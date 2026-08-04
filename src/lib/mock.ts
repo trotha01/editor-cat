@@ -1,0 +1,239 @@
+/**
+ * Offline mock provider mode, enabled with `VITE_MOCK_PROVIDERS=1`.
+ *
+ * The point is to make the whole app — generate, timeline, trim, voiceover,
+ * export — exercisable with no API keys, no network, and no spend. That makes
+ * the flow testable in CI, and it gives anyone evaluating the app a way to see
+ * it work before deciding to pay for credits.
+ *
+ * The media produced here is real: images are drawn on a canvas and videos are
+ * recorded off an animated canvas, so they have genuine dimensions, duration
+ * and bytes, and the export path gets a real workout.
+ */
+import type { GenerationProgress } from './falClient'
+
+export function isMockEnabled(): boolean {
+  return import.meta.env.VITE_MOCK_PROVIDERS === '1'
+}
+
+/**
+ * Whether a provider feature should be usable.
+ *
+ * In mock mode nothing is gated on a key, because there is no provider to
+ * authenticate against — the whole point is to be able to walk the app without
+ * one.
+ */
+export function hasAccess(key: string): boolean {
+  return isMockEnabled() || key.trim().length > 0
+}
+
+const PALETTES = [
+  ['#0ea5e9', '#6366f1'],
+  ['#f97316', '#db2777'],
+  ['#10b981', '#0891b2'],
+  ['#a855f7', '#e11d48'],
+]
+
+function paletteFor(seed: string): [string, string] {
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return PALETTES[hash % PALETTES.length] as [string, string]
+}
+
+function sizeFor(imageSize: unknown): { width: number; height: number } {
+  switch (imageSize) {
+    case 'portrait_16_9':
+      return { width: 576, height: 1024 }
+    case 'square_hd':
+      return { width: 768, height: 768 }
+    case 'landscape_4_3':
+      return { width: 1024, height: 768 }
+    case 'portrait_4_3':
+      return { width: 768, height: 1024 }
+    default:
+      return { width: 1024, height: 576 }
+  }
+}
+
+function drawFrame(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  prompt: string,
+  t: number,
+) {
+  const [from, to] = paletteFor(prompt)
+  const gradient = ctx.createLinearGradient(0, 0, width, height)
+  gradient.addColorStop(0, from)
+  gradient.addColorStop(1, to)
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, width, height)
+
+  // A moving element so mock "video" visibly animates and A/V sync is checkable.
+  const radius = Math.min(width, height) * 0.12
+  const cx = width * (0.2 + 0.6 * (0.5 + 0.5 * Math.sin(t * 1.4)))
+  const cy = height * (0.35 + 0.2 * Math.cos(t * 1.9))
+  ctx.fillStyle = 'rgba(255,255,255,0.85)'
+  ctx.beginPath()
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.fillStyle = 'rgba(255,255,255,0.95)'
+  ctx.font = `600 ${Math.round(width / 26)}px system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  const words = prompt.slice(0, 90)
+  ctx.fillText(words, width / 2, height - height * 0.12, width * 0.86)
+
+  ctx.font = `500 ${Math.round(width / 42)}px system-ui, sans-serif`
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'
+  ctx.fillText('MOCK MODE — no API call was made', width / 2, height - height * 0.05, width * 0.86)
+}
+
+async function mockImage(
+  input: Record<string, unknown>,
+): Promise<{ images: { url: string; width: number; height: number }[] }> {
+  const prompt = String(input.prompt ?? 'untitled')
+  const { width, height } = sizeFor(input.image_size)
+  const count = Math.max(1, Math.min(4, Number(input.num_images ?? 1)))
+
+  const images = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Canvas is unavailable, so mock mode cannot draw images.')
+      drawFrame(ctx, width, height, `${prompt} #${i + 1}`, i * 2)
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) throw new Error('Could not encode the mock image.')
+      return { url: URL.createObjectURL(blob), width, height }
+    }),
+  )
+
+  return { images }
+}
+
+async function mockVideo(
+  input: Record<string, unknown>,
+  onProgress?: (p: GenerationProgress) => void,
+  signal?: AbortSignal,
+): Promise<{ video: { url: string; content_type: string } }> {
+  const prompt = String(input.prompt ?? 'untitled')
+  const seconds = Math.max(1, Math.min(10, Number(input.duration ?? 5)))
+  const width = 640
+  const height = 360
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas is unavailable, so mock mode cannot render video.')
+
+  if (typeof MediaRecorder === 'undefined' || !canvas.captureStream) {
+    throw new Error('This browser cannot record a canvas, so mock video generation is unavailable.')
+  }
+
+  const stream = canvas.captureStream(30)
+  const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((type) =>
+    MediaRecorder.isTypeSupported(type),
+  )
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+  const chunks: Blob[] = []
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) chunks.push(event.data)
+  }
+
+  const done = new Promise<Blob>((resolve) => {
+    recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || 'video/webm' }))
+  })
+
+  recorder.start()
+  const startedAt = performance.now()
+
+  await new Promise<void>((resolve, reject) => {
+    const tick = () => {
+      if (signal?.aborted) {
+        recorder.stop()
+        stream.getTracks().forEach((track) => track.stop())
+        reject(new DOMException('Aborted', 'AbortError'))
+        return
+      }
+      const elapsed = (performance.now() - startedAt) / 1000
+      drawFrame(ctx, width, height, prompt, elapsed)
+      onProgress?.({
+        status: 'IN_PROGRESS',
+        elapsed,
+        message: `Rendering mock video ${elapsed.toFixed(1)}s / ${seconds}s`,
+      })
+      if (elapsed >= seconds) {
+        resolve()
+        return
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  })
+
+  recorder.stop()
+  stream.getTracks().forEach((track) => track.stop())
+  const blob = await done
+
+  return { video: { url: URL.createObjectURL(blob), content_type: blob.type } }
+}
+
+function mockLlm(input: Record<string, unknown>): { output: string } {
+  const prompt = String(input.prompt ?? '')
+  // Echo back something clearly shaped like an enhanced prompt so the diff UI
+  // has real content to show, while staying obviously fake.
+  const subject = prompt.split('\n').at(-1)?.slice(0, 200) ?? prompt
+  return {
+    output:
+      `${subject.trim()}, rendered with cinematic depth of field, soft rim lighting from the left, ` +
+      `shallow 35mm perspective, rich colour grading, fine surface detail, composed on the thirds. ` +
+      `[mock enhancement — no LLM was called]`,
+  }
+}
+
+/** Routes a mock request by model ID, mimicking the real client's contract. */
+export async function mockFal<T>(
+  modelId: string,
+  input: Record<string, unknown>,
+  onProgress?: (p: GenerationProgress) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  onProgress?.({ status: 'IN_QUEUE', elapsed: 0 })
+
+  if (modelId.includes('any-llm')) {
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    return mockLlm(input) as T
+  }
+
+  if (modelId.includes('image-to-video') || modelId.includes('i2v') || modelId.includes('video')) {
+    return (await mockVideo(input, onProgress, signal)) as T
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  onProgress?.({ status: 'IN_PROGRESS', elapsed: 0.6 })
+  return (await mockImage(input)) as T
+}
+
+/** Mock voice list, shaped like the ElevenLabs response. */
+export function mockVoices() {
+  return {
+    voices: [
+      { voice_id: 'mock-rachel', name: 'Rachel (mock)', category: 'premade' },
+      { voice_id: 'mock-adam', name: 'Adam (mock)', category: 'premade' },
+      { voice_id: 'mock-bella', name: 'Bella (mock)', category: 'premade' },
+    ],
+  }
+}
+
+/**
+ * Mock voice conversion. Returns the original audio unchanged — the point is to
+ * exercise the plumbing (upload, store, A/B toggle, export mixing), and
+ * pretending to change the timbre would only make the mock misleading.
+ */
+export async function mockConvert(audio: Blob): Promise<Blob> {
+  await new Promise((resolve) => setTimeout(resolve, 700))
+  return audio
+}

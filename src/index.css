@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-canvas: oklch(0.16 0.012 265);
+  --color-surface: oklch(0.21 0.014 265);
+  --color-surface-2: oklch(0.26 0.016 265);
+  --color-line: oklch(0.32 0.018 265);
+  --color-ink: oklch(0.97 0.005 265);
+  --color-ink-dim: oklch(0.72 0.015 265);
+  --color-accent: oklch(0.72 0.16 250);
+  --color-accent-ink: oklch(0.18 0.03 250);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Range inputs are used for trimming and scrubbing, where the default
+   platform styling is inconsistent enough to be distracting. */
+input[type='range'] {
+  accent-color: var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,135 @@
+import { useEffect, useState } from 'react'
+import { ImagePanel } from './components/ImagePanel'
+import { VideoPanel } from './components/VideoPanel'
+import { LibraryPanel } from './components/LibraryPanel'
+import { VoicePanel } from './components/VoicePanel'
+import { Preview } from './components/Preview'
+import { Timeline } from './components/Timeline'
+import { Transport } from './components/Transport'
+import { SettingsDialog } from './components/SettingsDialog'
+import { ExportDialog } from './components/ExportDialog'
+import { Button } from './components/ui'
+import { usePlayback } from './hooks/usePlayback'
+import { useAssetStore } from './state/useAssetStore'
+import { useProjectStore } from './state/useProjectStore'
+import { useSettingsStore } from './state/useSettingsStore'
+import { isMockEnabled } from './lib/mock'
+
+const TABS = [
+  { id: 'image', label: '1 · Image', hint: 'Make images from a prompt' },
+  { id: 'video', label: '2 · Video', hint: 'Animate an image into a clip' },
+  { id: 'library', label: 'Library', hint: 'Everything you have made' },
+  { id: 'voice', label: '3 · Voice', hint: 'Record and change your voice' },
+] as const
+
+type TabId = (typeof TABS)[number]['id']
+
+export default function App() {
+  const [tab, setTab] = useState<TabId>('image')
+  // Open Settings straight away on a first visit: without a key there is
+  // nothing else the app can usefully do.
+  const [settingsOpen, setSettingsOpen] = useState(
+    () => !isMockEnabled() && useSettingsStore.getState().fal.trim().length === 0,
+  )
+  const [exportOpen, setExportOpen] = useState(false)
+
+  const loadAssets = useAssetStore((state) => state.load)
+  const loadProject = useProjectStore((state) => state.load)
+  const project = useProjectStore((state) => state.project)
+  const rename = useProjectStore((state) => state.rename)
+  const duration = useProjectStore((state) => state.duration())
+
+  const playback = usePlayback(duration)
+
+  useEffect(() => {
+    void loadAssets()
+    void loadProject()
+  }, [loadAssets, loadProject])
+
+  return (
+    <div className="flex h-full flex-col bg-canvas text-ink">
+      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+        <span aria-hidden className="text-xl">
+          🎬
+        </span>
+        <h1 className="text-sm font-semibold">editor-cat</h1>
+
+        <input
+          value={project.name}
+          onChange={(event) => rename(event.target.value)}
+          aria-label="Project name"
+          className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm hover:border-line focus:border-accent focus:outline-none"
+        />
+
+        {isMockEnabled() ? (
+          <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-xs text-amber-200">
+            mock mode
+          </span>
+        ) : null}
+
+        <Button onClick={() => setSettingsOpen(true)}>
+          <span aria-hidden>⚙️</span> Settings
+        </Button>
+        <Button
+          variant="primary"
+          onClick={() => setExportOpen(true)}
+          disabled={project.clips.length === 0}
+        >
+          <span aria-hidden>⬇️</span> Export
+        </Button>
+      </header>
+
+      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:flex-row">
+        <section className="flex w-full shrink-0 flex-col gap-3 lg:w-[26rem]">
+          <nav
+            className="flex gap-1 rounded-xl border border-line bg-surface p-1"
+            aria-label="Steps"
+          >
+            {TABS.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => setTab(entry.id)}
+                title={entry.hint}
+                aria-current={tab === entry.id}
+                className={`flex-1 rounded-lg px-2 py-2 text-xs font-medium transition ${
+                  tab === entry.id ? 'bg-accent text-accent-ink' : 'text-ink-dim hover:text-ink'
+                }`}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="rounded-xl border border-line bg-surface p-4">
+            {tab === 'image' ? <ImagePanel /> : null}
+            {tab === 'video' ? <VideoPanel /> : null}
+            {tab === 'library' ? <LibraryPanel /> : null}
+            {tab === 'voice' ? (
+              <VoicePanel
+                currentTime={playback.currentTime}
+                onPlay={playback.play}
+                onPause={playback.pause}
+              />
+            ) : null}
+          </div>
+        </section>
+
+        <section className="flex min-w-0 flex-1 flex-col gap-4">
+          <Preview currentTime={playback.currentTime} playing={playback.playing} />
+          <Transport
+            currentTime={playback.currentTime}
+            duration={duration}
+            playing={playback.playing}
+            onToggle={playback.toggle}
+            onSeek={playback.seek}
+          />
+          <Timeline currentTime={playback.currentTime} onSeek={playback.seek} />
+        </section>
+      </main>
+
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
+    </div>
+  )
+}
