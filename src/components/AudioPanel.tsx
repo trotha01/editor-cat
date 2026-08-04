@@ -1,29 +1,31 @@
 /**
- * Step 4: record a voiceover, then optionally re-perform it in another voice.
+ * Step 3: layer voiceovers, and lay music under them.
  *
- * Recording starts playback at the current playhead so you are narrating to
- * picture, and the take is anchored where you started — which is the only
- * behaviour that makes "record over the video" mean anything.
+ * Recording starts playback at the playhead so you narrate to picture, and the
+ * take is pinned where you started. Takes are placed automatically: onto an
+ * existing voice track if it is free at that moment, otherwise onto a new one.
+ * That means you can record the same passage twice, or talk over yourself, and
+ * both survive — without ever having to think about which track you are on.
  *
- * The original recording is never overwritten by a conversion. Both are kept
- * and switchable, because voice conversion is a matter of taste and being
- * unable to go back would make it risky to even try.
+ * A conversion never overwrites the original. Both are kept and switchable,
+ * because voice conversion is a matter of taste and being unable to go back
+ * would make it risky to even try.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Callout, EmptyState, Field, Select, Spinner } from './ui'
 import { useRecorder } from '../hooks/useRecorder'
 import { convertVoice, listVoices, type Voice } from '../lib/elevenlabs'
 import { getBlob } from '../lib/db'
-import { ingestBlob, newId } from '../lib/media'
+import { ingestBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { hasAccess } from '../lib/mock'
-import type { VoiceoverTake } from '../lib/types'
+import type { AudioClip } from '../lib/types'
 
-export function VoicePanel({
+export function AudioPanel({
   currentTime,
   onPlay,
   onPause,
@@ -33,18 +35,22 @@ export function VoicePanel({
   onPause: () => void
 }) {
   const recorder = useRecorder()
-  const elevenKey = useSettingsStore((state) => state.elevenlabs)
   const addAsset = useAssetStore((state) => state.add)
-  const voiceovers = useProjectStore((state) => state.project.voiceovers)
-  const addVoiceover = useProjectStore((state) => state.addVoiceover)
+  const audioClips = useProjectStore((state) => state.project.audioClips)
+  const addAudioClip = useProjectStore((state) => state.addAudioClip)
   const timelineDuration = useProjectStore((state) => state.duration())
 
-  const [anchor, setAnchor] = useState(0)
+  const anchorRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
+  const [placement, setPlacement] = useState<string | null>(null)
+  const musicInput = useRef<HTMLInputElement>(null)
 
   const beginRecording = async () => {
     setError(null)
-    setAnchor(currentTime)
+    setPlacement(null)
+    // Captured before the preview starts rolling, so the take lands where the
+    // playhead was when the user hit record, not wherever it drifted to.
+    anchorRef.current = currentTime
     await recorder.start()
     onPlay()
   }
@@ -57,23 +63,63 @@ export function VoicePanel({
       return
     }
     try {
+      const startTime = anchorRef.current
       const asset = await ingestBlob(blob, {
         kind: 'audio',
-        name: `Voiceover at ${formatTime(anchor)}`,
+        name: `Voiceover at ${formatTime(startTime)}`,
       })
       addAsset(asset)
-      const take: VoiceoverTake = {
-        id: newId('take'),
+
+      const outcome = addAudioClip('voice', {
         assetId: asset.id,
         useConverted: false,
-        startTime: anchor,
+        startTime,
+        inPoint: 0,
         duration: asset.duration && asset.duration > 0 ? asset.duration : recorder.elapsed,
-      }
-      addVoiceover(take)
+      })
+
+      setPlacement(
+        outcome.createdTrack
+          ? `Every voice track was busy at ${formatTime(startTime)}, so this take went onto a new one — ${outcome.trackName}.`
+          : `Added to ${outcome.trackName}.`,
+      )
     } catch (cause) {
       setError(toDisplayMessage(cause))
     }
   }
+
+  const addMusic = async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    setError(null)
+    setPlacement(null)
+    try {
+      if (!file.type.startsWith('audio/')) {
+        throw new Error(`"${file.name}" is not an audio file.`)
+      }
+      const asset = await ingestBlob(file, { kind: 'audio', name: file.name })
+      addAsset(asset)
+
+      const outcome = addAudioClip('music', {
+        assetId: asset.id,
+        useConverted: false,
+        // Score almost always starts at the top; drag it later if not.
+        startTime: 0,
+        inPoint: 0,
+        duration: asset.duration && asset.duration > 0 ? asset.duration : 30,
+        label: file.name,
+      })
+      setPlacement(
+        `"${file.name}" added to ${outcome.trackName}. Drag it on the timeline to retime it.`,
+      )
+    } catch (cause) {
+      setError(toDisplayMessage(cause))
+    } finally {
+      if (musicInput.current) musicInput.current.value = ''
+    }
+  }
+
+  const voiceClips = audioClips.filter((clip) => !clip.label)
 
   return (
     <div className="flex flex-col gap-4">
@@ -81,7 +127,7 @@ export function VoicePanel({
         <p className="text-sm font-medium">Record a voiceover</p>
         <p className="text-xs leading-relaxed text-ink-dim">
           Recording starts the preview from wherever the playhead is, so you can narrate to picture.
-          The take is pinned to that point on the timeline.
+          Record as many times as you like — takes layer onto separate tracks automatically.
         </p>
 
         {recorder.recording ? (
@@ -126,17 +172,38 @@ export function VoicePanel({
         )}
 
         {recorder.error ? <Callout tone="error">{recorder.error}</Callout> : null}
-        {error ? <Callout tone="error">{error}</Callout> : null}
       </div>
 
-      {voiceovers.length === 0 ? (
+      <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
+        <p className="text-sm font-medium">Music and score</p>
+        <p className="text-xs leading-relaxed text-ink-dim">
+          Add a track and it sits under your narration at half volume. Adjust the level with the
+          slider beside the track on the timeline.
+        </p>
+        <Button className="self-start" onClick={() => musicInput.current?.click()}>
+          <span aria-hidden>🎵</span> Add music
+        </Button>
+        <input
+          ref={musicInput}
+          type="file"
+          accept="audio/*"
+          className="hidden"
+          onChange={(event) => void addMusic(event.target.files)}
+        />
+      </div>
+
+      {placement ? <Callout tone="success">{placement}</Callout> : null}
+      {error ? <Callout tone="error">{error}</Callout> : null}
+
+      {voiceClips.length === 0 ? (
         <EmptyState icon="🎧" title="No takes yet">
-          Record one above. Afterwards you can convert it into a different voice with ElevenLabs.
+          Record one above. Afterwards you can convert any take into a different voice with
+          ElevenLabs.
         </EmptyState>
       ) : (
         <ul className="flex flex-col gap-3">
-          {voiceovers.map((take) => (
-            <TakeCard key={take.id} take={take} elevenKey={elevenKey} />
+          {voiceClips.map((clip) => (
+            <TakeCard key={clip.id} clip={clip} />
           ))}
         </ul>
       )}
@@ -144,9 +211,13 @@ export function VoicePanel({
   )
 }
 
-function TakeCard({ take, elevenKey }: { take: VoiceoverTake; elevenKey: string }) {
-  const updateVoiceover = useProjectStore((state) => state.updateVoiceover)
-  const removeVoiceover = useProjectStore((state) => state.removeVoiceover)
+function TakeCard({ clip }: { clip: AudioClip }) {
+  const elevenKey = useSettingsStore((state) => state.elevenlabs)
+  const updateAudioClip = useProjectStore((state) => state.updateAudioClip)
+  const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
+  const trackName = useProjectStore(
+    (state) => state.project.audioTracks.find((track) => track.id === clip.trackId)?.name,
+  )
   const addAsset = useAssetStore((state) => state.add)
   const assets = useAssetStore((state) => state.assets)
 
@@ -175,7 +246,7 @@ function TakeCard({ take, elevenKey }: { take: VoiceoverTake; elevenKey: string 
   }, [hasKey, elevenKey, voices])
 
   const convert = async () => {
-    const source = assets.find((asset) => asset.id === take.assetId)
+    const source = assets.find((asset) => asset.id === clip.assetId)
     if (!source) {
       setError('The original recording is no longer available.')
       return
@@ -194,7 +265,7 @@ function TakeCard({ take, elevenKey }: { take: VoiceoverTake; elevenKey: string 
         name: `${source.name} — ${voiceName}`,
       })
       addAsset(asset)
-      updateVoiceover(take.id, {
+      updateAudioClip(clip.id, {
         convertedAssetId: asset.id,
         useConverted: true,
         voiceName,
@@ -211,32 +282,37 @@ function TakeCard({ take, elevenKey }: { take: VoiceoverTake; elevenKey: string 
       <div className="flex items-center gap-2">
         <span aria-hidden>🎙️</span>
         <span className="text-sm font-medium">
-          Take at {formatTime(take.startTime)} · {formatTime(take.duration)}
+          {formatTime(clip.startTime)} · {formatTime(clip.duration)}
         </span>
+        {trackName ? (
+          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-dim">
+            {trackName}
+          </span>
+        ) : null}
         <Button
           variant="ghost"
           className="ml-auto"
-          onClick={() => removeVoiceover(take.id)}
+          onClick={() => removeAudioClip(clip.id)}
           aria-label="Delete this take"
         >
           🗑
         </Button>
       </div>
 
-      {take.convertedAssetId ? (
+      {clip.convertedAssetId ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-ink-dim">Playing:</span>
           <Button
-            variant={take.useConverted ? 'ghost' : 'primary'}
-            onClick={() => updateVoiceover(take.id, { useConverted: false })}
+            variant={clip.useConverted ? 'ghost' : 'primary'}
+            onClick={() => updateAudioClip(clip.id, { useConverted: false })}
           >
             Your voice
           </Button>
           <Button
-            variant={take.useConverted ? 'primary' : 'ghost'}
-            onClick={() => updateVoiceover(take.id, { useConverted: true })}
+            variant={clip.useConverted ? 'primary' : 'ghost'}
+            onClick={() => updateAudioClip(clip.id, { useConverted: true })}
           >
-            {take.voiceName ?? 'Converted'}
+            {clip.voiceName ?? 'Converted'}
           </Button>
         </div>
       ) : null}
@@ -264,7 +340,7 @@ function TakeCard({ take, elevenKey }: { take: VoiceoverTake; elevenKey: string 
           </div>
           <Button onClick={convert} disabled={!voiceId || busy}>
             {busy ? <Spinner /> : <span aria-hidden>🪄</span>}
-            {take.convertedAssetId ? 'Convert again' : 'Change voice'}
+            {clip.convertedAssetId ? 'Convert again' : 'Change voice'}
           </Button>
         </div>
       )}

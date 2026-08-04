@@ -1,6 +1,13 @@
 /**
  * Shared helpers for the bring-your-own-key proxy functions.
  *
+ * This lives in netlify/lib/ rather than alongside the handlers on purpose:
+ * Netlify treats *every* file in the functions directory as a deployable
+ * function, so a helper there becomes a pointless endpoint and a test file
+ * there fails the deploy outright ("_shared.test" is not a legal function
+ * name). Keep netlify/functions/ to handlers only; esbuild bundles imports
+ * from here into each one.
+ *
  * These functions exist for reliability, not secrecy. The user's key is their
  * own and lives in their browser; we forward it once and forget it. Routing
  * through our own origin means we do not depend on each provider's CORS policy

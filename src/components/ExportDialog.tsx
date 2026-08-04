@@ -1,10 +1,16 @@
 /** Renders the timeline to an MP4 in the browser. */
 import { useRef, useState } from 'react'
 import { Button, Callout, Field, Modal, Select, Spinner } from './ui'
-import { renderProject, type ExportAsset, type RenderProgress } from '../lib/export/render'
+import {
+  renderProject,
+  type ExportAsset,
+  type RenderProgress,
+  type RenderRequest,
+} from '../lib/export/render'
 import { getBlob } from '../lib/db'
 import { downloadBlob } from '../lib/media'
 import { clipDuration, formatTime, layoutClips } from '../lib/timeline'
+import { audioEnd, gainFor } from '../lib/audioTracks'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from '../state/useAssetStore'
@@ -35,11 +41,12 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
   const positioned = layoutClips(project.clips)
   const visualDuration = positioned.at(-1)?.end ?? 0
-  const voiceEnd = project.voiceovers.reduce(
-    (max, take) => Math.max(max, take.startTime + take.duration),
-    0,
-  )
-  const outputDuration = Math.max(visualDuration, voiceEnd)
+  const outputDuration = Math.max(visualDuration, audioEnd(project.audioClips))
+
+  // Muted tracks are dropped rather than exported at zero gain: encoding
+  // silence costs time and gains nothing.
+  const audibleClips = project.audioClips.filter((clip) => gainFor(project.audioTracks, clip) > 0)
+  const mutedCount = project.audioClips.length - audibleClips.length
 
   const run = async () => {
     setError(null)
@@ -66,12 +73,18 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
       for (const clip of project.clips) await collect(clip.assetId)
 
-      const voiceovers: { assetId: string; startTime: number; duration: number }[] = []
-      for (const take of project.voiceovers) {
+      const audio: RenderRequest['audio'] = []
+      for (const clip of audibleClips) {
         const assetId =
-          take.useConverted && take.convertedAssetId ? take.convertedAssetId : take.assetId
+          clip.useConverted && clip.convertedAssetId ? clip.convertedAssetId : clip.assetId
         await collect(assetId)
-        voiceovers.push({ assetId, startTime: take.startTime, duration: take.duration })
+        audio.push({
+          assetId,
+          startTime: clip.startTime,
+          inPoint: clip.inPoint,
+          duration: clip.duration,
+          volume: gainFor(project.audioTracks, clip),
+        })
       }
 
       const clips = project.clips.map((clip) => {
@@ -87,7 +100,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
       const { blob } = await renderProject(
         {
           clips,
-          voiceovers,
+          audio,
           assets: needed,
           width: project.width,
           height: project.height,
@@ -160,8 +173,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         <p className="text-sm text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
           {formatTime(outputDuration)} ·{' '}
-          {project.voiceovers.length > 0
-            ? `${project.voiceovers.length} voiceover take${project.voiceovers.length === 1 ? '' : 's'}`
+          {audibleClips.length > 0
+            ? `${audibleClips.length} audio clip${audibleClips.length === 1 ? '' : 's'} across ` +
+              `${new Set(audibleClips.map((clip) => clip.trackId)).size} track` +
+              `${new Set(audibleClips.map((clip) => clip.trackId)).size === 1 ? '' : 's'}` +
+              (mutedCount > 0 ? ` · ${mutedCount} muted, not exported` : '')
             : 'no audio'}
         </p>
 

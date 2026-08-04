@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   MIN_CLIP_DURATION,
-  activeVoiceovers,
   clipAtTime,
   clipDuration,
   clipForAsset,
@@ -197,7 +196,8 @@ describe('projectDuration', () => {
     id: 'p',
     name: 'p',
     clips: [clip('1', 0, 3)],
-    voiceovers: [],
+    audioTracks: [],
+    audioClips: [],
     width: 1280,
     height: 720,
     fps: 30,
@@ -207,25 +207,22 @@ describe('projectDuration', () => {
     expect(projectDuration(base)).toBe(3)
   })
 
-  it('extends to cover a voiceover that outlasts the clips', () => {
+  it('extends to cover audio that outlasts the clips', () => {
     const project: Project = {
       ...base,
-      voiceovers: [{ id: 'v', assetId: 'a', useConverted: false, startTime: 2, duration: 6 }],
+      audioClips: [
+        {
+          id: 'v',
+          trackId: 't',
+          assetId: 'a',
+          useConverted: false,
+          startTime: 2,
+          inPoint: 0,
+          duration: 6,
+        },
+      ],
     }
     expect(projectDuration(project)).toBe(8)
-  })
-})
-
-describe('activeVoiceovers', () => {
-  const takes = [
-    { id: 'v1', assetId: 'a', useConverted: false, startTime: 0, duration: 2 },
-    { id: 'v2', assetId: 'b', useConverted: false, startTime: 1, duration: 3 },
-  ]
-
-  it('returns every take overlapping the playhead', () => {
-    expect(activeVoiceovers(takes, 1.5).map((take) => take.id)).toEqual(['v1', 'v2'])
-    expect(activeVoiceovers(takes, 3).map((take) => take.id)).toEqual(['v2'])
-    expect(activeVoiceovers(takes, 9)).toEqual([])
   })
 })
 

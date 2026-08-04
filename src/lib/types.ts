@@ -41,19 +41,59 @@ export interface Clip {
   outPoint: number
 }
 
-/** A single voiceover recording, optionally with an ElevenLabs conversion. */
-export interface VoiceoverTake {
+/**
+ * Voice and music live on separate kinds of track because they are mixed
+ * differently: narration wants to sit on top at full level, score wants to sit
+ * underneath. Keeping the kind on the track means a new recording can never
+ * land in the middle of the music bed.
+ */
+export type AudioTrackKind = 'voice' | 'music'
+
+/** One lane of audio. Layering is just having more than one of these. */
+export interface AudioTrack {
   id: string
-  /** The raw microphone recording. Never destroyed by conversion. */
+  kind: AudioTrackKind
+  name: string
+  muted: boolean
+  /** Playback and export gain. 1 is unity; music defaults lower. */
+  volume: number
+}
+
+/** A piece of audio placed at a point in time on a track. */
+export interface AudioClip {
+  id: string
+  trackId: string
+  /** The source recording or music file. Never replaced by a conversion. */
   assetId: string
   /** The ElevenLabs speech-to-speech result, once converted. */
   convertedAssetId?: string
   /** Which of the two to play and export. */
   useConverted: boolean
-  /** Where this take starts on the timeline, in seconds. */
+  /** Where this clip starts on the timeline, in seconds. */
   startTime: number
+  /** Seconds into the source to start from. */
+  inPoint: number
+  /** How long the clip plays for. */
   duration: number
   /** Name of the ElevenLabs voice used, for display. */
+  voiceName?: string
+  /** Display label, e.g. the music file's name. */
+  label?: string
+}
+
+/**
+ * The pre-multitrack shape, kept only so stored projects can be migrated.
+ * Nothing new should be written in this form.
+ *
+ * @deprecated Superseded by AudioTrack + AudioClip.
+ */
+export interface LegacyVoiceoverTake {
+  id: string
+  assetId: string
+  convertedAssetId?: string
+  useConverted: boolean
+  startTime: number
+  duration: number
   voiceName?: string
 }
 
@@ -61,10 +101,13 @@ export interface Project {
   id: string
   name: string
   clips: Clip[]
-  voiceovers: VoiceoverTake[]
+  audioTracks: AudioTrack[]
+  audioClips: AudioClip[]
   width: number
   height: number
   fps: number
+  /** Present only on projects saved before multitrack. Read by migrateProject. */
+  voiceovers?: LegacyVoiceoverTake[]
 }
 
 /** A clip with its resolved timeline position. Produced by `layoutClips`. */

@@ -1,17 +1,22 @@
 /**
  * Builds the ffmpeg command line for an export.
  *
- * This is deliberately a pure function over plain data: given clips and
- * voiceover takes it returns argv, with no wasm, no filesystem and no browser
+ * This is deliberately a pure function over plain data: given visual clips and
+ * audio clips it returns argv, with no wasm, no filesystem and no browser
  * involved. Export bugs are almost always filtergraph bugs, and this way they
  * can be caught by a unit test asserting on the arguments instead of by
  * rendering a video and squinting at it.
  *
- * A note on audio: clip audio is not mixed in. Most image-to-video models
- * return silent footage, and conditionally wiring per-clip audio streams
- * requires knowing which inputs have an audio track at all — which cannot be
- * known without probing every file first. The voiceover is the soundtrack, and
- * the preview mutes clips to match, so what you hear is what you export.
+ * Audio is mixed from the timeline's audio tracks: every clip is delayed to
+ * its start time, scaled by its track's volume, and summed. Muted tracks are
+ * expected to have been dropped by the caller — silence is cheaper to produce
+ * by not encoding a stream than by encoding one at zero gain.
+ *
+ * Video clips' own audio is not mixed in. Most image-to-video models return
+ * silent footage, and conditionally wiring per-clip audio requires knowing
+ * which inputs have an audio stream at all, which cannot be known without
+ * probing every file first. The preview mutes clips to match, so what you hear
+ * is what you export.
  */
 
 export interface ExportClip {
@@ -24,16 +29,20 @@ export interface ExportClip {
   duration: number
 }
 
-export interface ExportVoiceover {
+export interface ExportAudioClip {
   file: string
   /** Seconds from the start of the timeline. */
   startTime: number
+  /** Seconds into the source to start from. */
+  inPoint: number
   duration: number
+  /** Track gain. 1 is unity; the filter is omitted at unity. */
+  volume: number
 }
 
 export interface ExportSpec {
   clips: readonly ExportClip[]
-  voiceovers: readonly ExportVoiceover[]
+  audio: readonly ExportAudioClip[]
   width: number
   height: number
   fps: number
@@ -54,23 +63,32 @@ function sec(value: number): string {
   return (Math.round(value * 1000) / 1000).toString()
 }
 
+/** Gain to three decimals — finer than anyone can hear, and keeps argv tidy. */
+function roundGain(value: number): string {
+  return (Math.round(value * 1000) / 1000).toString()
+}
+
 export function totalVisualDuration(clips: readonly ExportClip[]): number {
   return clips.reduce((sum, clip) => sum + Math.max(0, clip.duration), 0)
 }
 
-export function totalAudioEnd(voiceovers: readonly ExportVoiceover[]): number {
-  return voiceovers.reduce((max, take) => Math.max(max, take.startTime + take.duration), 0)
+export function totalAudioEnd(audio: readonly ExportAudioClip[]): number {
+  return audio.reduce((max, clip) => Math.max(max, clip.startTime + clip.duration), 0)
 }
 
 export function buildExportPlan(spec: ExportSpec): ExportPlan {
-  const { clips, voiceovers, width, height, fps, outputFile } = spec
+  const { clips, width, height, fps, outputFile } = spec
 
   if (clips.length === 0) {
     throw new Error('Add at least one clip to the timeline before exporting.')
   }
 
+  // A silent clip contributes nothing but an input and a filter chain, and a
+  // zero-length one would produce an empty stream that amix chokes on.
+  const audio = spec.audio.filter((clip) => clip.volume > 0 && clip.duration > 0)
+
   const visualDuration = totalVisualDuration(clips)
-  const audioEnd = totalAudioEnd(voiceovers)
+  const audioEnd = totalAudioEnd(audio)
   const outputDuration = Math.max(visualDuration, audioEnd)
 
   const args: string[] = []
@@ -87,8 +105,10 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   }
 
   const audioInputOffset = clips.length
-  for (const take of voiceovers) {
-    args.push('-i', take.file)
+  for (const clip of audio) {
+    // Trim at the input like the video clips, so the filtergraph only has to
+    // place and mix rather than also cut.
+    args.push('-ss', sec(clip.inPoint), '-t', sec(clip.duration), '-i', clip.file)
   }
 
   // --- Video graph -------------------------------------------------------
@@ -110,32 +130,39 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${concatOut}`)
 
   if (needsPad) {
-    // The voiceover runs past the last clip, so hold its final frame rather
-    // than cutting to black mid-sentence.
+    // The audio runs past the last clip, so hold its final frame rather than
+    // cutting to black mid-sentence.
     chains.push(`[vcat]tpad=stop_mode=clone:stop_duration=${sec(audioEnd - visualDuration)}[vout]`)
   }
 
   // --- Audio graph -------------------------------------------------------
-  const hasAudio = voiceovers.length > 0
+  const hasAudio = audio.length > 0
   if (hasAudio) {
-    const delayed: string[] = []
-    voiceovers.forEach((take, index) => {
+    const placed: string[] = []
+    audio.forEach((clip, index) => {
       const input = audioInputOffset + index
       const label = `a${index}`
-      const delayMs = Math.max(0, Math.round(take.startTime * 1000))
+      const delayMs = Math.max(0, Math.round(clip.startTime * 1000))
       // all=1 applies the delay to every channel, so it works for mono and
-      // stereo takes alike without knowing the layout up front.
-      chains.push(`[${input}:a]adelay=${delayMs}:all=1,aresample=48000[${label}]`)
-      delayed.push(`[${label}]`)
+      // stereo sources alike without knowing the layout up front.
+      const stages = [`adelay=${delayMs}:all=1`]
+      // Skip the filter at unity so an untouched mix stays byte-identical to
+      // what it produced before track volumes existed.
+      if (clip.volume !== 1) stages.push(`volume=${roundGain(clip.volume)}`)
+      stages.push('aresample=48000')
+
+      chains.push(`[${input}:a]${stages.join(',')}[${label}]`)
+      placed.push(`[${label}]`)
     })
 
-    if (delayed.length === 1) {
-      chains.push(`${delayed[0]}anull[aout]`)
+    if (placed.length === 1) {
+      chains.push(`${placed[0]}anull[aout]`)
     } else {
-      // normalize=0 keeps each take at its recorded level; the default would
-      // quietly halve the volume as soon as a second take is added.
+      // normalize=0 keeps every clip at its own level; the default would
+      // quietly divide the volume by the number of inputs, so adding a music
+      // bed would duck the narration it is supposed to sit under.
       chains.push(
-        `${delayed.join('')}amix=inputs=${delayed.length}:duration=longest:normalize=0[aout]`,
+        `${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0[aout]`,
       )
     }
   }

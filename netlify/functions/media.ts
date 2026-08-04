@@ -1,5 +1,5 @@
 import type { Config } from '@netlify/functions'
-import { isAllowedMediaUrl, jsonError, passthroughHeaders } from './_shared'
+import { isAllowedMediaUrl, jsonError, passthroughHeaders } from '../lib/proxy'
 
 /**
  * Streams provider media through our own origin.

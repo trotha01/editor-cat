@@ -7,24 +7,52 @@
 import { create } from 'zustand'
 import { loadProject, saveProject } from '../lib/db'
 import { clipForAsset, layoutClips, reorder, totalDuration, trimClip } from '../lib/timeline'
+import {
+  audioEnd,
+  createTrack,
+  defaultTracks,
+  insertTrack,
+  migrateProject,
+  moveAudioClip,
+  placeAudioClip,
+} from '../lib/audioTracks'
 import { newId } from '../lib/media'
-import type { Asset, Clip, PositionedClip, Project, VoiceoverTake } from '../lib/types'
+import type {
+  Asset,
+  AudioClip,
+  AudioTrack,
+  AudioTrackKind,
+  Clip,
+  PositionedClip,
+  Project,
+} from '../lib/types'
 
 const PROJECT_ID = 'default'
 
-const EMPTY_PROJECT: Project = {
-  id: PROJECT_ID,
-  name: 'Untitled project',
-  clips: [],
-  voiceovers: [],
-  width: 1280,
-  height: 720,
-  fps: 30,
+function emptyProject(): Project {
+  return {
+    id: PROJECT_ID,
+    name: 'Untitled project',
+    clips: [],
+    audioTracks: defaultTracks(newId('track'), newId('track')),
+    audioClips: [],
+    width: 1280,
+    height: 720,
+    fps: 30,
+  }
+}
+
+/** What `addRecording` did, so the UI can say where the take landed. */
+export interface PlacementOutcome {
+  trackId: string
+  trackName: string
+  createdTrack: boolean
 }
 
 interface ProjectState {
   project: Project
   selectedClipId: string | null
+  selectedAudioClipId: string | null
   loaded: boolean
 
   load: () => Promise<void>
@@ -38,13 +66,19 @@ interface ProjectState {
   trim: (clipId: string, asset: Asset | undefined, edge: 'start' | 'end', value: number) => void
   setImageDuration: (clipId: string, seconds: number) => void
 
-  addVoiceover: (take: VoiceoverTake) => void
-  updateVoiceover: (id: string, patch: Partial<VoiceoverTake>) => void
-  removeVoiceover: (id: string) => void
+  /** Places audio, adding a track only if every existing one is busy there. */
+  addAudioClip: (kind: AudioTrackKind, clip: Omit<AudioClip, 'id' | 'trackId'>) => PlacementOutcome
+  updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
+  moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
+  removeAudioClip: (id: string) => void
+  selectAudioClip: (id: string | null) => void
+
+  addTrack: (kind: AudioTrackKind) => void
+  updateTrack: (id: string, patch: Partial<AudioTrack>) => void
+  removeTrack: (id: string) => void
 
   clearTimeline: () => void
 
-  /** Derived helpers. */
   positioned: () => PositionedClip[]
   duration: () => number
 }
@@ -65,16 +99,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
   }
 
   return {
-    project: EMPTY_PROJECT,
+    project: emptyProject(),
     selectedClipId: null,
+    selectedAudioClipId: null,
     loaded: false,
 
     load: async () => {
       try {
         const stored = await loadProject(PROJECT_ID)
-        set({ project: stored ?? EMPTY_PROJECT, loaded: true })
+        // Projects saved before multitrack carry a flat `voiceovers` list;
+        // migrating on read means old work opens with its layers intact.
+        const project = stored ? migrateProject(stored, newId) : emptyProject()
+        if (stored && project !== stored) persist(project)
+        set({ project, loaded: true })
       } catch {
-        set({ project: EMPTY_PROJECT, loaded: true })
+        set({ project: emptyProject(), loaded: true })
       }
     },
 
@@ -119,37 +158,99 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ),
       })),
 
-    addVoiceover: (take) =>
-      mutate((project) => ({ ...project, voiceovers: [...project.voiceovers, take] })),
+    addAudioClip: (kind, clip) => {
+      const id = newId('aclip')
+      const { project } = get()
 
-    updateVoiceover: (id, patch) =>
+      const result = placeAudioClip(project.audioTracks, project.audioClips, {
+        kind,
+        newTrackId: newId('track'),
+        clip: { ...clip, id },
+      })
+
+      mutate((current) => ({
+        ...current,
+        audioTracks: result.tracks,
+        audioClips: result.clips,
+      }))
+      set({ selectedAudioClipId: id })
+
+      const track = result.tracks.find((entry) => entry.id === result.trackId)
+      return {
+        trackId: result.trackId,
+        trackName: track?.name ?? 'Track',
+        createdTrack: result.createdTrack,
+      }
+    },
+
+    updateAudioClip: (id, patch) =>
       mutate((project) => ({
         ...project,
-        voiceovers: project.voiceovers.map((take) =>
-          take.id === id ? { ...take, ...patch } : take,
+        audioClips: project.audioClips.map((clip) =>
+          clip.id === id ? { ...clip, ...patch } : clip,
         ),
       })),
 
-    removeVoiceover: (id) =>
+    moveAudioClipTo: (id, startTime, trackId) => {
+      const { project } = get()
+      const result = moveAudioClip(project.audioClips, id, {
+        startTime,
+        ...(trackId ? { trackId } : {}),
+      })
+      // A blocked move leaves state untouched, so skip the write entirely
+      // rather than persisting an identical project on every rejected drag.
+      if (!result.moved) return false
+      mutate((current) => ({ ...current, audioClips: result.clips }))
+      return true
+    },
+
+    removeAudioClip: (id) => {
       mutate((project) => ({
         ...project,
-        voiceovers: project.voiceovers.filter((take) => take.id !== id),
+        audioClips: project.audioClips.filter((clip) => clip.id !== id),
+      }))
+      set((state) => ({
+        selectedAudioClipId: state.selectedAudioClipId === id ? null : state.selectedAudioClipId,
+      }))
+    },
+
+    selectAudioClip: (id) => set({ selectedAudioClipId: id }),
+
+    addTrack: (kind) =>
+      mutate((project) => ({
+        ...project,
+        audioTracks: insertTrack(
+          project.audioTracks,
+          createTrack(newId('track'), kind, project.audioTracks),
+        ),
+      })),
+
+    updateTrack: (id, patch) =>
+      mutate((project) => ({
+        ...project,
+        audioTracks: project.audioTracks.map((track) =>
+          track.id === id ? { ...track, ...patch } : track,
+        ),
+      })),
+
+    removeTrack: (id) =>
+      // Removing a track takes its clips with it. Leaving them orphaned would
+      // keep them audible in the mix with nothing on screen to explain why.
+      mutate((project) => ({
+        ...project,
+        audioTracks: project.audioTracks.filter((track) => track.id !== id),
+        audioClips: project.audioClips.filter((clip) => clip.trackId !== id),
       })),
 
     clearTimeline: () => {
-      mutate((project) => ({ ...project, clips: [], voiceovers: [] }))
-      set({ selectedClipId: null })
+      mutate((project) => ({ ...project, clips: [], audioClips: [] }))
+      set({ selectedClipId: null, selectedAudioClipId: null })
     },
 
     positioned: () => layoutClips(get().project.clips),
     duration: () => {
-      const project = get().project
-      const visual = totalDuration(project.clips)
-      const voice = project.voiceovers.reduce(
-        (max, take) => Math.max(max, take.startTime + take.duration),
-        0,
-      )
-      return Math.max(visual, voice)
+      const { project } = get()
+      return Math.max(totalDuration(project.clips), audioEnd(project.audioClips))
     },
   }
 })

@@ -3,7 +3,8 @@
  * "did the trim land in the right place" bugs would otherwise live, so it is
  * kept side-effect free and unit tested directly.
  */
-import type { Asset, Clip, PositionedClip, Project, VoiceoverTake } from './types'
+import { audioEnd } from './audioTracks'
+import type { Asset, Clip, PositionedClip, Project } from './types'
 
 /** Shortest clip we allow. Below this, trimming produces unplayable slivers. */
 export const MIN_CLIP_DURATION = 0.2
@@ -41,15 +42,10 @@ export function totalDuration(clips: readonly Clip[]): number {
 
 /**
  * Total length of the project, which is the longer of the visual track and the
- * voiceover track — a voiceover may run past the last clip.
+ * audio tracks — a voiceover or a music bed may run past the last clip.
  */
 export function projectDuration(project: Project): number {
-  const visual = totalDuration(project.clips)
-  const voice = project.voiceovers.reduce(
-    (max, take) => Math.max(max, take.startTime + take.duration),
-    0,
-  )
-  return Math.max(visual, voice)
+  return Math.max(totalDuration(project.clips), audioEnd(project.audioClips ?? []))
 }
 
 /** The clip playing at time `t`, or null if `t` is past the end. */
@@ -120,11 +116,6 @@ export function reorder<T>(items: readonly T[], from: number, to: number): T[] {
   const [moved] = next.splice(from, 1)
   if (moved !== undefined) next.splice(to, 0, moved)
   return next
-}
-
-/** Which voiceover takes overlap time `t`. */
-export function activeVoiceovers(takes: readonly VoiceoverTake[], t: number): VoiceoverTake[] {
-  return takes.filter((take) => t >= take.startTime && t < take.startTime + take.duration)
 }
 
 export function clamp(value: number, min: number, max: number): number {

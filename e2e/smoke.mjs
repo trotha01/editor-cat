@@ -20,6 +20,7 @@ import { readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { unpack } from './mp4.mjs'
+import { sineWav } from './wav.mjs'
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:4173/'
 const workDir = mkdtempSync(join(tmpdir(), 'editor-cat-e2e-'))
@@ -102,22 +103,81 @@ try {
   if (trimmed === twoClips) fail('trimming a clip did not change the timeline duration')
   step(`trimming shortens the timeline (${twoClips.trim()} -> ${trimmed.trim()})`)
 
-  // --- Voiceover -----------------------------------------------------------
-  await page.getByRole('button', { name: /3 · Voice/ }).click()
-  await page.getByRole('button', { name: /Record from/ }).click()
-  await page.waitForTimeout(2500)
-  await page.getByRole('button', { name: /Stop and keep/ }).click()
-  await page.waitForSelector('text=/Take at/', { timeout: 30000 })
-  step('voiceover recorded and pinned to the timeline')
+  // --- Voiceover, layered across tracks -------------------------------------
+  const trackCount = () =>
+    page.locator('section[aria-label="Timeline"] [aria-label$="volume"]').count()
 
+  await page.getByRole('button', { name: /3 · Audio/ }).click()
+  const tracksAtStart = await trackCount()
+
+  const recordFrom = async (seconds) => {
+    // Park the playhead so both takes claim the same stretch of timeline.
+    await page.locator('input[aria-label="Scrub through the timeline"]').fill(String(seconds))
+    await page.getByRole('button', { name: /Record from/ }).click()
+    await page.waitForTimeout(2500)
+    await page.getByRole('button', { name: /Stop and keep/ }).click()
+  }
+
+  await recordFrom(0)
+  await page.waitForSelector('text=/Added to|went onto a new one/', { timeout: 30000 })
+  step('first voiceover take recorded and placed automatically')
+
+  await recordFrom(0)
+  await page.waitForSelector('text=/went onto a new one/', { timeout: 30000 })
+  const tracksAfter = await trackCount()
+  if (tracksAfter !== tracksAtStart + 1) {
+    fail(`overlapping take should have added one track, went ${tracksAtStart} -> ${tracksAfter}`)
+  }
+  step(`overlapping take stacked onto a new track (${tracksAtStart} -> ${tracksAfter} tracks)`)
+
+  // --- Music ---------------------------------------------------------------
+  await page.locator('input[accept="audio/*"]').setInputFiles({
+    name: 'score.wav',
+    mimeType: 'audio/wav',
+    buffer: sineWav({ seconds: 5 }),
+  })
+  await page.waitForSelector('text=/score.wav.+added to/', { timeout: 30000 })
+  step('music added to a music track, under the voice tracks')
+
+  // --- Voice conversion -----------------------------------------------------
   await page.waitForSelector('select')
-  await page.getByRole('button', { name: /Change voice/ }).click()
+  await page
+    .getByRole('button', { name: /Change voice/ })
+    .first()
+    .click()
   await page.waitForSelector('button:has-text("Your voice")', { timeout: 60000 })
   step('voice conversion completes and keeps the original for A/B')
+
+  // --- Muting excludes a track from the mix --------------------------------
+  const muteButton = page.locator('button[aria-label^="Mute"]').first()
+  await muteButton.click()
+  await page.waitForTimeout(200)
+  const exportSummaryMuted = await page.evaluate(() => {
+    document.querySelector('dialog[open]')?.close()
+    return true
+  })
+  if (!exportSummaryMuted) fail('could not reset dialogs before checking the mute state')
+  await page.locator('button[aria-label^="Unmute"]').first().click()
+  step('track mute toggles without error')
 
   // --- Export --------------------------------------------------------------
   await page.getByRole('button', { name: 'Export' }).first().click()
   await page.waitForSelector('text=Render and download MP4')
+
+  // The summary is how we know all three layers reach the mixer, rather than
+  // one take quietly replacing another.
+  const summary = await page.evaluate(
+    () =>
+      [...document.querySelectorAll('dialog[open] p')]
+        .map((p) => p.textContent ?? '')
+        .find((text) => /audio clip/.test(text)) ?? '',
+  )
+  const clipCount = Number(/(\d+) audio clips?/.exec(summary)?.[1] ?? 0)
+  const trackTotal = Number(/across (\d+) track/.exec(summary)?.[1] ?? 0)
+  if (clipCount !== 3) fail(`expected 3 audio clips in the export, summary said: "${summary}"`)
+  if (trackTotal !== 3) fail(`expected 3 audio tracks in the export, summary said: "${summary}"`)
+  step(`export receives ${clipCount} audio clips across ${trackTotal} tracks`)
+
   const download = page.waitForEvent('download', { timeout: 420000 })
   await page.getByRole('button', { name: /Render and download MP4/ }).click()
   const file = await download
@@ -129,7 +189,7 @@ try {
   const mp4 = unpack(readFileSync(target))
   if (!mp4.complete) fail('exported MP4 box structure is truncated')
   if (!mp4.hasVideo) fail('exported MP4 has no H.264 video track')
-  if (!mp4.hasAudio) fail('exported MP4 has no AAC audio track despite a voiceover')
+  if (!mp4.hasAudio) fail('exported MP4 has no AAC audio track despite three audio layers')
   if (mp4.durationSeconds < 1) fail(`exported MP4 duration looks wrong: ${mp4.durationSeconds}s`)
   if (mp4.boxes[1] !== 'moov') fail('moov is not first, so +faststart did not take effect')
   step(
