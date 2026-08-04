@@ -132,7 +132,7 @@ npm run test:e2e
 The unit tests concentrate on the pure logic where the real bugs live:
 `src/lib/timeline.ts` (clip layout, trim clamping) and
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
-running ffmpeg). `netlify/functions/_shared.test.ts` covers the media proxy's
+running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
 
 `e2e/smoke.mjs` walks the whole product and then parses the exported MP4 to

@@ -6,7 +6,7 @@ import {
   redactHeaders,
   requireKey,
   upstreamPath,
-} from './_shared'
+} from './proxy'
 
 describe('isBlockedHost', () => {
   it('blocks loopback and localhost', () => {

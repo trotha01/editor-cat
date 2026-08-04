@@ -1,5 +1,11 @@
 import type { Config } from '@netlify/functions'
-import { isBlockedHost, jsonError, passthroughHeaders, requireKey, upstreamPath } from './_shared'
+import {
+  isBlockedHost,
+  jsonError,
+  passthroughHeaders,
+  requireKey,
+  upstreamPath,
+} from '../lib/proxy'
 
 /**
  * Pass-through proxy to fal.ai's queue API.
