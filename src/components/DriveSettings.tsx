@@ -9,8 +9,18 @@ import { isDriveConfigured } from '../lib/google/gis'
 import { useDriveStore } from '../state/useDriveStore'
 
 export function DriveSettings() {
-  const { status, account, folder, error, connect, disconnect, setFolder, clearError } =
-    useDriveStore()
+  // Selected field by field rather than destructured off the whole store: an
+  // upload in progress updates `uploads` many times a second, and this panel
+  // has no reason to re-render for any of them.
+  const status = useDriveStore((state) => state.status)
+  const account = useDriveStore((state) => state.account)
+  const folder = useDriveStore((state) => state.folder)
+  const error = useDriveStore((state) => state.error)
+  const connect = useDriveStore((state) => state.connect)
+  const disconnect = useDriveStore((state) => state.disconnect)
+  const setFolder = useDriveStore((state) => state.setFolder)
+  const clearError = useDriveStore((state) => state.clearError)
+
   const [pickerOpen, setPickerOpen] = useState(false)
 
   if (!isDriveConfigured()) {

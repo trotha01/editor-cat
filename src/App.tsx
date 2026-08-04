@@ -8,6 +8,7 @@ import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { SettingsDialog } from './components/SettingsDialog'
 import { ExportDialog } from './components/ExportDialog'
+import { DriveUploads } from './components/DriveUploads'
 import { Button } from './components/ui'
 import { usePlayback } from './hooks/usePlayback'
 import { useAssetStore } from './state/useAssetStore'
@@ -113,6 +114,10 @@ export default function App() {
               </button>
             ))}
           </nav>
+
+          {/* Outside the tab panel: a backup started from the Image tab must
+              still be able to report a failure once you have moved on. */}
+          <DriveUploads />
 
           <div className="rounded-xl border border-line bg-surface p-4">
             {tab === 'image' ? <ImagePanel /> : null}

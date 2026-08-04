@@ -2,7 +2,6 @@
 import { useRef, useState } from 'react'
 import { AssetThumb } from './AssetThumb'
 import { DriveImportDialog } from './DriveImportDialog'
-import { DriveUploads } from './DriveUploads'
 import { Button, Callout, EmptyState } from './ui'
 import { ingestBlob } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
@@ -74,8 +73,6 @@ export function LibraryPanel() {
           onChange={(event) => void upload(event.target.files)}
         />
       </div>
-
-      <DriveUploads />
 
       {error ? (
         <Callout tone="error" title="Could not add that file">

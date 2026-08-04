@@ -14,7 +14,7 @@ import {
   isDriveConfigured,
   NeedsConsentError,
 } from '../lib/google/gis'
-import { currentUser, uploadFile, type DriveFolder } from '../lib/google/drive'
+import { currentUser, DriveError, uploadFile, type DriveFolder } from '../lib/google/drive'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from './useAssetStore'
 import type { Asset } from '../lib/types'
@@ -52,6 +52,12 @@ interface DriveState {
 
   /** Fire-and-forget upload of a freshly ingested asset. */
   uploadAsset: (asset: Asset, blob: Blob) => void
+}
+
+/** Whether a failure means "sign in again" rather than "that one went wrong". */
+function isExpiredSession(cause: unknown): boolean {
+  if (cause instanceof NeedsConsentError) return true
+  return cause instanceof DriveError && cause.status === 401
 }
 
 function loadFolder(): DriveFolder | null {
@@ -164,6 +170,13 @@ export const useDriveStore = create<DriveState>((set, get) => ({
         // The bytes are still in IndexedDB, so a failed upload costs the user
         // nothing but the backup. Leave the job visible with its reason.
         patch({ error: toDisplayMessage(cause) })
+
+        // An expired session will fail every later upload the same way, so it
+        // is worth promoting to the connection state — otherwise Settings goes
+        // on claiming everything is connected while nothing is being saved.
+        if (isExpiredSession(cause) && get().status === 'connected') {
+          set({ status: 'needs-reconnect' })
+        }
       }
     })()
   },

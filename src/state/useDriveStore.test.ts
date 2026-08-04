@@ -12,8 +12,18 @@ vi.mock('../lib/google/gis', () => ({
   NeedsConsentError: class extends Error {},
 }))
 
+class FakeDriveError extends Error {
+  readonly status: number
+
+  constructor(status: number) {
+    super(`drive ${status}`)
+    this.status = status
+  }
+}
+
 vi.mock('../lib/google/drive', () => ({
   currentUser: vi.fn(),
+  DriveError: FakeDriveError,
   uploadFile: (...args: unknown[]) => uploadFile(...args) as unknown,
 }))
 
@@ -115,6 +125,26 @@ describe('uploadAsset', () => {
     expect(useDriveStore.getState().uploads).toEqual([
       expect.objectContaining({ assetId: 'asset_1', error: 'Your Google Drive is full.' }),
     ])
+  })
+
+  it('flags the connection as stale when an upload fails on an expired session', async () => {
+    uploadFile.mockRejectedValue(new FakeDriveError(401))
+
+    useDriveStore.getState().uploadAsset(asset(), blob)
+    await flush()
+
+    // Otherwise Settings keeps claiming Drive is connected while every
+    // subsequent backup silently fails the same way.
+    expect(useDriveStore.getState().status).toBe('needs-reconnect')
+  })
+
+  it('leaves the connection alone for an ordinary upload failure', async () => {
+    uploadFile.mockRejectedValue(new FakeDriveError(507))
+
+    useDriveStore.getState().uploadAsset(asset(), blob)
+    await flush()
+
+    expect(useDriveStore.getState().status).toBe('connected')
   })
 
   it('reports progress as the upload runs', async () => {

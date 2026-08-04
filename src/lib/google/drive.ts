@@ -87,19 +87,106 @@ export function kindForMime(mimeType: string): AssetKind | null {
  * clock cannot see — revocation from the account page, a password change, a
  * session signed out in another tab.
  */
-async function driveFetch(url: string, init: RequestInit = {}, retry = true): Promise<Response> {
+const MAX_RATE_LIMIT_RETRIES = 4
+
+/**
+ * Whether a response is Drive saying "too fast" rather than "no".
+ *
+ * Drive signals rate limiting as 429, but also as a 403 whose body reason is
+ * one of the rate-limit variants — a 403 that means slow down, not forbidden.
+ * The body is read from a clone so the original stays intact for the caller.
+ */
+async function isRateLimited(response: Response): Promise<boolean> {
+  if (response.status === 429) return true
+  if (response.status !== 403) return false
+
+  try {
+    const body = (await response.clone().json()) as {
+      error?: { errors?: { reason?: string }[] }
+    }
+    return (body.error?.errors ?? []).some((entry) =>
+      ['rateLimitExceeded', 'userRateLimitExceeded', 'sharingRateLimitExceeded'].includes(
+        entry.reason ?? '',
+      ),
+    )
+  } catch {
+    return false
+  }
+}
+
+function backoffDelay(attempt: number): number {
+  // Exponential with jitter, which is what Google's own guidance asks for:
+  // without the random part, parallel requests retry in lockstep and rebuild
+  // the burst that got them throttled.
+  return 2 ** attempt * 500 + Math.random() * 500
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new DOMException('Aborted.', 'AbortError'))
+      },
+      { once: true },
+    )
+  })
+}
+
+async function driveFetch(url: string, init: RequestInit = {}, attempt = 0): Promise<Response> {
   const token = await accessToken()
   const response = await fetch(url, {
     ...init,
     headers: { ...init.headers, Authorization: `Bearer ${token}` },
   })
 
-  if (response.status === 401 && retry) {
+  // Only the first 401 is worth a retry: if a freshly minted token is also
+  // rejected, the problem is not staleness.
+  if (response.status === 401 && attempt === 0) {
     invalidateToken()
-    return await driveFetch(url, init, false)
+    return await driveFetch(url, init, attempt + 1)
   }
+
+  // Retried for rate limits only, never for 5xx. A request Drive throttled
+  // provably did not run, whereas a 500 may have applied before failing —
+  // retrying that could create a second folder.
+  if (attempt < MAX_RATE_LIMIT_RETRIES && (await isRateLimited(response))) {
+    await sleep(backoffDelay(attempt), init.signal ?? undefined)
+    return await driveFetch(url, init, attempt + 1)
+  }
+
   if (!response.ok) throw await driveErrorFrom(response)
   return response
+}
+
+/**
+ * Runs tasks a few at a time.
+ *
+ * Drive throttles per user, so firing one request per folder at a wide tree is
+ * a reliable way to earn a 403. The limit costs a little latency and buys a
+ * walk that finishes.
+ */
+async function mapLimited<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array<R>(items.length)
+  let next = 0
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++
+      const item = items[index]
+      if (item === undefined) continue
+      results[index] = await fn(item)
+    }
+  })
+
+  await Promise.all(workers)
+  return results
 }
 
 async function driveErrorFrom(response: Response): Promise<DriveError> {
@@ -238,9 +325,10 @@ async function collectFolderIds(rootId: string, maxFolders = 200): Promise<strin
 
   while (queue.length > 0 && ids.length < maxFolders) {
     // One level at a time, so sibling folders are fetched together rather than
-    // one request deep per folder.
+    // one request deep per folder — but capped, so a wide level does not open
+    // a hundred parallel connections.
     const level = queue.splice(0, queue.length)
-    const batches = await Promise.all(level.map((id) => listSubfolders(id)))
+    const batches = await mapLimited(level, 5, (id) => listSubfolders(id))
 
     for (const child of batches.flat()) {
       if (seen.has(child.id) || ids.length >= maxFolders) continue
@@ -281,10 +369,8 @@ export async function listMedia(
   const folderIds = recursive ? await collectFolderIds(folderId) : [folderId]
   const mimeFilter = kinds.map((kind) => `mimeType contains '${kind}/'`).join(' or ')
 
-  const results = await Promise.all(
-    parentClauses(folderIds).map((clause) =>
-      listAll(`${clause} and (${mimeFilter}) and trashed = false`),
-    ),
+  const results = await mapLimited(parentClauses(folderIds), 5, (clause) =>
+    listAll(`${clause} and (${mimeFilter}) and trashed = false`),
   )
 
   const files = results
@@ -327,6 +413,13 @@ export interface UploadOptions {
   signal?: AbortSignal
 }
 
+/** What an upload tells the caller. The kind is the caller's own to decide. */
+export interface UploadedFile {
+  id: string
+  name: string
+  mimeType: string
+}
+
 /**
  * Uploads a blob with a resumable session.
  *
@@ -334,8 +427,8 @@ export interface UploadOptions {
  * upload cannot report progress, and generated video is routinely tens of
  * megabytes — long enough that a silent progress bar reads as a hang.
  */
-export async function uploadFile(blob: Blob, options: UploadOptions): Promise<DriveFile> {
-  const params = new URLSearchParams({ uploadType: 'resumable', fields: FILE_FIELDS })
+export async function uploadFile(blob: Blob, options: UploadOptions): Promise<UploadedFile> {
+  const params = new URLSearchParams({ uploadType: 'resumable', fields: 'id,name,mimeType' })
   const start = await driveFetch(`${UPLOAD_API}?${params.toString()}&${SHARED_DRIVE_PARAMS}`, {
     method: 'POST',
     headers: {
@@ -353,13 +446,7 @@ export async function uploadFile(blob: Blob, options: UploadOptions): Promise<Dr
   }
 
   const raw = await putWithProgress(sessionUrl, blob, options, await accessToken())
-  const file = toDriveFile(raw)
-  if (!file) {
-    // Drive accepted bytes we cannot classify. The upload worked, so report the
-    // id rather than failing, and let the caller's own kind stand.
-    return { id: raw.id, name: raw.name, mimeType: raw.mimeType, kind: 'image' }
-  }
-  return file
+  return { id: raw.id, name: raw.name, mimeType: raw.mimeType }
 }
 
 /**
@@ -374,14 +461,18 @@ function putWithProgress(
   blob: Blob,
   options: UploadOptions,
   token: string,
-): Promise<RawFile> {
-  return new Promise<RawFile>((resolve, reject) => {
+): Promise<UploadedFile> {
+  return new Promise<UploadedFile>((resolve, reject) => {
     if (options.signal?.aborted) {
       reject(new DOMException('Upload cancelled.', 'AbortError'))
       return
     }
 
     const xhr = new XMLHttpRequest()
+    const abort = () => xhr.abort()
+    // The signal outlives this upload, so the listener has to come off with it.
+    const done = () => options.signal?.removeEventListener('abort', abort)
+
     xhr.open('PUT', sessionUrl)
     xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream')
@@ -391,10 +482,12 @@ function putWithProgress(
     }
 
     xhr.onload = () => {
+      done()
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
+          const file = JSON.parse(xhr.responseText) as UploadedFile
           options.onProgress?.(1)
-          resolve(JSON.parse(xhr.responseText) as RawFile)
+          resolve(file)
         } catch {
           reject(new DriveError(xhr.status, 'Google Drive returned an unreadable response.'))
         }
@@ -403,10 +496,16 @@ function putWithProgress(
       reject(new DriveError(xhr.status, `The upload to Google Drive failed (${xhr.status}).`))
     }
 
-    xhr.onerror = () => reject(new DriveError(0, 'The upload to Google Drive failed.'))
-    xhr.onabort = () => reject(new DOMException('Upload cancelled.', 'AbortError'))
+    xhr.onerror = () => {
+      done()
+      reject(new DriveError(0, 'The upload to Google Drive failed.'))
+    }
+    xhr.onabort = () => {
+      done()
+      reject(new DOMException('Upload cancelled.', 'AbortError'))
+    }
 
-    options.signal?.addEventListener('abort', () => xhr.abort(), { once: true })
+    options.signal?.addEventListener('abort', abort, { once: true })
 
     xhr.send(blob)
   })

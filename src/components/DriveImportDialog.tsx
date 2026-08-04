@@ -78,11 +78,9 @@ function DriveBrowser({ onClose }: { onClose: () => void }) {
     return () => {
       cancelled = true
     }
-    // `key` already encodes the folder and the kinds, and is what the results
-    // are tagged with; depending on the array itself would refetch on every
-    // render since it is rebuilt each time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, folderId])
+    // `kinds` is state, so its identity changes only when the filter is
+    // toggled — which is exactly when this should re-run.
+  }, [folderId, kinds, key])
 
   const toggleKind = (kind: AssetKind) => {
     setKinds((current) =>

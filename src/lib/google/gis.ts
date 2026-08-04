@@ -216,16 +216,37 @@ export async function connect(): Promise<string> {
   return await request('consent')
 }
 
+/** The silent renewal currently running, shared by everyone waiting on it. */
+let renewal: Promise<string> | null = null
+
 /**
  * Returns a usable token, renewing silently when the previous one has aged out.
  *
- * Throws `NeedsConsentError` when Google will not issue one without UI, which
- * is the signal for the caller to show a reconnect button rather than an error.
+ * Concurrent callers share one renewal. Generating a batch of images fires
+ * several uploads at once, and without this the first would start a request and
+ * the rest would fail outright, since GIS cannot have two in flight at a time.
+ *
+ * Throws `NeedsConsentError` when Google will not issue a token without UI,
+ * which is the signal for the caller to show a reconnect button rather than an
+ * error.
  */
 export async function accessToken(): Promise<string> {
   const current = validToken()
   if (current) return current
-  return await request('')
+
+  if (!renewal) {
+    const attempt = request('')
+    renewal = attempt
+    // Cleared however it settles, but only if a newer attempt has not already
+    // replaced it. Handling the rejection here as well keeps a renewal nobody
+    // happened to await from surfacing as an unhandled rejection.
+    const clear = () => {
+      if (renewal === attempt) renewal = null
+    }
+    attempt.then(clear, clear)
+  }
+
+  return await renewal
 }
 
 /** True when a token is held right now, without triggering a request. */
@@ -267,4 +288,5 @@ export function resetForTests(): void {
   tokenClient = null
   token = null
   pending = null
+  renewal = null
 }
