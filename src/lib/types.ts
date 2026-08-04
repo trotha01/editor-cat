@@ -25,6 +25,12 @@ export interface Asset {
   sourceUrl?: string
   /** What prompt produced this, for provenance in the library. */
   prompt?: string
+  /**
+   * The file's id in the user's Drive, once it has been backed up there (or if
+   * it was imported from there). Its presence is what stops the uploader from
+   * sending the same bytes back to Drive a second time.
+   */
+  driveFileId?: string
   createdAt: number
 }
 

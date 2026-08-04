@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { Button, Callout, Field, Modal, Spinner, TextInput } from './ui'
 import { LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
+import { DriveSettings } from './DriveSettings'
 import { verifyKey } from '../lib/elevenlabs'
 import { run } from '../lib/falClient'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
@@ -187,6 +188,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           onChange={(id) => settings.setPref('llmModel', id)}
           hint="Routed through fal.ai, so it uses the same key. Cheaper models are perfectly good at rewriting prompts."
         />
+
+        <DriveSettings />
 
         <div className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-3">
           <p className="text-sm font-medium">Stored media</p>

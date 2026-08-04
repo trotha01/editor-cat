@@ -11,8 +11,10 @@ import { ExportDialog } from './components/ExportDialog'
 import { Button } from './components/ui'
 import { usePlayback } from './hooks/usePlayback'
 import { useAssetStore } from './state/useAssetStore'
+import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
 import { useSettingsStore } from './state/useSettingsStore'
+import { setIngestListener } from './lib/media'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
@@ -44,7 +46,18 @@ export default function App() {
   useEffect(() => {
     void loadAssets()
     void loadProject()
+    // Resumes a previous Drive session without prompting. It is a no-op until
+    // the user has picked a folder, so a first visit never sees Google.
+    void useDriveStore.getState().restore()
   }, [loadAssets, loadProject])
+
+  useEffect(() => {
+    // Every panel reaches Drive through this one hook, so generated images,
+    // rendered clips, recordings and manual uploads all get backed up without
+    // each of them knowing Drive exists.
+    setIngestListener((asset, blob) => useDriveStore.getState().uploadAsset(asset, blob))
+    return () => setIngestListener(null)
+  }, [])
 
   return (
     <div className="flex h-full flex-col bg-canvas text-ink">

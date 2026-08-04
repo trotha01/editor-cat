@@ -27,4 +27,9 @@
     Permissions-Policy = "camera=(), geolocation=(), microphone=(self)"
     # 'wasm-unsafe-eval' is required by ffmpeg.wasm. blob: covers the worker,
     # the object URLs used for media, and the export download.
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    # 'wasm-unsafe-eval' is required by ffmpeg.wasm. blob: covers the worker,
+    # the object URLs used for media, and the export download.
+    # accounts.google.com serves the Google Identity Services client, which
+    # also needs frame-src for the hidden iframe it uses to renew tokens
+    # without a pop-up.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://accounts.google.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://accounts.google.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' data: blob: https:; font-src 'self' data:; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
