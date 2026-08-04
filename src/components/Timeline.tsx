@@ -24,6 +24,8 @@ import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
 import { MIN_CLIP_DURATION, clipDuration, formatTime, layoutClips } from '../lib/timeline'
+import { audioEnd } from '../lib/audioTracks'
+import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
@@ -186,8 +188,11 @@ export function Timeline({
   const trim = useProjectStore((state) => state.trim)
   const assets = useAssetStore((state) => state.assets)
 
+  const addTrack = useProjectStore((state) => state.addTrack)
+
   const [zoom, setZoom] = useState(40)
   const trackRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const positioned = useMemo(() => layoutClips(project.clips), [project.clips])
@@ -207,14 +212,19 @@ export function Timeline({
   )
 
   const scrub = (event: React.MouseEvent<HTMLDivElement>) => {
-    const track = trackRef.current
-    if (!track) return
-    const rect = track.getBoundingClientRect()
-    const x = event.clientX - rect.left + track.scrollLeft
-    onSeek(Math.max(0, x / zoom))
+    const ruler = trackRef.current
+    if (!ruler) return
+    // The ruler moves with the scroll container, so its own bounding box
+    // already accounts for the scroll offset.
+    const rect = ruler.getBoundingClientRect()
+    onSeek(Math.max(0, (event.clientX - rect.left) / zoom))
   }
 
   const playheadX = currentTime * zoom
+  const audioEndTime = audioEnd(project.audioClips)
+  // The lanes must span the audio too — a music bed longer than the picture
+  // still has to be reachable and scrubbable.
+  const contentWidth = Math.max(visualDuration, audioEndTime) * zoom
 
   return (
     <section className="flex flex-col gap-2" aria-label="Timeline">
@@ -223,8 +233,19 @@ export function Timeline({
         <span className="text-xs text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
           {formatTime(visualDuration)}
+          {project.audioTracks.length > 0
+            ? ` · ${project.audioTracks.length} audio track${
+                project.audioTracks.length === 1 ? '' : 's'
+              }`
+            : ''}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <Button onClick={() => addTrack('voice')} title="Add an empty voice track">
+            + Voice track
+          </Button>
+          <Button onClick={() => addTrack('music')} title="Add an empty music track">
+            + Music track
+          </Button>
           <label htmlFor="zoom" className="text-xs text-ink-dim">
             Zoom
           </label>
@@ -235,116 +256,95 @@ export function Timeline({
             max={MAX_ZOOM}
             value={zoom}
             onChange={(event) => setZoom(Number(event.target.value))}
-            className="w-28"
+            className="w-24"
           />
         </div>
       </header>
 
-      <div className="overflow-x-auto rounded-xl border border-line bg-surface p-3">
+      {/* Track headers sit in a fixed gutter while the lanes scroll, so the
+          mute and volume controls stay reachable at any scroll position. */}
+      <div className="flex rounded-xl border border-line bg-surface">
         <div
-          className="relative min-w-full"
-          style={{ width: Math.max(visualDuration * zoom, 320) }}
+          className="shrink-0 border-r border-line p-3 pr-2"
+          style={{ width: TRACK_GUTTER_WIDTH }}
         >
-          {/* Ruler doubles as the scrub bar. */}
-          <div
-            ref={trackRef}
-            onClick={scrub}
-            className="relative mb-2 h-6 cursor-pointer rounded bg-surface-2"
-            role="presentation"
-          >
-            {Array.from({ length: Math.ceil(visualDuration) + 1 }, (_, second) => (
-              <span
-                key={second}
-                className="absolute top-0 h-full border-l border-line pl-1 text-[10px] text-ink-dim"
-                style={{ left: second * zoom }}
-              >
-                {second % (zoom < 20 ? 5 : 1) === 0 ? `${second}s` : ''}
-              </span>
-            ))}
+          <div className="mb-2 h-6" aria-hidden />
+          <div className="mb-2 flex h-20 items-center text-xs font-medium text-ink-dim">
+            Picture
           </div>
+          <AudioTrackHeaders />
+        </div>
 
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            modifiers={[restrictToHorizontalAxis]}
-            onDragEnd={onDragEnd}
-          >
-            <SortableContext
-              items={project.clips.map((clip) => clip.id)}
-              strategy={horizontalListSortingStrategy}
-            >
-              <div className="flex gap-0.5">
-                {positioned.length === 0 ? (
-                  <p className="px-2 py-6 text-sm text-ink-dim">
-                    Nothing on the timeline yet. Add a clip from the Library.
-                  </p>
-                ) : (
-                  positioned.map((entry) => (
-                    <ClipCard
-                      key={entry.clip.id}
-                      entry={entry}
-                      asset={assetById.get(entry.clip.assetId)}
-                      zoom={zoom}
-                      selected={entry.clip.id === selectedClipId}
-                      onSelect={() => selectClip(entry.clip.id)}
-                      onTrim={(edge, seconds) =>
-                        trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
-                      }
-                      onRemove={() => removeClip(entry.clip.id)}
-                    />
-                  ))
-                )}
-              </div>
-            </SortableContext>
-          </DndContext>
-
-          <VoiceoverTrack zoom={zoom} />
-
-          {project.clips.length > 0 ? (
+        <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto p-3 pl-2">
+          <div className="relative min-w-full" style={{ width: Math.max(contentWidth, 320) }}>
+            {/* Ruler doubles as the scrub bar. */}
             <div
-              aria-hidden
-              className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-red-400"
-              style={{ left: playheadX }}
-            />
-          ) : null}
+              ref={trackRef}
+              onClick={scrub}
+              className="relative mb-2 h-6 cursor-pointer rounded bg-surface-2"
+              role="presentation"
+            >
+              {Array.from({ length: Math.ceil(contentWidth / zoom) + 1 }, (_, second) => (
+                <span
+                  key={second}
+                  className="absolute top-0 h-full border-l border-line pl-1 text-[10px] text-ink-dim"
+                  style={{ left: second * zoom }}
+                >
+                  {second % (zoom < 20 ? 5 : 1) === 0 ? `${second}s` : ''}
+                </span>
+              ))}
+            </div>
+
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToHorizontalAxis]}
+              onDragEnd={onDragEnd}
+            >
+              <SortableContext
+                items={project.clips.map((clip) => clip.id)}
+                strategy={horizontalListSortingStrategy}
+              >
+                <div className="flex h-20 gap-0.5">
+                  {positioned.length === 0 ? (
+                    <p className="px-2 py-6 text-sm text-ink-dim">
+                      Nothing on the timeline yet. Add a clip from the Library.
+                    </p>
+                  ) : (
+                    positioned.map((entry) => (
+                      <ClipCard
+                        key={entry.clip.id}
+                        entry={entry}
+                        asset={assetById.get(entry.clip.assetId)}
+                        zoom={zoom}
+                        selected={entry.clip.id === selectedClipId}
+                        onSelect={() => selectClip(entry.clip.id)}
+                        onTrim={(edge, seconds) =>
+                          trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
+                        }
+                        onRemove={() => removeClip(entry.clip.id)}
+                      />
+                    ))
+                  )}
+                </div>
+              </SortableContext>
+            </DndContext>
+
+            <AudioTrackLanes zoom={zoom} />
+
+            {contentWidth > 0 ? (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-red-400"
+                style={{ left: playheadX }}
+              />
+            ) : null}
+          </div>
         </div>
       </div>
 
       <SelectedClipControls />
     </section>
-  )
-}
-
-function VoiceoverTrack({ zoom }: { zoom: number }) {
-  const voiceovers = useProjectStore((state) => state.project.voiceovers)
-  const removeVoiceover = useProjectStore((state) => state.removeVoiceover)
-
-  if (voiceovers.length === 0) return null
-
-  return (
-    <div className="relative mt-2 h-10 rounded bg-surface-2">
-      {voiceovers.map((take) => (
-        <div
-          key={take.id}
-          className="absolute top-1 bottom-1 flex items-center gap-1 overflow-hidden rounded border border-emerald-500/40 bg-emerald-500/20 px-2 text-[11px] text-emerald-100"
-          style={{ left: take.startTime * zoom, width: Math.max(28, take.duration * zoom) }}
-          title={`${take.useConverted ? (take.voiceName ?? 'Converted voice') : 'Your voice'} · ${formatTime(take.duration)}`}
-        >
-          <span aria-hidden>🎙️</span>
-          <span className="truncate">
-            {take.useConverted ? (take.voiceName ?? 'Converted') : 'Your voice'}
-          </span>
-          <button
-            type="button"
-            onClick={() => removeVoiceover(take.id)}
-            aria-label="Delete this voiceover take"
-            className="ml-auto shrink-0"
-          >
-            ✕
-          </button>
-        </div>
-      ))}
-    </div>
   )
 }
 

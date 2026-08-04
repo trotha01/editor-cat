@@ -3,7 +3,7 @@
 A small AI video editor that runs in your browser.
 
 Write a prompt → get images → animate one into a clip → arrange clips on a
-timeline → record a voiceover → swap your voice for another one → export an MP4.
+timeline → layer voiceovers and music → swap your voice for another one → export an MP4.
 
 Every AI feature uses **your own API keys**. This app has no accounts, no
 provider credentials, and no server-side storage of its own.
@@ -12,13 +12,13 @@ provider credentials, and no server-side storage of its own.
 
 ## What it does
 
-| Step          | What happens                                                                                                                                                                             |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                  |
-| **2 · Video** | Pick a generated image as the opening frame and animate it. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
-| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen.                                                                                                     |
-| **3 · Voice** | Record a voiceover against the playing preview, then convert it into another voice with ElevenLabs. Your original take is always kept.                                                   |
-| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                   |
+| Step          | What happens                                                                                                                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                       |
+| **2 · Video** | Pick a generated image as the opening frame and animate it. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                      |
+| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Audio sits on its own stacked tracks below.                                                                              |
+| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept. |
+| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                        |
 
 ## What you need
 
@@ -85,7 +85,7 @@ Browser (React + TypeScript + Tailwind)      Netlify Functions (stateless pass-t
   Settings  — keys, in memory or local          /api/fal/*        → queue.fal.run
   Generate  — images, then image → video        /api/elevenlabs/* → api.elevenlabs.io
   Library   — blobs in IndexedDB                /api/media        → streams provider media
-  Timeline  — one visual track + voiceover
+  Timeline  — one picture track + N audio tracks
   Preview   — custom player over <video>        The caller's key is forwarded once and
   Export    — ffmpeg.wasm → MP4                 never stored, logged, or reused.
 ```
@@ -106,9 +106,20 @@ submit, then poll — and every proxied request stays short.
 into IndexedDB and everything afterwards works from `blob:` URLs. That is what
 makes the project survive a refresh and keeps export free of CORS surprises.
 
-**Clip audio is muted.** The exporter mixes only your voiceover, so the preview
-mutes clips to match. Hearing something in preview that vanished from the export
-would be worse than silence.
+**Tracks fill themselves in.** A new recording goes onto the first voice track
+with a free gap at that moment, and only stacks a new lane when every existing
+one is busy. So you can record the same passage twice, or talk over yourself,
+and both survive — without ever having to think about which track you are on.
+The rule is first-fit, and it lives in `src/lib/audioTracks.ts` as a pure
+function so it can be tested directly.
+
+**Overlaps are refused, not allowed.** Dragging a clip on top of another is a
+no-op with a red outline rather than a silent collision, because two clips
+stacked on one lane cannot both be heard and you would only find out on export.
+
+**Clip audio is muted.** The exporter mixes only your audio tracks, so the
+preview mutes video clips to match. Hearing something in preview that vanished
+from the export would be worse than silence.
 
 **Model IDs live in one file.** Provider catalogues change every few weeks, so
 `src/lib/models.ts` holds every ID the app depends on and each picker has a
@@ -130,29 +141,35 @@ npm run test:e2e
 ```
 
 The unit tests concentrate on the pure logic where the real bugs live:
-`src/lib/timeline.ts` (clip layout, trim clamping) and
+`src/lib/timeline.ts` (clip layout, trim clamping), `src/lib/audioTracks.ts`
+(track assignment, overlap rules, migration of pre-multitrack projects) and
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
 
-`e2e/smoke.mjs` walks the whole product and then parses the exported MP4 to
-confirm it has the tracks and duration it should. It earns its keep: it is what
-caught the ffmpeg core being loaded as UMD when Vite's module worker needs ESM.
+`e2e/smoke.mjs` walks the whole product — including recording two overlapping
+takes and checking that the second one lands on a new track — then parses the
+exported MP4 to confirm it has the tracks and duration it should. It earns its
+keep: it is what caught the ffmpeg core being loaded as UMD when Vite's module
+worker needs ESM.
 
 If your CI image ships its own browser, point the test at it with
 `CHROMIUM_PATH=/path/to/chrome`.
 
 ## Known limits
 
-- **Audio from clips is not exported.** Most image-to-video models return silent
-  footage, and mixing per-clip audio requires knowing which files have an audio
-  track at all. Your voiceover is the soundtrack.
+- **Audio from video clips is not exported.** Most image-to-video models return
+  silent footage, and mixing per-clip audio requires knowing which files have an
+  audio stream at all. Your audio tracks are the soundtrack.
+- **Audio clips cannot be trimmed from the timeline.** They can be retimed and
+  moved between tracks, but shortening a take means re-recording it.
 - **Export uses the single-threaded ffmpeg build**, so a short project takes
   roughly 30–90 seconds. The multithreaded build needs cross-origin isolation
   (COOP/COEP), which would block loading provider media in the page.
-- **One visual track, no transitions or text overlays.** This is deliberate —
-  clips sit end to end with no gaps, which removes most of what makes a
-  timeline confusing.
+- **One picture track, no transitions or text overlays.** This is deliberate —
+  visual clips sit end to end with no gaps, which removes most of what makes a
+  timeline confusing. Audio is the part that genuinely needs layers, so that is
+  where the multiple tracks are.
 
 ## Licence
 

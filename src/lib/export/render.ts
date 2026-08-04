@@ -12,7 +12,7 @@
  */
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
-import { buildExportPlan, type ExportClip, type ExportVoiceover } from './buildGraph'
+import { buildExportPlan, type ExportAudioClip, type ExportClip } from './buildGraph'
 
 export interface ExportAsset {
   /** Stable key used to name the file inside the ffmpeg filesystem. */
@@ -23,7 +23,8 @@ export interface ExportAsset {
 
 export interface RenderRequest {
   clips: { assetId: string; kind: 'image' | 'video'; inPoint: number; duration: number }[]
-  voiceovers: { assetId: string; startTime: number; duration: number }[]
+  /** Already resolved to a track volume; muted tracks are dropped by the caller. */
+  audio: { assetId: string; startTime: number; inPoint: number; duration: number; volume: number }[]
   assets: Map<string, ExportAsset>
   width: number
   height: number
@@ -124,7 +125,7 @@ export async function renderProject(
   }
 
   for (const clip of request.clips) await stage(clip.assetId, clip.kind)
-  for (const take of request.voiceovers) await stage(take.assetId, 'audio')
+  for (const clip of request.audio) await stage(clip.assetId, 'audio')
 
   const outputFile = 'editor-cat-export.mp4'
 
@@ -135,15 +136,17 @@ export async function renderProject(
     duration: clip.duration,
   }))
 
-  const exportVoiceovers: ExportVoiceover[] = request.voiceovers.map((take) => ({
-    file: fileNameFor.get(take.assetId) as string,
-    startTime: take.startTime,
-    duration: take.duration,
+  const exportAudio: ExportAudioClip[] = request.audio.map((clip) => ({
+    file: fileNameFor.get(clip.assetId) as string,
+    startTime: clip.startTime,
+    inPoint: clip.inPoint,
+    duration: clip.duration,
+    volume: clip.volume,
   }))
 
   const plan = buildExportPlan({
     clips: exportClips,
-    voiceovers: exportVoiceovers,
+    audio: exportAudio,
     width: request.width,
     height: request.height,
     fps: request.fps,

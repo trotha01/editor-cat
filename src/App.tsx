@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ImagePanel } from './components/ImagePanel'
 import { VideoPanel } from './components/VideoPanel'
 import { LibraryPanel } from './components/LibraryPanel'
-import { VoicePanel } from './components/VoicePanel'
+import { AudioPanel } from './components/AudioPanel'
 import { Preview } from './components/Preview'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
@@ -19,7 +19,7 @@ const TABS = [
   { id: 'image', label: '1 · Image', hint: 'Make images from a prompt' },
   { id: 'video', label: '2 · Video', hint: 'Animate an image into a clip' },
   { id: 'library', label: 'Library', hint: 'Everything you have made' },
-  { id: 'voice', label: '3 · Voice', hint: 'Record and change your voice' },
+  { id: 'audio', label: '3 · Audio', hint: 'Record voiceovers, layer takes, add music' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -105,8 +105,8 @@ export default function App() {
             {tab === 'image' ? <ImagePanel /> : null}
             {tab === 'video' ? <VideoPanel /> : null}
             {tab === 'library' ? <LibraryPanel /> : null}
-            {tab === 'voice' ? (
-              <VoicePanel
+            {tab === 'audio' ? (
+              <AudioPanel
                 currentTime={playback.currentTime}
                 onPlay={playback.play}
                 onPause={playback.pause}

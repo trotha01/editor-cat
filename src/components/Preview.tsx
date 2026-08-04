@@ -17,7 +17,8 @@ import { clipAtTime, formatTime, layoutClips } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetUrl } from '../hooks/useAssetUrl'
-import type { Asset, Clip, VoiceoverTake } from '../lib/types'
+import { gainFor } from '../lib/audioTracks'
+import type { Asset, AudioClip, Clip } from '../lib/types'
 
 /** How far a media element may drift before we correct it, in seconds. */
 const SEEK_TOLERANCE = 0.3
@@ -85,37 +86,48 @@ function ClipLayer({
   )
 }
 
-function VoiceLayer({
-  take,
+/**
+ * One audio clip on one track. Every layered clip gets its own element, so
+ * overlapping takes really do play together rather than cutting each other
+ * off — which is the whole point of having more than one track.
+ */
+function AudioLayer({
+  clip,
   asset,
+  gain,
   currentTime,
   playing,
 }: {
-  take: VoiceoverTake
+  clip: AudioClip
   asset: Asset | undefined
+  /** Resolved track gain. 0 means muted, and the element stays silent. */
+  gain: number
   currentTime: number
   playing: boolean
 }) {
   const url = useAssetUrl(asset)
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  const active = currentTime >= take.startTime && currentTime < take.startTime + take.duration
+  const active = currentTime >= clip.startTime && currentTime < clip.startTime + clip.duration
 
   useEffect(() => {
     const element = audioRef.current
     if (!element) return
 
-    if (!active || !playing) {
+    element.volume = Math.max(0, Math.min(1, gain))
+
+    if (!active || !playing || gain <= 0) {
       if (!element.paused) element.pause()
       return
     }
 
-    const target = currentTime - take.startTime
+    // The source may be trimmed, so the playhead maps to inPoint + offset.
+    const target = clip.inPoint + (currentTime - clip.startTime)
     if (Math.abs(element.currentTime - target) > SEEK_TOLERANCE) {
       element.currentTime = Math.max(0, target)
     }
     if (element.paused) void element.play().catch(() => undefined)
-  }, [active, currentTime, playing, take.startTime])
+  }, [active, clip.inPoint, clip.startTime, currentTime, gain, playing])
 
   if (!url) return null
   return <audio ref={audioRef} src={url} preload="auto" className="hidden" />
@@ -169,14 +181,15 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
         ) : null}
       </div>
 
-      {project.voiceovers.map((take) => {
+      {project.audioClips.map((clip) => {
         const assetId =
-          take.useConverted && take.convertedAssetId ? take.convertedAssetId : take.assetId
+          clip.useConverted && clip.convertedAssetId ? clip.convertedAssetId : clip.assetId
         return (
-          <VoiceLayer
-            key={take.id}
-            take={take}
+          <AudioLayer
+            key={clip.id}
+            clip={clip}
             asset={assetById.get(assetId)}
+            gain={gainFor(project.audioTracks, clip)}
             currentTime={currentTime}
             playing={playing}
           />
@@ -184,8 +197,8 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
       })}
 
       <p className="text-xs text-ink-dim">
-        Clip audio is muted — your voiceover is the soundtrack, and the export works the same way.
-        Playhead at {formatTime(currentTime)}.
+        Clip audio is muted — your audio tracks are the soundtrack, and the export mixes exactly
+        what you hear here. Playhead at {formatTime(currentTime)}.
       </p>
     </div>
   )
