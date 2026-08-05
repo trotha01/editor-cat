@@ -13,6 +13,7 @@ import { clipDuration, formatTime, layoutClips } from '../lib/timeline'
 import { audioEnd, gainFor } from '../lib/audioTracks'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
+import { exportPresetsFor, orientationOf, type ExportPreset } from '../lib/orientation'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 
@@ -22,11 +23,21 @@ const QUALITY = [
   { crf: 18, label: 'Best quality' },
 ]
 
-const RESOLUTIONS = [
-  { width: 854, height: 480, label: '480p' },
-  { width: 1280, height: 720, label: '720p' },
-  { width: 1920, height: 1080, label: '1080p' },
-]
+/**
+ * The presets offered follow the project's orientation, so only three of the
+ * six are ever shown. A project sitting on a size that matches none of them —
+ * square, or something set before the presets changed — would otherwise leave
+ * the Select with a value not among its options, which React warns about and
+ * renders blank, so its current size is appended as its own option.
+ */
+function resolutionOptions(width: number, height: number): ExportPreset[] {
+  const presets = exportPresetsFor(orientationOf(width, height))
+  if (presets.some((preset) => preset.width === width && preset.height === height)) return presets
+  return [
+    ...presets,
+    { label: 'Current', orientation: orientationOf(width, height), width, height },
+  ]
+}
 
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const project = useProjectStore((state) => state.project)
@@ -39,6 +50,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [result, setResult] = useState<Blob | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
+  const resolutions = resolutionOptions(project.width, project.height)
   const positioned = layoutClips(project.clips)
   const visualDuration = positioned.at(-1)?.end ?? 0
   const outputDuration = Math.max(visualDuration, audioEnd(project.audioClips))
@@ -130,18 +142,21 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         ) : null}
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Resolution">
+          <Field
+            label="Resolution"
+            hint="Sizes follow the project's orientation — change it above the preview."
+          >
             <Select
               value={`${project.width}x${project.height}`}
               disabled={busy}
               onChange={(event) => {
-                const found = RESOLUTIONS.find(
+                const found = resolutions.find(
                   (option) => `${option.width}x${option.height}` === event.target.value,
                 )
                 if (found) setResolution(found.width, found.height)
               }}
             >
-              {RESOLUTIONS.map((option) => (
+              {resolutions.map((option) => (
                 <option key={option.label} value={`${option.width}x${option.height}`}>
                   {option.label} ({option.width}×{option.height})
                 </option>

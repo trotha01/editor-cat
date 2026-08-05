@@ -51,7 +51,6 @@ Rules:
 export type EnhanceKind = 'image' | 'video'
 
 export interface EnhanceOptions {
-  key: string
   kind: EnhanceKind
   prompt: string
   model: string
@@ -60,7 +59,6 @@ export interface EnhanceOptions {
 
 /** Rewrites a prompt, returning the improved text. */
 export async function enhancePrompt({
-  key,
   kind,
   prompt,
   model,
@@ -76,7 +74,7 @@ export async function enhancePrompt({
       system_prompt: kind === 'image' ? IMAGE_SYSTEM : VIDEO_SYSTEM,
       prompt: trimmed,
     },
-    { key, signal },
+    { signal },
   )
 
   const improved = (output.output ?? '').trim()

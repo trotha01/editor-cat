@@ -22,6 +22,14 @@ describe('toProxyPath', () => {
     )
   })
 
+  it('handles an owner-scoped model id, which carries no fal-ai/ prefix', () => {
+    // Seedance is published as `bytedance/...`, so nothing here may assume the
+    // first segment is always `fal-ai`.
+    expect(toProxyPath('https://queue.fal.run/bytedance/seedance-2.0/requests/xyz/status')).toBe(
+      '/api/fal/bytedance/seedance-2.0/requests/xyz/status',
+    )
+  })
+
   it('falls back sanely for a relative or malformed value', () => {
     expect(toProxyPath('fal-ai/flux/requests/abc')).toBe('/api/fal/fal-ai/flux/requests/abc')
     expect(toProxyPath('/fal-ai/flux')).toBe('/api/fal/fal-ai/flux')

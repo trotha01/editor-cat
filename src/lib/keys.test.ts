@@ -7,41 +7,54 @@ describe('key storage', () => {
     clearKeys()
   })
 
-  it('does not write keys to storage unless remember is on', () => {
-    saveKeys({ fal: 'fal-secret', elevenlabs: 'el-secret', remember: false })
+  it('does not write the key to storage unless remember is on', () => {
+    saveKeys({ elevenlabs: 'el-secret', remember: false })
 
     // The whole point of the opt-out: nothing durable is left behind.
-    expect(JSON.stringify(window.localStorage)).not.toContain('fal-secret')
     expect(JSON.stringify(window.localStorage)).not.toContain('el-secret')
   })
 
-  it('keeps unremembered keys usable for the rest of the session', () => {
-    saveKeys({ fal: 'fal-secret', elevenlabs: '', remember: false })
-    expect(loadKeys().fal).toBe('fal-secret')
+  it('keeps an unremembered key usable for the rest of the session', () => {
+    saveKeys({ elevenlabs: 'el-secret', remember: false })
+    expect(loadKeys().elevenlabs).toBe('el-secret')
   })
 
-  it('persists and reloads keys when remember is on', () => {
-    saveKeys({ fal: 'fal-secret', elevenlabs: 'el-secret', remember: true })
+  it('persists and reloads the key when remember is on', () => {
+    saveKeys({ elevenlabs: 'el-secret', remember: true })
     clearKeysFromMemoryOnly()
 
     const loaded = loadKeys()
-    expect(loaded.fal).toBe('fal-secret')
     expect(loaded.elevenlabs).toBe('el-secret')
     expect(loaded.remember).toBe(true)
   })
 
-  it('erases already-stored keys when remember is turned off', () => {
-    saveKeys({ fal: 'fal-secret', elevenlabs: 'el-secret', remember: true })
-    saveKeys({ fal: 'fal-secret', elevenlabs: 'el-secret', remember: false })
+  it('erases an already-stored key when remember is turned off', () => {
+    saveKeys({ elevenlabs: 'el-secret', remember: true })
+    saveKeys({ elevenlabs: 'el-secret', remember: false })
 
     // Turning the setting off has to clean up, not just stop writing.
-    expect(JSON.stringify(window.localStorage)).not.toContain('fal-secret')
+    expect(JSON.stringify(window.localStorage)).not.toContain('el-secret')
   })
 
   it('clearKeys removes everything', () => {
-    saveKeys({ fal: 'fal-secret', elevenlabs: 'el-secret', remember: true })
+    saveKeys({ elevenlabs: 'el-secret', remember: true })
     clearKeys()
-    expect(loadKeys()).toEqual({ fal: '', elevenlabs: '', remember: false })
+    expect(loadKeys()).toEqual({ elevenlabs: '', remember: false })
+  })
+
+  it('erases a fal key left behind by the bring-your-own-key era', () => {
+    // Nothing reads it any more, so leaving it would strand a live credential
+    // in local storage forever.
+    window.localStorage.setItem('editor-cat.keys.remember.v1', '1')
+    window.localStorage.setItem(
+      'editor-cat.keys.v1',
+      JSON.stringify({ fal: 'fal-secret', elevenlabs: 'el-secret' }),
+    )
+
+    const loaded = loadKeys()
+
+    expect(loaded).toEqual({ elevenlabs: 'el-secret', remember: true })
+    expect(JSON.stringify(window.localStorage)).not.toContain('fal-secret')
   })
 
   it('survives corrupted storage instead of throwing', () => {

@@ -3,6 +3,7 @@ import { ImagePanel } from './components/ImagePanel'
 import { VideoPanel } from './components/VideoPanel'
 import { LibraryPanel } from './components/LibraryPanel'
 import { AudioPanel } from './components/AudioPanel'
+import { OrientationToggle } from './components/OrientationToggle'
 import { Preview } from './components/Preview'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
@@ -134,6 +135,7 @@ export default function App() {
         </section>
 
         <section className="flex min-w-0 flex-1 flex-col gap-4">
+          <OrientationToggle />
           <Preview currentTime={playback.currentTime} playing={playback.playing} />
           <Transport
             currentTime={playback.currentTime}

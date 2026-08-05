@@ -113,6 +113,19 @@ async function mockImage(
   return { images }
 }
 
+/**
+ * Mock clips have to follow the requested orientation, not just be small.
+ * The export letterboxes rather than crops, so a 640×360 mock dropped into a
+ * vertical project would come out as a thin strip inside black bars — and the
+ * end-to-end test would stop exercising the portrait path at all.
+ */
+function videoSizeFor(input: Record<string, unknown>): { width: number; height: number } {
+  const ratio = String(input.aspect_ratio ?? '16:9')
+  return ratio === '9:16' || ratio === '3:4'
+    ? { width: 360, height: 640 }
+    : { width: 640, height: 360 }
+}
+
 async function mockVideo(
   input: Record<string, unknown>,
   onProgress?: (p: GenerationProgress) => void,
@@ -120,8 +133,7 @@ async function mockVideo(
 ): Promise<{ video: { url: string; content_type: string } }> {
   const prompt = String(input.prompt ?? 'untitled')
   const seconds = Math.max(1, Math.min(10, Number(input.duration ?? 5)))
-  const width = 640
-  const height = 360
+  const { width, height } = videoSizeFor(input)
 
   const canvas = document.createElement('canvas')
   canvas.width = width

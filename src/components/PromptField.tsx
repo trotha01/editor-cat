@@ -11,7 +11,6 @@ import { Button, Callout, Field, Spinner, TextArea } from './ui'
 import { enhancePrompt, type EnhanceKind } from '../lib/promptEnhancer'
 import { toDisplayMessage } from '../lib/errors'
 import { useSettingsStore } from '../state/useSettingsStore'
-import { hasAccess } from '../lib/mock'
 
 interface Props {
   kind: EnhanceKind
@@ -34,7 +33,6 @@ export function PromptField({
   rows = 4,
   disabled,
 }: Props) {
-  const falKey = useSettingsStore((state) => state.fal)
   const llmModel = useSettingsStore((state) => state.llmModel)
 
   const [busy, setBusy] = useState(false)
@@ -42,14 +40,14 @@ export function PromptField({
   const [suggestion, setSuggestion] = useState<string | null>(null)
   const [previous, setPrevious] = useState<string | null>(null)
 
-  const canEnhance = hasAccess(falKey) && value.trim().length > 0 && !disabled
+  const canEnhance = value.trim().length > 0 && !disabled
 
   const improve = async () => {
     setBusy(true)
     setError(null)
     setSuggestion(null)
     try {
-      const improved = await enhancePrompt({ key: falKey, kind, prompt: value, model: llmModel })
+      const improved = await enhancePrompt({ kind, prompt: value, model: llmModel })
       setSuggestion(improved)
     } catch (cause) {
       setError(toDisplayMessage(cause))
@@ -87,11 +85,7 @@ export function PromptField({
       </Field>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          onClick={improve}
-          disabled={!canEnhance || busy}
-          title={hasAccess(falKey) ? undefined : 'Add your fal.ai key in Settings first'}
-        >
+        <Button onClick={improve} disabled={!canEnhance || busy}>
           {busy ? <Spinner /> : <span aria-hidden>✨</span>}
           {busy ? 'Improving…' : 'Improve with AI'}
         </Button>

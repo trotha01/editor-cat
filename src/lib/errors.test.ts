@@ -28,11 +28,25 @@ describe('extractMessage', () => {
 
 describe('explainStatus', () => {
   it('tells the user what to actually do', () => {
-    expect(explainStatus('fal.ai', 401)).toMatch(/key/i)
     expect(explainStatus('fal.ai', 402)).toMatch(/credit/i)
     expect(explainStatus('fal.ai', 404)).toMatch(/model ID/i)
     expect(explainStatus('fal.ai', 429)).toMatch(/rate limit/i)
     expect(explainStatus('ElevenLabs', 503)).toMatch(/server error/i)
+  })
+
+  it('sends an ElevenLabs rejection to Settings, where its key actually lives', () => {
+    expect(explainStatus('ElevenLabs', 401)).toMatch(/key/i)
+    expect(explainStatus('ElevenLabs', 401)).toMatch(/settings/i)
+  })
+
+  it('never tells the user to fix a fal key, because there is no field for one', () => {
+    // fal runs on the site's own account. Advice to check a Settings field that
+    // does not exist is worse than no advice at all.
+    for (const status of [401, 403, 402, 503]) {
+      expect(explainStatus('fal.ai', status)).not.toMatch(/settings/i)
+    }
+    expect(explainStatus('fal.ai', 401)).toMatch(/sign in/i)
+    expect(explainStatus('fal.ai', 503)).toMatch(/deployed/i)
   })
 })
 

@@ -90,3 +90,15 @@ export const useAuthStore = create<AuthState>((set) => ({
 export function currentUserId(): string | null {
   return useAuthStore.getState().session?.user.id ?? null
 }
+
+/**
+ * The token proving to our own functions that this browser is signed in.
+ *
+ * Read per request rather than captured: a video job polls for minutes, and
+ * Supabase refreshes the token underneath it. `onAuthChange` keeps the store
+ * current, so reading it fresh each time is what keeps a long job from failing
+ * halfway through on a token that was valid when it started.
+ */
+export function currentAccessToken(): string | null {
+  return useAuthStore.getState().session?.access_token ?? null
+}
