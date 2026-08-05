@@ -99,10 +99,12 @@ exactly as it did before: one project, IndexedDB, no sign-in.
 ### Setting it up
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. Run `supabase/migrations/0001_projects.sql` — paste it into the dashboard's
-   **SQL editor**, or `supabase db push` with the CLI. It creates two tables and
-   turns on row-level security, so a user can only ever read and write rows on
-   their own account.
+2. Run the files in `supabase/migrations/` in order — paste them into the
+   dashboard's **SQL editor**, or `supabase db push` with the CLI. `0001` creates
+   the projects and assets tables with row-level security, so a user can only
+   ever read and write rows on their own account. `0002` adds the table behind
+   [staying connected to Drive](#staying-connected-between-visits), which no
+   browser can read at all; skip it if you are not using that.
 3. **Authentication → Providers → Google → Enable**, and paste the _same_ Google
    client ID from the Drive setup above into **Authorized Client IDs**. No
    client secret is needed: the page hands Supabase a Google ID token directly
@@ -146,9 +148,13 @@ the Drive section of Settings just explains that it is switched off.
    up to 100 test users and nothing further is required.
 3. Create an **OAuth client ID** of type _Web application_. Add your origins to
    **Authorised JavaScript origins**: `http://localhost:5173` for `npm run dev`,
-   `http://localhost:8888` for `netlify dev`, plus your deployed URL. There is
-   no redirect URI to set — the token flow never leaves the page.
-4. Put the client ID in `.env` locally, and in Netlify under **Site settings →
+   `http://localhost:8888` for `netlify dev`, plus your deployed URL.
+4. Add the same origins with `/oauth/google` on the end to **Authorised redirect
+   URIs** — `http://localhost:8888/oauth/google`, `https://your-site/oauth/google`.
+   That is where the consent pop-up lands, and it is only needed for
+   [staying connected](#staying-connected-between-visits) below. Google compares
+   it byte for byte, so no trailing slash.
+5. Put the client ID in `.env` locally, and in Netlify under **Site settings →
    Environment variables** (it is read at build time, so redeploy after adding
    it):
 
@@ -158,6 +164,43 @@ VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
 
 A client ID is not a secret — it ships in the bundle by design, and origin
 allowlisting is what protects it.
+
+### Staying connected between visits
+
+Out of the box a Drive connection lasts about an hour, because the browser-only
+flow Google offers hands back an access token and no way to renew it. Reload
+after that and Settings asks you to reconnect. That is survivable but tiresome,
+and browsers are steadily closing the loophole that let the renewal happen
+invisibly.
+
+Set these two and the connection is remembered instead, on the account rather
+than in the browser — so it survives a reload, a restart, and signing in on
+another machine:
+
+```
+GOOGLE_CLIENT_SECRET=            # same OAuth client as the ID above
+SUPABASE_SERVICE_ROLE_KEY=       # Supabase → Project settings → API
+```
+
+Then run `supabase/migrations/0002_google_connections.sql`, the same way as the
+first migration.
+
+**What changes.** Connecting opens a normal OAuth consent pop-up instead of
+Google's own widget, and `/api/google/*` exchanges the code it returns for a
+refresh token. That token is written to `google_connections` and never leaves the
+server; the browser is handed the same hour-long access token it always had, and
+asks for a new one when that expires.
+
+**Why a service role key.** The table has row-level security enabled and no
+policies at all, so no browser can read it whatever token it presents — not even
+its owner's. The service role bypasses RLS, and that key exists only in the
+function environment. A refresh token is a standing key to someone's Drive, and
+this is what keeps it from being readable by anything running on the page.
+
+Without both variables the app falls back to exactly the behaviour above: an
+in-memory token, a silent renewal attempt on load, and a Reconnect button.
+Settings says which of the two you are getting, so a connection that will not
+survive the hour does not look like a fault.
 
 ### The two scopes, and the catch
 
@@ -211,6 +254,12 @@ account, so it verifies the caller's Supabase session before attaching the key:
 and not secret — the anon key is protected by row-level security, and the client
 ID by origin allowlisting.
 
+Two more secrets are optional, and only affect Drive:
+**`GOOGLE_CLIENT_SECRET`** and **`SUPABASE_SERVICE_ROLE_KEY`** are what keep a
+Drive connection alive between visits. See
+[staying connected](#staying-connected-between-visits); without them everything
+works, a connection just lasts about an hour.
+
 ## How it fits together
 
 ```
@@ -220,9 +269,12 @@ Browser (React + TypeScript + Tailwind)      Netlify Functions (stateless pass-t
   Library   — blobs in IndexedDB                /api/elevenlabs/* → api.elevenlabs.io
   Timeline  — one picture track + N audio tracks  the caller's own key, forwarded once
   Projects  — timelines in Supabase (no media)  /api/media        → streams provider media
-  Drive     — media in your own Drive
-  Preview   — custom player over <video>        Supabase and Drive talk to the browser
-  Export    — ffmpeg.wasm → MP4                 directly, not through our functions.
+  Drive     — media in your own Drive           /api/google/*     → oauth2.googleapis.com
+  Preview   — custom player over <video>          holds the refresh token, mints
+  Export    — ffmpeg.wasm → MP4                   an access token per request
+
+                                                Supabase and Drive themselves talk to
+                                                the browser directly, not through us.
 ```
 
 A few decisions worth knowing about:
@@ -261,11 +313,15 @@ id; the assets table maps those to Drive file ids. That indirection is what lets
 a timeline be a few kilobytes and still describe hundreds of megabytes of media
 well enough to rebuild it anywhere.
 
-**Drive tokens are never stored.** The browser token flow issues no refresh
-token on purpose — a long-lived Google credential in a static site's local
-storage has nothing protecting it. Tokens live in memory for about an hour and
-are renewed silently; when Google will not renew without UI, Settings offers a
-Reconnect button rather than throwing an error at whatever you were doing.
+**A Drive credential never reaches local storage.** The access token lives in
+memory for its hour and nowhere else. The refresh token that replaces it — the
+part that is genuinely long-lived — is held server-side under a service role key
+and swapped for an access token on demand, so the page never sees it. That split
+is the whole design: everything the browser holds is short-lived and cheap to
+replace, and the thing that is not, it cannot read. Where a deployment has no
+server-side half configured there is no refresh token at all, and a connection
+lasts the hour; when it lapses, Settings offers a Reconnect button rather than
+throwing an error at whatever you were doing.
 
 **Tracks fill themselves in.** A new recording goes onto the first voice track
 with a free gap at that moment, and only stacks a new lane when every existing
@@ -291,7 +347,8 @@ and the fix is one line — no code change and no waiting for a release.
 
 ```bash
 npm test          # unit tests — timeline maths, ffmpeg argv, SSRF guard, session
-                  # verification, the video request body, orientation, key storage
+                  # verification and persistence, the Drive connection flow, the
+                  # video request body, orientation, key storage
 npm run lint
 npm run build
 
@@ -308,6 +365,13 @@ The unit tests concentrate on the pure logic where the real bugs live:
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
+
+Two of them exist because the bug they guard against is invisible until you
+close the tab: `src/state/useAuthStore.test.ts` signs in against a real Supabase
+client with a seeded local storage, and `src/lib/google/gis.test.ts` checks that
+a stored Drive connection is preferred, that a site without one still falls back
+to Google's own flow, and that the consent request asks for offline access — the
+single parameter the whole "still connected tomorrow" behaviour rests on.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track — then parses the

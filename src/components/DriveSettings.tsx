@@ -16,6 +16,7 @@ export function DriveSettings() {
   const account = useDriveStore((state) => state.account)
   const folder = useDriveStore((state) => state.folder)
   const error = useDriveStore((state) => state.error)
+  const durable = useDriveStore((state) => state.durable)
   const connect = useDriveStore((state) => state.connect)
   const disconnect = useDriveStore((state) => state.disconnect)
   const setFolder = useDriveStore((state) => state.setFolder)
@@ -65,6 +66,17 @@ export function DriveSettings() {
         <Callout tone="warn" title="Your Google session expired">
           Media is still saved in this browser. Reconnect to resume backing it up to{' '}
           {folder ? `“${folder.name}”` : 'Drive'}.
+        </Callout>
+      ) : null}
+
+      {/* Only worth saying when it is the surprising answer. A connection that
+          is remembered needs no explanation; one that quietly lapses after an
+          hour does, or the Reconnect button looks like a fault. */}
+      {status === 'connected' && durable === false ? (
+        <Callout tone="warn" title="Connected for this visit only">
+          This site is not set up to remember Google connections, so you will be asked to reconnect
+          when you next open it. Whoever deploys it can change that — see{' '}
+          <code>GOOGLE_CLIENT_SECRET</code> in the README.
         </Callout>
       ) : null}
 

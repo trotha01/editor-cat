@@ -16,11 +16,22 @@ export function SignInGate({ children }: { children: ReactNode }) {
   const start = useAuthStore((state) => state.start)
 
   useEffect(() => {
+    // `start` resolves after the effect may already have been torn down —
+    // StrictMode mounts twice in development — so the unsubscribe has to be
+    // callable late. Without the flag the first subscription is never dropped
+    // and every auth change is handled twice.
+    let cancelled = false
     let dispose: (() => void) | undefined
+
     void start().then((unsubscribe) => {
-      dispose = unsubscribe
+      if (cancelled) unsubscribe()
+      else dispose = unsubscribe
     })
-    return () => dispose?.()
+
+    return () => {
+      cancelled = true
+      dispose?.()
+    }
   }, [start])
 
   if (!requiresSignIn() || status === 'signed-in') return <>{children}</>
