@@ -12,7 +12,6 @@ import { Button } from './components/ui'
 import { usePlayback } from './hooks/usePlayback'
 import { useAssetStore } from './state/useAssetStore'
 import { useProjectStore } from './state/useProjectStore'
-import { useSettingsStore } from './state/useSettingsStore'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
@@ -26,11 +25,7 @@ type TabId = (typeof TABS)[number]['id']
 
 export default function App() {
   const [tab, setTab] = useState<TabId>('image')
-  // Open Settings straight away on a first visit: without a key there is
-  // nothing else the app can usefully do.
-  const [settingsOpen, setSettingsOpen] = useState(
-    () => !isMockEnabled() && useSettingsStore.getState().fal.trim().length === 0,
-  )
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
 
   const loadAssets = useAssetStore((state) => state.load)
