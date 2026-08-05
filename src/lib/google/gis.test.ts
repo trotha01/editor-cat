@@ -14,7 +14,7 @@ const requestAccessToken = vi.fn()
 const saveConnection = vi.fn()
 const connectionStatus = vi.fn()
 const clearConnection = vi.fn()
-const requestAuthorizationCode = vi.fn()
+const requestAuthorization = vi.fn()
 
 class NoConnectionError extends Error {}
 class ConnectionExpiredError extends Error {}
@@ -34,7 +34,7 @@ vi.mock('./connection', () => ({
 }))
 
 vi.mock('./oauthPopup', () => ({
-  requestAuthorizationCode: (...args: unknown[]) => requestAuthorizationCode(...args) as unknown,
+  requestAuthorization: (...args: unknown[]) => requestAuthorization(...args) as unknown,
   ConsentDeclinedError,
 }))
 
@@ -75,6 +75,7 @@ beforeEach(() => {
   vi.stubEnv('VITE_GOOGLE_CLIENT_ID', 'client-abc.apps.googleusercontent.com')
   installGis()
   requestAccessToken.mockResolvedValue(storedGrant)
+  clearConnection.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -174,7 +175,7 @@ describe('connect', () => {
     connectionStatus.mockResolvedValue({ durable: true, connected: false, scope: '' })
     await gis.loadConnectionStatus()
 
-    requestAuthorizationCode.mockResolvedValue('one-time-code')
+    requestAuthorization.mockResolvedValue({ code: 'one-time-code' })
     saveConnection.mockResolvedValue({ ...storedGrant, durable: true })
 
     await expect(gis.connect()).resolves.toBe('stored-token')
@@ -192,12 +193,12 @@ describe('connect', () => {
     await gis.loadConnectionStatus()
 
     await expect(gis.connect()).resolves.toBe('gis-token')
-    expect(requestAuthorizationCode).not.toHaveBeenCalled()
+    expect(requestAuthorization).not.toHaveBeenCalled()
     expect(gisRequest).toHaveBeenCalledWith({ prompt: 'consent' })
   })
 
   it('recovers when the exchange reveals the site cannot store one after all', async () => {
-    requestAuthorizationCode.mockResolvedValue('one-time-code')
+    requestAuthorization.mockResolvedValue({ code: 'one-time-code' })
     saveConnection.mockRejectedValue(new NotDurableError())
 
     // The consent just given cannot be used, so the flow Google understands runs
@@ -207,9 +208,35 @@ describe('connect', () => {
   })
 
   it('treats a closed consent window as a decision, not a fault', async () => {
-    requestAuthorizationCode.mockRejectedValue(new ConsentDeclinedError('Window closed.'))
+    requestAuthorization.mockRejectedValue(new ConsentDeclinedError('Window closed.'))
 
     await expect(gis.connect()).rejects.toBeInstanceOf(gis.NeedsConsentError)
+  })
+})
+
+describe('adoptConnection', () => {
+  it('turns a code from the sign-in screen into a live connection', async () => {
+    saveConnection.mockResolvedValue({ ...storedGrant, durable: true })
+
+    await expect(gis.adoptConnection('sign-in-code')).resolves.toBe('stored-token')
+    expect(gis.hasToken()).toBe(true)
+    expect(gis.isDurableConnection()).toBe(true)
+  })
+
+  it('drops a grant that arrived without the Drive permissions', async () => {
+    // Google's consent screen lets the Drive scopes be unticked, which signs the
+    // user in with a connection that can do nothing. Keeping it would mean
+    // resuming it on every load and failing the same way each time.
+    saveConnection.mockResolvedValue({
+      accessToken: 'partial',
+      expiresIn: 3600,
+      scope: 'openid email',
+      durable: true,
+    })
+
+    await expect(gis.adoptConnection('sign-in-code')).rejects.toThrow(/partly granted/)
+    expect(clearConnection).toHaveBeenCalled()
+    expect(gis.hasToken()).toBe(false)
   })
 })
 

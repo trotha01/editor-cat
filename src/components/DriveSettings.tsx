@@ -44,7 +44,7 @@ export function DriveSettings() {
           <p className="text-sm font-medium">Google Drive</p>
           <p className="truncate text-xs text-ink-dim">
             {status === 'connected' && account?.email
-              ? `Signed in as ${account.email}`
+              ? `Saving to ${account.email}`
               : 'Save your generated media to a folder you own.'}
           </p>
         </div>
@@ -56,8 +56,11 @@ export function DriveSettings() {
             Disconnect
           </Button>
         ) : (
+          // Where Drive came with the sign-in this is a recovery path rather
+          // than a step: it is reached by declining the permission at sign-in,
+          // or by disconnecting here and changing your mind.
           <Button onClick={() => void connect()}>
-            {status === 'needs-reconnect' ? 'Reconnect' : 'Connect Google Drive'}
+            {status === 'needs-reconnect' ? 'Reconnect' : 'Allow Google Drive'}
           </Button>
         )}
       </div>

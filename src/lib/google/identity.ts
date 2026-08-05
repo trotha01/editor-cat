@@ -1,17 +1,26 @@
 /**
- * Google sign-in for identity, as opposed to Drive authorisation.
+ * Signing in with Google.
  *
- * Two different halves of Google Identity Services are in play, and mixing them
- * up is the easy mistake here:
+ * There are two ways to do it here, and which one runs depends on whether the
+ * deployment can store a Drive connection (see gis.ts):
  *
- * - `google.accounts.id` (this file) issues an **ID token** — a signed JWT
- *   saying who the user is. That is what Supabase verifies to create a session.
- * - `google.accounts.oauth2` (gis.ts) issues an **access token** — permission
- *   to call Drive. It cannot produce an ID token.
+ * - **One screen for both** (`requestSignIn`). A single OAuth request asks for
+ *   identity and Drive together and comes back with an ID token *and* a consent
+ *   code. Supabase turns the first into a session; the second becomes a stored
+ *   Drive connection. Nothing further is needed in Settings.
  *
- * Both ride the same Google session, so choosing an account once covers both.
+ * - **Identity only** (`renderSignInButton`), for a deployment with nowhere to
+ *   store a connection. This is Google Identity Services' `google.accounts.id`,
+ *   which issues an ID token and cannot authorise Drive at all — so Drive stays
+ *   a separate step in Settings, through `google.accounts.oauth2`.
+ *
+ * Mixing the two halves of GIS up is the easy mistake: `google.accounts.id`
+ * issues an **ID token** saying who the user is, and `google.accounts.oauth2`
+ * issues an **access token** granting Drive. Neither can do the other's job,
+ * which is exactly why the combined flow does not use either.
  */
-import { clientId, loadGisScript } from './gis'
+import { clientId, loadGisScript, SIGN_IN_SCOPES } from './gis'
+import { requestAuthorization } from './oauthPopup'
 
 /**
  * A nonce ties one ID token to one sign-in attempt.
@@ -37,6 +46,42 @@ export async function createNonce(): Promise<Nonce> {
   ).join('')
 
   return { raw, hashed }
+}
+
+export interface SignInGrant {
+  /** Proves who the user is. Exchanged with Supabase for a session. */
+  idToken: string
+  /** Becomes the stored Drive connection, once there is a session to file it under. */
+  code: string
+}
+
+/**
+ * Signs in and authorises Drive in one pass.
+ *
+ * `select_account` so the account in use is always a deliberate choice, and
+ * `consent` because Google only issues a refresh token alongside a fresh grant —
+ * without it a returning user would sign in fine and have no Drive connection
+ * worth keeping.
+ *
+ * Must be called straight from a click, or the pop-up is blocked.
+ */
+export async function requestSignIn(nonce: Nonce): Promise<SignInGrant> {
+  const id = clientId()
+  if (!id) {
+    throw new Error(
+      'Google sign-in is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.',
+    )
+  }
+
+  const result = await requestAuthorization({
+    clientId: id,
+    scope: SIGN_IN_SCOPES,
+    nonce: nonce.hashed,
+    prompt: 'select_account consent',
+  })
+
+  if (!result.idToken) throw new Error('Google did not return a sign-in token. Try again.')
+  return { idToken: result.idToken, code: result.code }
 }
 
 /** Cleans up a rendered button so a re-render does not stack two of them. */

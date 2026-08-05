@@ -4,7 +4,7 @@ import {
   callbackUri,
   CALLBACK_MESSAGE,
   ConsentDeclinedError,
-  requestAuthorizationCode,
+  requestAuthorization,
   type CallbackMessage,
 } from './oauthPopup'
 import { completeOauthCallback, isOauthCallback } from './oauthCallback'
@@ -13,7 +13,8 @@ const CLIENT_ID = 'client-abc.apps.googleusercontent.com'
 const SCOPE = 'https://www.googleapis.com/auth/drive.file'
 
 describe('authorizationUrl', () => {
-  const url = () => new URL(authorizationUrl(CLIENT_ID, SCOPE, 'state-1'))
+  const url = (extra: Record<string, string> = {}) =>
+    new URL(authorizationUrl({ clientId: CLIENT_ID, scope: SCOPE, ...extra }, 'state-1'))
 
   it('asks for offline access, which is what produces a refresh token at all', () => {
     expect(url().searchParams.get('access_type')).toBe('offline')
@@ -41,6 +42,27 @@ describe('authorizationUrl', () => {
   it('carries a state value, so a stale pop-up cannot answer a later request', () => {
     expect(url().searchParams.get('state')).toBe('state-1')
   })
+
+  it('asks for an ID token alongside the code when a nonce is given', () => {
+    // The hybrid flow is what lets one consent screen cover both signing in and
+    // authorising Drive. Drop back to a bare code and sign-in would need a
+    // second trip to Google through a library that cannot ask for Drive.
+    const hybrid = url({ nonce: 'hashed-nonce' })
+
+    expect(hybrid.searchParams.get('response_type')).toBe('code id_token')
+    expect(hybrid.searchParams.get('nonce')).toBe('hashed-nonce')
+  })
+
+  it('asks for a bare code when no ID token is wanted', () => {
+    expect(url().searchParams.get('response_type')).toBe('code')
+    expect(url().searchParams.has('nonce')).toBe(false)
+  })
+
+  it('lets the caller widen the prompt, for picking an account at sign-in', () => {
+    expect(url({ prompt: 'select_account consent' }).searchParams.get('prompt')).toBe(
+      'select_account consent',
+    )
+  })
 })
 
 /** A stand-in for the pop-up window, which jsdom will not open for real. */
@@ -57,7 +79,7 @@ function reply(message: Partial<CallbackMessage>): void {
   )
 }
 
-describe('requestAuthorizationCode', () => {
+describe('requestAuthorization', () => {
   let popup: ReturnType<typeof fakePopup>
   let open: ReturnType<typeof vi.spyOn>
 
@@ -76,7 +98,7 @@ describe('requestAuthorizationCode', () => {
   })
 
   it('opens the window before awaiting anything, so the click still counts', () => {
-    void requestAuthorizationCode(CLIENT_ID, SCOPE).catch(() => {})
+    void requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE }).catch(() => {})
 
     // A pop-up opened after an await is attributed to no gesture and blocked.
     expect(open).toHaveBeenCalledOnce()
@@ -86,24 +108,24 @@ describe('requestAuthorizationCode', () => {
   })
 
   it('resolves with the code the callback window hands back', async () => {
-    const pending = requestAuthorizationCode(CLIENT_ID, SCOPE)
+    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })
     reply({ state: 'state-1', code: 'code-1' })
 
-    await expect(pending).resolves.toBe('code-1')
+    await expect(pending).resolves.toEqual({ code: 'code-1' })
     expect(popup.close).toHaveBeenCalled()
   })
 
   it('ignores an answer carrying someone else’s state', async () => {
-    const pending = requestAuthorizationCode(CLIENT_ID, SCOPE)
+    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })
 
     reply({ state: 'a-previous-attempt', code: 'wrong-code' })
     reply({ state: 'state-1', code: 'code-1' })
 
-    await expect(pending).resolves.toBe('code-1')
+    await expect(pending).resolves.toEqual({ code: 'code-1' })
   })
 
   it('ignores a message from another origin', async () => {
-    const pending = requestAuthorizationCode(CLIENT_ID, SCOPE)
+    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })
 
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -113,18 +135,25 @@ describe('requestAuthorizationCode', () => {
     )
     reply({ state: 'state-1', code: 'code-1' })
 
-    await expect(pending).resolves.toBe('code-1')
+    await expect(pending).resolves.toEqual({ code: 'code-1' })
+  })
+
+  it('returns the ID token beside the code when the hybrid flow answers', async () => {
+    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE, nonce: 'hashed' })
+    reply({ state: 'state-1', code: 'code-1', idToken: 'eyJhbGciOi.signed' })
+
+    await expect(pending).resolves.toEqual({ code: 'code-1', idToken: 'eyJhbGciOi.signed' })
   })
 
   it('treats a declined consent as a decision rather than a fault', async () => {
-    const pending = requestAuthorizationCode(CLIENT_ID, SCOPE)
+    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })
     reply({ state: 'state-1', error: 'access_denied' })
 
     await expect(pending).rejects.toBeInstanceOf(ConsentDeclinedError)
   })
 
   it('notices the window being closed, which fires no event of its own', async () => {
-    const pending = requestAuthorizationCode(CLIENT_ID, SCOPE)
+    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })
     // Asserted before the timer runs, so the rejection is never momentarily
     // unhandled — which vitest reports as an error in its own right.
     const rejected = expect(pending).rejects.toBeInstanceOf(ConsentDeclinedError)
@@ -138,7 +167,9 @@ describe('requestAuthorizationCode', () => {
   it('explains a blocked pop-up instead of hanging forever', async () => {
     open.mockReturnValue(null)
 
-    await expect(requestAuthorizationCode(CLIENT_ID, SCOPE)).rejects.toThrow(/Allow pop-ups/)
+    await expect(requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })).rejects.toThrow(
+      /Allow pop-ups/,
+    )
   })
 })
 
@@ -178,6 +209,25 @@ describe('the callback window', () => {
       window.location.origin,
     )
     expect(close).toHaveBeenCalled()
+  })
+
+  it('reads the hybrid answer out of the fragment, where the ID token arrives', () => {
+    // Google returns `code id_token` in the fragment rather than the query, so
+    // the ID token never reaches a server log on the way past.
+    window.history.replaceState({}, '', '/oauth/google#code=code-1&id_token=signed&state=state-1')
+
+    const postMessage = vi.fn()
+    vi.spyOn(window, 'close').mockImplementation(() => {})
+    withOpener({ postMessage })
+
+    completeOauthCallback()
+
+    expect(postMessage.mock.calls[0]?.[0]).toEqual({
+      source: CALLBACK_MESSAGE,
+      state: 'state-1',
+      code: 'code-1',
+      idToken: 'signed',
+    })
   })
 
   it('passes a refusal along, so the opener can tell it apart from a crash', () => {

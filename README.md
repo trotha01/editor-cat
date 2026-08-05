@@ -82,6 +82,13 @@ then keeps your timelines in your account: a project switcher in the header,
 auto-save about two seconds after you stop editing, and projects that open on
 any machine you sign in from.
 
+**Signing in also grants Drive**, from the same consent screen, so there is no
+second connection step to find. Settings is left with the part that is actually
+a choice — which folder your media is saved into. (That needs the two variables
+under [staying connected](#staying-connected-between-visits); without them
+Google's sign-in cannot carry Drive permissions with it, and Drive goes back to
+being connected separately.)
+
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
 placement, resolution — and a catalogue of asset metadata. It never holds media
 bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
@@ -107,8 +114,11 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    browser can read at all; skip it if you are not using that.
 3. **Authentication → Providers → Google → Enable**, and paste the _same_ Google
    client ID from the Drive setup above into **Authorized Client IDs**. No
-   client secret is needed: the page hands Supabase a Google ID token directly
-   rather than going through a redirect.
+   client secret is needed here: the page hands Supabase a Google ID token it
+   already holds, rather than sending the browser through Supabase's own
+   redirect. (The secret in `GOOGLE_CLIENT_SECRET` is a different thing — it is
+   read only by this site's own function, to obtain that token and a Drive
+   refresh token together.)
 4. Copy the project URL and anon key from **Project settings → API** into `.env`
    (and into Netlify's environment variables), then redeploy.
 
@@ -125,11 +135,16 @@ Resolution is a reload — merging two timelines has no sensible automatic answe
 
 ## Saving to your own Google Drive (optional)
 
-Connect a Google account in **Settings** and pick a folder. From then on
-everything the app makes — generated images, rendered clips, recordings, files
-you upload — is copied into that folder as it is created, and **Library →
-Import from Drive** browses that folder and its subfolders to bring existing
-media in.
+Drive comes with the sign-in, so all that is left is picking a folder in
+**Settings**. From then on everything the app makes — generated images, rendered
+clips, recordings, files you upload — is copied into that folder as it is
+created, and **Library → Import from Drive** browses that folder and its
+subfolders to bring existing media in.
+
+Until a folder is chosen, nothing is backed up: Settings says so, and clearing
+the folder again is how you stop. Declining the Drive permission on Google's own
+consent screen still signs you in — Settings then offers to ask for it on its
+own.
 
 The bytes stay in IndexedDB either way; Drive is the durable copy, not the
 playback source. Drive has no URL that carries our token _and_ serves range
@@ -151,9 +166,9 @@ the Drive section of Settings just explains that it is switched off.
    `http://localhost:8888` for `netlify dev`, plus your deployed URL.
 4. Add the same origins with `/oauth/google` on the end to **Authorised redirect
    URIs** — `http://localhost:8888/oauth/google`, `https://your-site/oauth/google`.
-   That is where the consent pop-up lands, and it is only needed for
-   [staying connected](#staying-connected-between-visits) below. Google compares
-   it byte for byte, so no trailing slash.
+   That is where the consent pop-up lands, for both signing in and Drive. Google
+   compares it byte for byte, so no trailing slash. Only needed alongside
+   [staying connected](#staying-connected-between-visits) below.
 5. Put the client ID in `.env` locally, and in Netlify under **Site settings →
    Environment variables** (it is read at build time, so redeploy after adding
    it):
@@ -167,15 +182,10 @@ allowlisting is what protects it.
 
 ### Staying connected between visits
 
-Out of the box a Drive connection lasts about an hour, because the browser-only
-flow Google offers hands back an access token and no way to renew it. Reload
-after that and Settings asks you to reconnect. That is survivable but tiresome,
-and browsers are steadily closing the loophole that let the renewal happen
-invisibly.
+Google's browser-only libraries force two compromises, and these two variables
+lift both of them.
 
-Set these two and the connection is remembered instead, on the account rather
-than in the browser — so it survives a reload, a restart, and signing in on
-another machine:
+Set them:
 
 ```
 GOOGLE_CLIENT_SECRET=            # same OAuth client as the ID above
@@ -185,11 +195,24 @@ SUPABASE_SERVICE_ROLE_KEY=       # Supabase → Project settings → API
 Then run `supabase/migrations/0002_google_connections.sql`, the same way as the
 first migration.
 
-**What changes.** Connecting opens a normal OAuth consent pop-up instead of
-Google's own widget, and `/api/google/*` exchanges the code it returns for a
-refresh token. That token is written to `google_connections` and never leaves the
-server; the browser is handed the same hour-long access token it always had, and
-asks for a new one when that expires.
+**One consent screen instead of two.** Google Identity Services splits its two
+jobs across libraries that cannot do each other's: `google.accounts.id` issues
+the ID token that proves who you are, and `google.accounts.oauth2` grants Drive.
+Using both means asking twice for what a user experiences as one decision — and
+a backup that quietly does nothing until they find the second button. The plain
+OAuth endpoint has no such split: asking for `response_type=code id_token`
+returns both from one screen. So signing in grants Drive, and Settings is left
+with the folder.
+
+**A connection that outlives the tab.** The browser-only flow hands back an
+access token and no way to renew it, so a Drive connection lasted about an hour
+and a reload asked you to reconnect — and browsers are steadily closing the
+loophole that let the renewal happen invisibly. The code returned above is
+exchanged by `/api/google/*` for a refresh token, written to
+`google_connections`, and never sent to the browser. What the page holds is the
+same hour-long access token it always had; when that expires it asks the function
+for another. The connection belongs to the account, so it also comes back on any
+machine you sign in from.
 
 **Why a service role key.** The table has row-level security enabled and no
 policies at all, so no browser can read it whatever token it presents — not even
@@ -197,10 +220,11 @@ its owner's. The service role bypasses RLS, and that key exists only in the
 function environment. A refresh token is a standing key to someone's Drive, and
 this is what keeps it from being readable by anything running on the page.
 
-Without both variables the app falls back to exactly the behaviour above: an
-in-memory token, a silent renewal attempt on load, and a Reconnect button.
-Settings says which of the two you are getting, so a connection that will not
-survive the hour does not look like a fault.
+Without both variables everything still works, with the compromises back: a
+Google-rendered sign-in button, Drive connected separately in Settings, an
+in-memory token renewed silently on load, and a Reconnect button when Google will
+not renew without asking. Settings says which of the two you are getting, so a
+connection that will not survive the hour does not look like a fault.
 
 ### The two scopes, and the catch
 
@@ -217,6 +241,11 @@ public and can live without importing pre-existing media, drop `drive.readonly`
 from `DRIVE_SCOPE_LIST` in `src/lib/google/gis.ts`: uploads, the folder picker's
 own listing of app-created content, and everything else keep working under
 `drive.file` alone.
+
+Both scopes are now asked for at sign-in rather than only by those who went
+looking for the Drive section, which makes that decision more prominent than it
+was — the consent screen everyone sees is the one listing them. Google's granular
+consent still lets either be unticked, and the app signs the user in regardless.
 
 ## Deploying to Netlify
 
@@ -323,6 +352,14 @@ server-side half configured there is no refresh token at all, and a connection
 lasts the hour; when it lapses, Settings offers a Reconnect button rather than
 throwing an error at whatever you were doing.
 
+**One trip to Google, not two.** Signing in and authorising Drive are one
+request (`response_type=code id_token`), so the user makes one decision and the
+app gets both an ID token and a consent code out of it. The alternative was two
+libraries that cannot do each other's job, two consent screens, and a Drive
+backup that sat switched off until someone found the button in Settings. The
+combined flow needs a client secret to complete, so a deployment without one
+falls back to the two-step version rather than losing sign-in entirely.
+
 **Tracks fill themselves in.** A new recording goes onto the first voice track
 with a free gap at that moment, and only stacks a new lane when every existing
 one is busy. So you can record the same passage twice, or talk over yourself,
@@ -366,12 +403,14 @@ The unit tests concentrate on the pure logic where the real bugs live:
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
 
-Two of them exist because the bug they guard against is invisible until you
+Three of them exist because the bug they guard against is invisible until you
 close the tab: `src/state/useAuthStore.test.ts` signs in against a real Supabase
-client with a seeded local storage, and `src/lib/google/gis.test.ts` checks that
-a stored Drive connection is preferred, that a site without one still falls back
-to Google's own flow, and that the consent request asks for offline access — the
-single parameter the whole "still connected tomorrow" behaviour rests on.
+client with a seeded local storage; `src/lib/google/gis.test.ts` checks that a
+stored Drive connection is preferred and that a site without one still falls back
+to Google's own flow; and `src/lib/google/oauthPopup.test.ts` pins the three
+parameters the whole thing rests on — `access_type=offline` and `prompt=consent`
+for a refresh token that outlives the tab, and `response_type=code id_token` for
+the single consent screen that covers both sign-in and Drive.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track — then parses the

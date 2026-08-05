@@ -36,7 +36,7 @@ import {
   saveConnection,
   type DriveGrant,
 } from './connection'
-import { ConsentDeclinedError, requestAuthorizationCode } from './oauthPopup'
+import { ConsentDeclinedError, requestAuthorization } from './oauthPopup'
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client'
 
@@ -51,6 +51,20 @@ export const DRIVE_SCOPE_LIST: [string, ...string[]] = [
 ]
 
 export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
+
+/**
+ * What signing in asks for: who you are, plus Drive.
+ *
+ * Asked together on purpose. Google will grant both from one consent screen, and
+ * the alternative — sign in now, connect Drive later in Settings — meant two
+ * trips to Google for what is one decision, and a backup that quietly did
+ * nothing until someone found the second button.
+ *
+ * The Drive half can still be unticked on Google's own screen. That signs the
+ * user in with no Drive access, which the Drive store reports and Settings
+ * offers to put right.
+ */
+export const SIGN_IN_SCOPES = ['openid', 'email', 'profile', ...DRIVE_SCOPE_LIST].join(' ')
 
 export function clientId(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() ?? ''
@@ -305,7 +319,7 @@ export async function connect(): Promise<string> {
   try {
     // Opens the pop-up synchronously, so the click is still what the browser
     // sees. Everything after this point may await freely.
-    code = await requestAuthorizationCode(id, DRIVE_SCOPES)
+    code = (await requestAuthorization({ clientId: id, scope: DRIVE_SCOPES })).code
   } catch (cause) {
     // Declining or closing the window is a decision, not a fault: the caller
     // turns it into a reconnect affordance rather than an error banner.
@@ -314,9 +328,7 @@ export async function connect(): Promise<string> {
   }
 
   try {
-    const grant = await saveConnection(code)
-    durable = grant.durable
-    return keep(grant)
+    return await adoptConnection(code)
   } catch (cause) {
     // The site turned out not to store connections after all. The consent just
     // given cannot be used, so run the flow GIS understands instead.
@@ -324,6 +336,27 @@ export async function connect(): Promise<string> {
       durable = false
       return await request('consent')
     }
+    throw cause
+  }
+}
+
+/**
+ * Turns a consent code into a stored connection and a live token.
+ *
+ * Shared by the two ways of getting one: the Connect button here, and signing
+ * in, which asks for Drive in the same breath (see `SIGN_IN_SCOPES`).
+ */
+export async function adoptConnection(code: string): Promise<string> {
+  const grant = await saveConnection(code)
+  durable = grant.durable
+
+  try {
+    return keep(grant)
+  } catch (cause) {
+    // Someone who unticked Drive on the consent screen leaves a connection that
+    // cannot do anything. Storing it would mean resuming it on every load and
+    // failing the same way each time, so it is dropped and reported instead.
+    await clearConnection().catch(() => {})
     throw cause
   }
 }

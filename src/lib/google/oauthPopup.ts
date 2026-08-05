@@ -1,13 +1,22 @@
 /**
- * The consent half of a Drive connection that survives a reload.
+ * One trip to Google, for whatever this app needs from it.
  *
- * Google's own browser library (GIS, see gis.ts) only offers the implicit token
- * flow: an access token, no refresh token, gone in an hour. Getting a refresh
- * token means running the plain authorisation-code flow, which this module does
- * by hand — a popup to Google, a redirect back to this app, and the one-time
- * code handed to the opener over `postMessage`.
+ * Google's own browser library (GIS, see gis.ts) splits the two things apart:
+ * `google.accounts.id` issues an ID token and cannot authorise Drive, while
+ * `google.accounts.oauth2` authorises Drive and cannot issue an ID token. Using
+ * both means two consent screens for what the user experiences as one decision.
  *
- * A popup rather than a redirect because sign-in must not navigate away from an
+ * The plain OAuth endpoint has no such split. Asking for `response_type=code
+ * id_token` — the OpenID Connect hybrid flow, which Google supports — returns
+ * the ID token that proves who they are *and* the one-time code that becomes a
+ * durable Drive connection, from a single screen. Signing in therefore grants
+ * Drive as well, and Settings has no separate connection step.
+ *
+ * Doing it by hand is also what makes the code flow available at all: GIS only
+ * offers the implicit token flow, which issues no refresh token, so a connection
+ * made through it dies within the hour.
+ *
+ * A pop-up rather than a redirect because sign-in must not navigate away from an
  * open project mid-edit. A window of our own rather than an iframe because
  * Google refuses to render consent in one.
  */
@@ -35,6 +44,8 @@ export interface CallbackMessage {
   source: typeof CALLBACK_MESSAGE
   state: string
   code?: string
+  /** Present only when the request asked for one — see `AuthorizationRequest`. */
+  idToken?: string
   error?: string
 }
 
@@ -42,29 +53,54 @@ export function callbackUri(): string {
   return `${window.location.origin}${CALLBACK_PATH}`
 }
 
+export interface AuthorizationRequest {
+  clientId: string
+  /** Space-delimited. Include `openid` to get an ID token back. */
+  scope: string
+  /**
+   * The hashed half of a sign-in nonce. Supplying it switches the request to the
+   * hybrid flow, so an ID token comes back beside the code.
+   */
+  nonce?: string
+  /** Defaults to re-asking for consent. See below for why that matters. */
+  prompt?: string
+}
+
+export interface Authorization {
+  code: string
+  idToken?: string
+}
+
 /**
- * The URL the consent popup opens.
+ * The URL the consent pop-up opens.
  *
- * Two parameters carry the whole feature:
+ * Three parameters carry the whole feature:
  *
  * - `access_type=offline` is what asks for a refresh token at all.
  * - `prompt=consent` is what makes Google issue one *again* for someone who has
  *   already granted these scopes. A refresh token only comes back with a fresh
- *   grant, so without this every existing user of the app would connect
- *   successfully and still find themselves disconnected an hour later — which is
- *   the exact complaint this path exists to answer.
+ *   grant, so without this a returning user would connect successfully and still
+ *   find themselves disconnected an hour later — the exact complaint this path
+ *   exists to answer.
+ * - `response_type=code id_token`, when a nonce is given, adds the ID token that
+ *   Supabase turns into a session. That is what lets one screen cover both
+ *   signing in and authorising Drive.
  */
-export function authorizationUrl(clientId: string, scope: string, state: string): string {
+export function authorizationUrl(request: AuthorizationRequest, state: string): string {
   const params = new URLSearchParams({
-    client_id: clientId,
+    client_id: request.clientId,
     redirect_uri: callbackUri(),
-    response_type: 'code',
-    scope,
+    response_type: request.nonce ? 'code id_token' : 'code',
+    scope: request.scope,
     access_type: 'offline',
-    prompt: 'consent',
+    prompt: request.prompt ?? 'consent',
     include_granted_scopes: 'true',
     state,
   })
+  // Google signs the value straight into the ID token; Supabase re-hashes the
+  // raw half and compares, which is what stops a token lifted from elsewhere
+  // being replayed into a session here.
+  if (request.nonce) params.set('nonce', request.nonce)
   return `${AUTH_ENDPOINT}?${params.toString()}`
 }
 
@@ -82,28 +118,24 @@ const CLOSE_POLL_MS = 400
 const POPUP_FEATURES = 'popup=yes,width=520,height=660,left=100,top=60'
 
 /**
- * Opens the consent popup and resolves with the one-time authorisation code.
+ * Opens the consent pop-up and resolves with what Google sent back.
  *
  * Must be called straight from a click: a `window.open` that browsers cannot
  * attribute to a user gesture is blocked outright.
  */
-export async function requestAuthorizationCode(clientId: string, scope: string): Promise<string> {
+export async function requestAuthorization(request: AuthorizationRequest): Promise<Authorization> {
   const state = crypto.randomUUID()
 
   // Opened before anything is awaited. Any `await` first would break the gesture
   // attribution the pop-up blocker relies on.
-  const popup = window.open(
-    authorizationUrl(clientId, scope, state),
-    'editor-cat-google',
-    POPUP_FEATURES,
-  )
+  const popup = window.open(authorizationUrl(request, state), 'editor-cat-google', POPUP_FEATURES)
   if (!popup) {
     throw new ConsentDeclinedError(
       'The browser blocked the Google window. Allow pop-ups for this site and try again.',
     )
   }
 
-  return await new Promise<string>((resolve, reject) => {
+  return await new Promise<Authorization>((resolve, reject) => {
     let timer = 0
 
     const finish = (fn: () => void) => {
@@ -125,8 +157,9 @@ export async function requestAuthorizationCode(clientId: string, scope: string):
 
       finish(() => {
         popup.close()
-        if (data.code) resolve(data.code)
-        else if (data.error === 'access_denied') {
+        if (data.code) {
+          resolve({ code: data.code, ...(data.idToken ? { idToken: data.idToken } : {}) })
+        } else if (data.error === 'access_denied') {
           reject(new ConsentDeclinedError('Google access was declined.'))
         } else {
           reject(new Error(data.error || 'Google did not return an authorisation code.'))

@@ -37,11 +37,15 @@ import {
  * The refresh token never appears in a response body. What the browser gets is
  * the same hour-long access token it always had.
  *
- * Every route needs a verified Supabase session, because the user id from that
- * session is the key the refresh token is filed under. That also means anonymous
- * local development (`FAL_PROXY_ALLOW_ANONYMOUS=1`) cannot use this path at all
- * — `status` says so plainly, and the app falls back to the in-memory token flow
- * it used before.
+ * Storing anything needs a verified Supabase session, because the user id from
+ * that session is the key the refresh token is filed under. That also means
+ * anonymous local development (`FAL_PROXY_ALLOW_ANONYMOUS=1`) cannot use this
+ * path at all — `status` says so plainly, and the app falls back to the
+ * in-memory token flow it used before.
+ *
+ * `connect` is reached during sign-in as well as from Settings: signing in asks
+ * Google for Drive at the same time, so the code that comes back is exchanged
+ * the moment the new session exists.
  */
 
 interface Setup {
@@ -118,21 +122,23 @@ export default async (request: Request): Promise<Response> => {
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/google\/?/, '').replace(/\/+$/, '')
 
-  const session = await requireSession(request)
-  if (!session.ok) return session.response
-
   const ready = setup()
 
-  // Anonymous development builds have no user id to file a token under, and a
-  // deployment missing either secret has nowhere to put one. Both are ordinary
-  // states rather than errors: the app has a working fallback for them, and only
-  // needs to be told which world it is in.
+  // Deliberately answered before any session is required, and the only route
+  // that is. The sign-in screen asks this to decide whether it can request Drive
+  // alongside identity — which is precisely the moment before a session exists.
+  // All it discloses is whether the deployment is set up for that, which the
+  // README states publicly; anything about a *user* still needs their token.
   if (route === 'status') {
-    if (!ready || !session.userId) {
-      return json({ durable: false, connected: false, scope: '' })
-    }
+    if (!ready) return json({ durable: false, connected: false, scope: '' })
+
+    const caller = await requireSession(request)
+    // Signed out, or an anonymous development build with no account to file a
+    // connection under. Either way there is nothing of theirs to report.
+    if (!caller.ok || !caller.userId) return json({ durable: true, connected: false, scope: '' })
+
     try {
-      const stored = await readConnection(session.userId, ready.store)
+      const stored = await readConnection(caller.userId, ready.store)
       return json({ durable: true, connected: stored !== null, scope: stored?.scope ?? '' })
     } catch (error) {
       return jsonError(
@@ -142,6 +148,9 @@ export default async (request: Request): Promise<Response> => {
       )
     }
   }
+
+  const session = await requireSession(request)
+  if (!session.ok) return session.response
 
   if (!ready)
     return jsonError(503, 'This site does not keep Drive connected.', NOT_CONFIGURED_DETAIL)
