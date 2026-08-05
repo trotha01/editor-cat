@@ -48,15 +48,20 @@ export function completeOauthCallback(): void {
     ...(value('error') ? { error: value('error') } : {}),
   }
 
-  if (window.opener) {
-    window.opener.postMessage(message, window.location.origin)
-    window.close()
-    return
-  }
+  // Taken out of the address bar as soon as it has been read. The window is
+  // about to close, but a blocked close would otherwise leave an ID token
+  // sitting in a visible URL and in this window's session history.
+  window.history.replaceState({}, '', window.location.pathname)
 
-  // No opener means someone reached this URL directly, or the browser severed
-  // the relationship. There is nothing to hand the code to, so say so rather
-  // than showing a blank page.
+  // Written before the close attempt rather than only as a fallback: a browser
+  // that refuses to close the window would otherwise leave a blank page, and
+  // this is the one instruction that recovers every version of that — no
+  // opener, a severed opener, or a close that did not happen.
   document.body.textContent =
     'You can close this window and return to editor-cat to finish signing in.'
+
+  if (!window.opener) return
+
+  window.opener.postMessage(message, window.location.origin)
+  window.close()
 }

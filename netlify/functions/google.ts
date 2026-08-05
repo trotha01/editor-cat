@@ -130,16 +130,16 @@ export default async (request: Request): Promise<Response> => {
   // All it discloses is whether the deployment is set up for that, which the
   // README states publicly; anything about a *user* still needs their token.
   if (route === 'status') {
-    if (!ready) return json({ durable: false, connected: false, scope: '' })
+    if (!ready) return json({ durable: false, connected: false })
 
     const caller = await requireSession(request)
     // Signed out, or an anonymous development build with no account to file a
     // connection under. Either way there is nothing of theirs to report.
-    if (!caller.ok || !caller.userId) return json({ durable: true, connected: false, scope: '' })
+    if (!caller.ok || !caller.userId) return json({ durable: true, connected: false })
 
     try {
       const stored = await readConnection(caller.userId, ready.store)
-      return json({ durable: true, connected: stored !== null, scope: stored?.scope ?? '' })
+      return json({ durable: true, connected: stored !== null })
     } catch (error) {
       return jsonError(
         502,

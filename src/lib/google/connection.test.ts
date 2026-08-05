@@ -42,18 +42,14 @@ afterEach(() => {
 
 describe('connectionStatus', () => {
   it('reports what the site supports and whether this account is connected', async () => {
-    const calls = serve(200, { durable: true, connected: true, scope: 'drive.file' })
+    const calls = serve(200, { durable: true, connected: true })
 
-    await expect(connectionStatus()).resolves.toEqual({
-      durable: true,
-      connected: true,
-      scope: 'drive.file',
-    })
+    await expect(connectionStatus()).resolves.toEqual({ durable: true, connected: true })
     expect(calls[0]?.url).toBe('/api/google/status')
   })
 
   it('sends the session token, since the connection is filed under the account', async () => {
-    const calls = serve(200, { durable: true, connected: false, scope: '' })
+    const calls = serve(200, { durable: true, connected: false })
 
     await connectionStatus()
 
@@ -66,11 +62,7 @@ describe('connectionStatus', () => {
     // fallback and only needs to know which world it is in.
     serve(404, { error: 'Not found' })
 
-    await expect(connectionStatus()).resolves.toEqual({
-      durable: false,
-      connected: false,
-      scope: '',
-    })
+    await expect(connectionStatus()).resolves.toEqual({ durable: false, connected: false })
   })
 
   it('treats being offline the same way, rather than failing the whole load', async () => {
@@ -81,11 +73,30 @@ describe('connectionStatus', () => {
       }),
     )
 
-    await expect(connectionStatus()).resolves.toEqual({
-      durable: false,
-      connected: false,
-      scope: '',
-    })
+    await expect(connectionStatus()).resolves.toEqual({ durable: false, connected: false })
+  })
+
+  it('is not fooled by a static host answering /api with the app itself', async () => {
+    // An SPA fallback returns index.html and a cheerful 200. Trusting that would
+    // read as "this site stores connections" and send the user through a consent
+    // flow that cannot possibly complete.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<!doctype html><title>editor-cat</title>', { status: 200 })),
+    )
+
+    await expect(connectionStatus()).resolves.toEqual({ durable: false, connected: false })
+  })
+
+  it('bounds the wait, so a hung request cannot strand the sign-in screen', async () => {
+    // The gate waits on this before it can draw a button: a request that never
+    // settles would leave no way into the app at all. Whatever the abort ends up
+    // throwing lands in the same catch as being offline, above.
+    const calls = serve(200, { durable: true, connected: false })
+
+    await connectionStatus()
+
+    expect(calls[0]?.init.signal).toBeInstanceOf(AbortSignal)
   })
 })
 

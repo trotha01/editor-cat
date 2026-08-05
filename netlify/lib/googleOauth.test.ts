@@ -8,10 +8,22 @@ import {
   refreshAccessToken,
   revokeToken,
 } from './googleOauth'
+import { CALLBACK_PATH as BROWSER_CALLBACK_PATH } from '../../src/lib/google/oauthPopup'
+
+describe('the callback path', () => {
+  it('is the same string the browser sends, which Google compares byte for byte', () => {
+    // Declared twice because the browser and the functions are separate
+    // TypeScript projects, so nothing else can notice them drifting apart. When
+    // they do, the authorisation request and the code exchange name different
+    // redirect URIs and Google answers `redirect_uri_mismatch` — a runtime
+    // failure that points at neither file.
+    expect(CALLBACK_PATH).toBe(BROWSER_CALLBACK_PATH)
+  })
+})
 
 const config = { clientId: 'client-abc.apps.googleusercontent.com', clientSecret: 'secret-xyz' }
 
-/** Builds a stub `fetch` that answers once and records what it was sent. */
+/** Builds a stub `fetch` that gives the same answer every time, recording each request. */
 function respondWith(body: unknown, status = 200) {
   const calls: { url: string; params: URLSearchParams }[] = []
   const impl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

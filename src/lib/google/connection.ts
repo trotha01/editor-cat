@@ -20,7 +20,6 @@ export interface ConnectionStatus {
   durable: boolean
   /** Whether this user has one stored. */
   connected: boolean
-  scope: string
 }
 
 export interface DriveGrant {
@@ -69,6 +68,19 @@ export class NotDurableError extends Error {
   }
 }
 
+/**
+ * How long to wait on our own function before deciding nothing is answering.
+ *
+ * Only applied to the status check, which the sign-in screen waits on before it
+ * can draw a button. A request that hangs there leaves no way into the app at
+ * all, and falling back to the flow that needs no server is far better than a
+ * spinner that never resolves.
+ */
+const STATUS_TIMEOUT_MS = 8000
+
+/** Google's own default, used when a response omits `expires_in`. */
+const DEFAULT_LIFETIME_SECONDS = 3600
+
 async function call(path: string, init: RequestInit = {}): Promise<Response> {
   const token = currentAccessToken()
   return await fetch(`${BASE}${path}`, {
@@ -92,38 +104,57 @@ async function messageFrom(response: Response, fallback: string): Promise<string
 }
 
 /**
+ * Reads a JSON object from one of our own endpoints.
+ *
+ * A static host with an SPA fallback answers `/api/*` with the app's own
+ * index.html and a cheerful 200. Parsing that throws a `SyntaxError`, which
+ * would reach the user as gibberish — so an unreadable body is reported as this
+ * site simply not having the endpoint, which every caller already handles.
+ */
+async function readBody(response: Response): Promise<Record<string, unknown>> {
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new NotDurableError()
+  }
+  if (!body || typeof body !== 'object') throw new NotDurableError()
+  return body as Record<string, unknown>
+}
+
+/**
  * Whether this deployment stores connections, and whether this user has one.
  *
  * Answered without calling Google, so it is cheap enough to ask on every load
  * before deciding whether to resume a connection or offer the button.
  */
 export async function connectionStatus(): Promise<ConnectionStatus> {
-  const unsupported: ConnectionStatus = { durable: false, connected: false, scope: '' }
+  const unsupported: ConnectionStatus = { durable: false, connected: false }
 
   try {
-    const response = await call('/status')
+    const response = await call('/status', { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) })
     // 404 covers the case that matters most in practice: an older deploy, or a
     // local `vite dev` with no functions behind it at all.
     if (!response.ok) return unsupported
 
-    // A static host with an SPA fallback answers /api/* with the app's own
-    // index.html and a cheerful 200, so the shape is checked rather than
-    // trusted. Anything unrecognisable means there is no endpoint here.
-    const body = (await response.json()) as Partial<ConnectionStatus>
+    const body = await readBody(response)
     if (typeof body.durable !== 'boolean' || typeof body.connected !== 'boolean') return unsupported
-    return { durable: body.durable, connected: body.connected, scope: body.scope ?? '' }
+    return { durable: body.durable, connected: body.connected }
   } catch {
-    // Offline, or /api is not being served. Either way there is no stored
-    // connection to resume, and the caller has a fallback.
+    // Offline, timed out, or /api is not being served. Either way there is no
+    // stored connection to resume, and the caller has a fallback.
     return unsupported
   }
 }
 
-function toGrant(body: { access_token: string; expires_in: number; scope?: string }): DriveGrant {
+function toGrant(body: Record<string, unknown>): DriveGrant {
+  if (typeof body.access_token !== 'string') throw new NotDurableError()
   return {
     accessToken: body.access_token,
-    expiresIn: Number.isFinite(body.expires_in) ? body.expires_in : 3600,
-    scope: body.scope ?? '',
+    expiresIn: Number.isFinite(body.expires_in)
+      ? Number(body.expires_in)
+      : DEFAULT_LIFETIME_SECONDS,
+    scope: typeof body.scope === 'string' ? body.scope : '',
   }
 }
 
@@ -147,12 +178,7 @@ export async function saveConnection(code: string): Promise<DriveGrant & { durab
     throw new Error(await messageFrom(response, 'Could not connect Google Drive.'))
   }
 
-  const body = (await response.json()) as {
-    access_token: string
-    expires_in: number
-    scope?: string
-    durable?: boolean
-  }
+  const body = await readBody(response)
   return { ...toGrant(body), durable: body.durable !== false }
 }
 
@@ -172,9 +198,7 @@ export async function requestAccessToken(): Promise<DriveGrant> {
     throw new Error(await messageFrom(response, 'Could not refresh your Google Drive access.'))
   }
 
-  return toGrant(
-    (await response.json()) as { access_token: string; expires_in: number; scope?: string },
-  )
+  return toGrant(await readBody(response))
 }
 
 /** Forgets the stored connection and revokes it at Google. */

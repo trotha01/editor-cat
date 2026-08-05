@@ -40,10 +40,14 @@ function storedSession(expiresInSeconds = HOUR) {
   }
 }
 
-/** Imports the store fresh, so its module-level env reads happen under the stubs. */
+/**
+ * Imports the store fresh, so its module-level env reads happen under the stubs.
+ *
+ * `resetModules` is what drops the cached Supabase client too — it lives in a
+ * module-level variable, and a client built against a previous test's URL would
+ * read a different storage key.
+ */
 async function loadStore() {
-  const { resetForTests } = await import('../lib/supabase/client')
-  resetForTests()
   vi.resetModules()
   return await import('./useAuthStore')
 }
