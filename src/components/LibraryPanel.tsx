@@ -1,11 +1,13 @@
 /** Everything generated or uploaded, ready to drop on the timeline. */
 import { useRef, useState } from 'react'
 import { AssetThumb } from './AssetThumb'
+import { DriveImportDialog } from './DriveImportDialog'
 import { Button, Callout, EmptyState } from './ui'
 import { ingestBlob } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { formatTime } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
+import { useDriveStore } from '../state/useDriveStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { AssetKind } from '../lib/types'
 
@@ -22,8 +24,11 @@ export function LibraryPanel() {
   const removeAsset = useAssetStore((state) => state.remove)
   const addClip = useProjectStore((state) => state.addClip)
 
+  const driveReady = useDriveStore((state) => state.status === 'connected' && state.folder !== null)
+
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const upload = async (files: FileList | null) => {
@@ -54,6 +59,11 @@ export function LibraryPanel() {
         <Button onClick={() => fileInput.current?.click()} disabled={busy}>
           <span aria-hidden>⬆️</span> Upload media
         </Button>
+        {driveReady ? (
+          <Button onClick={() => setImportOpen(true)} disabled={busy}>
+            <span aria-hidden>📁</span> Import from Drive
+          </Button>
+        ) : null}
         <input
           ref={fileInput}
           type="file"
@@ -109,6 +119,8 @@ export function LibraryPanel() {
           ))}
         </ul>
       )}
+
+      <DriveImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
   )
 }

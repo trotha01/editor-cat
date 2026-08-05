@@ -153,7 +153,25 @@ export interface IngestOptions {
   name: string
   prompt?: string
   sourceUrl?: string
+  /** Set when the media came from Drive, so it is not uploaded straight back. */
+  driveFileId?: string
   signal?: AbortSignal
+}
+
+/**
+ * Notified about every newly ingested asset, so it can be copied somewhere
+ * durable.
+ *
+ * This indirection is what keeps Drive out of the ingest path: every panel in
+ * the app already calls `ingestBlob`, so registering one hook at startup backs
+ * up all of them, and this module stays testable with no Google in sight.
+ */
+export type IngestListener = (asset: Asset, blob: Blob) => void
+
+let listener: IngestListener | null = null
+
+export function setIngestListener(fn: IngestListener | null): void {
+  listener = fn
 }
 
 /** Stores a blob plus its metadata and returns the resulting Asset. */
@@ -172,10 +190,19 @@ export async function ingestBlob(blob: Blob, options: IngestOptions): Promise<As
     ...probed,
     ...(options.prompt ? { prompt: options.prompt } : {}),
     ...(options.sourceUrl ? { sourceUrl: options.sourceUrl } : {}),
+    ...(options.driveFileId ? { driveFileId: options.driveFileId } : {}),
   }
 
   await putBlob(blobKey, blob)
   await putAsset(asset)
+
+  try {
+    listener?.(asset, blob)
+  } catch {
+    // A backup that cannot start must not fail the ingest: the asset is
+    // already saved locally and usable.
+  }
+
   return asset
 }
 

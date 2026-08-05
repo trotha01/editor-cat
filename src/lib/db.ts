@@ -88,6 +88,21 @@ export async function loadProject(id: string): Promise<Project | undefined> {
   return (await db()).get('projects', id)
 }
 
+/**
+ * Every project cached locally.
+ *
+ * This is the offline view of the project list. The authoritative list comes
+ * from Supabase when signed in, but a cold start with no network still has to
+ * show something openable.
+ */
+export async function listProjects(): Promise<Project[]> {
+  return (await db()).getAll('projects')
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await (await db()).delete('projects', id)
+}
+
 /** Rough total of stored bytes, for the storage readout in Settings. */
 export async function estimateUsage(): Promise<{ used: number; quota: number } | null> {
   if (!navigator.storage?.estimate) return null

@@ -23,7 +23,7 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
 
-    "types": ["vite/client", "vitest/globals"]
+    "types": ["vite/client", "vitest/globals", "google.accounts"]
   },
   "include": ["src"]
 }

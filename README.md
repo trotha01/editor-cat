@@ -61,6 +61,106 @@ The media it produces is real — images are drawn on a canvas and videos are
 recorded off an animated one — so the timeline, preview and export all get a
 genuine workout. This is also what the end-to-end test drives.
 
+## Saving projects (optional)
+
+With a Supabase project configured, the app asks you to sign in with Google and
+then keeps your timelines in your account: a project switcher in the header,
+auto-save about two seconds after you stop editing, and projects that open on
+any machine you sign in from.
+
+**What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
+placement, resolution — and a catalogue of asset metadata. It never holds media
+bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
+Opening a project on a new machine restores the timeline from metadata
+immediately, so you can rearrange it while the media is still coming down from
+Drive behind you.
+
+**Media that predates Drive cannot be recovered on another machine.** An asset
+with no `driveFileId` only ever existed in the browser that made it; those clips
+open with their timing intact and report as unrecoverable.
+
+Leave `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` unset and the app behaves
+exactly as it did before: one project, IndexedDB, no sign-in.
+
+### Setting it up
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. Run `supabase/migrations/0001_projects.sql` — paste it into the dashboard's
+   **SQL editor**, or `supabase db push` with the CLI. It creates two tables and
+   turns on row-level security, so a user can only ever read and write rows on
+   their own account.
+3. **Authentication → Providers → Google → Enable**, and paste the _same_ Google
+   client ID from the Drive setup above into **Authorized Client IDs**. No
+   client secret is needed: the page hands Supabase a Google ID token directly
+   rather than going through a redirect.
+4. Copy the project URL and anon key from **Project settings → API** into `.env`
+   (and into Netlify's environment variables), then redeploy.
+
+The client ID must match in both places. If it does not, sign-in fails with
+"Unacceptable audience" — the app rewrites that message to say so, because the
+raw error points at nothing.
+
+### Conflicts
+
+Each project row carries a version. A write only lands if the version still
+matches what this session last saw, so editing the same project in two tabs
+shows "Changed elsewhere" rather than one tab silently overwriting the other.
+Resolution is a reload — merging two timelines has no sensible automatic answer.
+
+## Saving to your own Google Drive (optional)
+
+Connect a Google account in **Settings** and pick a folder. From then on
+everything the app makes — generated images, rendered clips, recordings, files
+you upload — is copied into that folder as it is created, and **Library →
+Import from Drive** browses that folder and its subfolders to bring existing
+media in.
+
+The bytes stay in IndexedDB either way; Drive is the durable copy, not the
+playback source. Drive has no URL that carries our token _and_ serves range
+requests, so a `<video>` pointed straight at it could not seek — and export
+needs the bytes locally regardless. A failed upload therefore costs you the
+backup and nothing else.
+
+The app is fully usable without this. Leave `VITE_GOOGLE_CLIENT_ID` unset and
+the Drive section of Settings just explains that it is switched off.
+
+### Setting up the client ID
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a
+   project and enable the **Google Drive API**.
+2. Configure the **OAuth consent screen**. While it is in _Testing_ you can add
+   up to 100 test users and nothing further is required.
+3. Create an **OAuth client ID** of type _Web application_. Add your origins to
+   **Authorised JavaScript origins**: `http://localhost:5173` for `npm run dev`,
+   `http://localhost:8888` for `netlify dev`, plus your deployed URL. There is
+   no redirect URI to set — the token flow never leaves the page.
+4. Put the client ID in `.env` locally, and in Netlify under **Site settings →
+   Environment variables** (it is read at build time, so redeploy after adding
+   it):
+
+```
+VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+```
+
+A client ID is not a secret — it ships in the bundle by design, and origin
+allowlisting is what protects it.
+
+### The two scopes, and the catch
+
+- `drive.file` — the app's own files. Anything it uploads stays accessible to it
+  forever, and it can see nothing else.
+- `drive.readonly` — needed only to _list_ the folder you pick. Per-file access
+  cannot enumerate media the app did not write, so without this the import
+  browser would always come back empty.
+
+**`drive.readonly` is a restricted scope.** In Testing mode that costs nothing.
+But publishing the consent screen so that anyone can sign in requires Google's
+annual third-party security assessment, which is expensive. If you intend to go
+public and can live without importing pre-existing media, drop `drive.readonly`
+from `DRIVE_SCOPE_LIST` in `src/lib/google/gis.ts`: uploads, the folder picker's
+own listing of app-created content, and everything else keep working under
+`drive.file` alone.
+
 ## Deploying to Netlify
 
 The repo is deploy-ready; `netlify.toml` already declares the build command,
@@ -70,9 +170,14 @@ publish directory, functions directory, SPA fallback and security headers.
 2. Pick this repository. The build settings are detected from `netlify.toml`.
 3. Deploy.
 
-**No environment variables are needed.** That falls out of the bring-your-own-key
-design: the keys arrive from the browser on each request, so the deployment
-holds no secrets at all.
+If you are using the Drive integration, set `VITE_GOOGLE_CLIENT_ID` in the
+site's environment variables and add the deployed origin to the OAuth client's
+authorised origins.
+
+**No secrets are needed.** That falls out of the bring-your-own-key design: the
+keys arrive from the browser on each request, so the deployment holds none of
+its own. The one build-time variable, `VITE_GOOGLE_CLIENT_ID`, is optional and
+is not a secret either.
 
 Note that anyone who visits your deployed URL can use it with _their_ keys, and
 the proxy will forward for any caller. If you would rather it not be public, add
@@ -86,6 +191,8 @@ Browser (React + TypeScript + Tailwind)      Netlify Functions (stateless pass-t
   Generate  — images, then image → video        /api/elevenlabs/* → api.elevenlabs.io
   Library   — blobs in IndexedDB                /api/media        → streams provider media
   Timeline  — one picture track + N audio tracks
+  Projects  — timelines in Supabase (no media)  Both talk to the browser directly;
+  Drive     — media in your own Drive           neither goes through our functions.
   Preview   — custom player over <video>        The caller's key is forwarded once and
   Export    — ffmpeg.wasm → MP4                 never stored, logged, or reused.
 ```
@@ -105,6 +212,31 @@ submit, then poll — and every proxied request stays short.
 **Ingest on arrival.** As soon as something is generated, its bytes are pulled
 into IndexedDB and everything afterwards works from `blob:` URLs. That is what
 makes the project survive a refresh and keeps export free of CORS surprises.
+
+**One hook backs everything up.** Every panel already funnels new media through
+`ingestBlob`, so Drive and the asset catalogue both attach to that single point
+(`setIngestListener` in `src/lib/media.ts`) instead of to each generate button.
+Nothing in the ingest path knows Google or Supabase exists, which is also what
+keeps it testable.
+
+**Local first, cloud second.** Every edit still writes to IndexedDB
+synchronously, exactly as before; the Supabase push is a debounced follow-up.
+That ordering is deliberate — the editor never waits on a network round trip,
+and a dropped connection costs you sync, not work. The scheduler that does it
+(`src/lib/sync/scheduler.ts`) is pure and tested directly, because its awkward
+case — an edit made _while_ a save is in flight — is exactly the kind of bug
+that only ever shows up as "my last change sometimes vanished".
+
+**The timeline stores ids, not files.** A project document references assets by
+id; the assets table maps those to Drive file ids. That indirection is what lets
+a timeline be a few kilobytes and still describe hundreds of megabytes of media
+well enough to rebuild it anywhere.
+
+**Drive tokens are never stored.** The browser token flow issues no refresh
+token on purpose — a long-lived Google credential in a static site's local
+storage has nothing protecting it. Tokens live in memory for about an hour and
+are renewed silently; when Google will not renew without UI, Settings offers a
+Reconnect button rather than throwing an error at whatever you were doing.
 
 **Tracks fill themselves in.** A new recording goes onto the first voice track
 with a free gap at that moment, and only stacks a new lane when every existing

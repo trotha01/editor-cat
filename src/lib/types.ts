@@ -25,6 +25,12 @@ export interface Asset {
   sourceUrl?: string
   /** What prompt produced this, for provenance in the library. */
   prompt?: string
+  /**
+   * The file's id in the user's Drive, once it has been backed up there (or if
+   * it was imported from there). Its presence is what stops the uploader from
+   * sending the same bytes back to Drive a second time.
+   */
+  driveFileId?: string
   createdAt: number
 }
 
@@ -109,6 +115,23 @@ export interface Project {
   /** Present only on projects saved before multitrack. Read by migrateProject. */
   voiceovers?: LegacyVoiceoverTake[]
 }
+
+/**
+ * The part of a project that gets stored as one value.
+ *
+ * `id` and `name` are columns of their own so the project list can be rendered
+ * without pulling every timeline down with it.
+ */
+export type ProjectDoc = Omit<Project, 'id' | 'name' | 'voiceovers'>
+
+/**
+ * The shape version written alongside a stored document.
+ *
+ * 1 was the flat `voiceovers` list; 2 is multitrack audio. Recorded explicitly
+ * so `migrateProject` upgrades from a known version rather than inferring one
+ * from the shape.
+ */
+export const SCHEMA_VERSION = 2
 
 /** A clip with its resolved timeline position. Produced by `layoutClips`. */
 export interface PositionedClip {

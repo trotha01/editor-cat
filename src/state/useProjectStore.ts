@@ -27,12 +27,19 @@ import type {
   Project,
 } from '../lib/types'
 
-const PROJECT_ID = 'default'
+/**
+ * The id every project had before this app could hold more than one.
+ *
+ * Still used as the local-only project id when there is no account to own a
+ * real one, and adopted as the user's first cloud project on first sign-in so
+ * existing work is not stranded.
+ */
+export const LOCAL_PROJECT_ID = 'default'
 
-function emptyProject(): Project {
+export function emptyProject(id = LOCAL_PROJECT_ID, name = 'Untitled project'): Project {
   return {
-    id: PROJECT_ID,
-    name: 'Untitled project',
+    id,
+    name,
     clips: [],
     audioTracks: defaultTracks(newId('track'), newId('track')),
     audioClips: [],
@@ -55,7 +62,12 @@ interface ProjectState {
   selectedAudioClipId: string | null
   loaded: boolean
 
+  /** Opens the local project. Used when signed out or running unconfigured. */
   load: () => Promise<void>
+  /** Replaces the open project wholesale, e.g. with one fetched from Supabase. */
+  adopt: (project: Project) => void
+  /** Opens a project from the local cache by id. */
+  open: (id: string) => Promise<void>
   rename: (name: string) => void
   setResolution: (width: number, height: number) => void
 
@@ -105,16 +117,25 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     loaded: false,
 
     load: async () => {
+      await get().open(LOCAL_PROJECT_ID)
+    },
+
+    open: async (id) => {
       try {
-        const stored = await loadProject(PROJECT_ID)
+        const stored = await loadProject(id)
         // Projects saved before multitrack carry a flat `voiceovers` list;
         // migrating on read means old work opens with its layers intact.
-        const project = stored ? migrateProject(stored, newId) : emptyProject()
+        const project = stored ? migrateProject(stored, newId) : emptyProject(id)
         if (stored && project !== stored) persist(project)
-        set({ project, loaded: true })
+        set({ project, loaded: true, selectedClipId: null, selectedAudioClipId: null })
       } catch {
-        set({ project: emptyProject(), loaded: true })
+        set({ project: emptyProject(id), loaded: true })
       }
+    },
+
+    adopt: (project) => {
+      persist(project)
+      set({ project, loaded: true, selectedClipId: null, selectedAudioClipId: null })
     },
 
     rename: (name) => mutate((project) => ({ ...project, name })),
