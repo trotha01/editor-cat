@@ -8,11 +8,18 @@
  * name). Keep netlify/functions/ to handlers only; esbuild bundles imports
  * from here into each one.
  *
- * These functions exist for reliability, not secrecy. The user's key is their
- * own and lives in their browser; we forward it once and forget it. Routing
- * through our own origin means we do not depend on each provider's CORS policy
- * (which we cannot control and which changes without notice), and it means
- * provider media arrives same-origin so it never taints the export canvas.
+ * Two kinds of key pass through here, and the difference matters:
+ *
+ *  - ElevenLabs stays bring-your-own-key. The key is the user's own, lives in
+ *    their browser, and is forwarded once and forgotten. See `requireKey`.
+ *  - fal is paid for by the deployment, so its key is read from the
+ *    environment and never reaches the browser at all. See `requireServerKey`,
+ *    and `auth.ts` for who is allowed to spend it.
+ *
+ * Routing through our own origin is what makes either kind reliable: we do not
+ * depend on each provider's CORS policy (which we cannot control and which
+ * changes without notice), and provider media arrives same-origin so it never
+ * taints the export canvas.
  *
  * Invariants worth keeping:
  *  - no key is ever written to storage or to a log line
@@ -126,10 +133,13 @@ export function redactHeaders(headers: Headers): Record<string, string> {
 }
 
 /**
- * Pulls the caller-supplied provider key off the request.
+ * Pulls a caller-supplied provider key off the request.
  *
- * The browser sends its own key per request; we never read one from the
- * environment, so a deployment of this app holds no credentials at all.
+ * For providers that stay bring-your-own-key: the browser sends the user's own
+ * key per request, and we forward it once without ever reading one from the
+ * environment. Deliberately has no environment fallback — a deployment key
+ * quietly standing in for a missing header would be a security surprise buried
+ * in a shared helper.
  */
 export function requireKey(
   request: Request,
@@ -144,6 +154,31 @@ export function requireKey(
     }
   }
   return { ok: true, key: key.trim() }
+}
+
+/**
+ * Reads a provider key this deployment owns, rather than one the caller sent.
+ *
+ * Used where the site pays the provider itself. A missing variable is an
+ * operator mistake that no visitor can do anything about, so it answers 503
+ * naming the variable rather than 401 telling someone to check their settings.
+ */
+export function requireServerKey(
+  name: string,
+  label: string,
+): { ok: true; key: string } | { ok: false; response: Response } {
+  const key = (process.env[name] ?? '').trim()
+  if (!key) {
+    return {
+      ok: false,
+      response: jsonError(
+        503,
+        `This site is not configured for ${label}.`,
+        `Set ${name} in the site's environment variables.`,
+      ),
+    }
+  }
+  return { ok: true, key }
 }
 
 /** Strips a leading proxy mount point off a pathname, returning the upstream path. */

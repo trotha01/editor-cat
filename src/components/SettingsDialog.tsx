@@ -1,10 +1,13 @@
 /**
  * API keys and storage.
  *
- * The keys belong to the user. They are sent per request to our own proxy
- * function, forwarded once to the provider, and never written to a server. The
- * copy in this browser is the only copy, which is why "remember" is a choice
- * rather than a default.
+ * One key is entered here, and it belongs to the user: ElevenLabs. It is sent
+ * per request to our own proxy function, forwarded once to the provider, and
+ * never written to a server. The copy in this browser is the only copy, which
+ * is why "remember" is a choice rather than a default.
+ *
+ * Image and video generation used to need a second key. It now runs on a
+ * fal.ai account belonging to this deployment, so there is nothing here for it.
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout, Field, Modal, Spinner, TextInput } from './ui'
@@ -12,7 +15,6 @@ import { LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
 import { DriveSettings } from './DriveSettings'
 import { verifyKey } from '../lib/elevenlabs'
-import { run } from '../lib/falClient'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { isMockEnabled } from '../lib/mock'
@@ -26,7 +28,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const settings = useSettingsStore()
   const loadAssets = useAssetStore((state) => state.load)
 
-  const [falTest, setFalTest] = useState<TestState>('idle')
   const [elevenTest, setElevenTest] = useState<TestState>('idle')
   const [testError, setTestError] = useState<string | null>(null)
   const [usage, setUsage] = useState<{ used: number; quota: number } | null>(null)
@@ -34,23 +35,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     if (open) void estimateUsage().then(setUsage)
   }, [open])
-
-  const testFal = async () => {
-    setFalTest('testing')
-    setTestError(null)
-    try {
-      // The cheapest possible real call: a tiny LLM completion.
-      await run(
-        'fal-ai/any-llm',
-        { model: settings.llmModel, prompt: 'Reply with: ok' },
-        { key: settings.fal },
-      )
-      setFalTest('ok')
-    } catch (cause) {
-      setFalTest('fail')
-      setTestError(toDisplayMessage(cause))
-    }
-  }
 
   const testEleven = async () => {
     setElevenTest('testing')
@@ -96,38 +80,12 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </Callout>
         ) : null}
 
-        <Callout tone="info" title="Your keys stay yours">
-          Keys are held in this browser and attached to each request as it passes through this
-          site&apos;s proxy on its way to the provider. Nothing is stored on a server, and this site
-          has no API accounts of its own.
+        <Callout tone="info" title="Your key stays yours">
+          Your ElevenLabs key is held in this browser and attached to each request as it passes
+          through this site&apos;s proxy on its way to the provider. It is never stored on a server.
+          Image and video generation need no key from you — they run on this site&apos;s own fal.ai
+          account.
         </Callout>
-
-        <Field
-          label="fal.ai API key"
-          hint={
-            <>
-              Used for image generation, video generation, and the “Improve with AI” buttons. Create
-              one at <span className="text-ink">fal.ai/dashboard/keys</span>.
-            </>
-          }
-          htmlFor="fal-key"
-        >
-          <TextInput
-            id="fal-key"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="Paste your fal.ai key"
-            value={settings.fal}
-            onChange={(event) => settings.setKey('fal', event.target.value)}
-          />
-        </Field>
-        <div className="-mt-3 flex items-center gap-3">
-          <Button onClick={testFal} disabled={!settings.fal.trim() || falTest === 'testing'}>
-            Test connection
-          </Button>
-          {badge(falTest)}
-        </div>
 
         <Field
           label="ElevenLabs API key"
@@ -146,7 +104,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             spellCheck={false}
             placeholder="Paste your ElevenLabs key"
             value={settings.elevenlabs}
-            onChange={(event) => settings.setKey('elevenlabs', event.target.value)}
+            onChange={(event) => settings.setElevenLabsKey(event.target.value)}
           />
         </Field>
         <div className="-mt-3 flex items-center gap-3">
@@ -173,10 +131,10 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             className="mt-0.5 size-4"
           />
           <span className="text-sm">
-            Remember these keys on this device
+            Remember this key on this device
             <span className="mt-0.5 block text-xs text-ink-dim">
-              Saves them in this browser&apos;s local storage so you do not retype them. Leave it
-              off on a shared machine — keys will then be forgotten when you close the tab.
+              Saves it in this browser&apos;s local storage so you do not retype it. Leave it off on
+              a shared machine — the key will then be forgotten when you close the tab.
             </span>
           </span>
         </label>
@@ -186,7 +144,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           options={LLM_MODELS}
           value={settings.llmModel}
           onChange={(id) => settings.setPref('llmModel', id)}
-          hint="Routed through fal.ai, so it uses the same key. Cheaper models are perfectly good at rewriting prompts."
+          hint="Routed through fal.ai, so it is covered by this site's own key. Cheaper models are perfectly good at rewriting prompts."
         />
 
         <DriveSettings />
@@ -203,7 +161,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               Delete all stored media
             </Button>
             <Button variant="ghost" onClick={() => settings.forgetKeys()}>
-              Forget API keys
+              Forget API key
             </Button>
           </div>
         </div>

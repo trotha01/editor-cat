@@ -1,14 +1,21 @@
 import type { Config } from '@netlify/functions'
+import { requireSession } from '../lib/auth'
 import {
   isBlockedHost,
   jsonError,
   passthroughHeaders,
-  requireKey,
+  requireServerKey,
   upstreamPath,
 } from '../lib/proxy'
 
 /**
- * Pass-through proxy to fal.ai's queue API.
+ * Proxy to fal.ai's queue API, using this deployment's own fal key.
+ *
+ * Unlike the ElevenLabs proxy, the key here belongs to the site rather than the
+ * caller, so this endpoint spends the operator's money. That is why every
+ * request must carry a verified session first — including the status polls,
+ * since verification is local and costs a signature check rather than a round
+ * trip.
  *
  * Every call here is short by design. Video generation takes minutes, which is
  * far longer than a Netlify function may run (~10s), so the browser drives the
@@ -24,7 +31,10 @@ import {
 const FAL_QUEUE_ORIGIN = 'https://queue.fal.run'
 
 export default async (request: Request): Promise<Response> => {
-  const auth = requireKey(request, 'x-fal-key', 'fal.ai')
+  const session = await requireSession(request)
+  if (!session.ok) return session.response
+
+  const auth = requireServerKey('FAL_KEY', 'image and video generation')
   if (!auth.ok) return auth.response
 
   const url = new URL(request.url)
@@ -43,6 +53,8 @@ export default async (request: Request): Promise<Response> => {
     return jsonError(400, 'Invalid fal endpoint path.')
   }
 
+  // Built fresh rather than copied from the request, so the caller's session
+  // token is never forwarded to fal.
   const headers = new Headers({
     // fal expects its key in this exact form.
     authorization: `Key ${auth.key}`,

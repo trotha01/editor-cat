@@ -5,36 +5,45 @@ A small AI video editor that runs in your browser.
 Write a prompt → get images → animate one into a clip → arrange clips on a
 timeline → layer voiceovers and music → swap your voice for another one → export an MP4.
 
-Every AI feature uses **your own API keys**. This app has no accounts, no
-provider credentials, and no server-side storage of its own.
+Images and video are generated on the deployment's own fal.ai account, so
+visitors need no key for them. Voice conversion still uses **your own
+ElevenLabs key**, held in your browser.
 
 ---
 
 ## What it does
 
-| Step          | What happens                                                                                                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                       |
-| **2 · Video** | Pick a generated image as the opening frame and animate it. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                      |
-| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Audio sits on its own stacked tracks below.                                                                              |
-| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept. |
-| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                        |
+| Step          | What happens                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                            |
+| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
+| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Audio sits on its own stacked tracks below.                                                                                   |
+| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.      |
+| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                             |
 
 ## What you need
 
-Two keys, both entered in **Settings** inside the app:
+**As a visitor:** nothing, unless you want voice conversion. Image and video
+generation run on the site's own fal.ai account.
 
-- **[fal.ai](https://fal.ai/dashboard/keys)** — images, video, and both prompt-improvement buttons. One key covers all three.
-- **[ElevenLabs](https://elevenlabs.io)** — only for changing your recorded voice. Everything else works without it.
+- **[ElevenLabs](https://elevenlabs.io)** — entered in **Settings**, and only for changing your recorded voice. Everything else works without it. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, and is never written to a server or a log.
 
-Keys are held in your browser. Tick _remember on this device_ and they go into
-local storage; leave it off and they are gone when you close the tab. Either way
-they are attached to each request as it passes through this site's proxy on the
-way to the provider, and are never written to a server or a log.
+**As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key set as
+`FAL_KEY` in the site environment. See [Deploying to Netlify](#deploying-to-netlify).
 
-**Costs are real.** Images are roughly $0.003–$0.04 each; video is roughly
-$0.04–$0.40 per second of output depending on model. The app shows an estimate
-before every generate button, because a mis-click on a video model is expensive.
+**Costs are real, and they land on the deployment.** Images are roughly
+$0.003–$0.04 each; video is roughly $0.04 per second at 480p on the default
+model, rising to $0.40 on the most expensive one in the picker. The app shows an
+estimate before every generate button, because a mis-click on a video model is
+expensive.
+
+## Shape
+
+Projects are **vertical 9:16 by default**. The Orientation toggle above the
+preview switches the whole pipeline at once — the shape of generated images, the
+aspect ratio sent to the video model, and the export frame — because a clip
+generated one way up and exported the other just gets black bars. Existing
+projects keep the orientation they were made with until you change it.
 
 ## Running it locally
 
@@ -43,12 +52,17 @@ npm install
 npm run dev          # http://localhost:5173 — UI only, /api/* is unavailable
 ```
 
-To exercise the real providers you need the Netlify functions running too:
+To exercise the real providers you need the Netlify functions running too, with
+a `.env` holding at least `FAL_KEY` (copy `.env.example` and see the notes
+there):
 
 ```bash
 npm install -g netlify-cli
 netlify dev          # serves the app and /api/* together
 ```
+
+Against a checkout with no Supabase project, add `FAL_PROXY_ALLOW_ANONYMOUS=1`
+so the fal proxy stops asking for a session it cannot verify.
 
 ### Trying it without any keys
 
@@ -174,36 +188,51 @@ If you are using the Drive integration, set `VITE_GOOGLE_CLIENT_ID` in the
 site's environment variables and add the deployed origin to the OAuth client's
 authorised origins.
 
-**No secrets are needed.** That falls out of the bring-your-own-key design: the
-keys arrive from the browser on each request, so the deployment holds none of
-its own. The one build-time variable, `VITE_GOOGLE_CLIENT_ID`, is optional and
-is not a secret either.
+### The one secret this needs
 
-Note that anyone who visits your deployed URL can use it with _their_ keys, and
-the proxy will forward for any caller. If you would rather it not be public, add
-Netlify password protection or access controls to the site.
+Set **`FAL_KEY`** in the site's environment variables, for **all deploy
+contexts** — scoped to production only, every deploy preview answers 503. No
+`VITE_` prefix: that would inline it into the browser bundle and publish it.
+
+Then decide who is allowed to spend it. `/api/fal/*` generates video on your
+account, so it verifies the caller's Supabase session before attaching the key:
+
+- **Set `SUPABASE_URL`** to the same project the app signs in against. Tokens
+  are verified locally against its published signing keys — no round trip per
+  request, which matters because a single video job polls for minutes. Add
+  `SUPABASE_JWT_SECRET` too if your project still signs with a shared secret.
+- **With neither set, the proxy refuses every request** rather than running
+  open. `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`;
+  setting it on a deployed site hands your fal credits to anyone who finds the
+  URL. Netlify's own password protection or access controls are worth adding on
+  top if the site is not meant to be public at all.
+
+`VITE_GOOGLE_CLIENT_ID` and the two `VITE_SUPABASE_*` variables are build-time
+and not secret — the anon key is protected by row-level security, and the client
+ID by origin allowlisting.
 
 ## How it fits together
 
 ```
 Browser (React + TypeScript + Tailwind)      Netlify Functions (stateless pass-through)
-  Settings  — keys, in memory or local          /api/fal/*        → queue.fal.run
-  Generate  — images, then image → video        /api/elevenlabs/* → api.elevenlabs.io
-  Library   — blobs in IndexedDB                /api/media        → streams provider media
-  Timeline  — one picture track + N audio tracks
-  Projects  — timelines in Supabase (no media)  Both talk to the browser directly;
-  Drive     — media in your own Drive           neither goes through our functions.
-  Preview   — custom player over <video>        The caller's key is forwarded once and
-  Export    — ffmpeg.wasm → MP4                 never stored, logged, or reused.
+  Settings  — one key, in memory or local       /api/fal/*        → queue.fal.run
+  Generate  — images, then image → video          session verified, site's key attached
+  Library   — blobs in IndexedDB                /api/elevenlabs/* → api.elevenlabs.io
+  Timeline  — one picture track + N audio tracks  the caller's own key, forwarded once
+  Projects  — timelines in Supabase (no media)  /api/media        → streams provider media
+  Drive     — media in your own Drive
+  Preview   — custom player over <video>        Supabase and Drive talk to the browser
+  Export    — ffmpeg.wasm → MP4                 directly, not through our functions.
 ```
 
 A few decisions worth knowing about:
 
-**Why proxy at all, when the keys are yours?** Not secrecy — reliability.
-Browser-direct calls depend on each provider's CORS policy, which changes
-without notice. Going through our own origin makes it deterministic, and has a
-second payoff: provider media arrives same-origin, so it never taints the canvas
-during export.
+**Why proxy at all?** For fal, secrecy: the key belongs to the deployment and is
+attached on the way through, so it never exists in the browser. For ElevenLabs,
+reliability — browser-direct calls depend on each provider's CORS policy, which
+changes without notice, and going through our own origin makes it deterministic.
+Both share a second payoff: provider media arrives same-origin, so it never
+taints the canvas during export.
 
 **Why the queue API, not the simple one?** A Netlify function may run for about
 ten seconds; video generation takes minutes. So the browser drives the job —
@@ -261,7 +290,8 @@ and the fix is one line — no code change and no waiting for a release.
 ## Testing
 
 ```bash
-npm test          # unit tests — timeline maths, ffmpeg argv, SSRF guard, key storage
+npm test          # unit tests — timeline maths, ffmpeg argv, SSRF guard, session
+                  # verification, the video request body, orientation, key storage
 npm run lint
 npm run build
 

@@ -6,22 +6,23 @@ import { GenerationStatus } from './GenerationStatus'
 import { Button, Callout, Field, Select, Spinner } from './ui'
 import { run, type GenerationProgress, type ImageOutput } from '../lib/falClient'
 import { IMAGE_MODELS, IMAGE_SIZES, findImageModel, formatCost } from '../lib/models'
+import { imageSizeFor, orientationOf } from '../lib/orientation'
 import { ingestFromUrl } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
-import { hasAccess } from '../lib/mock'
 
 export function ImagePanel() {
-  const falKey = useSettingsStore((state) => state.fal)
   const model = useSettingsStore((state) => state.imageModel)
   const setPref = useSettingsStore((state) => state.setPref)
   const addAsset = useAssetStore((state) => state.add)
   const addClip = useProjectStore((state) => state.addClip)
+  const projectWidth = useProjectStore((state) => state.project.width)
+  const projectHeight = useProjectStore((state) => state.project.height)
 
   const [prompt, setPrompt] = useState('')
-  const [imageSize, setImageSize] = useState<string>('landscape_16_9')
+  const [imageSizeChoice, setImageSizeChoice] = useState<string | null>(null)
   const [count, setCount] = useState(1)
   const [progress, setProgress] = useState<GenerationProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -30,6 +31,11 @@ export function ImagePanel() {
 
   const modelInfo = findImageModel(model)
   const estimate = modelInfo ? modelInfo.approxCostPerImage * count : null
+
+  // Follows the project's orientation until someone picks a shape explicitly,
+  // and then stays put. Every image_size is valid for every model, so unlike
+  // duration and resolution there is no reason to override a deliberate choice.
+  const imageSize = imageSizeChoice ?? imageSizeFor(orientationOf(projectWidth, projectHeight))
 
   const generate = async () => {
     if (!prompt.trim()) return
@@ -44,7 +50,6 @@ export function ImagePanel() {
         model,
         { prompt: prompt.trim(), image_size: imageSize, num_images: count },
         {
-          key: falKey,
           signal: controller.signal,
           onProgress: setProgress,
         },
@@ -86,17 +91,9 @@ export function ImagePanel() {
   }
 
   const busy = progress !== null
-  const missingKey = !hasAccess(falKey)
 
   return (
     <div className="flex flex-col gap-4">
-      {missingKey ? (
-        <Callout tone="warn" title="Add your fal.ai key">
-          Image generation, video generation, and prompt improvement all use your fal.ai key. Open
-          Settings to add it.
-        </Callout>
-      ) : null}
-
       <PromptField
         kind="image"
         label="Image prompt"
@@ -116,7 +113,7 @@ export function ImagePanel() {
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="Shape">
-          <Select value={imageSize} onChange={(event) => setImageSize(event.target.value)}>
+          <Select value={imageSize} onChange={(event) => setImageSizeChoice(event.target.value)}>
             {IMAGE_SIZES.map((size) => (
               <option key={size.value} value={size.value}>
                 {size.label}
@@ -139,7 +136,7 @@ export function ImagePanel() {
         <GenerationStatus progress={progress} onCancel={() => abortRef.current?.abort()} />
       ) : (
         <div className="flex items-center gap-3">
-          <Button variant="primary" onClick={generate} disabled={missingKey || !prompt.trim()}>
+          <Button variant="primary" onClick={generate} disabled={!prompt.trim()}>
             {busy ? <Spinner /> : <span aria-hidden>🎨</span>}
             Generate {count > 1 ? `${count} images` : 'image'}
           </Button>

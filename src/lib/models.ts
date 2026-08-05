@@ -34,12 +34,29 @@ export interface VideoModel {
   description: string
   /** Approximate USD per second of generated video. */
   approxCostPerSecond: number
-  /** Durations the model accepts, in seconds. */
+  /**
+   * Per-resolution override, for models where one number would be badly wrong.
+   * fal bills some models by pixel count, so 480p and 720p can differ five-fold
+   * — far too wide a spread to show a single estimate for.
+   */
+  costPerSecondByResolution?: Readonly<Record<string, number>>
+  /** Durations the model accepts, in seconds. The first is the default. */
   durations: readonly number[]
   /** Whether the model accepts a closing frame in addition to the opening one. */
   supportsEndFrame: boolean
   /** Resolution enum values the model accepts, if it takes one. */
   resolutions?: readonly string[]
+  /** Which resolution to start on. Defaults to the last — the highest — entry. */
+  defaultResolution?: string
+  /**
+   * `aspect_ratio` values the model accepts. Absent means it takes no such
+   * field, and orientation is carried by the first frame instead. Opt-in on
+   * purpose: fal rejects an unknown field outright with a 422, so guessing that
+   * a model supports this would break it rather than degrade gracefully.
+   */
+  aspectRatios?: readonly string[]
+  /** Set only where a `generate_audio` flag is known to exist. Same 422 risk. */
+  supportsAudioToggle?: boolean
   durationFormat: DurationFormat
 }
 
@@ -100,6 +117,24 @@ export const IMAGE_MODELS: readonly ImageModel[] = [
 ]
 
 export const VIDEO_MODELS: readonly VideoModel[] = [
+  {
+    // Owner-scoped, so no `fal-ai/` prefix. Nothing needs to change for that:
+    // the proxy forwards whatever path it is given, and the queue's status and
+    // result URLs come back absolute and are rewritten by `toProxyPath`.
+    id: 'bytedance/seedance-2.0/fast/image-to-video',
+    label: 'Seedance 2.0 fast',
+    description:
+      'Quick and inexpensive at 480p. Takes an orientation, and can aim at a last frame.',
+    approxCostPerSecond: 0.043,
+    costPerSecondByResolution: { '480p': 0.043, '720p': 0.242 },
+    durations: [5, 6, 8, 10, 12, 15],
+    supportsEndFrame: true,
+    resolutions: ['480p', '720p'],
+    defaultResolution: '480p',
+    aspectRatios: ['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    supportsAudioToggle: true,
+    durationFormat: 'string',
+  },
   {
     id: 'fal-ai/kling-video/v2/master/image-to-video',
     label: 'Kling 2 Master',
@@ -171,6 +206,27 @@ export function findImageModel(id: string): ImageModel | undefined {
 
 export function findVideoModel(id: string): VideoModel | undefined {
   return VIDEO_MODELS.find((m) => m.id === id)
+}
+
+/**
+ * Which resolution a model should start on.
+ *
+ * This used to be "the highest one offered", which is the wrong instinct for a
+ * model priced by pixel count — it quietly picks the expensive option. A
+ * declared default wins; one that is not actually in the list is ignored rather
+ * than sent as an invalid enum.
+ */
+export function defaultResolutionFor(model: VideoModel): string {
+  const options = model.resolutions ?? []
+  if (model.defaultResolution && options.includes(model.defaultResolution)) {
+    return model.defaultResolution
+  }
+  return options.at(-1) ?? ''
+}
+
+/** The estimate to show, preferring a per-resolution figure where one exists. */
+export function costPerSecondFor(model: VideoModel, resolution: string): number {
+  return model.costPerSecondByResolution?.[resolution] ?? model.approxCostPerSecond
 }
 
 /** Encodes a duration the way a given model wants to receive it. */

@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   isAllowedMediaUrl,
   isBlockedHost,
   passthroughHeaders,
   redactHeaders,
   requireKey,
+  requireServerKey,
   upstreamPath,
 } from './proxy'
 
@@ -72,20 +73,78 @@ describe('isAllowedMediaUrl', () => {
 })
 
 describe('requireKey', () => {
-  it('accepts and trims a supplied key', () => {
-    const request = new Request('https://x.test/api/fal/m', { headers: { 'x-fal-key': '  abc  ' } })
-    const result = requireKey(request, 'x-fal-key', 'fal.ai')
+  it('accepts and trims a caller-supplied key', () => {
+    const request = new Request('https://x.test/api/elevenlabs/v1/voices', {
+      headers: { 'xi-api-key': '  abc  ' },
+    })
+    const result = requireKey(request, 'xi-api-key', 'ElevenLabs')
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.key).toBe('abc')
   })
 
   it('rejects a missing or blank key with a 401 and actionable text', () => {
-    const missing = requireKey(new Request('https://x.test/'), 'x-fal-key', 'fal.ai')
+    const missing = requireKey(new Request('https://x.test/'), 'xi-api-key', 'ElevenLabs')
     expect(missing.ok).toBe(false)
     if (!missing.ok) expect(missing.response.status).toBe(401)
 
-    const blank = new Request('https://x.test/', { headers: { 'x-fal-key': '   ' } })
-    expect(requireKey(blank, 'x-fal-key', 'fal.ai').ok).toBe(false)
+    const blank = new Request('https://x.test/', { headers: { 'xi-api-key': '   ' } })
+    expect(requireKey(blank, 'xi-api-key', 'ElevenLabs').ok).toBe(false)
+  })
+
+  it('never falls back to a deployment key for a bring-your-own-key provider', () => {
+    // A shared helper quietly substituting the site's own credentials would be
+    // a security surprise, so the environment is not consulted here at all.
+    process.env.ELEVENLABS_API_KEY = 'site-owned'
+    try {
+      expect(requireKey(new Request('https://x.test/'), 'xi-api-key', 'ElevenLabs').ok).toBe(false)
+    } finally {
+      delete process.env.ELEVENLABS_API_KEY
+    }
+  })
+})
+
+describe('requireServerKey', () => {
+  let saved: string | undefined
+
+  beforeEach(() => {
+    saved = process.env.FAL_KEY
+    delete process.env.FAL_KEY
+  })
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.FAL_KEY
+    else process.env.FAL_KEY = saved
+  })
+
+  it('reads and trims the key this deployment owns', () => {
+    process.env.FAL_KEY = '  site-key  '
+    const result = requireServerKey('FAL_KEY', 'image and video generation')
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.key).toBe('site-key')
+  })
+
+  it('answers 503 when the variable is unset, because no visitor can fix it', () => {
+    const result = requireServerKey('FAL_KEY', 'image and video generation')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.response.status).toBe(503)
+  })
+
+  it('treats an empty or whitespace-only value as unset', () => {
+    process.env.FAL_KEY = ''
+    expect(requireServerKey('FAL_KEY', 'generation').ok).toBe(false)
+    process.env.FAL_KEY = '   '
+    expect(requireServerKey('FAL_KEY', 'generation').ok).toBe(false)
+  })
+
+  it('names the variable to set without ever echoing the key', async () => {
+    process.env.FAL_KEY = ''
+    const result = requireServerKey('FAL_KEY', 'image and video generation')
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    const body = await result.response.text()
+    expect(body).toContain('FAL_KEY')
+    expect(body).toContain('image and video generation')
   })
 })
 

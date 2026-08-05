@@ -43,8 +43,11 @@ export function emptyProject(id = LOCAL_PROJECT_ID, name = 'Untitled project'): 
     clips: [],
     audioTracks: defaultTracks(newId('track'), newId('track')),
     audioClips: [],
-    width: 1280,
-    height: 720,
+    // Vertical by default: short-form is what most of these get made for, and
+    // it is far easier to notice and flip than to discover afterwards that a
+    // 9:16 clip has been letterboxed into a landscape frame.
+    width: 720,
+    height: 1280,
     fps: 30,
   }
 }

@@ -2,7 +2,11 @@
  * fal.ai queue client.
  *
  * All traffic goes through /api/fal (our Netlify function) rather than straight
- * to fal, so we do not depend on fal's browser CORS policy.
+ * to fal. Two reasons, and the first is the stronger one: the fal key belongs
+ * to the deployment and is attached on the way through, so it never exists in
+ * the browser at all. The second is that we then do not depend on fal's browser
+ * CORS policy. What this side sends instead is the user's session token, which
+ * is what the function checks before spending the site's credits.
  *
  * The queue is used rather than the synchronous endpoint because a Netlify
  * function may only run for about ten seconds and video generation takes
@@ -12,6 +16,7 @@
  */
 import { ProviderError, providerErrorFrom } from './errors'
 import { isMockEnabled, mockFal } from './mock'
+import { currentAccessToken } from '../state/useAuthStore'
 
 const PROXY_BASE = '/api/fal'
 const QUEUE_ORIGIN = 'https://queue.fal.run'
@@ -58,12 +63,15 @@ export function toProxyPath(absoluteUrl: string): string {
   }
 }
 
-async function falFetch(path: string, key: string, init?: RequestInit): Promise<Response> {
+async function falFetch(path: string, init?: RequestInit): Promise<Response> {
+  const token = currentAccessToken()
   const response = await fetch(path, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      'x-fal-key': key,
+      // Absent on a build with no Supabase project behind it, where the
+      // function is expected to be running with anonymous access allowed.
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
   })
   if (!response.ok) throw await providerErrorFrom('fal.ai', response)
@@ -73,10 +81,9 @@ async function falFetch(path: string, key: string, init?: RequestInit): Promise<
 export async function submit(
   modelId: string,
   input: Record<string, unknown>,
-  key: string,
   signal?: AbortSignal,
 ): Promise<QueueSubmission> {
-  const response = await falFetch(`${PROXY_BASE}/${modelId}`, key, {
+  const response = await falFetch(`${PROXY_BASE}/${modelId}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(input),
@@ -87,19 +94,14 @@ export async function submit(
 
 export async function checkStatus(
   statusUrl: string,
-  key: string,
   signal?: AbortSignal,
 ): Promise<QueueStatusResponse> {
-  const response = await falFetch(`${toProxyPath(statusUrl)}?logs=1`, key, { signal })
+  const response = await falFetch(`${toProxyPath(statusUrl)}?logs=1`, { signal })
   return (await response.json()) as QueueStatusResponse
 }
 
-export async function fetchResult<T>(
-  responseUrl: string,
-  key: string,
-  signal?: AbortSignal,
-): Promise<T> {
-  const response = await falFetch(toProxyPath(responseUrl), key, { signal })
+export async function fetchResult<T>(responseUrl: string, signal?: AbortSignal): Promise<T> {
+  const response = await falFetch(toProxyPath(responseUrl), { signal })
   return (await response.json()) as T
 }
 
@@ -128,7 +130,6 @@ const sleep = (ms: number, signal?: AbortSignal) =>
   })
 
 export interface RunOptions {
-  key: string
   signal?: AbortSignal
   onProgress?: (progress: GenerationProgress) => void
   /** Give up after this long. Video models can legitimately take minutes. */
@@ -139,12 +140,12 @@ export interface RunOptions {
 export async function run<T>(
   modelId: string,
   input: Record<string, unknown>,
-  { key, signal, onProgress, timeoutMs = 15 * 60 * 1000 }: RunOptions,
+  { signal, onProgress, timeoutMs = 15 * 60 * 1000 }: RunOptions = {},
 ): Promise<T> {
   if (isMockEnabled()) return mockFal<T>(modelId, input, onProgress, signal)
 
   const startedAt = Date.now()
-  const submission = await submit(modelId, input, key, signal)
+  const submission = await submit(modelId, input, signal)
 
   onProgress?.({ status: 'IN_QUEUE', elapsed: 0 })
 
@@ -160,7 +161,7 @@ export async function run<T>(
 
     await sleep(delayForAttempt(attempt), signal)
 
-    const status = await checkStatus(submission.status_url, key, signal)
+    const status = await checkStatus(submission.status_url, signal)
     const lastLog = status.logs?.at(-1)?.message
 
     onProgress?.({
@@ -171,7 +172,7 @@ export async function run<T>(
     })
 
     if (status.status === 'COMPLETED') {
-      return await fetchResult<T>(submission.response_url, key, signal)
+      return await fetchResult<T>(submission.response_url, signal)
     }
   }
 }

@@ -6,22 +6,30 @@ import { GenerationStatus } from './GenerationStatus'
 import { AssetThumb } from './AssetThumb'
 import { Button, Callout, EmptyState, Field, Select, Spinner, TextArea } from './ui'
 import { run, type GenerationProgress, type VideoOutput } from '../lib/falClient'
-import { VIDEO_MODELS, encodeDuration, findVideoModel, formatCost } from '../lib/models'
+import {
+  VIDEO_MODELS,
+  costPerSecondFor,
+  defaultResolutionFor,
+  findVideoModel,
+  formatCost,
+} from '../lib/models'
+import { orientationOf } from '../lib/orientation'
+import { buildVideoInput } from '../lib/videoRequest'
 import { getBlob } from '../lib/db'
 import { imageInputFor, ingestFromUrl } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
-import { hasAccess } from '../lib/mock'
 
 export function VideoPanel() {
-  const falKey = useSettingsStore((state) => state.fal)
   const model = useSettingsStore((state) => state.videoModel)
   const setPref = useSettingsStore((state) => state.setPref)
   const assets = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
   const addClip = useProjectStore((state) => state.addClip)
+  const projectWidth = useProjectStore((state) => state.project.width)
+  const projectHeight = useProjectStore((state) => state.project.height)
 
   const images = useMemo(() => assets.filter((asset) => asset.kind === 'image'), [assets])
 
@@ -50,11 +58,14 @@ export function VideoPanel() {
       : (durations[0] ?? 5)
 
   const resolutions = modelInfo?.resolutions ?? []
-  const resolution = !resolutions.length
-    ? ''
-    : resolutionChoice && resolutions.includes(resolutionChoice)
+  const resolution =
+    resolutionChoice && resolutions.includes(resolutionChoice)
       ? resolutionChoice
-      : (resolutions.at(-1) ?? '')
+      : modelInfo
+        ? defaultResolutionFor(modelInfo)
+        : ''
+
+  const orientation = orientationOf(projectWidth, projectHeight)
 
   // Default to the newest image so the common path is a single click.
   const firstFrameId =
@@ -63,7 +74,7 @@ export function VideoPanel() {
       : (images[0]?.id ?? null)
 
   const firstFrame = images.find((asset) => asset.id === firstFrameId)
-  const estimate = modelInfo ? modelInfo.approxCostPerSecond * duration : null
+  const estimate = modelInfo ? costPerSecondFor(modelInfo, resolution) * duration : null
 
   const generate = async () => {
     if (!firstFrame || !prompt.trim()) return
@@ -80,38 +91,41 @@ export function VideoPanel() {
       }
       const imageUrl = await imageInputFor(firstFrame, blob ?? new Blob())
 
-      const input: Record<string, unknown> = {
-        prompt: prompt.trim(),
-        image_url: imageUrl,
-        duration: encodeDuration(duration, modelInfo?.durationFormat ?? 'number'),
-      }
-
-      if (resolution) input.resolution = resolution
-
+      let endImageUrl: string | undefined
       if (modelInfo?.supportsEndFrame && lastFrameId) {
         const endAsset = images.find((asset) => asset.id === lastFrameId)
         if (endAsset) {
           const endBlob = await getBlob(endAsset.blobKey)
-          input.end_image_url = await imageInputFor(endAsset, endBlob ?? new Blob())
+          endImageUrl = await imageInputFor(endAsset, endBlob ?? new Blob())
         }
       }
 
+      let extra: Record<string, unknown> | undefined
       if (extraJson.trim()) {
-        let extra: unknown
+        let parsed: unknown
         try {
-          extra = JSON.parse(extraJson)
+          parsed = JSON.parse(extraJson)
         } catch {
           throw new Error('The extra parameters box does not contain valid JSON.')
         }
-        if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
-          Object.assign(input, extra)
-        } else {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
           throw new Error('Extra parameters must be a JSON object, for example {"seed": 42}.')
         }
+        extra = parsed as Record<string, unknown>
       }
 
+      const input = buildVideoInput({
+        model: modelInfo,
+        prompt: prompt.trim(),
+        imageUrl,
+        endImageUrl,
+        duration,
+        resolution,
+        orientation,
+        extra,
+      })
+
       const output = await run<VideoOutput>(model, input, {
-        key: falKey,
         signal: controller.signal,
         onProgress: setProgress,
       })
@@ -138,7 +152,6 @@ export function VideoPanel() {
   }
 
   const busy = progress !== null
-  const missingKey = !hasAccess(falKey)
 
   if (images.length === 0) {
     return (
@@ -151,12 +164,6 @@ export function VideoPanel() {
 
   return (
     <div className="flex flex-col gap-4">
-      {missingKey ? (
-        <Callout tone="warn" title="Add your fal.ai key">
-          Open Settings to add it before generating.
-        </Callout>
-      ) : null}
-
       <Field label="First frame" hint="The clip starts from this image.">
         <div className="grid grid-cols-4 gap-2">
           {images.slice(0, 12).map((asset) => (
@@ -263,11 +270,7 @@ export function VideoPanel() {
         <GenerationStatus progress={progress} onCancel={() => abortRef.current?.abort()} />
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="primary"
-            onClick={generate}
-            disabled={missingKey || !prompt.trim() || !firstFrame}
-          >
+          <Button variant="primary" onClick={generate} disabled={!prompt.trim() || !firstFrame}>
             {busy ? <Spinner /> : <span aria-hidden>🎬</span>}
             Generate video
           </Button>
