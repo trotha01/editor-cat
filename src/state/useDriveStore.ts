@@ -20,6 +20,7 @@ import {
   connect as gisConnect,
   disconnect as gisDisconnect,
   accessToken,
+  invalidateToken,
   isDriveConfigured,
   isDurableConnection,
   loadConnectionStatus,
@@ -73,6 +74,11 @@ interface DriveState {
   adopt: (code: string) => Promise<void>
   connect: () => Promise<void>
   disconnect: () => Promise<void>
+  /**
+   * Drops this browser's Drive state on sign-out, leaving the stored connection
+   * alone — it belongs to the account, and signing back in resumes it.
+   */
+  forget: () => void
   setFolder: (folder: DriveFolder | null) => void
   clearError: () => void
 
@@ -217,6 +223,24 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     persistFolder(null)
     persistLinked(false)
     set({ status: 'disconnected', account: null, folder: null, error: null, uploads: [] })
+  },
+
+  forget: () => {
+    // The access token has to go, or the next account to sign in on this
+    // browser inherits the last one's Drive for as long as it stays valid.
+    invalidateToken()
+    // The folder goes with it for the same reason: it is an id in someone
+    // else's Drive, and uploading into it would fail in a way nobody could read.
+    persistFolder(null)
+    persistLinked(false)
+    set({
+      status: isDriveConfigured() ? 'disconnected' : 'unconfigured',
+      account: null,
+      folder: null,
+      error: null,
+      uploads: [],
+      durable: null,
+    })
   },
 
   setFolder: (folder) => {

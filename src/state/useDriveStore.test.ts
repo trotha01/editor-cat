@@ -9,6 +9,7 @@ const accessToken = vi.fn()
 const loadConnectionStatus = vi.fn<() => Promise<{ durable: boolean; connected: boolean }>>()
 const isDurableConnection = vi.fn<() => boolean | null>(() => null)
 const adoptConnection = vi.fn()
+const invalidateToken = vi.fn()
 
 class FakeNeedsConsentError extends Error {}
 
@@ -17,6 +18,7 @@ vi.mock('../lib/google/gis', () => ({
   connect: (...args: unknown[]) => connect(...args) as unknown,
   disconnect: (...args: unknown[]) => disconnect(...args) as unknown,
   accessToken: (...args: unknown[]) => accessToken(...args) as unknown,
+  invalidateToken: () => invalidateToken(),
   isDriveConfigured: () => true,
   isDurableConnection: () => isDurableConnection(),
   loadConnectionStatus: () => loadConnectionStatus(),
@@ -225,6 +227,35 @@ describe('connect', () => {
     await useDriveStore.getState().connect()
 
     expect(useDriveStore.getState().durable).toBe(false)
+  })
+})
+
+describe('forget', () => {
+  it('clears this browser without revoking the connection the account owns', () => {
+    useDriveStore.getState().setFolder({ id: 'folder_2', name: 'B-roll' })
+    useDriveStore.setState({ status: 'connected', account: { email: 'a@b.c', name: 'A' } })
+
+    useDriveStore.getState().forget()
+
+    // Signing back in should resume Drive, so the stored connection stays put —
+    // unlike `disconnect`, which is the user asking for it to be gone.
+    expect(disconnect).not.toHaveBeenCalled()
+    expect(invalidateToken).toHaveBeenCalled()
+    expect(useDriveStore.getState().status).toBe('disconnected')
+    expect(useDriveStore.getState().account).toBeNull()
+  })
+
+  it('drops the folder, which is an id in the previous account’s Drive', () => {
+    useDriveStore.getState().setFolder({ id: 'folder_2', name: 'B-roll' })
+    window.localStorage.setItem('editor-cat.drive.linked.v1', '1')
+
+    useDriveStore.getState().forget()
+
+    // Left behind, the next person to sign in on this browser would have media
+    // uploaded into a folder they cannot reach.
+    expect(useDriveStore.getState().folder).toBeNull()
+    expect(window.localStorage.getItem('editor-cat.drive.folder.v1')).toBeNull()
+    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBeNull()
   })
 })
 

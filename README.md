@@ -144,7 +144,13 @@ subfolders to bring existing media in.
 Until a folder is chosen, nothing is backed up: Settings says so, and clearing
 the folder again is how you stop. Declining the Drive permission on Google's own
 consent screen still signs you in — Settings then offers to ask for it on its
-own.
+own, which is also the way back if you signed in before this site started asking
+for both together.
+
+**Signing out** is in Settings, under Account. It leaves your projects and your
+media where they are and clears this browser: the Google permission held in
+memory, and the folder new media was being saved into. Signing back in restores
+the Drive connection, because it belongs to the account rather than the browser.
 
 The bytes stay in IndexedDB either way; Drive is the durable copy, not the
 playback source. Drive has no URL that carries our token _and_ serves range
