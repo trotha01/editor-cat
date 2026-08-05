@@ -1,0 +1,100 @@
+name: Rebuild staging
+
+# `staging` is a disposable integration branch: main, plus every open PR merged
+# on top. It is never merged *from* and never incrementally updated — each run
+# throws the previous one away and rebuilds from scratch, so a PR that closes,
+# lands, or gains a commit is reflected by construction rather than by trying to
+# reconcile whatever was there before.
+#
+# Consequence worth knowing: this branch is force-pushed by a bot. Do not commit
+# to it or base work on it; anything you put there is gone on the next run.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main]
+  # Lets you rebuild by hand after resolving a conflict on a PR branch.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+# One rebuild at a time, newest wins. Cancelling mid-run is safe: every run
+# recomputes the whole branch from current state, so the survivor produces the
+# same result the cancelled one would have.
+concurrency:
+  group: staging
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    # A PR from a fork gets a read-only token, so the push would fail at the
+    # very end after doing all the work. Skip those outright.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild staging from main plus every open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "staging-bot"
+          git config user.email "staging-bot@users.noreply.github.com"
+
+          # --limit is not optional: gh defaults to 30 and would silently drop
+          # every PR past that. Sorted by number so merge order — and therefore
+          # which side of a conflict is the one that loses — is reproducible.
+          prs="$(gh pr list --state open --base main --limit 200 \
+                   --json number -q '.[].number' | sort -n)"
+
+          git checkout -B staging origin/main
+          base="$(git rev-parse --short HEAD)"
+
+          merged=""
+          skipped=""
+
+          for n in $prs; do
+            # Fetched one at a time rather than globbing refs/pull/*: that form
+            # pulls down every PR the repo has ever had, closed ones included.
+            git fetch --no-tags origin "refs/pull/$n/head:refs/remotes/pr/$n"
+
+            if git merge --no-ff -m "staging: merge PR #$n" "refs/remotes/pr/$n"; then
+              merged="$merged $n"
+            else
+              # `|| true` because aborting a merge that never began is itself an
+              # error, and `set -e` would take the whole job down with it.
+              git merge --abort || true
+              skipped="$skipped $n"
+              echo "::warning::PR #$n conflicts with staging and was left out"
+            fi
+          done
+
+          git push --force origin staging
+
+          {
+            echo "### staging rebuilt"
+            echo
+            echo "Base: \`main\` @ \`$base\`"
+            echo
+            if [ -n "$merged" ]; then
+              echo "**Merged**"
+              for n in $merged; do echo "- #$n"; done
+            else
+              echo "_No open PRs — staging is a copy of main._"
+            fi
+            if [ -n "$skipped" ]; then
+              echo
+              echo "**Skipped (conflicts)**"
+              for n in $skipped; do echo "- #$n"; done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

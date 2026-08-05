@@ -18,7 +18,6 @@ import { useAssetStore } from './state/useAssetStore'
 import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
 import { installFlushOnExit, useProjectsStore } from './state/useProjectsStore'
-import { useSettingsStore } from './state/useSettingsStore'
 import { setIngestListener } from './lib/media'
 import { recordAsset } from './lib/sync/assetSync'
 import { isMockEnabled } from './lib/mock'
@@ -34,11 +33,7 @@ type TabId = (typeof TABS)[number]['id']
 
 export default function App() {
   const [tab, setTab] = useState<TabId>('image')
-  // Open Settings straight away on a first visit: without a key there is
-  // nothing else the app can usefully do.
-  const [settingsOpen, setSettingsOpen] = useState(
-    () => !isMockEnabled() && useSettingsStore.getState().fal.trim().length === 0,
-  )
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
 
   const loadAssets = useAssetStore((state) => state.load)
