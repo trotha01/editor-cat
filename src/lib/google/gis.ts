@@ -46,7 +46,11 @@ export class NeedsConsentError extends Error {
 
 let scriptPromise: Promise<void> | null = null
 
-function loadScript(): Promise<void> {
+/**
+ * Loads the GIS script once, shared by both halves of it: the token client here
+ * (Drive authorisation) and the credential client in identity.ts (sign-in).
+ */
+export function loadGisScript(): Promise<void> {
   scriptPromise ??= new Promise<void>((resolve, reject) => {
     if (typeof document === 'undefined') {
       reject(new Error('Google sign-in is only available in a browser.'))
@@ -161,7 +165,7 @@ async function client(): Promise<google.accounts.oauth2.TokenClient> {
     )
   }
 
-  await loadScript()
+  await loadGisScript()
 
   tokenClient ??= google.accounts.oauth2.initTokenClient({
     client_id: id,
@@ -272,7 +276,7 @@ export async function disconnect(): Promise<void> {
   if (!current) return
 
   try {
-    await loadScript()
+    await loadGisScript()
     await new Promise<void>((resolve) => {
       google.accounts.oauth2.revoke(current, () => resolve())
     })

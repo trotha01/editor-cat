@@ -16,6 +16,7 @@ import {
 } from '../lib/google/gis'
 import { currentUser, DriveError, uploadFile, type DriveFolder } from '../lib/google/drive'
 import { toDisplayMessage } from '../lib/errors'
+import { recordAsset } from '../lib/sync/assetSync'
 import { useAssetStore } from './useAssetStore'
 import type { Asset } from '../lib/types'
 
@@ -162,6 +163,11 @@ export const useDriveStore = create<DriveState>((set, get) => ({
         // carries one is never uploaded again. The dependency only points this
         // way — the asset store knows nothing about Drive.
         await useAssetStore.getState().update(asset.id, { driveFileId: file.id })
+
+        // Second catalogue write. The first one, at ingest, had no Drive id to
+        // record — and that id is the only thing that makes these bytes
+        // recoverable on another machine.
+        void recordAsset({ ...asset, driveFileId: file.id }, blob.size)
 
         set((state) => ({
           uploads: state.uploads.filter((entry) => entry.assetId !== asset.id),

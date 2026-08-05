@@ -6,6 +6,7 @@
  * would add tens of megabytes to a browser bundle to cover five calls.
  */
 import { accessToken, invalidateToken } from './gis'
+import { mapLimited } from '../concurrency'
 import type { AssetKind } from '../types'
 
 const API = 'https://www.googleapis.com/drive/v3'
@@ -159,34 +160,6 @@ async function driveFetch(url: string, init: RequestInit = {}, attempt = 0): Pro
 
   if (!response.ok) throw await driveErrorFrom(response)
   return response
-}
-
-/**
- * Runs tasks a few at a time.
- *
- * Drive throttles per user, so firing one request per folder at a wide tree is
- * a reliable way to earn a 403. The limit costs a little latency and buys a
- * walk that finishes.
- */
-async function mapLimited<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array<R>(items.length)
-  let next = 0
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++
-      const item = items[index]
-      if (item === undefined) continue
-      results[index] = await fn(item)
-    }
-  })
-
-  await Promise.all(workers)
-  return results
 }
 
 async function driveErrorFrom(response: Response): Promise<DriveError> {

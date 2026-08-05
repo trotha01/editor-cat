@@ -44,7 +44,9 @@ function DriveBrowser({ onClose }: { onClose: () => void }) {
   const assets = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
 
-  const [kinds, setKinds] = useState<AssetKind[]>(['image'])
+  // Everything on by default: the editor uses all three, and an empty-looking
+  // folder is a worse first impression than a list you narrow down.
+  const [kinds, setKinds] = useState<AssetKind[]>(['image', 'video', 'audio'])
   const [result, setResult] = useState<Loaded<DriveFile[]> | null>(null)
   const [error, setError] = useState<Loaded<string> | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())

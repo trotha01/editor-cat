@@ -116,6 +116,23 @@ export interface Project {
   voiceovers?: LegacyVoiceoverTake[]
 }
 
+/**
+ * The part of a project that gets stored as one value.
+ *
+ * `id` and `name` are columns of their own so the project list can be rendered
+ * without pulling every timeline down with it.
+ */
+export type ProjectDoc = Omit<Project, 'id' | 'name' | 'voiceovers'>
+
+/**
+ * The shape version written alongside a stored document.
+ *
+ * 1 was the flat `voiceovers` list; 2 is multitrack audio. Recorded explicitly
+ * so `migrateProject` upgrades from a known version rather than inferring one
+ * from the shape.
+ */
+export const SCHEMA_VERSION = 2
+
 /** A clip with its resolved timeline position. Produced by `layoutClips`. */
 export interface PositionedClip {
   clip: Clip

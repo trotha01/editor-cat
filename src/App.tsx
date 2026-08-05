@@ -9,13 +9,18 @@ import { Transport } from './components/Transport'
 import { SettingsDialog } from './components/SettingsDialog'
 import { ExportDialog } from './components/ExportDialog'
 import { DriveUploads } from './components/DriveUploads'
+import { HydrationStatus } from './components/HydrationStatus'
+import { ProjectPicker } from './components/ProjectPicker'
+import { SyncStatus } from './components/SyncStatus'
 import { Button } from './components/ui'
 import { usePlayback } from './hooks/usePlayback'
 import { useAssetStore } from './state/useAssetStore'
 import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
+import { installFlushOnExit, useProjectsStore } from './state/useProjectsStore'
 import { useSettingsStore } from './state/useSettingsStore'
 import { setIngestListener } from './lib/media'
+import { recordAsset } from './lib/sync/assetSync'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
@@ -37,26 +42,31 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false)
 
   const loadAssets = useAssetStore((state) => state.load)
-  const loadProject = useProjectStore((state) => state.load)
-  const project = useProjectStore((state) => state.project)
-  const rename = useProjectStore((state) => state.rename)
   const duration = useProjectStore((state) => state.duration())
+  const clipCount = useProjectStore((state) => state.project.clips.length)
 
   const playback = usePlayback(duration)
 
   useEffect(() => {
     void loadAssets()
-    void loadProject()
+    // Loads the project list and opens one, or falls back to the single local
+    // project when there is no account behind this build.
+    void useProjectsStore.getState().start()
     // Resumes a previous Drive session without prompting. It is a no-op until
     // the user has picked a folder, so a first visit never sees Google.
     void useDriveStore.getState().restore()
-  }, [loadAssets, loadProject])
+
+    return installFlushOnExit()
+  }, [loadAssets])
 
   useEffect(() => {
-    // Every panel reaches Drive through this one hook, so generated images,
-    // rendered clips, recordings and manual uploads all get backed up without
-    // each of them knowing Drive exists.
-    setIngestListener((asset, blob) => useDriveStore.getState().uploadAsset(asset, blob))
+    // Every panel reaches durable storage through this one hook, so generated
+    // images, rendered clips, recordings and manual uploads are all backed up
+    // and catalogued without any of them knowing Drive or Supabase exist.
+    setIngestListener((asset, blob) => {
+      useDriveStore.getState().uploadAsset(asset, blob)
+      void recordAsset(asset, blob.size)
+    })
     return () => setIngestListener(null)
   }, [])
 
@@ -68,12 +78,9 @@ export default function App() {
         </span>
         <h1 className="text-sm font-semibold">editor-cat</h1>
 
-        <input
-          value={project.name}
-          onChange={(event) => rename(event.target.value)}
-          aria-label="Project name"
-          className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm hover:border-line focus:border-accent focus:outline-none"
-        />
+        <ProjectPicker />
+
+        <SyncStatus />
 
         {isMockEnabled() ? (
           <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-xs text-amber-200">
@@ -84,11 +91,7 @@ export default function App() {
         <Button onClick={() => setSettingsOpen(true)}>
           <span aria-hidden>⚙️</span> Settings
         </Button>
-        <Button
-          variant="primary"
-          onClick={() => setExportOpen(true)}
-          disabled={project.clips.length === 0}
-        >
+        <Button variant="primary" onClick={() => setExportOpen(true)} disabled={clipCount === 0}>
           <span aria-hidden>⬇️</span> Export
         </Button>
       </header>
@@ -114,6 +117,8 @@ export default function App() {
               </button>
             ))}
           </nav>
+
+          <HydrationStatus />
 
           {/* Outside the tab panel: a backup started from the Image tab must
               still be able to report a failure once you have moved on. */}

@@ -26,6 +26,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
+    "@supabase/supabase-js": "^2.112.0",
     "idb": "^8.0.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

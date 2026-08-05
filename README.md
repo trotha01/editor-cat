@@ -61,6 +61,52 @@ The media it produces is real — images are drawn on a canvas and videos are
 recorded off an animated one — so the timeline, preview and export all get a
 genuine workout. This is also what the end-to-end test drives.
 
+## Saving projects (optional)
+
+With a Supabase project configured, the app asks you to sign in with Google and
+then keeps your timelines in your account: a project switcher in the header,
+auto-save about two seconds after you stop editing, and projects that open on
+any machine you sign in from.
+
+**What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
+placement, resolution — and a catalogue of asset metadata. It never holds media
+bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
+Opening a project on a new machine restores the timeline from metadata
+immediately, so you can rearrange it while the media is still coming down from
+Drive behind you.
+
+**Media that predates Drive cannot be recovered on another machine.** An asset
+with no `driveFileId` only ever existed in the browser that made it; those clips
+open with their timing intact and report as unrecoverable.
+
+Leave `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` unset and the app behaves
+exactly as it did before: one project, IndexedDB, no sign-in.
+
+### Setting it up
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. Run `supabase/migrations/0001_projects.sql` — paste it into the dashboard's
+   **SQL editor**, or `supabase db push` with the CLI. It creates two tables and
+   turns on row-level security, so a user can only ever read and write rows on
+   their own account.
+3. **Authentication → Providers → Google → Enable**, and paste the _same_ Google
+   client ID from the Drive setup above into **Authorized Client IDs**. No
+   client secret is needed: the page hands Supabase a Google ID token directly
+   rather than going through a redirect.
+4. Copy the project URL and anon key from **Project settings → API** into `.env`
+   (and into Netlify's environment variables), then redeploy.
+
+The client ID must match in both places. If it does not, sign-in fails with
+"Unacceptable audience" — the app rewrites that message to say so, because the
+raw error points at nothing.
+
+### Conflicts
+
+Each project row carries a version. A write only lands if the version still
+matches what this session last saw, so editing the same project in two tabs
+shows "Changed elsewhere" rather than one tab silently overwriting the other.
+Resolution is a reload — merging two timelines has no sensible automatic answer.
+
 ## Saving to your own Google Drive (optional)
 
 Connect a Google account in **Settings** and pick a folder. From then on
@@ -145,7 +191,8 @@ Browser (React + TypeScript + Tailwind)      Netlify Functions (stateless pass-t
   Generate  — images, then image → video        /api/elevenlabs/* → api.elevenlabs.io
   Library   — blobs in IndexedDB                /api/media        → streams provider media
   Timeline  — one picture track + N audio tracks
-  Drive     — optional backup, browser → Google (no server involved)
+  Projects  — timelines in Supabase (no media)  Both talk to the browser directly;
+  Drive     — media in your own Drive           neither goes through our functions.
   Preview   — custom player over <video>        The caller's key is forwarded once and
   Export    — ffmpeg.wasm → MP4                 never stored, logged, or reused.
 ```
@@ -167,9 +214,23 @@ into IndexedDB and everything afterwards works from `blob:` URLs. That is what
 makes the project survive a refresh and keeps export free of CORS surprises.
 
 **One hook backs everything up.** Every panel already funnels new media through
-`ingestBlob`, so Drive attaches to that single point (`setIngestListener` in
-`src/lib/media.ts`) instead of to each generate button. Nothing in the ingest
-path knows Google exists, which is also what keeps it testable.
+`ingestBlob`, so Drive and the asset catalogue both attach to that single point
+(`setIngestListener` in `src/lib/media.ts`) instead of to each generate button.
+Nothing in the ingest path knows Google or Supabase exists, which is also what
+keeps it testable.
+
+**Local first, cloud second.** Every edit still writes to IndexedDB
+synchronously, exactly as before; the Supabase push is a debounced follow-up.
+That ordering is deliberate — the editor never waits on a network round trip,
+and a dropped connection costs you sync, not work. The scheduler that does it
+(`src/lib/sync/scheduler.ts`) is pure and tested directly, because its awkward
+case — an edit made _while_ a save is in flight — is exactly the kind of bug
+that only ever shows up as "my last change sometimes vanished".
+
+**The timeline stores ids, not files.** A project document references assets by
+id; the assets table maps those to Drive file ids. That indirection is what lets
+a timeline be a few kilobytes and still describe hundreds of megabytes of media
+well enough to rebuild it anywhere.
 
 **Drive tokens are never stored.** The browser token flow issues no refresh
 token on purpose — a long-lived Google credential in a static site's local
