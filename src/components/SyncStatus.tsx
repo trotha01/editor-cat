@@ -16,7 +16,7 @@ export function SyncStatus() {
 
   if (status === 'conflict') {
     return (
-      <span className="flex items-center gap-2 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs text-amber-100">
+      <span className="flex items-center gap-2 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs text-amber-800">
         <span aria-hidden>⚠️</span>
         Changed elsewhere
         <Button
@@ -33,7 +33,7 @@ export function SyncStatus() {
   if (status === 'error') {
     return (
       <span
-        className="rounded-full bg-red-500/15 px-2.5 py-1 text-xs text-red-100"
+        className="rounded-full bg-red-500/15 px-2.5 py-1 text-xs text-red-800"
         title={error ?? undefined}
       >
         <span aria-hidden>⚠️</span> Not saved

@@ -66,9 +66,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     state === 'testing' ? (
       <Spinner />
     ) : state === 'ok' ? (
-      <span className="text-xs text-emerald-300">✓ working</span>
+      <span className="text-xs text-emerald-700">✓ working</span>
     ) : state === 'fail' ? (
-      <span className="text-xs text-red-300">✕ failed</span>
+      <span className="text-xs text-red-700">✕ failed</span>
     ) : null
 
   return (

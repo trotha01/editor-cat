@@ -153,8 +153,8 @@ function ClipChip({
 }) {
   const isVoice = track.kind === 'voice'
   const tone = isVoice
-    ? 'border-emerald-500/45 bg-emerald-500/25 text-emerald-50'
-    : 'border-violet-500/45 bg-violet-500/25 text-violet-50'
+    ? 'border-emerald-600/40 bg-emerald-500/15 text-emerald-900'
+    : 'border-violet-600/40 bg-violet-500/15 text-violet-900'
 
   const label = clip.label ?? (clip.useConverted ? (clip.voiceName ?? 'Converted') : 'Your voice')
 
@@ -169,7 +169,7 @@ function ClipChip({
       style={{ left: clip.startTime * zoom, width: Math.max(30, clip.duration * zoom) }}
       className={`group/chip absolute top-1 bottom-1 flex cursor-grab items-center gap-1 overflow-hidden rounded border px-2 text-[11px] transition-shadow active:cursor-grabbing ${tone} ${
         selected ? 'ring-2 ring-accent' : ''
-      } ${blocked ? 'ring-2 ring-red-400' : ''} ${track.muted ? 'opacity-40' : ''}`}
+      } ${blocked ? 'ring-2 ring-red-500' : ''} ${track.muted ? 'opacity-40' : ''}`}
       title={
         blocked
           ? 'There is already a clip here — drop it somewhere with room.'

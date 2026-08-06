@@ -111,13 +111,15 @@ function ClipCard({
         {asset ? (
           <AssetThumb asset={asset} className="size-full rounded-none border-0" />
         ) : (
-          <span className="flex size-full items-center justify-center text-xs text-red-300">
+          <span className="flex size-full items-center justify-center text-xs text-red-700">
             media missing
           </span>
         )}
       </button>
 
-      <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-0.5 text-[10px] text-ink">
+      {/* Sits on top of the thumbnail, so this pair stays white-on-scrim
+          rather than following the theme — the media below can be any colour. */}
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
         {formatTime(entry.duration)}
       </span>
 
@@ -165,7 +167,7 @@ function ClipCard({
         type="button"
         onClick={onRemove}
         aria-label="Remove clip from the timeline"
-        className="absolute top-1 right-1 hidden size-5 items-center justify-center rounded bg-black/70 text-xs text-ink group-hover:flex"
+        className="absolute top-1 right-1 hidden size-5 items-center justify-center rounded bg-black/70 text-xs text-white group-hover:flex"
       >
         ✕
       </button>
@@ -335,7 +337,7 @@ export function Timeline({
             {contentWidth > 0 ? (
               <div
                 aria-hidden
-                className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-red-400"
+                className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-red-500"
                 style={{ left: playheadX }}
               />
             ) : null}

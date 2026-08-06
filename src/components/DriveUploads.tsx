@@ -54,7 +54,7 @@ export function DriveUploads() {
             </div>
 
             {job.error ? (
-              <p className="mt-1 text-red-100">Not backed up — {job.error}</p>
+              <p className="mt-1 text-red-700">Not backed up — {job.error}</p>
             ) : (
               <div
                 className="mt-1.5 h-1 overflow-hidden rounded-full bg-surface-2"

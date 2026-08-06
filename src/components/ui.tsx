@@ -15,7 +15,7 @@ const VARIANTS: Record<Variant, string> = {
   primary: 'bg-accent text-accent-ink hover:brightness-110 disabled:hover:brightness-100',
   secondary: 'bg-surface-2 text-ink hover:bg-line disabled:hover:bg-surface-2',
   ghost: 'bg-transparent text-ink-dim hover:text-ink hover:bg-surface-2',
-  danger: 'bg-red-500/15 text-red-300 hover:bg-red-500/25',
+  danger: 'bg-red-500/10 text-red-700 hover:bg-red-500/20',
 }
 
 export function Button({
@@ -57,7 +57,7 @@ export function Field({
 }
 
 const CONTROL =
-  'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-dim/60 focus:border-accent focus:outline-none disabled:opacity-50'
+  'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-dim/75 focus:border-accent focus:outline-none disabled:opacity-50'
 
 export function TextInput({ className = '', ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={`${CONTROL} ${className}`} />
@@ -85,9 +85,9 @@ export function Callout({
 }) {
   const tones = {
     info: 'border-accent/30 bg-accent/10 text-ink',
-    warn: 'border-amber-500/30 bg-amber-500/10 text-amber-100',
-    error: 'border-red-500/35 bg-red-500/10 text-red-100',
-    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100',
+    warn: 'border-amber-500/40 bg-amber-500/10 text-amber-800',
+    error: 'border-red-500/40 bg-red-500/10 text-red-800',
+    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800',
   }
   return (
     <div
@@ -143,7 +143,7 @@ export function Modal({
         event.preventDefault()
         onClose()
       }}
-      className={`m-auto w-[calc(100vw-2rem)] rounded-xl border border-line bg-surface p-0 text-ink backdrop:bg-black/60 ${
+      className={`m-auto w-[calc(100vw-2rem)] rounded-xl border border-line bg-surface p-0 text-ink shadow-xl backdrop:bg-black/40 ${
         wide ? 'max-w-3xl' : 'max-w-lg'
       }`}
     >

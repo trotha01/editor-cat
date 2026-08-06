@@ -146,7 +146,7 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
   return (
     <div className="flex flex-col gap-2">
       <div
-        className="relative w-full overflow-hidden rounded-xl border border-line bg-black"
+        className="relative w-full overflow-hidden rounded-xl border border-line bg-surface-2"
         style={{ aspectRatio: aspect }}
       >
         {project.clips.length === 0 ? (
@@ -175,7 +175,7 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
         )}
 
         {active === null && project.clips.length > 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-black">
+          <div className="absolute inset-0 flex items-center justify-center bg-surface-2">
             <p className="text-sm text-ink-dim">End of timeline</p>
           </div>
         ) : null}

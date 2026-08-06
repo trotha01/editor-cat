@@ -391,6 +391,9 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
  *
  * Ours rather than `google.accounts.id.renderButton`, because that button is
  * welded to the identity-only flow and cannot ask for Drive.
+ *
+ * The literal colours are Google's light-theme values, which their terms fix —
+ * they are not ours to pull from the theme.
  */
 function GoogleButton({
   onClick,
@@ -406,7 +409,7 @@ function GoogleButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex h-10 items-center gap-3 rounded-full border border-[#8e918f] bg-[#131314] pl-3 pr-4 text-sm font-medium text-[#e3e3e3] transition hover:bg-[#1c1c1d] disabled:opacity-50"
+      className="flex h-10 items-center gap-3 rounded-full border border-[#747775] bg-white pl-3 pr-4 text-sm font-medium text-[#1f1f1f] transition hover:bg-[#f2f2f2] disabled:opacity-50"
     >
       <GoogleMark />
       {label}

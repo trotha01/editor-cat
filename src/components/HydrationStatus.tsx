@@ -16,7 +16,7 @@ export function HydrationStatus() {
       {hydration.done} of {hydration.total} restored from Google Drive. You can arrange the timeline
       now — clips will play as their files arrive.
       {hydration.failures.length > 0 ? (
-        <span className="mt-1 block text-amber-200">
+        <span className="mt-1 block text-amber-800">
           {hydration.failures.length} could not be recovered:{' '}
           {hydration.failures.slice(0, 2).join(', ')}
           {hydration.failures.length > 2 ? '…' : ''}

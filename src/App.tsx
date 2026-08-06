@@ -76,7 +76,7 @@ export default function App() {
         <SyncStatus />
 
         {isMockEnabled() ? (
-          <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-xs text-amber-200">
+          <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-xs text-amber-800">
             mock mode
           </span>
         ) : null}
