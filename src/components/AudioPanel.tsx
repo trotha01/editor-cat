@@ -140,7 +140,7 @@ export function AudioPanel({
               <span className="text-sm tabular-nums">{recorder.elapsed.toFixed(1)}s</span>
               <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-2">
                 <div
-                  className="h-full bg-emerald-400 transition-[width] duration-75"
+                  className="h-full bg-emerald-500 transition-[width] duration-75"
                   style={{ width: `${Math.min(100, recorder.level * 140)}%` }}
                 />
               </div>

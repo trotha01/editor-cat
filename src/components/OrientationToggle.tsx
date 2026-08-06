@@ -40,7 +40,7 @@ export function OrientationToggle() {
               aria-checked={selected}
               title={option.hint}
               className={`px-3 py-1.5 text-xs transition-colors ${
-                selected ? 'bg-accent text-white' : 'bg-surface text-ink-dim hover:text-ink'
+                selected ? 'bg-accent text-accent-ink' : 'bg-surface text-ink-dim hover:text-ink'
               }`}
               onClick={() => {
                 // Re-orienting rather than swapping keeps whichever size tier

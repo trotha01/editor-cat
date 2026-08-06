@@ -1,20 +1,26 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-canvas: oklch(0.16 0.012 265);
-  --color-surface: oklch(0.21 0.014 265);
-  --color-surface-2: oklch(0.26 0.016 265);
-  --color-line: oklch(0.32 0.018 265);
-  --color-ink: oklch(0.97 0.005 265);
-  --color-ink-dim: oklch(0.72 0.015 265);
-  --color-accent: oklch(0.72 0.16 250);
-  --color-accent-ink: oklch(0.18 0.03 250);
+  --color-canvas: oklch(1 0 0);
+  --color-surface: oklch(0.98 0.004 265);
+  --color-surface-2: oklch(0.95 0.007 265);
+  --color-line: oklch(0.87 0.012 265);
+  --color-ink: oklch(0.22 0.015 265);
+  --color-ink-dim: oklch(0.5 0.02 265);
+  --color-accent: oklch(0.53 0.17 258);
+  --color-accent-ink: oklch(0.99 0.005 258);
 }
 
 html,
 body,
 #root {
   height: 100%;
+}
+
+/* Native widgets — scrollbars, the file picker, form control internals — pick
+   their own palette from this, so state it rather than leaving it to the OS. */
+html {
+  color-scheme: light;
 }
 
 body {
