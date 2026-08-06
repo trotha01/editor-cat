@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { SignInGate } from './components/SignInGate'
 import { completeOauthCallback, isOauthCallback } from './lib/google/oauthCallback'
+import { installVersionGlobal } from './lib/version'
 import './index.css'
 
 function mount(): void {
@@ -19,6 +20,11 @@ function mount(): void {
     </StrictMode>,
   )
 }
+
+// Before anything that can fail, and before the gate decides whether to let
+// anyone in: whoever is debugging a deployment needs `VERSION` to answer even on
+// a screen that is refusing them entry.
+installVersionGlobal()
 
 // Google's consent pop-up lands back on this origin, and the SPA fallback serves
 // it as this app. That window exists for a few milliseconds, so it hands the

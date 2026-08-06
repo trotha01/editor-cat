@@ -31,3 +31,14 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+/** Substituted by Vite at build time. See `define` in vite.config.ts. */
+declare const __BUILD__: import('./lib/version').Build
+
+interface Window {
+  /**
+   * The deployed build, so `VERSION` in the browser console answers "which
+   * commit is this?" without leaving the page. See src/lib/version.ts.
+   */
+  VERSION: import('./lib/version').Build
+}

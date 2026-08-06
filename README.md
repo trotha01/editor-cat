@@ -130,6 +130,23 @@ The client ID must match in both places. If it does not, sign-in fails with
 "Unacceptable audience" — the app rewrites that message to say so, because the
 raw error points at nothing.
 
+### Which build is deployed
+
+Type **`VERSION`** in the browser console on any deployed site:
+
+```js
+VERSION
+// { commit: "91d8e38…", short: "91d8e38", branch: "staging",
+//   context: "branch-deploy", builtAt: "2026-08-06T22:24:11.368Z" }
+```
+
+Stamped in at build time from Netlify's own `COMMIT_REF`, `BRANCH` and
+`CONTEXT`, falling back to git for a local `npm run build`. It is set before
+anything else runs, so it answers even on a screen that is refusing to let you
+in — which is usually when you need it. The `branch` is the field that matters
+most: a branch deploy running code older than the branch you fixed it on looks
+identical to a bug from the outside.
+
 ### Conflicts
 
 Each project row carries a version. A write only lands if the version still
