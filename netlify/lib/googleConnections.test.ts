@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { deleteConnection, readConnection, storeConfig, writeConnection } from './googleConnections'
+import {
+  deleteConnection,
+  MissingTableError,
+  readConnection,
+  storeConfig,
+  writeConnection,
+} from './googleConnections'
 
 const config = { url: 'https://project.supabase.co', serviceKey: 'service-role-key' }
 
@@ -92,6 +98,58 @@ describe('readConnection', () => {
     // button to someone who is already connected, and re-prompt them for consent.
     const { impl } = serve(500, { message: 'boom' })
     await expect(readConnection('user_42', config, impl)).rejects.toThrow(/Could not read/)
+  })
+
+  /**
+   * Told apart from every other failure because it is the only one an operator
+   * can act on, and because the site's advice differs completely: "run the
+   * migration" versus "try again in a minute".
+   */
+  describe('when the table is not there', () => {
+    it('recognises Postgres saying the relation does not exist', async () => {
+      const { impl } = serve(404, {
+        code: '42P01',
+        message: 'relation "public.google_connections" does not exist',
+      })
+
+      await expect(readConnection('user_42', config, impl)).rejects.toBeInstanceOf(
+        MissingTableError,
+      )
+    })
+
+    it('recognises PostgREST not finding it in the schema cache', async () => {
+      // What a freshly created table looks like until the cache reloads, and
+      // what an unexposed one looks like permanently.
+      const { impl } = serve(404, {
+        code: 'PGRST205',
+        message: "Could not find the table 'public.google_connections' in the schema cache",
+      })
+
+      await expect(readConnection('user_42', config, impl)).rejects.toBeInstanceOf(
+        MissingTableError,
+      )
+    })
+
+    it('does not mistake an ordinary failure for a missing table', async () => {
+      // Claiming the migration was never run when Supabase is merely down would
+      // send an operator to re-run something that is already there.
+      const { impl } = serve(503, { code: 'PGRST002', message: 'schema cache load failed' })
+
+      const error = await readConnection('user_42', config, impl).catch((cause: unknown) => cause)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(MissingTableError)
+    })
+
+    it('does not choke when whatever answered was not PostgREST at all', async () => {
+      const impl = (async () =>
+        new Response('<html>504 Gateway Timeout</html>', {
+          status: 504,
+        })) as unknown as typeof fetch
+
+      const error = await readConnection('user_42', config, impl).catch((cause: unknown) => cause)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(MissingTableError)
+    })
   })
 })
 

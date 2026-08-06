@@ -3,6 +3,7 @@ import { requireSession } from '../lib/auth'
 import { jsonError } from '../lib/proxy'
 import {
   deleteConnection,
+  MissingTableError,
   readConnection,
   storeConfig,
   writeConnection,
@@ -51,6 +52,29 @@ import {
 interface Setup {
   oauth: OauthConfig
   store: StoreConfig
+}
+
+/**
+ * Why this deployment cannot keep Drive connected, when it cannot.
+ *
+ * Told to the browser because the sign-in screen has to say something true
+ * about a site it is refusing to let anyone into, and one message covering
+ * every cause is what sends an operator to re-check the half that was already
+ * right. None of these names a value — only which step of the setup is
+ * unfinished, which the README states publicly anyway.
+ *
+ * Mirrored by `StatusProblem` in src/lib/google/connection.ts.
+ */
+type StatusProblem =
+  /** The function environment is missing a secret it cannot work without. */
+  | 'not-configured'
+  /** Configured, but the migration that creates the table was never run. */
+  | 'no-table'
+  /** Configured and migrated; the store did not answer just now. */
+  | 'unreachable'
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** Both halves have to be configured; either one alone is not usable. */
@@ -123,11 +147,7 @@ async function handleOauthFailure(
     return jsonError(error.status, 'Google refused the request.', error.message)
   }
 
-  return jsonError(
-    502,
-    'Could not reach Google.',
-    error instanceof Error ? error.message : String(error),
-  )
+  return jsonError(502, 'Could not reach Google.', describe(error))
 }
 
 async function readCode(request: Request): Promise<string | null> {
@@ -151,9 +171,11 @@ export default async (request: Request): Promise<Response> => {
   // All it discloses is whether the deployment is set up for that, which the
   // README states publicly; anything about a *user* still needs their token.
   if (route === 'status') {
+    const unusable = (problem: StatusProblem) => json({ durable: false, connected: false, problem })
+
     if (!ready) {
       reportMissingSetup()
-      return json({ durable: false, connected: false })
+      return unusable('not-configured')
     }
 
     const caller = await requireSession(request)
@@ -165,11 +187,20 @@ export default async (request: Request): Promise<Response> => {
       const stored = await readConnection(caller.userId, ready.store)
       return json({ durable: true, connected: stored !== null })
     } catch (error) {
-      return jsonError(
-        502,
-        'Could not check your Google connection.',
-        error instanceof Error ? error.message : String(error),
-      )
+      // Answered 200, not 502, on purpose. The question asked was "can this
+      // deployment keep Drive connected", and "no, because the table is
+      // missing" is an answer to it. A 502 collapses the reason back into
+      // "something went wrong", which is then all the browser can show.
+      if (error instanceof MissingTableError) {
+        console.warn(
+          `[google] ${error.message} Run supabase/migrations/0002_google_connections.sql ` +
+            'against this project.',
+        )
+        return unusable('no-table')
+      }
+
+      console.warn(`[google] Could not reach the connection store: ${describe(error)}`)
+      return unusable('unreachable')
     }
   }
 
@@ -223,7 +254,7 @@ export default async (request: Request): Promise<Response> => {
       return jsonError(
         502,
         'Connected to Google, but could not save the connection for next time.',
-        error instanceof Error ? error.message : String(error),
+        describe(error),
       )
     }
 
@@ -242,11 +273,7 @@ export default async (request: Request): Promise<Response> => {
     try {
       stored = await readConnection(userId, ready.store)
     } catch (error) {
-      return jsonError(
-        502,
-        'Could not read your Google connection.',
-        error instanceof Error ? error.message : String(error),
-      )
+      return jsonError(502, 'Could not read your Google connection.', describe(error))
     }
 
     // Not an error worth alarming anyone with: this user has simply never
@@ -277,11 +304,7 @@ export default async (request: Request): Promise<Response> => {
       await deleteConnection(userId, ready.store)
       if (stored) await revokeToken(stored.refreshToken)
     } catch (error) {
-      return jsonError(
-        502,
-        'Could not disconnect Google Drive.',
-        error instanceof Error ? error.message : String(error),
-      )
+      return jsonError(502, 'Could not disconnect Google Drive.', describe(error))
     }
 
     return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })

@@ -6,20 +6,34 @@
  * Supabase session token — the same one the fal proxy checks — because the
  * connection is filed under their account id.
  *
- * A deployment that has not been set up for this (no client secret, no service
- * role key) answers `durable: false`, and the caller falls back to the in-memory
- * token flow in gis.ts. That fallback is why `npm run dev` against a bare
- * checkout still works exactly as it did.
+ * A deployment that has not been set up for this answers `durable: false` and
+ * says why. There is no degraded mode behind that: the editor writes to Drive,
+ * so a site that cannot keep the connection cannot let anyone in, and the gate
+ * shows the reason instead of a button that would fail after consent.
  */
 import { currentAccessToken } from '../../state/useAuthStore'
 
 const BASE = '/api/google'
+
+/**
+ * Why this deployment cannot keep Drive connected.
+ *
+ * Mirrors the union in netlify/functions/google.ts, plus nothing: `unreachable`
+ * covers both "the store did not answer the function" and "the function did not
+ * answer us", because the two are the same sentence to whoever is reading it,
+ * and the function log already separates them for whoever is fixing it.
+ */
+export type StatusProblem = 'not-configured' | 'no-table' | 'unreachable'
+
+const PROBLEMS: readonly string[] = ['not-configured', 'no-table', 'unreachable']
 
 export interface ConnectionStatus {
   /** Whether this deployment can store a connection at all. */
   durable: boolean
   /** Whether this user has one stored. */
   connected: boolean
+  /** Why not, when `durable` is false. */
+  problem?: StatusProblem
 }
 
 export interface DriveGrant {
@@ -129,21 +143,32 @@ async function readBody(response: Response): Promise<Record<string, unknown>> {
  * before deciding whether to resume a connection or offer the button.
  */
 export async function connectionStatus(): Promise<ConnectionStatus> {
-  const unsupported: ConnectionStatus = { durable: false, connected: false }
+  // Every way of not getting an answer lands here: offline, timed out, a 404
+  // from a static host with no functions behind it, or a body that is not the
+  // shape this expects. None of them is evidence about how the site is set up,
+  // so none of them may claim it is set up wrongly.
+  const noAnswer: ConnectionStatus = { durable: false, connected: false, problem: 'unreachable' }
 
   try {
     const response = await call('/status', { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) })
-    // 404 covers the case that matters most in practice: an older deploy, or a
-    // local `vite dev` with no functions behind it at all.
-    if (!response.ok) return unsupported
+    if (!response.ok) return noAnswer
 
     const body = await readBody(response)
-    if (typeof body.durable !== 'boolean' || typeof body.connected !== 'boolean') return unsupported
-    return { durable: body.durable, connected: body.connected }
+    if (typeof body.durable !== 'boolean' || typeof body.connected !== 'boolean') return noAnswer
+    if (body.durable) return { durable: true, connected: body.connected }
+
+    return {
+      durable: false,
+      connected: body.connected,
+      // An unlabelled `durable: false` reads as "not configured" because that is
+      // the only thing it ever meant: the function says false deliberately, and
+      // before it named reasons, being unconfigured was the only one it had.
+      problem: PROBLEMS.includes(body.problem as string)
+        ? (body.problem as StatusProblem)
+        : 'not-configured',
+    }
   } catch {
-    // Offline, timed out, or /api is not being served. Either way there is no
-    // stored connection to resume, and the caller has a fallback.
-    return unsupported
+    return noAnswer
   }
 }
 

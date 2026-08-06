@@ -50,10 +50,12 @@ vi.mock('../state/useDriveStore', () => ({
   ),
 }))
 
-const loadConnectionStatus = vi.fn<() => Promise<{ durable: boolean; connected: boolean }>>()
+const loadConnectionStatus =
+  vi.fn<() => Promise<{ durable: boolean; connected: boolean; problem?: string }>>()
+let driveConfigured = true
 
 vi.mock('../lib/google/gis', () => ({
-  isDriveConfigured: () => true,
+  isDriveConfigured: () => driveConfigured,
   loadConnectionStatus: () => loadConnectionStatus(),
 }))
 
@@ -90,6 +92,7 @@ beforeEach(() => {
   driveState.error = null
   driveState.folder = null
   pickerConfigured = true
+  driveConfigured = true
   createFolder.mockResolvedValue({ id: 'folder_new', name: 'editor-cat' })
   pickFolder.mockResolvedValue({ id: 'folder_chosen', name: 'Renders' })
   loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
@@ -144,12 +147,66 @@ describe('the gate', () => {
   })
 
   it('says so when the deployment cannot sign anyone in, instead of a dead button', async () => {
-    loadConnectionStatus.mockResolvedValue({ durable: false, connected: false })
+    loadConnectionStatus.mockResolvedValue({
+      durable: false,
+      connected: false,
+      problem: 'not-configured',
+    })
 
     mount()
 
     expect(await screen.findByText(/not set up for sign-in/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
+  })
+
+  /**
+   * Every one of these used to print the same paragraph, naming two environment
+   * variables and a migration. Only one of the three was ever the problem, and
+   * the reader had no way to tell which — so the screen reliably sent whoever
+   * deployed the site to go and re-check something that was already correct.
+   */
+  describe('what it says is wrong', () => {
+    async function blockedBy(problem: string): Promise<HTMLElement> {
+      loadConnectionStatus.mockResolvedValue({ durable: false, connected: false, problem })
+      mount()
+      return await screen.findByRole('alert')
+    }
+
+    it('sends someone to the migration, and only the migration, when that is the gap', async () => {
+      const callout = await blockedBy('no-table')
+
+      expect(callout).toHaveTextContent('0002_google_connections.sql')
+      // The two secrets demonstrably are set: the request got far enough to ask
+      // the database a question. Naming them here is what wasted the afternoon.
+      expect(callout).not.toHaveTextContent(/GOOGLE_CLIENT_SECRET|SUPABASE_SERVICE_ROLE_KEY/)
+    })
+
+    it('offers a reload for a server that did not answer, not a verdict on the setup', async () => {
+      const callout = await blockedBy('unreachable')
+
+      expect(callout).toHaveTextContent(/reload/i)
+      expect(callout).not.toHaveTextContent(/not set up/i)
+    })
+
+    it('names the two secrets only when the deployment really is missing them', async () => {
+      const callout = await blockedBy('not-configured')
+
+      expect(callout).toHaveTextContent('GOOGLE_CLIENT_SECRET')
+      expect(callout).toHaveTextContent('SUPABASE_SERVICE_ROLE_KEY')
+      expect(callout).not.toHaveTextContent('0002_google_connections.sql')
+    })
+
+    it('blames the bundle when it was built without a Google client id', async () => {
+      // The server half can be flawless and this still cannot work, so it is
+      // checked before the server's answer is even considered.
+      driveConfigured = false
+      loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
+
+      mount()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('VITE_GOOGLE_CLIENT_ID')
+      expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
+    })
   })
 
   it('waits rather than flashing the sign-in screen at a returning visitor', () => {

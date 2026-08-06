@@ -90,7 +90,13 @@ export function Callout({
     success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100',
   }
   return (
-    <div className={`rounded-lg border px-3 py-2.5 text-sm leading-relaxed ${tones[tone]}`}>
+    <div
+      // Error callouts appear in response to something that just failed, often
+      // after the surrounding screen has settled. `alert` is what makes a screen
+      // reader announce one rather than leaving it to be discovered.
+      role={tone === 'error' ? 'alert' : undefined}
+      className={`rounded-lg border px-3 py-2.5 text-sm leading-relaxed ${tones[tone]}`}
+    >
       {title ? <p className="mb-0.5 font-semibold">{title}</p> : null}
       <div className="[overflow-wrap:anywhere]">{children}</div>
     </div>

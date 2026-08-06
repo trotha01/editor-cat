@@ -26,6 +26,7 @@ import {
   connectionStatus,
   requestAccessToken,
   saveConnection,
+  type ConnectionStatus,
   type DriveGrant,
 } from './connection'
 
@@ -131,11 +132,12 @@ function keep(grant: DriveGrant): string {
 /**
  * Asks the server whether a connection is stored for this account.
  *
- * Also settles `durable` for the rest of the session. A `false` here means the
- * deployment is missing its client secret or service role key, which the gate
- * reports as an operator error — there is no degraded mode left to fall into.
+ * Also settles `durable` for the rest of the session. A `false` here is the end
+ * of the road — there is no degraded mode left to fall into — so the reason
+ * comes back with it for the gate to show, which is the only thing anyone can
+ * act on from that screen.
  */
-export async function loadConnectionStatus(): Promise<{ durable: boolean; connected: boolean }> {
+export async function loadConnectionStatus(): Promise<ConnectionStatus> {
   const status = await connectionStatus()
   durable = status.durable
   return status

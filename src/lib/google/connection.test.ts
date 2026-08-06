@@ -56,13 +56,45 @@ describe('connectionStatus', () => {
     expect(calls[0]?.init.headers).toMatchObject({ authorization: 'Bearer supabase-session-token' })
   })
 
-  it('treats a missing endpoint as "no stored connections here"', async () => {
+  it('passes on the reason the site gave for not storing connections', async () => {
+    // The gate can only tell someone what to fix if this carries the answer up.
+    // Collapsing every "no" into one made the screen name environment variables
+    // that were already set while the real gap — an unrun migration — went
+    // unmentioned, which is a bug that costs whoever deployed it an afternoon.
+    serve(200, { durable: false, connected: false, problem: 'no-table' })
+
+    await expect(connectionStatus()).resolves.toEqual({
+      durable: false,
+      connected: false,
+      problem: 'no-table',
+    })
+  })
+
+  it('reads an unlabelled refusal as "not configured", which is what it meant', async () => {
+    // A cached bundle can outlive the function it talks to. Before the function
+    // named reasons, `durable: false` had exactly one.
+    serve(200, { durable: false, connected: false })
+
+    await expect(connectionStatus()).resolves.toMatchObject({ problem: 'not-configured' })
+  })
+
+  it('refuses a reason it does not recognise rather than passing it to the UI', async () => {
+    serve(200, { durable: false, connected: false, problem: 'something-invented-later' })
+
+    await expect(connectionStatus()).resolves.toMatchObject({ problem: 'not-configured' })
+  })
+
+  it('treats a missing endpoint as unreachable, not as a verdict on the setup', async () => {
     // Plain `vite dev` serves no /api routes at all, and an older deploy has no
-    // such function. Neither is an error worth showing anyone — the app has a
-    // fallback and only needs to know which world it is in.
+    // such function. Neither is evidence about how the site is configured, so
+    // neither may claim it is configured wrongly.
     serve(404, { error: 'Not found' })
 
-    await expect(connectionStatus()).resolves.toEqual({ durable: false, connected: false })
+    await expect(connectionStatus()).resolves.toEqual({
+      durable: false,
+      connected: false,
+      problem: 'unreachable',
+    })
   })
 
   it('treats being offline the same way, rather than failing the whole load', async () => {
@@ -73,7 +105,10 @@ describe('connectionStatus', () => {
       }),
     )
 
-    await expect(connectionStatus()).resolves.toEqual({ durable: false, connected: false })
+    await expect(connectionStatus()).resolves.toMatchObject({
+      durable: false,
+      problem: 'unreachable',
+    })
   })
 
   it('is not fooled by a static host answering /api with the app itself', async () => {
@@ -85,7 +120,10 @@ describe('connectionStatus', () => {
       vi.fn(async () => new Response('<!doctype html><title>editor-cat</title>', { status: 200 })),
     )
 
-    await expect(connectionStatus()).resolves.toEqual({ durable: false, connected: false })
+    await expect(connectionStatus()).resolves.toMatchObject({
+      durable: false,
+      problem: 'unreachable',
+    })
   })
 
   it('bounds the wait, so a hung request cannot strand the sign-in screen', async () => {

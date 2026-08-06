@@ -17,6 +17,7 @@ import { Button, Callout, Spinner } from './ui'
 import { createNonce, requestSignIn, type Nonce } from '../lib/google/identity'
 import { ConsentDeclinedError } from '../lib/google/oauthPopup'
 import { isDriveConfigured, loadConnectionStatus } from '../lib/google/gis'
+import type { StatusProblem } from '../lib/google/connection'
 import { createFolder } from '../lib/google/drive'
 import { isPickerConfigured, pickFolder } from '../lib/google/picker'
 import { toDisplayMessage } from '../lib/errors'
@@ -177,8 +178,60 @@ function Panel({ title, lead, children }: { title: string; lead: string; childre
   )
 }
 
-/** What this deployment can offer. `null` until the config check answers. */
-type Readiness = 'ready' | 'not-configured' | null
+/**
+ * What this deployment can offer. `null` until the config check answers.
+ *
+ * `no-client-id` is this side's own contribution: the function can be perfectly
+ * configured while the bundle was built without a Google client to sign in
+ * against, and only the bundle knows that.
+ */
+type Readiness = 'ready' | 'no-client-id' | StatusProblem | null
+
+/**
+ * What to say about a deployment that cannot sign anyone in.
+ *
+ * These four causes shared one message once, naming two environment variables
+ * and a migration. Whoever read it could not tell which of the three was
+ * actually missing, and the two it named first were usually the ones already
+ * set — so the message sent people to re-check correct configuration while the
+ * real gap went unmentioned.
+ */
+function SetupProblem({ problem }: { problem: Exclude<Readiness, 'ready' | null> }) {
+  if (problem === 'unreachable') {
+    return (
+      <Callout tone="error" title="Cannot reach this site's server">
+        Signing in needs an answer from it, and it did not give one. This is usually temporary —
+        reload to try again.
+      </Callout>
+    )
+  }
+
+  if (problem === 'no-table') {
+    return (
+      <Callout tone="error" title="This site is not finished being set up">
+        Its database has no <code>google_connections</code> table, so there is nowhere to keep the
+        Drive connection. Whoever deployed it needs to run{' '}
+        <code>supabase/migrations/0002_google_connections.sql</code>. Nothing you can fix from here.
+      </Callout>
+    )
+  }
+
+  if (problem === 'no-client-id') {
+    return (
+      <Callout tone="error" title="This site is not set up for sign-in">
+        It was built without <code>VITE_GOOGLE_CLIENT_ID</code>, so there is no Google client to
+        sign in against. Nothing you can fix from here.
+      </Callout>
+    )
+  }
+
+  return (
+    <Callout tone="error" title="This site is not set up for sign-in">
+      Whoever deployed it needs to set <code>GOOGLE_CLIENT_SECRET</code> and{' '}
+      <code>SUPABASE_SERVICE_ROLE_KEY</code> in the site environment. Nothing you can fix from here.
+    </Callout>
+  )
+}
 
 function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean }) {
   const signIn = useAuthStore((state) => state.signIn)
@@ -213,8 +266,12 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
   // Google's consent screen and fail afterwards.
   useEffect(() => {
     let cancelled = false
-    void loadConnectionStatus().then(({ durable }) => {
-      if (!cancelled) setReadiness(durable && isDriveConfigured() ? 'ready' : 'not-configured')
+    void loadConnectionStatus().then(({ durable, problem }) => {
+      if (cancelled) return
+      // Checked first: without a client id there is nothing to sign in against,
+      // however well the server half is configured.
+      if (!isDriveConfigured()) setReadiness('no-client-id')
+      else setReadiness(durable ? 'ready' : (problem ?? 'not-configured'))
     })
     return () => {
       cancelled = true
@@ -275,12 +332,8 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
         </Callout>
       ) : null}
 
-      {readiness === 'not-configured' ? (
-        <Callout tone="error" title="This site is not set up for sign-in">
-          Whoever deployed it needs to set <code>GOOGLE_CLIENT_SECRET</code> and{' '}
-          <code>SUPABASE_SERVICE_ROLE_KEY</code>, and run the <code>google_connections</code>{' '}
-          migration. Nothing you can fix from here.
-        </Callout>
+      {readiness !== null && readiness !== 'ready' ? (
+        <SetupProblem problem={readiness} />
       ) : busy || opening ? (
         <span className="flex items-center gap-2 text-sm text-ink-dim">
           <Spinner /> Signing in…

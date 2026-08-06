@@ -30,6 +30,8 @@ class FakeGoogleOauthError extends Error {
   }
 }
 
+class FakeMissingTableError extends Error {}
+
 vi.mock('./auth', () => ({
   requireSession: (request: Request) => requireSession(request) as unknown,
 }))
@@ -40,6 +42,7 @@ vi.mock('./googleConnections', () => ({
   writeConnection: (userId: string, connection: unknown) =>
     writeConnection(userId, connection) as unknown,
   deleteConnection: (userId: string) => deleteConnection(userId) as unknown,
+  MissingTableError: FakeMissingTableError,
 }))
 
 vi.mock('./googleOauth', () => ({
@@ -104,6 +107,53 @@ describe('status', () => {
     await call('status')
 
     expect(readConnection).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A store that cannot be read used to come back as a 502, which the browser
+   * could only render as "this site is not set up" — the same words it uses for
+   * missing environment variables. Whoever deployed it then went and re-checked
+   * the variables, which were fine, while the actual gap went unnamed.
+   */
+  describe('when the store cannot be read', () => {
+    let warn: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      // The reason belongs in the function log, where the operator can see the
+      // whole PostgREST body. Silenced here only to keep the run readable.
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    it('names the unrun migration, so the fix is the thing that is actually wrong', async () => {
+      readConnection.mockRejectedValue(new FakeMissingTableError('relation does not exist'))
+
+      const response = await call('status')
+
+      // 200, not 502: "no, because the table is missing" is an answer to the
+      // question, and a 502 would collapse it back into "something went wrong".
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({
+        durable: false,
+        connected: false,
+        problem: 'no-table',
+      })
+      expect(String(warn.mock.calls[0]?.[0])).toContain('0002_google_connections.sql')
+    })
+
+    it('separates a store that is merely down from one that was never migrated', async () => {
+      // Distinct because the advice differs: one is "reload in a minute", the
+      // other is "nobody will ever get in until someone runs the migration".
+      readConnection.mockRejectedValue(new Error('503 upstream connect error'))
+
+      const response = await call('status')
+
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({
+        durable: false,
+        connected: false,
+        problem: 'unreachable',
+      })
+    })
   })
 })
 

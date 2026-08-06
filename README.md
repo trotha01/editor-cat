@@ -229,12 +229,16 @@ SUPABASE_SERVICE_ROLE_KEY=       # Supabase → Project settings → API
 Both are genuinely secret, so mark them as such and **scope them to Functions**
 — they are read at request time, not at build time. The `VITE_` variables are the
 opposite: they are inlined into the browser bundle by design, so marking one
-secret makes secrets scanning fail the build. If sign-in is refused after setting
-these, the function log for `/api/google/status` names exactly which half is
-still missing.
+secret makes secrets scanning fail the build.
 
 Then run `supabase/migrations/0002_google_connections.sql`, the same way as the
-first migration.
+first migration. Setting the two secrets without running it gets you a site that
+signs people in and then has nowhere to put the result.
+
+If sign-in is refused, the screen says which of the three steps is unfinished —
+missing secrets, unrun migration, or a store that simply did not answer — and
+the function log for `/api/google/status` names the variable or prints the
+database's own complaint.
 
 **One consent screen instead of two.** Google Identity Services splits its two
 jobs across libraries that cannot do each other's: `google.accounts.id` issues

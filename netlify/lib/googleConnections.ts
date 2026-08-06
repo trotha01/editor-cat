@@ -63,6 +63,29 @@ function endpoint(config: StoreConfig, query = ''): string {
   return `${config.url}/rest/v1/${TABLE}${query}`
 }
 
+/**
+ * Raised when the table is not in the database at all.
+ *
+ * Worth its own type because it is the one storage failure an operator can act
+ * on, and because it is otherwise indistinguishable from Supabase having a
+ * moment. Telling the two apart is the difference between a site that says "run
+ * the migration" and one that says "not set up for sign-in" — the second sends
+ * whoever deployed it to re-check environment variables that were fine.
+ */
+export class MissingTableError extends Error {
+  constructor(detail: string) {
+    super(`The ${TABLE} table is not there. ${detail}`)
+    this.name = 'MissingTableError'
+  }
+}
+
+/**
+ * The two ways "no such table" arrives: Postgres' own `undefined_table`, and
+ * PostgREST's schema-cache miss — which is also what a table looks like in the
+ * seconds after it is created, and when it exists but is not exposed.
+ */
+const MISSING_TABLE_CODES = new Set(['42P01', 'PGRST205'])
+
 /** Turns a PostgREST failure into something a log line can be read from. */
 async function failed(action: string, response: Response): Promise<Error> {
   let detail = ''
@@ -71,6 +94,18 @@ async function failed(action: string, response: Response): Promise<Error> {
   } catch {
     // Body already consumed or unreadable; the status still says enough.
   }
+
+  let code: unknown
+  try {
+    code = (JSON.parse(detail) as { code?: unknown }).code
+  } catch {
+    // Not JSON: something between here and PostgREST answered instead. The
+    // generic error below is the right reading of that.
+  }
+  if (typeof code === 'string' && MISSING_TABLE_CODES.has(code)) {
+    return new MissingTableError(detail)
+  }
+
   return new Error(`Could not ${action} the Google connection (${response.status}). ${detail}`)
 }
 
