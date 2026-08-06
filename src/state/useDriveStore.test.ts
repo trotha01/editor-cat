@@ -3,8 +3,6 @@ import type { Asset } from '../lib/types'
 
 const uploadFile = vi.fn()
 const update = vi.fn()
-const connect = vi.fn()
-const disconnect = vi.fn()
 const accessToken = vi.fn()
 const loadConnectionStatus = vi.fn<() => Promise<{ durable: boolean; connected: boolean }>>()
 const isDurableConnection = vi.fn<() => boolean | null>(() => null)
@@ -15,8 +13,6 @@ class FakeNeedsConsentError extends Error {}
 
 vi.mock('../lib/google/gis', () => ({
   adoptConnection: (code: string) => adoptConnection(code) as unknown,
-  connect: (...args: unknown[]) => connect(...args) as unknown,
-  disconnect: (...args: unknown[]) => disconnect(...args) as unknown,
   accessToken: (...args: unknown[]) => accessToken(...args) as unknown,
   invalidateToken: () => invalidateToken(),
   isDriveConfigured: () => true,
@@ -89,8 +85,6 @@ describe('adopt', () => {
     expect(adoptConnection).toHaveBeenCalledWith('sign-in-code')
     expect(useDriveStore.getState().status).toBe('connected')
     expect(useDriveStore.getState().account?.email).toBe('someone@example.com')
-    // So the fallback path on the next load knows there is something to resume.
-    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBe('1')
   })
 
   it('leaves the user signed in when they decline the Drive permissions', async () => {
@@ -99,17 +93,16 @@ describe('adopt', () => {
 
     await useDriveStore.getState().adopt('sign-in-code')
 
-    // Reported as never having connected — which is true — so Settings offers
-    // to ask for the permission on its own rather than claiming a lapsed session.
+    // Reported as never having connected — which is true — so the gate asks
+    // again rather than letting them into an editor with nowhere to save.
     expect(useDriveStore.getState().status).toBe('disconnected')
     expect(useDriveStore.getState().error).toMatch(/partly granted/)
-    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBeNull()
   })
 
   it('is not undone by the restore that runs as the editor mounts', async () => {
     // Sign-in claims the connection before the session exists, so the two run
     // concurrently. Without the guard, restore's older answer lands last and
-    // shows "Connect Google Drive" to someone who just connected.
+    // holds someone at the gate who has just been let through.
     loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
     useDriveStore.getState().setConnecting(true)
 
@@ -125,7 +118,7 @@ describe('adopt', () => {
     useDriveStore.getState().setConnecting(true)
     expect(useDriveStore.getState().status).toBe('connecting')
 
-    // Otherwise a failed sign-in leaves Settings spinning, and the next
+    // Otherwise a failed sign-in leaves the gate spinning, and the next
     // `restore` stands down for a connection that is not coming.
     useDriveStore.getState().setConnecting(false)
     expect(useDriveStore.getState().status).toBe('disconnected')
@@ -147,11 +140,10 @@ describe('restore', () => {
     expect(useDriveStore.getState().durable).toBe(true)
   })
 
-  it('offers the button when the account has no stored connection', async () => {
+  it('reports no connection when the account has none, folder or not', async () => {
     loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
-    // Even with a folder left over from a previous connection: the account is
-    // the authority, and asking Google about someone who has disconnected would
-    // be a prompt they did not ask for.
+    // A folder left over from a previous account must not be read as a
+    // connection: the account is the only authority on that now.
     useDriveStore.setState({ status: 'disconnected' })
 
     await useDriveStore.getState().restore()
@@ -160,7 +152,7 @@ describe('restore', () => {
     expect(useDriveStore.getState().status).toBe('disconnected')
   })
 
-  it('leaves a first-time visitor alone when there is nothing to store connections in', async () => {
+  it('does not try Google when the site cannot store connections at all', async () => {
     loadConnectionStatus.mockResolvedValue({ durable: false, connected: false })
     useDriveStore.setState({ status: 'disconnected', folder: null })
 
@@ -170,21 +162,7 @@ describe('restore', () => {
     expect(useDriveStore.getState().status).toBe('disconnected')
   })
 
-  it('still tries a silent renewal for a browser that connected before', async () => {
-    // The fallback path, for a deployment with no server-side storage. The flag
-    // is what stops "connected but no folder yet" from looking like a first
-    // visit on the next load.
-    loadConnectionStatus.mockResolvedValue({ durable: false, connected: false })
-    window.localStorage.setItem('editor-cat.drive.linked.v1', '1')
-    useDriveStore.setState({ status: 'disconnected', folder: null })
-
-    await useDriveStore.getState().restore()
-
-    expect(accessToken).toHaveBeenCalled()
-    expect(useDriveStore.getState().status).toBe('connected')
-  })
-
-  it('asks for a reconnect rather than an error when consent is needed again', async () => {
+  it('flags a revoked grant as needing a reconnect rather than as an error', async () => {
     loadConnectionStatus.mockResolvedValue({ durable: true, connected: true })
     accessToken.mockRejectedValue(new FakeNeedsConsentError('Connect your Google account.'))
     useDriveStore.setState({ status: 'disconnected' })
@@ -195,39 +173,6 @@ describe('restore', () => {
     // Nothing has gone wrong that the user should be alarmed by.
     expect(useDriveStore.getState().error).toBeNull()
   })
-
-  it('forgets a connection the account no longer has', async () => {
-    window.localStorage.setItem('editor-cat.drive.linked.v1', '1')
-    loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
-    useDriveStore.setState({ status: 'disconnected' })
-
-    await useDriveStore.getState().restore()
-
-    // Otherwise the stale flag would keep prompting Google on a deployment that
-    // later loses its server-side storage.
-    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBeNull()
-  })
-})
-
-describe('connect', () => {
-  it('records that this browser has connected, so the next load resumes', async () => {
-    isDurableConnection.mockReturnValue(true)
-    useDriveStore.setState({ status: 'disconnected', folder: null })
-
-    await useDriveStore.getState().connect()
-
-    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBe('1')
-    expect(useDriveStore.getState().status).toBe('connected')
-    expect(useDriveStore.getState().durable).toBe(true)
-  })
-
-  it('says the connection is only for this visit when it cannot be stored', async () => {
-    isDurableConnection.mockReturnValue(false)
-
-    await useDriveStore.getState().connect()
-
-    expect(useDriveStore.getState().durable).toBe(false)
-  })
 })
 
 describe('forget', () => {
@@ -237,9 +182,8 @@ describe('forget', () => {
 
     useDriveStore.getState().forget()
 
-    // Signing back in should resume Drive, so the stored connection stays put —
-    // unlike `disconnect`, which is the user asking for it to be gone.
-    expect(disconnect).not.toHaveBeenCalled()
+    // Signing back in should resume Drive, so the connection stored against the
+    // account stays put — this only clears what this browser was holding.
     expect(invalidateToken).toHaveBeenCalled()
     expect(useDriveStore.getState().status).toBe('disconnected')
     expect(useDriveStore.getState().account).toBeNull()
@@ -247,7 +191,6 @@ describe('forget', () => {
 
   it('drops the folder, which is an id in the previous account’s Drive', () => {
     useDriveStore.getState().setFolder({ id: 'folder_2', name: 'B-roll' })
-    window.localStorage.setItem('editor-cat.drive.linked.v1', '1')
 
     useDriveStore.getState().forget()
 
@@ -255,21 +198,6 @@ describe('forget', () => {
     // uploaded into a folder they cannot reach.
     expect(useDriveStore.getState().folder).toBeNull()
     expect(window.localStorage.getItem('editor-cat.drive.folder.v1')).toBeNull()
-    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBeNull()
-  })
-})
-
-describe('disconnect', () => {
-  it('clears everything that would resume the connection on the next load', async () => {
-    window.localStorage.setItem('editor-cat.drive.linked.v1', '1')
-    useDriveStore.getState().setFolder({ id: 'folder_2', name: 'B-roll' })
-
-    await useDriveStore.getState().disconnect()
-
-    expect(disconnect).toHaveBeenCalled()
-    expect(window.localStorage.getItem('editor-cat.drive.linked.v1')).toBeNull()
-    expect(window.localStorage.getItem('editor-cat.drive.folder.v1')).toBeNull()
-    expect(useDriveStore.getState().status).toBe('disconnected')
   })
 })
 

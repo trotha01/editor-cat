@@ -1,9 +1,13 @@
 /**
- * The Google Drive section of Settings: connect an account, choose the folder
- * new media is saved into, and disconnect again.
+ * The Google Drive section of Settings: which folder new media is saved into.
+ *
+ * There is no connect button here, and deliberately so. Drive is authorised at
+ * the sign-in screen along with everything else, so by the time anyone reaches
+ * Settings the connection already exists — the only thing left to decide is
+ * where the files go.
  */
 import { useState } from 'react'
-import { Button, Callout, Spinner } from './ui'
+import { Button, Callout } from './ui'
 import { DriveFolderPicker } from './DriveFolderPicker'
 import { isDriveConfigured } from '../lib/google/gis'
 import { useDriveStore } from '../state/useDriveStore'
@@ -16,9 +20,6 @@ export function DriveSettings() {
   const account = useDriveStore((state) => state.account)
   const folder = useDriveStore((state) => state.folder)
   const error = useDriveStore((state) => state.error)
-  const durable = useDriveStore((state) => state.durable)
-  const connect = useDriveStore((state) => state.connect)
-  const disconnect = useDriveStore((state) => state.disconnect)
   const setFolder = useDriveStore((state) => state.setFolder)
   const clearError = useDriveStore((state) => state.clearError)
 
@@ -39,47 +40,24 @@ export function DriveSettings() {
 
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-line bg-surface p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Google Drive</p>
-          <p className="truncate text-xs text-ink-dim">
-            {status === 'connected' && account?.email
-              ? `Saving to ${account.email}`
-              : 'Save your generated media to a folder you own.'}
-          </p>
-        </div>
-
-        {status === 'connecting' ? (
-          <Spinner />
-        ) : status === 'connected' ? (
-          <Button variant="ghost" onClick={() => void disconnect()}>
-            Disconnect
-          </Button>
-        ) : (
-          // Where Drive came with the sign-in this is a recovery path rather
-          // than a step: it is reached by declining the permission at sign-in,
-          // or by disconnecting here and changing your mind.
-          <Button onClick={() => void connect()}>
-            {status === 'needs-reconnect' ? 'Reconnect' : 'Allow Google Drive'}
-          </Button>
-        )}
+      <div className="min-w-0">
+        <p className="text-sm font-medium">Google Drive</p>
+        <p className="truncate text-xs text-ink-dim">
+          {account?.email
+            ? `Saving to ${account.email}`
+            : 'Save your generated media to a folder you own.'}
+        </p>
       </div>
 
+      {/* Reached by a grant revoked from the user's Google account page while
+          they were working. They keep the editor — throwing someone out of an
+          open project would be worse — but nothing is being backed up until
+          they sign in again, and only saying so makes that visible. */}
       {status === 'needs-reconnect' ? (
-        <Callout tone="warn" title="Your Google session expired">
-          Media is still saved in this browser. Reconnect to resume backing it up to{' '}
-          {folder ? `“${folder.name}”` : 'Drive'}.
-        </Callout>
-      ) : null}
-
-      {/* Only worth saying when it is the surprising answer. A connection that
-          is remembered needs no explanation; one that quietly lapses after an
-          hour does, or the Reconnect button looks like a fault. */}
-      {status === 'connected' && durable === false ? (
-        <Callout tone="warn" title="Connected for this visit only">
-          This site is not set up to remember Google connections, so you will be asked to reconnect
-          when you next open it. Whoever deploys it can change that — see{' '}
-          <code>GOOGLE_CLIENT_SECRET</code> in the README.
+        <Callout tone="warn" title="Your Google access expired">
+          Media is still saved in this browser, but nothing is reaching{' '}
+          {folder ? `“${folder.name}”` : 'Drive'}. Sign out under Account above and back in to
+          restore it.
         </Callout>
       ) : null}
 
@@ -92,29 +70,33 @@ export function DriveSettings() {
         </Callout>
       ) : null}
 
-      {status === 'connected' ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-canvas p-2.5">
-          <p className="min-w-0 text-xs">
-            {folder ? (
-              <>
-                <span className="text-ink-dim">Saving to</span>{' '}
-                <span className="font-medium">📁 {folder.name}</span>
-              </>
-            ) : (
-              <span className="text-ink-dim">
-                No folder chosen yet — nothing is being backed up.
-              </span>
-            )}
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-canvas p-2.5">
+        <p className="min-w-0 text-xs">
+          {folder ? (
+            <>
+              <span className="text-ink-dim">Saving to</span>{' '}
+              <span className="font-medium">📁 {folder.name}</span>
+            </>
+          ) : (
+            <span className="text-ink-dim">No folder chosen yet — nothing is being backed up.</span>
+          )}
+        </p>
+        <div className="flex items-center gap-2">
+          {folder ? (
+            <Button variant="ghost" onClick={() => setFolder(null)}>
+              Stop saving
+            </Button>
+          ) : null}
           <Button onClick={() => setPickerOpen(true)}>
             {folder ? 'Change folder' : 'Choose folder'}
           </Button>
         </div>
-      ) : null}
+      </div>
 
       <p className="text-xs leading-relaxed text-ink-dim">
         Files are stored in your own Drive, under your own quota. This site keeps no copy — the
-        permission it asks for covers the folder you pick and the files it saves there.
+        permission you granted when signing in covers the folder you pick and the files it saves
+        there.
       </p>
 
       <DriveFolderPicker

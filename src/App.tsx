@@ -48,11 +48,6 @@ export default function App() {
     // Loads the project list and opens one, or falls back to the single local
     // project when there is no account behind this build.
     void useProjectsStore.getState().start()
-    // Resumes a previous Drive connection without prompting. Where one is
-    // stored against the account it comes back on any machine; otherwise it
-    // falls back to a silent renewal, and does nothing at all for someone who
-    // has never connected — so a first visit never sees Google.
-    void useDriveStore.getState().restore()
 
     return installFlushOnExit()
   }, [loadAssets])

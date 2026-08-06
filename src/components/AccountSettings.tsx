@@ -6,16 +6,13 @@
  * store already knows about auth, so auth must not learn about Drive. A
  * component is where the two legitimately meet.
  */
-import { Button, Callout } from './ui'
+import { Button } from './ui'
 import { requiresSignIn, useAuthStore } from '../state/useAuthStore'
 import { useDriveStore } from '../state/useDriveStore'
 
 export function AccountSettings() {
   const session = useAuthStore((state) => state.session)
   const signOut = useAuthStore((state) => state.signOut)
-  const driveStatus = useDriveStore((state) => state.status)
-  const durable = useDriveStore((state) => state.durable)
-
   // A build with no Supabase project behind it has no account to show, and the
   // editor is open to anyone who loads it.
   if (!requiresSignIn()) return null
@@ -40,18 +37,6 @@ export function AccountSettings() {
           Sign out
         </Button>
       </div>
-
-      {/* The one case where the Drive section below is not a mistake: this site
-          cannot ask for Drive during sign-in, so it has to be granted on its
-          own. Without saying so, that button looks like something that should
-          have happened already. */}
-      {durable === false && driveStatus !== 'unconfigured' ? (
-        <Callout tone="info" title="Drive is a separate step on this site">
-          Signing in normally grants Google Drive at the same time. This deployment is not set up
-          for that, so Drive is allowed below instead — see <code>GOOGLE_CLIENT_SECRET</code> in the
-          README.
-        </Callout>
-      ) : null}
 
       <p className="text-xs leading-relaxed text-ink-dim">
         Signing out leaves your projects in your account and your media in Drive. What it clears is

@@ -1,25 +1,17 @@
 /**
- * Signing in with Google.
+ * Signing in with Google, which is also how Drive is authorised.
  *
- * There are two ways to do it here, and which one runs depends on whether the
- * deployment can store a Drive connection (see gis.ts):
+ * One OAuth request asks for identity and Drive together and comes back with an
+ * ID token *and* a consent code. Supabase turns the first into a session; the
+ * second becomes the stored Drive connection. That is the only prompt this app
+ * shows, and the only place it talks to Google.
  *
- * - **One screen for both** (`requestSignIn`). A single OAuth request asks for
- *   identity and Drive together and comes back with an ID token *and* a consent
- *   code. Supabase turns the first into a session; the second becomes a stored
- *   Drive connection. Nothing further is needed in Settings.
- *
- * - **Identity only** (`renderSignInButton`), for a deployment with nowhere to
- *   store a connection. This is Google Identity Services' `google.accounts.id`,
- *   which issues an ID token and cannot authorise Drive at all — so Drive stays
- *   a separate step in Settings, through `google.accounts.oauth2`.
- *
- * Mixing the two halves of GIS up is the easy mistake: `google.accounts.id`
- * issues an **ID token** saying who the user is, and `google.accounts.oauth2`
- * issues an **access token** granting Drive. Neither can do the other's job,
- * which is exactly why the combined flow does not use either.
+ * Deliberately not Google Identity Services. GIS splits the two jobs across
+ * libraries that cannot do each other's — `google.accounts.id` issues an ID token
+ * and cannot authorise Drive, `google.accounts.oauth2` authorises Drive and
+ * cannot issue an ID token — so anything built on it asks the user twice.
  */
-import { clientId, loadGisScript, SIGN_IN_SCOPES } from './gis'
+import { clientId, SIGN_IN_SCOPES } from './gis'
 import { requestAuthorization } from './oauthPopup'
 
 /**
@@ -82,61 +74,4 @@ export async function requestSignIn(nonce: Nonce): Promise<SignInGrant> {
 
   if (!result.idToken) throw new Error('Google did not return a sign-in token. Try again.')
   return { idToken: result.idToken, code: result.code }
-}
-
-/** Cleans up a rendered button so a re-render does not stack two of them. */
-export type Rendered = () => void
-
-/**
- * Draws Google's own sign-in button into `container` and resolves the ID token
- * when it is used.
- *
- * The rendered button is used rather than One Tap because One Tap is silently
- * suppressed for a user who has dismissed it a few times — leaving no way to
- * sign in at all, which is fatal for a gate.
- */
-export async function renderSignInButton(
-  container: HTMLElement,
-  nonce: Nonce,
-  onCredential: (idToken: string) => void,
-  onError: (message: string) => void,
-): Promise<Rendered> {
-  const id = clientId()
-  if (!id) {
-    onError('Google sign-in is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.')
-    return () => {}
-  }
-
-  try {
-    await loadGisScript()
-  } catch (cause) {
-    onError(cause instanceof Error ? cause.message : String(cause))
-    return () => {}
-  }
-
-  google.accounts.id.initialize({
-    client_id: id,
-    nonce: nonce.hashed,
-    // The gate is the only way in, so a cancelled tap must leave the button
-    // usable rather than blocking future prompts.
-    cancel_on_tap_outside: false,
-    callback: (response: google.accounts.id.CredentialResponse) => {
-      if (response.credential) onCredential(response.credential)
-      else onError('Google did not return a sign-in token. Try again.')
-    },
-  })
-
-  google.accounts.id.renderButton(container, {
-    type: 'standard',
-    theme: 'filled_blue',
-    size: 'large',
-    text: 'signin_with',
-    shape: 'pill',
-    logo_alignment: 'left',
-  })
-
-  return () => {
-    google.accounts.id.cancel()
-    container.replaceChildren()
-  }
 }
