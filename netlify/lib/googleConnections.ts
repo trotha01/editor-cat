@@ -11,6 +11,7 @@
  * user's own anon-key token still reads nothing from it. See
  * `supabase/migrations/0002_google_connections.sql`.
  */
+import { supabaseProjectUrl } from './supabase'
 
 const TABLE = 'google_connections'
 
@@ -28,16 +29,12 @@ export interface StoreConfig {
  * key cannot read this table, and that is what makes storing a refresh token
  * here defensible in the first place.
  *
- * The *URL* is a different matter — it is the same public string the browser
- * already has, so it falls back to the build-time variable rather than making an
- * operator set one value under two names. Asking twice is how the two drift
- * apart, and the failure when they do is a site that refuses every sign-in
- * without saying which half is missing.
+ * The *URL* is a different matter, and is resolved by `supabaseProjectUrl` — the
+ * same call `auth.ts` makes, so the two cannot disagree about whether this
+ * deployment has a project behind it.
  */
 export function storeConfig(): StoreConfig | null {
-  const url = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '')
-    .trim()
-    .replace(/\/+$/, '')
+  const url = supabaseProjectUrl()
   const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim()
   if (!url || !serviceKey) return null
   return { url, serviceKey }

@@ -13,16 +13,13 @@
  * generation polls for minutes, so a round trip per poll would be both slow and
  * rude to a service that is not being paid to answer them.
  *
- * Everything here reads *unprefixed* environment variables. A `VITE_` prefix
+ * Every *secret* here reads an unprefixed environment variable. A `VITE_` prefix
  * would inline the value into the browser bundle, which is exactly the mistake
- * this module exists to avoid.
+ * this module exists to avoid. The project URL is the one exception, and only
+ * because it is not a secret — see `supabaseProjectUrl`.
  */
 import { jsonError } from './proxy'
-
-/** Trailing slashes are easy to leave on a pasted project URL and break `iss` comparison. */
-function supabaseUrl(): string {
-  return (process.env.SUPABASE_URL ?? '').trim().replace(/\/+$/, '')
-}
+import { supabaseProjectUrl } from './supabase'
 
 /** Set only on projects still signing with the legacy shared secret. */
 function jwtSecret(): string {
@@ -225,7 +222,7 @@ export type SessionResult =
 export async function requireSession(request: Request): Promise<SessionResult> {
   if (allowAnonymous()) return { ok: true, userId: null }
 
-  const baseUrl = supabaseUrl()
+  const baseUrl = supabaseProjectUrl()
   const secret = jwtSecret()
 
   if (!baseUrl && !secret) {
@@ -235,8 +232,9 @@ export async function requireSession(request: Request): Promise<SessionResult> {
       response: jsonError(
         503,
         'This site is not set up to authorise generation requests.',
-        'Set SUPABASE_URL (plus SUPABASE_JWT_SECRET if the project signs with a shared ' +
-          'secret), or FAL_PROXY_ALLOW_ANONYMOUS=1 for local development.',
+        'Set SUPABASE_URL — or VITE_SUPABASE_URL, which is the same public string — plus ' +
+          'SUPABASE_JWT_SECRET if the project signs with a shared secret, or ' +
+          'FAL_PROXY_ALLOW_ANONYMOUS=1 for local development.',
       ),
     }
   }

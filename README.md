@@ -307,11 +307,13 @@ contexts** — scoped to production only, every deploy preview answers 503. No
 Then decide who is allowed to spend it. `/api/fal/*` generates video on your
 account, so it verifies the caller's Supabase session before attaching the key:
 
-- **Set `SUPABASE_URL`** to the same project the app signs in against. Tokens
-  are verified locally against its published signing keys — no round trip per
-  request, which matters because a single video job polls for minutes. Add
+- **The project URL** — already set as `VITE_SUPABASE_URL` for the browser, and
+  the functions read that same value, so there is normally nothing to do here.
+  Set `SUPABASE_URL` only to point the server at a different project. Tokens are
+  verified locally against the project's published signing keys — no round trip
+  per request, which matters because a single video job polls for minutes. Add
   `SUPABASE_JWT_SECRET` too if your project still signs with a shared secret.
-- **With neither set, the proxy refuses every request** rather than running
+- **With no project URL under either name, the proxy refuses every request** rather than running
   open. `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`;
   setting it on a deployed site hands your fal credits to anyone who finds the
   URL. Netlify's own password protection or access controls are worth adding on
