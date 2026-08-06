@@ -82,10 +82,11 @@ then keeps your timelines in your account: a project switcher in the header,
 auto-save about two seconds after you stop editing, and projects that open on
 any machine you sign in from.
 
-**Signing in is the only prompt.** One Google consent screen covers both halves
+**Signing in is the only Google prompt.** One consent screen covers both halves
 of what the editor needs: who you are, and permission to write to your Drive.
-There is no second step to find, in Settings or anywhere else — Settings is left
-with the part that is actually a choice, which folder your media goes into.
+There is no second connection step anywhere. What follows it is a screen of our
+own — which folder your media goes into — and after that the editor. Settings
+keeps the folder and the sign-out, and nothing else about Google.
 
 Because that one screen has to do both jobs, sign-in needs the two server-side
 variables under [what the sign-in needs](#what-the-sign-in-needs). Without them
@@ -138,16 +139,17 @@ Resolution is a reload — merging two timelines has no sensible automatic answe
 
 ## Saving to your own Google Drive (optional)
 
-Drive comes with the sign-in, so all that is left is picking a folder in
-**Settings**. From then on everything the app makes — generated images, rendered
-clips, recordings, files you upload — is copied into that folder as it is
-created, and **Library → Import from Drive** browses that folder and its
-subfolders to bring existing media in.
+Drive comes with the sign-in, and the step straight after it is choosing where
+your media goes: make an `editor-cat` folder in one click, or pick an existing
+one. From then on everything the app makes — generated images, rendered clips,
+recordings, files you upload — is copied into that folder as it is created, and
+**Library → Import from Drive** opens the Google Picker inside it to bring
+existing media in.
 
-Until a folder is chosen, nothing is backed up: Settings says so, and **Stop
-saving** clears it again. Declining the Drive permission on Google's own consent
-screen does not get you into the editor — an editor that silently saves nothing
-would be worse — so the gate asks once more, with a way to switch accounts.
+The editor does not open until all three are in place — session, permission,
+folder — because an editor that silently saves nowhere is worse than one more
+click. Declining the Drive permission on Google's own consent screen therefore
+sends you back to the same button, with a way to switch accounts.
 
 **Signing out** is in Settings, under Account. It leaves your projects and your
 media where they are and clears this browser: the Google permission held in
@@ -169,23 +171,31 @@ sign-in and no Drive; the app runs against this browser's storage alone.
    project and enable the **Google Drive API**.
 2. Configure the **OAuth consent screen**. While it is in _Testing_ you can add
    up to 100 test users and nothing further is required.
-3. Create an **OAuth client ID** of type _Web application_. Add your origins to
+3. Enable the **Google Picker API** as well — it is what chooses folders and
+   imports media.
+4. Create an **OAuth client ID** of type _Web application_. Add your origins to
    **Authorised JavaScript origins**: `http://localhost:5173` for `npm run dev`,
    `http://localhost:8888` for `netlify dev`, plus your deployed URL.
-4. Add the same origins with `/oauth/google` on the end to **Authorised redirect
+5. Add the same origins with `/oauth/google` on the end to **Authorised redirect
    URIs** — `http://localhost:8888/oauth/google`, `https://your-site/oauth/google`.
    That is where the consent pop-up lands. Google compares it byte for byte, so
    no trailing slash, and sign-in fails without it.
-5. Put the client ID in `.env` locally, and in Netlify under **Site settings →
-   Environment variables** (it is read at build time, so redeploy after adding
-   it):
+6. Create an **API key** under the same credentials page, restricted by HTTP
+   referrer to your origins. The Picker will not open without one.
+7. Put all three in `.env` locally, and in Netlify under **Site settings →
+   Environment variables** (they are read at build time, so redeploy after
+   adding them):
 
 ```
 VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+VITE_GOOGLE_API_KEY=AIza...
+VITE_GOOGLE_PROJECT_NUMBER=1234567890   # Cloud console → project number
 ```
 
-A client ID is not a secret — it ships in the bundle by design, and origin
-allowlisting is what protects it.
+None of these is a secret — they ship in the bundle by design, and origin and
+referrer allowlisting are what protect them. The project number is passed to the
+Picker as its app id, which is what Google requires for files picked there to
+stay reachable under `drive.file`.
 
 ### What the sign-in needs
 
@@ -231,26 +241,25 @@ Without both variables the sign-in screen says the site is not set up and names
 what is missing. That is deliberate: the alternative was a second Google prompt
 buried in Settings, and one prompt was worth more than the fallback.
 
-### The two scopes, and the catch
+### One scope, and why
 
-- `drive.file` — the app's own files. Anything it uploads stays accessible to it
-  forever, and it can see nothing else.
-- `drive.readonly` — needed only to _list_ the folder you pick. Per-file access
-  cannot enumerate media the app did not write, so without this the import
-  browser would always come back empty.
+`drive.file` is the only Drive scope this app asks for: per-file access to what
+it creates, plus whatever you hand it through the Google Picker. It cannot see
+anything else in your Drive, and the consent screen says as much.
 
-**`drive.readonly` is a restricted scope.** In Testing mode that costs nothing.
-But publishing the consent screen so that anyone can sign in requires Google's
-annual third-party security assessment, which is expensive. If you intend to go
-public and can live without importing pre-existing media, drop `drive.readonly`
-from `DRIVE_SCOPE_LIST` in `src/lib/google/gis.ts`: uploads, the folder picker's
-own listing of app-created content, and everything else keep working under
-`drive.file` alone.
+That is possible because **the Picker does the browsing**. It runs against your
+own Google session rather than this app's token, so it shows your real Drive;
+whatever you select is then granted to the app, file by file. Listing your folder
+ourselves would need `drive.readonly` — a Google _restricted_ scope, rendered as
+"See and download all your Google Drive files", and requiring their annual
+third-party security assessment before the consent screen can be published.
+Using the Picker instead is Google's own recommendation, and it is what lets this
+app go public without that assessment.
 
-Both scopes are asked for at sign-in, so the consent screen everyone sees is the
-one listing them. Google's granular consent still lets either be unticked, which
-leaves a grant that cannot do the job — the app drops it and asks again rather
-than opening an editor with nowhere to save.
+The practical limit: `drive.file` does **not** grant access to files already
+inside a folder you pick — only to the folder itself, and to files the app
+created or you selected. So import always goes through the Picker, and there is
+no way to enumerate a folder behind your back.
 
 ## Deploying to Netlify
 

@@ -39,9 +39,7 @@ export function AccountSettings() {
       </div>
 
       <p className="text-xs leading-relaxed text-ink-dim">
-        Signing out leaves your projects in your account and your media in Drive. What it clears is
-        this browser: the Google permission held in memory, and the folder new media was being saved
-        into.
+        Your projects and media stay where they are. Signing out only clears this browser.
       </p>
     </section>
   )

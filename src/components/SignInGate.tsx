@@ -1,10 +1,11 @@
 /**
  * The way in, and the only place this app asks anyone for Google.
  *
- * One consent screen covers both halves of what the editor needs: a session, and
- * permission to write to the user's Drive. So the gate holds both — it does not
- * open the editor until Drive is connected, because an editor that cannot save
- * anything is worse than a prompt.
+ * Three things have to be true before the editor opens, and the gate holds all
+ * of them: a session, permission to write to the user's Drive, and a folder to
+ * write into. The first two come from one Google consent screen; the third is a
+ * step of our own, because an editor that silently saves nowhere is worse than
+ * one more click.
  *
  * Only stands in the way when this build actually has a Supabase project behind
  * it (see `requiresSignIn`). Mock mode and an unconfigured checkout render the
@@ -12,10 +13,12 @@
  * working with no account at all.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Callout, Spinner } from './ui'
+import { Button, Callout, Spinner } from './ui'
 import { createNonce, requestSignIn, type Nonce } from '../lib/google/identity'
 import { ConsentDeclinedError } from '../lib/google/oauthPopup'
 import { isDriveConfigured, loadConnectionStatus } from '../lib/google/gis'
+import { createFolder } from '../lib/google/drive'
+import { isPickerConfigured, pickFolder } from '../lib/google/picker'
 import { toDisplayMessage } from '../lib/errors'
 import { requiresSignIn, useAuthStore } from '../state/useAuthStore'
 import { useDriveStore } from '../state/useDriveStore'
@@ -24,6 +27,7 @@ export function SignInGate({ children }: { children: ReactNode }) {
   const status = useAuthStore((state) => state.status)
   const start = useAuthStore((state) => state.start)
   const driveStatus = useDriveStore((state) => state.status)
+  const folder = useDriveStore((state) => state.folder)
 
   useEffect(() => {
     // `start` resolves after the effect may already have been torn down —
@@ -51,23 +55,25 @@ export function SignInGate({ children }: { children: ReactNode }) {
     void useDriveStore.getState().restore()
   }, [status])
 
+  const ready = driveStatus === 'connected' && folder !== null
+
   /**
    * Whether the editor has been reached this session.
    *
-   * Latched on purpose. Drive is required to get *in*, but a grant revoked from
-   * someone's Google account page an hour later must not throw them out of an
-   * open project — Settings reports that instead. Setting state during render is
-   * React's own answer to deriving from a prop or store value without a wasted
-   * pass, and avoids a frame of sign-in screen after connecting.
+   * Latched on purpose. All three requirements are for getting *in*; a grant
+   * revoked from someone's Google account page an hour later must not throw them
+   * out of an open project — the editor reports that instead. Setting state
+   * during render is React's own answer to deriving from a store value without a
+   * wasted pass, and avoids a frame of sign-in screen after connecting.
    */
   const [entered, setEntered] = useState(false)
-  if (!entered && driveStatus === 'connected') setEntered(true)
+  if (!entered && ready) setEntered(true)
 
   if (!requiresSignIn() || entered) return <>{children}</>
 
   // 'checking' is the stored session being read back; 'connecting' is its Drive
-  // connection being resumed. Neither should flash the sign-in screen at someone
-  // who is about to be let straight through.
+  // connection being resumed. Neither should flash a screen at someone who is
+  // about to be let straight through.
   if (status === 'checking' || driveStatus === 'connecting') {
     return (
       <div className="flex h-full items-center justify-center bg-canvas text-ink">
@@ -76,7 +82,99 @@ export function SignInGate({ children }: { children: ReactNode }) {
     )
   }
 
+  // Everything Google asks for is done; all that is left is where to put things.
+  if (driveStatus === 'connected') return <ChooseFolderStep />
+
   return <SignInScreen busy={status === 'signing-in'} hasSession={status === 'signed-in'} />
+}
+
+/** The name given to the folder this app offers to make for you. */
+const DEFAULT_FOLDER_NAME = 'editor-cat'
+
+/**
+ * The last step before the editor: where new media is saved.
+ *
+ * Offered as a choice rather than done silently, because it is the user's Drive
+ * and they should know which corner of it this app is writing to. Making one for
+ * them is the primary action all the same — most people have no existing folder
+ * in mind, and hunting for one through the Picker to answer a question they did
+ * not ask is a poor first minute.
+ */
+function ChooseFolderStep() {
+  const setFolder = useDriveStore((state) => state.setFolder)
+
+  const [busy, setBusy] = useState<'creating' | 'choosing' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = async (kind: 'creating' | 'choosing') => {
+    setBusy(kind)
+    setError(null)
+    try {
+      const folder =
+        kind === 'creating' ? await createFolder(DEFAULT_FOLDER_NAME) : await pickFolder()
+      // A cancelled Picker resolves to null, which is not a failure — the step
+      // simply stays put.
+      if (folder) setFolder(folder)
+    } catch (cause) {
+      setError(toDisplayMessage(cause))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Panel
+      title="Where should your media go?"
+      lead={`Generated images, rendered clips and recordings are copied into a folder in your own Google Drive as you make them. Pick one, or let ${DEFAULT_FOLDER_NAME} make its own.`}
+    >
+      {error ? (
+        <Callout tone="error" title="Could not set that folder">
+          {error}
+        </Callout>
+      ) : null}
+
+      {busy ? (
+        <span className="flex items-center gap-2 text-sm text-ink-dim">
+          <Spinner /> {busy === 'creating' ? 'Creating the folder…' : 'Waiting for your choice…'}
+        </span>
+      ) : (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button variant="primary" onClick={() => void run('creating')}>
+            Create an “{DEFAULT_FOLDER_NAME}” folder
+          </Button>
+          {/* Creating a folder is a plain Drive call, but choosing one needs the
+              Picker — so on a deployment without an API key, offer only the half
+              that can work rather than a button that always fails. */}
+          {isPickerConfigured() ? (
+            <Button onClick={() => void run('choosing')}>Choose an existing folder</Button>
+          ) : null}
+        </div>
+      )}
+
+      <p className="text-xs leading-relaxed text-ink-dim">
+        You can change this later in Settings. This site only ever sees the folder you point it at
+        and the files it puts there.
+      </p>
+    </Panel>
+  )
+}
+
+/** The card every gate screen sits in, so they cannot drift apart. */
+function Panel({ title, lead, children }: { title: string; lead: string; children: ReactNode }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-canvas p-6 text-ink">
+      <div className="flex w-full max-w-md flex-col items-center gap-5 rounded-xl border border-line bg-surface p-8 text-center">
+        <span aria-hidden className="text-4xl">
+          🎬
+        </span>
+        <div>
+          <h1 className="text-lg font-semibold">{title}</h1>
+          <p className="mt-1 text-sm leading-relaxed text-ink-dim">{lead}</p>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
 }
 
 /** What this deployment can offer. `null` until the config check answers. */
@@ -157,73 +255,66 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
   const needsDrive = hasSession && readiness === 'ready'
 
   return (
-    <div className="flex h-full items-center justify-center bg-canvas p-6 text-ink">
-      <div className="flex w-full max-w-md flex-col items-center gap-5 rounded-xl border border-line bg-surface p-8 text-center">
-        <span aria-hidden className="text-4xl">
-          🎬
+    <Panel
+      title="editor-cat"
+      lead={
+        needsDrive
+          ? 'Almost there — the editor saves your media to your own Google Drive, so it needs your permission to write there.'
+          : 'Sign in to keep your projects. Your timelines are saved to your account, and your media to a folder in your own Google Drive.'
+      }
+    >
+      {error ? (
+        <Callout tone="error" title="Sign-in failed">
+          {error}
+        </Callout>
+      ) : null}
+
+      {needsDrive && driveError ? (
+        <Callout tone="error" title="Google Drive access is needed">
+          {driveError}
+        </Callout>
+      ) : null}
+
+      {readiness === 'not-configured' ? (
+        <Callout tone="error" title="This site is not set up for sign-in">
+          Whoever deployed it needs to set <code>GOOGLE_CLIENT_SECRET</code> and{' '}
+          <code>SUPABASE_SERVICE_ROLE_KEY</code>, and run the <code>google_connections</code>{' '}
+          migration. Nothing you can fix from here.
+        </Callout>
+      ) : busy || opening ? (
+        <span className="flex items-center gap-2 text-sm text-ink-dim">
+          <Spinner /> Signing in…
         </span>
-        <div>
-          <h1 className="text-lg font-semibold">editor-cat</h1>
-          <p className="mt-1 text-sm leading-relaxed text-ink-dim">
-            {needsDrive
-              ? 'Almost there — the editor saves your media to your own Google Drive, so it needs your permission to write there.'
-              : 'Sign in to keep your projects. Your timelines are saved to your account, and your media to a folder in your own Google Drive.'}
-          </p>
-        </div>
+      ) : readiness === 'ready' ? (
+        <GoogleButton
+          onClick={() => void start()}
+          disabled={!nonce}
+          label={needsDrive ? 'Allow Google Drive' : 'Sign in with Google'}
+        />
+      ) : (
+        <Spinner />
+      )}
 
-        {error ? (
-          <Callout tone="error" title="Sign-in failed">
-            {error}
-          </Callout>
-        ) : null}
+      {needsDrive && !busy && !opening ? (
+        // Without this, unticking Drive strands a perfectly good session on a
+        // screen whose only button will not help.
+        <button
+          type="button"
+          onClick={() => {
+            useDriveStore.getState().forget()
+            void useAuthStore.getState().signOut()
+          }}
+          className="text-xs text-ink-dim underline"
+        >
+          Use a different account
+        </button>
+      ) : null}
 
-        {needsDrive && driveError ? (
-          <Callout tone="error" title="Google Drive access is needed">
-            {driveError}
-          </Callout>
-        ) : null}
-
-        {readiness === 'not-configured' ? (
-          <Callout tone="error" title="This site is not set up for sign-in">
-            Whoever deployed it needs to set <code>GOOGLE_CLIENT_SECRET</code> and{' '}
-            <code>SUPABASE_SERVICE_ROLE_KEY</code>, and run the <code>google_connections</code>{' '}
-            migration. Nothing you can fix from here.
-          </Callout>
-        ) : busy || opening ? (
-          <span className="flex items-center gap-2 text-sm text-ink-dim">
-            <Spinner /> Signing in…
-          </span>
-        ) : readiness === 'ready' ? (
-          <GoogleButton
-            onClick={() => void start()}
-            disabled={!nonce}
-            label={needsDrive ? 'Allow Google Drive' : 'Sign in with Google'}
-          />
-        ) : (
-          <Spinner />
-        )}
-
-        {needsDrive && !busy && !opening ? (
-          // Without this, unticking Drive strands a perfectly good session on a
-          // screen whose only button will not help.
-          <button
-            type="button"
-            onClick={() => {
-              useDriveStore.getState().forget()
-              void useAuthStore.getState().signOut()
-            }}
-            className="text-xs text-ink-dim underline"
-          >
-            Use a different account
-          </button>
-        ) : null}
-
-        <p className="text-xs leading-relaxed text-ink-dim">
-          One permission covers both: it signs you in, and it saves your media to a folder you pick.
-          Your API keys stay in this browser and are never part of your account.
-        </p>
-      </div>
-    </div>
+      <p className="text-xs leading-relaxed text-ink-dim">
+        One permission covers both: it signs you in, and it lets the editor save your media to a
+        folder you pick. Your API keys stay in this browser and are never part of your account.
+      </p>
+    </Panel>
   )
 }
 

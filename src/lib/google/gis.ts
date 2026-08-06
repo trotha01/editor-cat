@@ -30,14 +30,18 @@ import {
 } from './connection'
 
 /**
- * `drive.file` covers everything we upload: an app always keeps access to the
- * files it created. `drive.readonly` is what makes browsing a pre-existing
- * folder possible — per-file scopes cannot list media the app did not write.
+ * The only Drive scope this app asks for, and deliberately the narrowest one
+ * Google offers: per-file access to what the app creates, plus whatever the user
+ * hands it through the Google Picker.
+ *
+ * It used to ask for `drive.readonly` as well, to list media already sitting in
+ * the chosen folder. That is a *restricted* scope — "see and download all your
+ * Google Drive files" on the consent screen, and an annual third-party security
+ * assessment before the consent screen can be published. The Picker does the
+ * same job by handing over exactly the files the user chose, which is both
+ * Google's recommendation and a much smaller thing to ask for.
  */
-export const DRIVE_SCOPE_LIST: readonly string[] = [
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/drive.readonly',
-]
+export const DRIVE_SCOPE_LIST: readonly string[] = ['https://www.googleapis.com/auth/drive.file']
 
 export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
 
@@ -101,10 +105,10 @@ function validToken(): string | null {
   return null
 }
 
-/** The message shown when Google issued only some of what was asked for. */
+/** The message shown when Google issued less than was asked for. */
 const PARTIAL_GRANT =
-  'Google Drive access was only partly granted. Both permissions are needed: one to save your ' +
-  'media, one to browse the folder you pick.'
+  'Google Drive access was not granted. The editor saves your media to your own Drive, so it ' +
+  'cannot open without it.'
 
 function grantsAllScopes(scope: string): boolean {
   const granted = new Set(scope.split(/\s+/).filter(Boolean))

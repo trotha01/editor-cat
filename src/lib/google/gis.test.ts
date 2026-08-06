@@ -32,8 +32,7 @@ vi.mock('./connection', () => ({
 
 const gis = await import('./gis')
 
-const BOTH_SCOPES = gis.DRIVE_SCOPES
-const storedGrant = { accessToken: 'stored-token', expiresIn: 3600, scope: BOTH_SCOPES }
+const storedGrant = { accessToken: 'stored-token', expiresIn: 3600, scope: gis.DRIVE_SCOPES }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -53,6 +52,16 @@ describe('SIGN_IN_SCOPES', () => {
 
     for (const scope of gis.DRIVE_SCOPE_LIST) expect(asked).toContain(scope)
     expect(asked).toContain('openid')
+  })
+
+  it('asks for no restricted scope, which is what the Picker buys', () => {
+    // `drive.readonly` reads as "See and download all your Google Drive files"
+    // on the consent screen and needs Google's annual third-party security
+    // assessment before that screen can be published. The Picker hands over the
+    // files the user chose instead, so this must never creep back.
+    expect(gis.SIGN_IN_SCOPES).not.toContain('drive.readonly')
+    expect(gis.SIGN_IN_SCOPES).not.toContain('auth/drive ')
+    expect(gis.DRIVE_SCOPE_LIST).toEqual(['https://www.googleapis.com/auth/drive.file'])
   })
 })
 
@@ -102,16 +111,16 @@ describe('accessToken', () => {
     await expect(gis.accessToken()).rejects.toThrow('Drive is on fire')
   })
 
-  it('refuses a stored grant that lost a scope', async () => {
+  it('refuses a stored grant that came back without Drive', async () => {
     requestAccessToken.mockResolvedValue({
-      accessToken: 'partial',
+      accessToken: 'no-drive',
       expiresIn: 3600,
-      scope: 'https://www.googleapis.com/auth/drive.file',
+      scope: 'openid email',
     })
 
-    // Browsing needs the read scope. Better a clear message here than a 403
-    // from the folder list once the user is halfway through choosing one.
-    await expect(gis.accessToken()).rejects.toThrow(/partly granted/)
+    // Better a clear message here than a 403 from the first upload, long after
+    // the user has stopped connecting anything to the cause.
+    await expect(gis.accessToken()).rejects.toThrow(/was not granted/)
   })
 })
 
@@ -133,8 +142,8 @@ describe('adoptConnection', () => {
     expect(gis.isDurableConnection()).toBe(true)
   })
 
-  it('drops a grant that arrived without the Drive permissions', async () => {
-    // Google's consent screen lets the Drive scopes be unticked, which signs the
+  it('drops a grant that arrived without the Drive permission', async () => {
+    // Google's consent screen lets the Drive scope be unticked, which signs the
     // user in with a connection that can do nothing. Keeping it would mean
     // resuming it on every load and failing the same way each time.
     saveConnection.mockResolvedValue({
@@ -144,7 +153,7 @@ describe('adoptConnection', () => {
       durable: true,
     })
 
-    await expect(gis.adoptConnection('sign-in-code')).rejects.toThrow(/partly granted/)
+    await expect(gis.adoptConnection('sign-in-code')).rejects.toThrow(/was not granted/)
     expect(clearConnection).toHaveBeenCalled()
     expect(gis.hasToken()).toBe(false)
   })
