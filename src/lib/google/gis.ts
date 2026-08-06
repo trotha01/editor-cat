@@ -1,31 +1,62 @@
 /**
- * Google sign-in, via Google Identity Services.
+ * Google Drive authorisation.
  *
- * GIS is script-loaded rather than bundled — Google does not ship it to npm,
- * and self-hosting it is explicitly unsupported because the endpoints it talks
- * to can change under it.
+ * There is one way in, and it is signing in: the consent screen at the gate asks
+ * for identity and Drive together, a Netlify function exchanges the code it
+ * returns for a refresh token and keeps that server-side, and this module asks
+ * for a fresh access token whenever it needs one. See connection.ts and
+ * `/api/google/*`.
  *
- * The flow here is the browser-side token flow, which hands back an access
- * token and no refresh token. That is a deliberate trade: a refresh token in a
- * static site is a long-lived credential sitting in storage with no server to
- * protect it. The cost is that tokens expire after roughly an hour, so
- * `accessToken` below re-acquires silently when it can and reports
- * `needsConsent` when it cannot.
+ * This file used to carry a second path built on Google Identity Services, for
+ * deployments with no server behind them. It is gone. GIS splits its two jobs
+ * across libraries that cannot do each other's, so using it meant asking the user
+ * for Google twice — once to sign in, once for Drive, from a button buried in
+ * Settings. One prompt was worth more than the fallback.
+ *
+ * The access token is held in memory, never in storage. It is the credential
+ * Drive actually accepts, and it is cheap to replace; the refresh token, which is
+ * neither, never reaches this side at all.
  */
-
-const GIS_SRC = 'https://accounts.google.com/gsi/client'
+import {
+  ConnectionExpiredError,
+  NoConnectionError,
+  NotDurableError,
+  SessionRequiredError,
+  clearConnection,
+  connectionStatus,
+  requestAccessToken,
+  saveConnection,
+  type ConnectionStatus,
+  type DriveGrant,
+} from './connection'
 
 /**
- * `drive.file` covers everything we upload: an app always keeps access to the
- * files it created. `drive.readonly` is what makes browsing a pre-existing
- * folder possible — per-file scopes cannot list media the app did not write.
+ * The only Drive scope this app asks for, and deliberately the narrowest one
+ * Google offers: per-file access to what the app creates, plus whatever the user
+ * hands it through the Google Picker.
+ *
+ * It used to ask for `drive.readonly` as well, to list media already sitting in
+ * the chosen folder. That is a *restricted* scope — "see and download all your
+ * Google Drive files" on the consent screen, and an annual third-party security
+ * assessment before the consent screen can be published. The Picker does the
+ * same job by handing over exactly the files the user chose, which is both
+ * Google's recommendation and a much smaller thing to ask for.
  */
-export const DRIVE_SCOPE_LIST: [string, ...string[]] = [
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/drive.readonly',
-]
+export const DRIVE_SCOPE_LIST: readonly string[] = ['https://www.googleapis.com/auth/drive.file']
 
 export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
+
+/**
+ * What signing in asks for: who you are, plus Drive.
+ *
+ * Asked together because they are one decision. Splitting them meant two trips to
+ * Google and a backup that quietly did nothing until someone found the second
+ * button — which is the whole reason this list exists.
+ *
+ * The Drive half can still be unticked on Google's own screen. That grant cannot
+ * do anything, so it is dropped rather than stored, and the gate asks again.
+ */
+export const SIGN_IN_SCOPES = ['openid', 'email', 'profile', ...DRIVE_SCOPE_LIST].join(' ')
 
 export function clientId(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() ?? ''
@@ -38,46 +69,10 @@ export function isDriveConfigured(): boolean {
 
 /** Raised when the user must interact before a token can be issued. */
 export class NeedsConsentError extends Error {
-  constructor(message = 'Connect your Google account to continue.') {
+  constructor(message = 'Sign in again to reach your Google Drive.') {
     super(message)
     this.name = 'NeedsConsentError'
   }
-}
-
-let scriptPromise: Promise<void> | null = null
-
-/**
- * Loads the GIS script once, shared by both halves of it: the token client here
- * (Drive authorisation) and the credential client in identity.ts (sign-in).
- */
-export function loadGisScript(): Promise<void> {
-  scriptPromise ??= new Promise<void>((resolve, reject) => {
-    if (typeof document === 'undefined') {
-      reject(new Error('Google sign-in is only available in a browser.'))
-      return
-    }
-    if (window.google?.accounts?.oauth2) {
-      resolve()
-      return
-    }
-
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${GIS_SRC}"]`)
-    const script = existing ?? document.createElement('script')
-    script.addEventListener('load', () => resolve())
-    script.addEventListener('error', () => {
-      // Let a later attempt retry rather than caching the failure forever.
-      scriptPromise = null
-      reject(new Error('Could not reach Google sign-in. Check your connection and try again.'))
-    })
-
-    if (!existing) {
-      script.src = GIS_SRC
-      script.async = true
-      script.defer = true
-      document.head.appendChild(script)
-    }
-  })
-  return scriptPromise
 }
 
 interface StoredToken {
@@ -87,12 +82,21 @@ interface StoredToken {
 }
 
 /**
- * Tokens are held in memory only. Persisting them would leave a working Drive
- * credential in localStorage for anything with script access on the origin to
- * read, and re-acquiring one silently is cheap.
+ * Access tokens are held in memory only. Persisting one would leave a working
+ * Drive credential in localStorage for anything with script access on the origin
+ * to read, and replacing it costs one request to our own function.
  */
 let token: StoredToken | null = null
-let tokenClient: google.accounts.oauth2.TokenClient | null = null
+
+/**
+ * Whether this deployment stores connections server-side.
+ *
+ * `null` until asked. Resolved by `loadConnectionStatus`, which the gate calls
+ * before drawing anything — a site that cannot store a connection cannot sign
+ * anyone in either, and says so rather than offering a button that fails after
+ * the user has already consented.
+ */
+let durable: boolean | null = null
 
 /** Renew a minute early; a token that expires mid-upload fails the whole upload. */
 const EXPIRY_MARGIN_MS = 60_000
@@ -102,144 +106,110 @@ function validToken(): string | null {
   return null
 }
 
-/**
- * The request in flight, if any.
- *
- * GIS fixes its callbacks when the client is built, so the client is created
- * once and its callbacks dispatch to whatever request is currently waiting.
- * Rebuilding a client per request would leak listeners and discard the session
- * state that makes silent renewal work.
- */
-let pending: { resolve: (token: string) => void; reject: (error: Error) => void } | null = null
+/** The message shown when Google issued less than was asked for. */
+const PARTIAL_GRANT =
+  'Google Drive access was not granted. The editor saves your media to your own Drive, so it ' +
+  'cannot open without it.'
 
-function settle(fn: (waiter: NonNullable<typeof pending>) => void): void {
-  const waiter = pending
-  if (!waiter) return
-  pending = null
-  fn(waiter)
+function grantsAllScopes(scope: string): boolean {
+  const granted = new Set(scope.split(/\s+/).filter(Boolean))
+  return DRIVE_SCOPE_LIST.every((needed) => granted.has(needed))
 }
 
-function onToken(response: google.accounts.oauth2.TokenResponse): void {
-  settle(({ resolve, reject }) => {
-    if (response.error) {
-      reject(
-        response.error === 'access_denied'
-          ? new NeedsConsentError('Google access was declined.')
-          : new Error(response.error_description || response.error),
-      )
-      return
-    }
+/** Caches a grant from the stored connection and hands back its access token. */
+function keep(grant: DriveGrant): string {
+  // The stored connection reports its scopes too, and a partial grant has to
+  // surface here rather than as a confusing 403 from the folder list later.
+  if (!grantsAllScopes(grant.scope)) throw new Error(PARTIAL_GRANT)
 
-    // Google may issue fewer scopes than were asked for. Browsing depends on
-    // the read scope, so a partial grant has to surface here rather than as a
-    // confusing 403 from the folder list later.
-    if (!google.accounts.oauth2.hasGrantedAllScopes(response, ...DRIVE_SCOPE_LIST)) {
-      reject(
-        new Error(
-          'Google Drive access was only partly granted. Both permissions are needed: one to save your media, one to browse the folder you pick.',
-        ),
-      )
-      return
-    }
-
-    const lifetime = Number(response.expires_in) * 1000
-    token = {
-      value: response.access_token,
-      expiresAt: Date.now() + (Number.isFinite(lifetime) ? lifetime : 3_600_000) - EXPIRY_MARGIN_MS,
-    }
-    resolve(response.access_token)
-  })
-}
-
-function onError(error: google.accounts.oauth2.ClientConfigError): void {
-  // A silent attempt that cannot finish without UI is an expected outcome, not
-  // a failure: the caller turns it into a "reconnect" prompt.
-  settle(({ reject }) => reject(new NeedsConsentError(errorMessage(error.type))))
-}
-
-async function client(): Promise<google.accounts.oauth2.TokenClient> {
-  const id = clientId()
-  if (!id) {
-    throw new Error(
-      'Google Drive is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.',
-    )
+  token = {
+    value: grant.accessToken,
+    expiresAt: Date.now() + grant.expiresIn * 1000 - EXPIRY_MARGIN_MS,
   }
-
-  await loadGisScript()
-
-  tokenClient ??= google.accounts.oauth2.initTokenClient({
-    client_id: id,
-    scope: DRIVE_SCOPES,
-    callback: onToken,
-    error_callback: onError,
-  })
-  return tokenClient
+  return grant.accessToken
 }
 
 /**
- * Runs one token request against GIS.
+ * Asks the server whether a connection is stored for this account.
  *
- * `prompt: ''` asks Google to skip the consent screen when the user has an
- * active session and has already granted these scopes — the case that makes an
- * expired token invisible to the user.
+ * Also settles `durable` for the rest of the session. A `false` here is the end
+ * of the road — there is no degraded mode left to fall into — so the reason
+ * comes back with it for the gate to show, which is the only thing anyone can
+ * act on from that screen.
  */
-async function request(prompt: '' | 'consent' | 'select_account'): Promise<string> {
-  const instance = await client()
-
-  // GIS has no way to cancel an outstanding request, so a second one would
-  // resolve against the first one's waiter. Serialising is simpler than
-  // tracking which response belongs to which caller.
-  if (pending) throw new Error('A Google sign-in is already in progress.')
-
-  return await new Promise<string>((resolve, reject) => {
-    pending = { resolve, reject }
-    try {
-      instance.requestAccessToken({ prompt })
-    } catch (cause) {
-      settle(() => reject(cause instanceof Error ? cause : new Error(String(cause))))
-    }
-  })
+export async function loadConnectionStatus(): Promise<ConnectionStatus> {
+  const status = await connectionStatus()
+  durable = status.durable
+  return status
 }
 
-function errorMessage(type: string): string {
-  switch (type) {
-    case 'popup_closed':
-      return 'The Google sign-in window was closed before finishing.'
-    case 'popup_failed_to_open':
-      return 'The browser blocked the Google sign-in window. Allow pop-ups for this site and try again.'
-    default:
-      return 'Connect your Google account to continue.'
+/** Whether this site can store a connection at all. Null until first asked. */
+export function isDurableConnection(): boolean | null {
+  return durable
+}
+
+/**
+ * Turns the consent code from the sign-in screen into a stored connection and a
+ * live token.
+ */
+export async function adoptConnection(code: string): Promise<string> {
+  const grant = await saveConnection(code)
+  durable = grant.durable
+
+  try {
+    return keep(grant)
+  } catch (cause) {
+    // Someone who unticked Drive on the consent screen leaves a connection that
+    // cannot do anything. Storing it would mean resuming it on every load and
+    // failing the same way each time, so it is dropped and reported instead.
+    await clearConnection().catch(() => {})
+    throw cause
   }
 }
 
-/**
- * Starts the consent flow. Must be called from a user gesture — browsers block
- * pop-ups opened from anything else.
- */
-export async function connect(): Promise<string> {
-  return await request('consent')
-}
-
-/** The silent renewal currently running, shared by everyone waiting on it. */
+/** The renewal currently running, shared by everyone waiting on it. */
 let renewal: Promise<string> | null = null
 
 /**
- * Returns a usable token, renewing silently when the previous one has aged out.
+ * Mints a token from the stored connection.
+ *
+ * Every way of not having one ends the same way — the user has to sign in again,
+ * which is the only place this app asks for Google. So they all become
+ * `NeedsConsentError` rather than four different failures the callers would each
+ * have to know about.
+ */
+async function renew(): Promise<string> {
+  try {
+    return keep(await requestAccessToken())
+  } catch (cause) {
+    if (
+      cause instanceof ConnectionExpiredError ||
+      cause instanceof NoConnectionError ||
+      cause instanceof SessionRequiredError ||
+      cause instanceof NotDurableError
+    ) {
+      throw new NeedsConsentError(cause.message)
+    }
+    throw cause
+  }
+}
+
+/**
+ * Returns a usable token, renewing when the previous one has aged out.
  *
  * Concurrent callers share one renewal. Generating a batch of images fires
- * several uploads at once, and without this the first would start a request and
- * the rest would fail outright, since GIS cannot have two in flight at a time.
+ * several uploads at once, and without this each would mint its own token.
  *
- * Throws `NeedsConsentError` when Google will not issue a token without UI,
- * which is the signal for the caller to show a reconnect button rather than an
- * error.
+ * Throws `NeedsConsentError` when a token cannot be issued without the user
+ * doing something, which is the signal for the caller to point them back at
+ * signing in rather than to show an error.
  */
 export async function accessToken(): Promise<string> {
   const current = validToken()
   if (current) return current
 
   if (!renewal) {
-    const attempt = request('')
+    const attempt = renew()
     renewal = attempt
     // Cleared however it settles, but only if a newer attempt has not already
     // replaced it. Handling the rejection here as well keeps a renewal nobody
@@ -269,28 +239,9 @@ export function invalidateToken(): void {
   token = null
 }
 
-/** Drops our token and tells Google to invalidate it. */
-export async function disconnect(): Promise<void> {
-  const current = token?.value
-  token = null
-  if (!current) return
-
-  try {
-    await loadGisScript()
-    await new Promise<void>((resolve) => {
-      google.accounts.oauth2.revoke(current, () => resolve())
-    })
-  } catch {
-    // Revocation is a courtesy to the user's account page. Failing it must not
-    // stop the local disconnect, which has already happened above.
-  }
-}
-
-/** Test seam: forget cached script/client/token state. */
+/** Test seam: forget cached token and configuration state. */
 export function resetForTests(): void {
-  scriptPromise = null
-  tokenClient = null
   token = null
-  pending = null
   renewal = null
+  durable = null
 }

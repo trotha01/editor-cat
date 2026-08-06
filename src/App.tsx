@@ -48,9 +48,6 @@ export default function App() {
     // Loads the project list and opens one, or falls back to the single local
     // project when there is no account behind this build.
     void useProjectsStore.getState().start()
-    // Resumes a previous Drive session without prompting. It is a no-op until
-    // the user has picked a folder, so a first visit never sees Google.
-    void useDriveStore.getState().restore()
 
     return installFlushOnExit()
   }, [loadAssets])

@@ -3,13 +3,22 @@ import type { Asset } from '../lib/types'
 
 const uploadFile = vi.fn()
 const update = vi.fn()
+const accessToken = vi.fn()
+const loadConnectionStatus = vi.fn<() => Promise<{ durable: boolean; connected: boolean }>>()
+const isDurableConnection = vi.fn<() => boolean | null>(() => null)
+const adoptConnection = vi.fn()
+const invalidateToken = vi.fn()
+
+class FakeNeedsConsentError extends Error {}
 
 vi.mock('../lib/google/gis', () => ({
-  connect: vi.fn(),
-  disconnect: vi.fn(),
-  accessToken: vi.fn(),
+  adoptConnection: (code: string) => adoptConnection(code) as unknown,
+  accessToken: (...args: unknown[]) => accessToken(...args) as unknown,
+  invalidateToken: () => invalidateToken(),
   isDriveConfigured: () => true,
-  NeedsConsentError: class extends Error {},
+  isDurableConnection: () => isDurableConnection(),
+  loadConnectionStatus: () => loadConnectionStatus(),
+  NeedsConsentError: FakeNeedsConsentError,
 }))
 
 class FakeDriveError extends Error {
@@ -21,8 +30,10 @@ class FakeDriveError extends Error {
   }
 }
 
+const currentUser = vi.fn(async () => ({ email: 'someone@example.com', name: 'Someone' }))
+
 vi.mock('../lib/google/drive', () => ({
-  currentUser: vi.fn(),
+  currentUser: () => currentUser(),
   DriveError: FakeDriveError,
   uploadFile: (...args: unknown[]) => uploadFile(...args) as unknown,
 }))
@@ -51,12 +62,142 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
+  currentUser.mockResolvedValue({ email: 'someone@example.com', name: 'Someone' })
+  loadConnectionStatus.mockResolvedValue({ durable: false, connected: false })
+  isDurableConnection.mockReturnValue(null)
+  adoptConnection.mockResolvedValue('stored-token')
   useDriveStore.setState({
     status: 'connected',
     account: null,
     folder: { id: 'folder_1', name: 'Renders' },
     error: null,
     uploads: [],
+    durable: null,
+  })
+})
+
+describe('adopt', () => {
+  it('completes the connection Google granted during sign-in', async () => {
+    useDriveStore.setState({ status: 'disconnected', folder: null })
+
+    await useDriveStore.getState().adopt('sign-in-code')
+
+    expect(adoptConnection).toHaveBeenCalledWith('sign-in-code')
+    expect(useDriveStore.getState().status).toBe('connected')
+    expect(useDriveStore.getState().account?.email).toBe('someone@example.com')
+  })
+
+  it('leaves the user signed in when they decline the Drive permissions', async () => {
+    adoptConnection.mockRejectedValue(new Error('Google Drive access was only partly granted.'))
+    useDriveStore.setState({ status: 'connecting', folder: null })
+
+    await useDriveStore.getState().adopt('sign-in-code')
+
+    // Reported as never having connected — which is true — so the gate asks
+    // again rather than letting them into an editor with nowhere to save.
+    expect(useDriveStore.getState().status).toBe('disconnected')
+    expect(useDriveStore.getState().error).toMatch(/partly granted/)
+  })
+
+  it('is not undone by the restore that runs as the editor mounts', async () => {
+    // Sign-in claims the connection before the session exists, so the two run
+    // concurrently. Without the guard, restore's older answer lands last and
+    // holds someone at the gate who has just been let through.
+    loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
+    useDriveStore.getState().setConnecting(true)
+
+    const adopting = useDriveStore.getState().adopt('sign-in-code')
+    await useDriveStore.getState().restore()
+    await adopting
+
+    expect(loadConnectionStatus).not.toHaveBeenCalled()
+    expect(useDriveStore.getState().status).toBe('connected')
+  })
+
+  it('releases the claim when the sign-in it was made for never landed', () => {
+    useDriveStore.getState().setConnecting(true)
+    expect(useDriveStore.getState().status).toBe('connecting')
+
+    // Otherwise a failed sign-in leaves the gate spinning, and the next
+    // `restore` stands down for a connection that is not coming.
+    useDriveStore.getState().setConnecting(false)
+    expect(useDriveStore.getState().status).toBe('disconnected')
+  })
+})
+
+describe('restore', () => {
+  it('resumes a connection stored against the account, on a browser that has never seen it', async () => {
+    // The whole point of storing it server-side: a machine with an empty local
+    // storage still comes back connected rather than showing the button again.
+    loadConnectionStatus.mockResolvedValue({ durable: true, connected: true })
+    useDriveStore.setState({ status: 'disconnected', folder: null })
+
+    await useDriveStore.getState().restore()
+
+    expect(accessToken).toHaveBeenCalled()
+    expect(useDriveStore.getState().status).toBe('connected')
+    expect(useDriveStore.getState().account?.email).toBe('someone@example.com')
+    expect(useDriveStore.getState().durable).toBe(true)
+  })
+
+  it('reports no connection when the account has none, folder or not', async () => {
+    loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
+    // A folder left over from a previous account must not be read as a
+    // connection: the account is the only authority on that now.
+    useDriveStore.setState({ status: 'disconnected' })
+
+    await useDriveStore.getState().restore()
+
+    expect(accessToken).not.toHaveBeenCalled()
+    expect(useDriveStore.getState().status).toBe('disconnected')
+  })
+
+  it('does not try Google when the site cannot store connections at all', async () => {
+    loadConnectionStatus.mockResolvedValue({ durable: false, connected: false })
+    useDriveStore.setState({ status: 'disconnected', folder: null })
+
+    await useDriveStore.getState().restore()
+
+    expect(accessToken).not.toHaveBeenCalled()
+    expect(useDriveStore.getState().status).toBe('disconnected')
+  })
+
+  it('flags a revoked grant as needing a reconnect rather than as an error', async () => {
+    loadConnectionStatus.mockResolvedValue({ durable: true, connected: true })
+    accessToken.mockRejectedValue(new FakeNeedsConsentError('Connect your Google account.'))
+    useDriveStore.setState({ status: 'disconnected' })
+
+    await useDriveStore.getState().restore()
+
+    expect(useDriveStore.getState().status).toBe('needs-reconnect')
+    // Nothing has gone wrong that the user should be alarmed by.
+    expect(useDriveStore.getState().error).toBeNull()
+  })
+})
+
+describe('forget', () => {
+  it('clears this browser without revoking the connection the account owns', () => {
+    useDriveStore.getState().setFolder({ id: 'folder_2', name: 'B-roll' })
+    useDriveStore.setState({ status: 'connected', account: { email: 'a@b.c', name: 'A' } })
+
+    useDriveStore.getState().forget()
+
+    // Signing back in should resume Drive, so the connection stored against the
+    // account stays put — this only clears what this browser was holding.
+    expect(invalidateToken).toHaveBeenCalled()
+    expect(useDriveStore.getState().status).toBe('disconnected')
+    expect(useDriveStore.getState().account).toBeNull()
+  })
+
+  it('drops the folder, which is an id in the previous account’s Drive', () => {
+    useDriveStore.getState().setFolder({ id: 'folder_2', name: 'B-roll' })
+
+    useDriveStore.getState().forget()
+
+    // Left behind, the next person to sign in on this browser would have media
+    // uploaded into a folder they cannot reach.
+    expect(useDriveStore.getState().folder).toBeNull()
+    expect(window.localStorage.getItem('editor-cat.drive.folder.v1')).toBeNull()
   })
 })
 

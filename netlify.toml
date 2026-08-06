@@ -29,7 +29,7 @@
     # the object URLs used for media, and the export download.
     # 'wasm-unsafe-eval' is required by ffmpeg.wasm. blob: covers the worker,
     # the object URLs used for media, and the export download.
-    # accounts.google.com serves the Google Identity Services client, which
-    # also needs frame-src for the hidden iframe it uses to renew tokens
-    # without a pop-up.
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://accounts.google.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://accounts.google.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' data: blob: https:; font-src 'self' data:; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    # apis.google.com serves the Google Picker's loader, and the Picker itself
+    # renders in an iframe from docs.google.com. The OAuth consent screen needs
+    # no entry: it is a pop-up window, which no fetch directive governs.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://apis.google.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-src https://docs.google.com https://drive.google.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"

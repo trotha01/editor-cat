@@ -82,6 +82,17 @@ then keeps your timelines in your account: a project switcher in the header,
 auto-save about two seconds after you stop editing, and projects that open on
 any machine you sign in from.
 
+**Signing in is the only Google prompt.** One consent screen covers both halves
+of what the editor needs: who you are, and permission to write to your Drive.
+There is no second connection step anywhere. What follows it is a screen of our
+own — which folder your media goes into — and after that the editor. Settings
+keeps the folder and the sign-out, and nothing else about Google.
+
+Because that one screen has to do both jobs, sign-in needs the two server-side
+variables under [what the sign-in needs](#what-the-sign-in-needs). Without them
+the site cannot sign anyone in at all, and says so rather than falling back to
+asking for Google twice.
+
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
 placement, resolution — and a catalogue of asset metadata. It never holds media
 bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
@@ -99,20 +110,42 @@ exactly as it did before: one project, IndexedDB, no sign-in.
 ### Setting it up
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. Run `supabase/migrations/0001_projects.sql` — paste it into the dashboard's
-   **SQL editor**, or `supabase db push` with the CLI. It creates two tables and
-   turns on row-level security, so a user can only ever read and write rows on
-   their own account.
+2. Run the files in `supabase/migrations/` in order — paste them into the
+   dashboard's **SQL editor**, or `supabase db push` with the CLI. `0001` creates
+   the projects and assets tables with row-level security, so a user can only
+   ever read and write rows on their own account. `0002` adds the table that
+   holds Google refresh tokens, which no browser can read at all — sign-in does
+   not work without it, so it is not optional.
 3. **Authentication → Providers → Google → Enable**, and paste the _same_ Google
    client ID from the Drive setup above into **Authorized Client IDs**. No
-   client secret is needed: the page hands Supabase a Google ID token directly
-   rather than going through a redirect.
+   client secret is needed here: the page hands Supabase a Google ID token it
+   already holds, rather than sending the browser through Supabase's own
+   redirect. (The secret in `GOOGLE_CLIENT_SECRET` is a different thing — it is
+   read only by this site's own function, to obtain that token and a Drive
+   refresh token together.)
 4. Copy the project URL and anon key from **Project settings → API** into `.env`
    (and into Netlify's environment variables), then redeploy.
 
 The client ID must match in both places. If it does not, sign-in fails with
 "Unacceptable audience" — the app rewrites that message to say so, because the
 raw error points at nothing.
+
+### Which build is deployed
+
+Type **`VERSION`** in the browser console on any deployed site:
+
+```js
+VERSION
+// { commit: "91d8e38…", short: "91d8e38", branch: "staging",
+//   context: "branch-deploy", builtAt: "2026-08-06T22:24:11.368Z" }
+```
+
+Stamped in at build time from Netlify's own `COMMIT_REF`, `BRANCH` and
+`CONTEXT`, falling back to git for a local `npm run build`. It is set before
+anything else runs, so it answers even on a screen that is refusing to let you
+in — which is usually when you need it. The `branch` is the field that matters
+most: a branch deploy running code older than the branch you fixed it on looks
+identical to a bug from the outside.
 
 ### Conflicts
 
@@ -123,11 +156,22 @@ Resolution is a reload — merging two timelines has no sensible automatic answe
 
 ## Saving to your own Google Drive (optional)
 
-Connect a Google account in **Settings** and pick a folder. From then on
-everything the app makes — generated images, rendered clips, recordings, files
-you upload — is copied into that folder as it is created, and **Library →
-Import from Drive** browses that folder and its subfolders to bring existing
-media in.
+Drive comes with the sign-in, and the step straight after it is choosing where
+your media goes: make an `editor-cat` folder in one click, or pick an existing
+one. From then on everything the app makes — generated images, rendered clips,
+recordings, files you upload — is copied into that folder as it is created, and
+**Library → Import from Drive** opens the Google Picker inside it to bring
+existing media in.
+
+The editor does not open until all three are in place — session, permission,
+folder — because an editor that silently saves nowhere is worse than one more
+click. Declining the Drive permission on Google's own consent screen therefore
+sends you back to the same button, with a way to switch accounts.
+
+**Signing out** is in Settings, under Account. It leaves your projects and your
+media where they are and clears this browser: the Google permission held in
+memory, and the folder new media was being saved into. Signing back in is the
+same single prompt.
 
 The bytes stay in IndexedDB either way; Drive is the durable copy, not the
 playback source. Drive has no URL that carries our token _and_ serves range
@@ -135,8 +179,8 @@ requests, so a `<video>` pointed straight at it could not seek — and export
 needs the bytes locally regardless. A failed upload therefore costs you the
 backup and nothing else.
 
-The app is fully usable without this. Leave `VITE_GOOGLE_CLIENT_ID` unset and
-the Drive section of Settings just explains that it is switched off.
+`VITE_GOOGLE_CLIENT_ID` is what turns all of this on. Left unset, there is no
+sign-in and no Drive; the app runs against this browser's storage alone.
 
 ### Setting up the client ID
 
@@ -144,36 +188,106 @@ the Drive section of Settings just explains that it is switched off.
    project and enable the **Google Drive API**.
 2. Configure the **OAuth consent screen**. While it is in _Testing_ you can add
    up to 100 test users and nothing further is required.
-3. Create an **OAuth client ID** of type _Web application_. Add your origins to
+3. Enable the **Google Picker API** as well — it is what chooses folders and
+   imports media.
+4. Create an **OAuth client ID** of type _Web application_. Add your origins to
    **Authorised JavaScript origins**: `http://localhost:5173` for `npm run dev`,
-   `http://localhost:8888` for `netlify dev`, plus your deployed URL. There is
-   no redirect URI to set — the token flow never leaves the page.
-4. Put the client ID in `.env` locally, and in Netlify under **Site settings →
-   Environment variables** (it is read at build time, so redeploy after adding
-   it):
+   `http://localhost:8888` for `netlify dev`, plus your deployed URL.
+5. Add the same origins with `/oauth/google` on the end to **Authorised redirect
+   URIs** — `http://localhost:8888/oauth/google`, `https://your-site/oauth/google`.
+   That is where the consent pop-up lands. Google compares it byte for byte, so
+   no trailing slash, and sign-in fails without it.
+6. Create an **API key** under the same credentials page, restricted by HTTP
+   referrer to your origins. The Picker will not open without one.
+7. Put all three in `.env` locally, and in Netlify under **Site settings →
+   Environment variables** (they are read at build time, so redeploy after
+   adding them):
 
 ```
 VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+VITE_GOOGLE_API_KEY=AIza...
+VITE_GOOGLE_PROJECT_NUMBER=1234567890   # Cloud console → project number
 ```
 
-A client ID is not a secret — it ships in the bundle by design, and origin
-allowlisting is what protects it.
+None of these is a secret — they ship in the bundle by design, and origin and
+referrer allowlisting are what protect them. The project number is passed to the
+Picker as its app id, which is what Google requires for files picked there to
+stay reachable under `drive.file`.
 
-### The two scopes, and the catch
+### What the sign-in needs
 
-- `drive.file` — the app's own files. Anything it uploads stays accessible to it
-  forever, and it can see nothing else.
-- `drive.readonly` — needed only to _list_ the folder you pick. Per-file access
-  cannot enumerate media the app did not write, so without this the import
-  browser would always come back empty.
+Google's browser-only libraries cannot do this, so these two variables are
+required — not optional extras.
 
-**`drive.readonly` is a restricted scope.** In Testing mode that costs nothing.
-But publishing the consent screen so that anyone can sign in requires Google's
-annual third-party security assessment, which is expensive. If you intend to go
-public and can live without importing pre-existing media, drop `drive.readonly`
-from `DRIVE_SCOPE_LIST` in `src/lib/google/gis.ts`: uploads, the folder picker's
-own listing of app-created content, and everything else keep working under
-`drive.file` alone.
+Set them:
+
+```
+GOOGLE_CLIENT_SECRET=            # same OAuth client as the ID above
+SUPABASE_SERVICE_ROLE_KEY=       # Supabase → Project settings → API
+```
+
+Both are genuinely secret, so mark them as such and **scope them to Functions**
+— they are read at request time, not at build time. The `VITE_` variables are the
+opposite: they are inlined into the browser bundle by design, so marking one
+secret makes secrets scanning fail the build.
+
+Then run `supabase/migrations/0002_google_connections.sql`, the same way as the
+first migration. Setting the two secrets without running it gets you a site that
+signs people in and then has nowhere to put the result.
+
+If sign-in is refused, the screen says which of the three steps is unfinished —
+missing secrets, unrun migration, or a store that simply did not answer — and
+the function log for `/api/google/status` names the variable or prints the
+database's own complaint.
+
+**One consent screen instead of two.** Google Identity Services splits its two
+jobs across libraries that cannot do each other's: `google.accounts.id` issues
+the ID token that proves who you are, and `google.accounts.oauth2` grants Drive.
+Using both means asking twice for what a user experiences as one decision — and
+a backup that quietly does nothing until they find the second button. The plain
+OAuth endpoint has no such split: asking for `response_type=code id_token`
+returns both from one screen. That code is what needs the client secret to
+exchange, which is why sign-in depends on it.
+
+**A connection that outlives the tab.** The browser-only flow hands back an
+access token and no way to renew it, so a Drive connection lasted about an hour
+and a reload asked you to reconnect — and browsers are steadily closing the
+loophole that let the renewal happen invisibly. The code returned above is
+exchanged by `/api/google/*` for a refresh token, written to
+`google_connections`, and never sent to the browser. What the page holds is the
+same hour-long access token it always had; when that expires it asks the function
+for another. The connection belongs to the account, so it also comes back on any
+machine you sign in from.
+
+**Why a service role key.** The table has row-level security enabled and no
+policies at all, so no browser can read it whatever token it presents — not even
+its owner's. The service role bypasses RLS, and that key exists only in the
+function environment. A refresh token is a standing key to someone's Drive, and
+this is what keeps it from being readable by anything running on the page.
+
+Without both variables the sign-in screen says the site is not set up and names
+what is missing. That is deliberate: the alternative was a second Google prompt
+buried in Settings, and one prompt was worth more than the fallback.
+
+### One scope, and why
+
+`drive.file` is the only Drive scope this app asks for: per-file access to what
+it creates, plus whatever you hand it through the Google Picker. It cannot see
+anything else in your Drive, and the consent screen says as much.
+
+That is possible because **the Picker does the browsing**. It runs against your
+own Google session rather than this app's token, so it shows your real Drive;
+whatever you select is then granted to the app, file by file. Listing your folder
+ourselves would need `drive.readonly` — a Google _restricted_ scope, rendered as
+"See and download all your Google Drive files", and requiring their annual
+third-party security assessment before the consent screen can be published.
+Using the Picker instead is Google's own recommendation, and it is what lets this
+app go public without that assessment.
+
+The practical limit: `drive.file` does **not** grant access to files already
+inside a folder you pick — only to the folder itself, and to files the app
+created or you selected. So import always goes through the Picker, and there is
+no way to enumerate a folder behind your back.
 
 ## Deploying to Netlify
 
@@ -197,11 +311,13 @@ contexts** — scoped to production only, every deploy preview answers 503. No
 Then decide who is allowed to spend it. `/api/fal/*` generates video on your
 account, so it verifies the caller's Supabase session before attaching the key:
 
-- **Set `SUPABASE_URL`** to the same project the app signs in against. Tokens
-  are verified locally against its published signing keys — no round trip per
-  request, which matters because a single video job polls for minutes. Add
+- **The project URL** — already set as `VITE_SUPABASE_URL` for the browser, and
+  the functions read that same value, so there is normally nothing to do here.
+  Set `SUPABASE_URL` only to point the server at a different project. Tokens are
+  verified locally against the project's published signing keys — no round trip
+  per request, which matters because a single video job polls for minutes. Add
   `SUPABASE_JWT_SECRET` too if your project still signs with a shared secret.
-- **With neither set, the proxy refuses every request** rather than running
+- **With no project URL under either name, the proxy refuses every request** rather than running
   open. `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`;
   setting it on a deployed site hands your fal credits to anyone who finds the
   URL. Netlify's own password protection or access controls are worth adding on
@@ -210,6 +326,11 @@ account, so it verifies the caller's Supabase session before attaching the key:
 `VITE_GOOGLE_CLIENT_ID` and the two `VITE_SUPABASE_*` variables are build-time
 and not secret — the anon key is protected by row-level security, and the client
 ID by origin allowlisting.
+
+Two more are **required if you want anyone to be able to sign in**:
+**`GOOGLE_CLIENT_SECRET`** and **`SUPABASE_SERVICE_ROLE_KEY`**. The single
+consent screen returns a code that only they can exchange. See
+[what the sign-in needs](#what-the-sign-in-needs).
 
 ## How it fits together
 
@@ -220,9 +341,12 @@ Browser (React + TypeScript + Tailwind)      Netlify Functions (stateless pass-t
   Library   — blobs in IndexedDB                /api/elevenlabs/* → api.elevenlabs.io
   Timeline  — one picture track + N audio tracks  the caller's own key, forwarded once
   Projects  — timelines in Supabase (no media)  /api/media        → streams provider media
-  Drive     — media in your own Drive
-  Preview   — custom player over <video>        Supabase and Drive talk to the browser
-  Export    — ffmpeg.wasm → MP4                 directly, not through our functions.
+  Drive     — media in your own Drive           /api/google/*     → oauth2.googleapis.com
+  Preview   — custom player over <video>          holds the refresh token, mints
+  Export    — ffmpeg.wasm → MP4                   an access token per request
+
+                                                Supabase and Drive themselves talk to
+                                                the browser directly, not through us.
 ```
 
 A few decisions worth knowing about:
@@ -261,11 +385,30 @@ id; the assets table maps those to Drive file ids. That indirection is what lets
 a timeline be a few kilobytes and still describe hundreds of megabytes of media
 well enough to rebuild it anywhere.
 
-**Drive tokens are never stored.** The browser token flow issues no refresh
-token on purpose — a long-lived Google credential in a static site's local
-storage has nothing protecting it. Tokens live in memory for about an hour and
-are renewed silently; when Google will not renew without UI, Settings offers a
-Reconnect button rather than throwing an error at whatever you were doing.
+**A Drive credential never reaches local storage.** The access token lives in
+memory for its hour and nowhere else. The refresh token that replaces it — the
+part that is genuinely long-lived — is held server-side under a service role key
+and swapped for an access token on demand, so the page never sees it. That split
+is the whole design: everything the browser holds is short-lived and cheap to
+replace, and the thing that is not, it cannot read. Where a deployment has no
+server-side half configured there is no refresh token at all, and a connection
+lasts the hour; when it lapses, Settings offers a Reconnect button rather than
+throwing an error at whatever you were doing.
+
+**One trip to Google, not two.** Signing in and authorising Drive are one
+request (`response_type=code id_token`), so the user makes one decision and the
+app gets both an ID token and a consent code out of it. The alternative was two
+libraries that cannot do each other's job, two consent screens, and a Drive
+backup that sat switched off until someone found the button in Settings. That
+fallback is gone rather than kept as a degraded mode: a site missing the client
+secret refuses to sign anyone in, because half a sign-in is not worth the second
+prompt.
+
+**The gate holds both.** The editor does not mount until there is a session _and_
+a Drive connection — an editor that silently saves nothing is worse than a
+prompt. But entry is latched: a grant revoked from someone's Google account page
+an hour later shows up in Settings rather than ejecting them from an open
+project.
 
 **Tracks fill themselves in.** A new recording goes onto the first voice track
 with a free gap at that moment, and only stacks a new lane when every existing
@@ -291,7 +434,8 @@ and the fix is one line — no code change and no waiting for a release.
 
 ```bash
 npm test          # unit tests — timeline maths, ffmpeg argv, SSRF guard, session
-                  # verification, the video request body, orientation, key storage
+                  # verification and persistence, the Drive connection flow, the
+                  # video request body, orientation, key storage
 npm run lint
 npm run build
 
@@ -308,6 +452,16 @@ The unit tests concentrate on the pure logic where the real bugs live:
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
+
+Four of them exist because the bug they guard against is invisible until you
+close the tab or lose a token: `src/state/useAuthStore.test.ts` signs in against a
+real Supabase client with a seeded local storage; `src/lib/google/oauthPopup.test.ts`
+and `identity.test.ts` pin the parameters the whole thing rests on —
+`access_type=offline` and `prompt=consent` for a refresh token that outlives the
+tab, `response_type=code id_token` for the single consent screen, and the Drive
+scopes actually reaching the request; and `src/components/SignInGate.test.tsx`
+holds the two gate rules that decide whether anyone can use the app — no entry
+without Drive, and no ejection once inside.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track — then parses the

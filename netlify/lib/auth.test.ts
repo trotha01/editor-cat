@@ -4,7 +4,12 @@ import { decodeJwt, isExpired, pickJwk, requireSession, resetJwksCacheForTests }
 const SECRET = 'a-shared-signing-secret'
 const PROJECT = 'https://abcdefgh.supabase.co'
 
-const ENV_KEYS = ['SUPABASE_URL', 'SUPABASE_JWT_SECRET', 'FAL_PROXY_ALLOW_ANONYMOUS'] as const
+const ENV_KEYS = [
+  'SUPABASE_URL',
+  'VITE_SUPABASE_URL',
+  'SUPABASE_JWT_SECRET',
+  'FAL_PROXY_ALLOW_ANONYMOUS',
+] as const
 
 let saved: Record<string, string | undefined> = {}
 
@@ -110,6 +115,37 @@ describe('requireSession', () => {
 
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.userId).toBe('user-123')
+  })
+
+  it('counts a project named only by the build-time variable as configured', async () => {
+    // Operators set VITE_SUPABASE_URL because the browser bundle needs it. When
+    // this module insisted on the unprefixed name it called such a deployment
+    // unconfigured and answered 503 — after the sign-in screen, reading a
+    // different variable, had already let the user in and taken their consent.
+    process.env.VITE_SUPABASE_URL = PROJECT
+
+    const result = await requireSession(requestWith(await signHs256(validClaims())))
+
+    expect(result.ok).toBe(false)
+    // 401 "sign in", never 503 "this site is not set up": the token is the
+    // problem here, not the deployment.
+    if (!result.ok) expect(result.response.status).toBe(401)
+  })
+
+  it('verifies against a project named only by the build-time variable', async () => {
+    // The fallback widens where the URL is read from, never what it means — so
+    // the issuer it names still has to be the one that signed the session.
+    process.env.VITE_SUPABASE_URL = PROJECT
+    process.env.SUPABASE_JWT_SECRET = SECRET
+
+    const own = await requireSession(requestWith(await signHs256(validClaims())))
+    expect(own.ok).toBe(true)
+    if (own.ok) expect(own.userId).toBe('user-123')
+
+    const foreign = await signHs256(
+      validClaims({ iss: 'https://someone-else.supabase.co/auth/v1' }),
+    )
+    expect((await requireSession(requestWith(foreign))).ok).toBe(false)
   })
 
   it('fails closed when the deployment is not configured at all', async () => {

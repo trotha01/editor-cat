@@ -1,17 +1,23 @@
 /**
- * The Google Drive connection: who is signed in, which folder we write to, and
- * what is currently uploading.
+ * The Google Drive connection: whose it is, which folder we write to, and what
+ * is currently uploading.
  *
- * The chosen folder is the only thing persisted. Access tokens deliberately
- * stay in memory (see lib/google/gis.ts), so a reload always re-acquires one —
- * silently when Google allows it, and behind a "Reconnect" button when not.
+ * There is nothing here that grants it. Drive is authorised at the sign-in
+ * screen, in the same consent as identity, and the connection is stored against
+ * the account — so `restore` asks the server what this user has rather than
+ * asking Google, and a browser that has never seen them still picks it up.
+ *
+ * The chosen folder is the one thing kept locally. It is not a credential; it is
+ * a preference about where new media goes.
  */
 import { create } from 'zustand'
 import {
-  connect as gisConnect,
-  disconnect as gisDisconnect,
+  adoptConnection,
   accessToken,
+  invalidateToken,
   isDriveConfigured,
+  isDurableConnection,
+  loadConnectionStatus,
   NeedsConsentError,
 } from '../lib/google/gis'
 import { currentUser, DriveError, uploadFile, type DriveFolder } from '../lib/google/drive'
@@ -23,8 +29,9 @@ import type { Asset } from '../lib/types'
 const FOLDER_KEY = 'editor-cat.drive.folder.v1'
 
 /**
- * `needs-reconnect` is distinct from `disconnected`: the user has chosen a
- * folder before, so the UI should offer to resume rather than start over.
+ * `needs-reconnect` is distinct from `disconnected`: the connection existed and
+ * stopped working, which is worth telling someone mid-session. Both are answered
+ * the same way — signing in again — but only one is a surprise.
  */
 export type DriveStatus =
   'unconfigured' | 'disconnected' | 'connecting' | 'connected' | 'needs-reconnect'
@@ -43,11 +50,28 @@ interface DriveState {
   folder: DriveFolder | null
   error: string | null
   uploads: UploadJob[]
+  /**
+   * Whether this deployment can store connections at all. Null until the first
+   * status check answers. False means an operator has not finished setting the
+   * site up, and the gate says so rather than offering a sign-in that cannot work.
+   */
+  durable: boolean | null
 
-  /** Attempts a silent sign-in for a returning user. Safe to call on mount. */
+  /** Resumes the account's connection without prompting. Safe to call on mount. */
   restore: () => Promise<void>
-  connect: () => Promise<void>
-  disconnect: () => Promise<void>
+  /**
+   * Claims the connection while sign-in is still in flight, so the `restore`
+   * that runs as the editor mounts does not race it to a stale answer. Released
+   * with `false` if the sign-in it was claimed for never happened.
+   */
+  setConnecting: (pending: boolean) => void
+  /** Completes a connection authorised during sign-in. */
+  adopt: (code: string) => Promise<void>
+  /**
+   * Drops this browser's Drive state on sign-out, leaving the stored connection
+   * alone — it belongs to the account, and signing back in resumes it.
+   */
+  forget: () => void
   setFolder: (folder: DriveFolder | null) => void
   clearError: () => void
 
@@ -88,20 +112,36 @@ export const useDriveStore = create<DriveState>((set, get) => ({
   folder: loadFolder(),
   error: null,
   uploads: [],
+  durable: null,
 
   restore: async () => {
     if (!isDriveConfigured()) return
-    // Nothing to resume for someone who has never picked a folder — asking
-    // Google about them on every cold load would be noise.
-    if (!get().folder) return
+    // Signing in authorises Drive too, so by the time the editor mounts the
+    // connection may already be in hand or on its way. Asking the server again
+    // would at best duplicate work and at worst overwrite a fresher answer with
+    // a stale one.
+    if (get().status === 'connected' || get().status === 'connecting') return
+
+    const { durable, connected } = await loadConnectionStatus()
+    set({ durable })
+
+    // The account is the only authority: it says whether there is anything to
+    // resume, so a browser that has never seen this user still picks the
+    // connection up, and one that has seen them cannot claim a connection the
+    // account no longer holds.
+    if (!durable || !connected) {
+      set({ status: 'disconnected' })
+      return
+    }
 
     set({ status: 'connecting', error: null })
     try {
       await accessToken()
       set({ status: 'connected', account: await currentUser() })
     } catch (cause) {
-      // A silent attempt failing is the normal path for an expired session, so
-      // it is not surfaced as an error — just as a reconnect affordance.
+      // A stored connection that has stopped working is the normal path for a
+      // revoked grant, so it is not surfaced as an error — just as a prompt to
+      // sign in again.
       set({
         status: 'needs-reconnect',
         ...(cause instanceof NeedsConsentError ? {} : { error: toDisplayMessage(cause) }),
@@ -109,23 +149,37 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     }
   },
 
-  connect: async () => {
+  setConnecting: (pending) => set({ status: pending ? 'connecting' : 'disconnected', error: null }),
+
+  adopt: async (code) => {
     set({ status: 'connecting', error: null })
     try {
-      await gisConnect()
-      set({ status: 'connected', account: await currentUser() })
+      await adoptConnection(code)
+      set({ status: 'connected', durable: isDurableConnection(), account: await currentUser() })
     } catch (cause) {
-      set({
-        status: get().folder ? 'needs-reconnect' : 'disconnected',
-        error: toDisplayMessage(cause),
-      })
+      // Signing in worked; only the Drive half did not — someone unticked it on
+      // Google's own screen. Reported as never having connected, because that is
+      // what it is, and the gate asks again rather than letting them in without
+      // anywhere to put their media.
+      set({ status: 'disconnected', account: null, error: toDisplayMessage(cause) })
     }
   },
 
-  disconnect: async () => {
-    await gisDisconnect()
+  forget: () => {
+    // The access token has to go, or the next account to sign in on this
+    // browser inherits the last one's Drive for as long as it stays valid.
+    invalidateToken()
+    // The folder goes with it for the same reason: it is an id in someone
+    // else's Drive, and uploading into it would fail in a way nobody could read.
     persistFolder(null)
-    set({ status: 'disconnected', account: null, folder: null, error: null, uploads: [] })
+    set({
+      status: isDriveConfigured() ? 'disconnected' : 'unconfigured',
+      account: null,
+      folder: null,
+      error: null,
+      uploads: [],
+      durable: null,
+    })
   },
 
   setFolder: (folder) => {

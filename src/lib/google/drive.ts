@@ -3,19 +3,21 @@
  *
  * Hand-written against the REST endpoints rather than pulled from `googleapis`:
  * that package targets Node, assumes a service-account style auth chain, and
- * would add tens of megabytes to a browser bundle to cover five calls.
+ * would add tens of megabytes to a browser bundle to cover four calls.
+ *
+ * Everything here works under `drive.file` alone — creating, uploading,
+ * and reading back files this app made or the user handed over through the
+ * Google Picker. Listing or searching someone's existing Drive is deliberately
+ * absent: that needs a restricted scope, and the Picker does it better. See
+ * `picker.ts`.
  */
 import { accessToken, invalidateToken } from './gis'
-import { mapLimited } from '../concurrency'
 import type { AssetKind } from '../types'
 
 const API = 'https://www.googleapis.com/drive/v3'
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3/files'
 
 export const FOLDER_MIME = 'application/vnd.google-apps.folder'
-
-/** The id Drive accepts as "the top of My Drive". */
-export const ROOT_FOLDER_ID = 'root'
 
 export class DriveError extends Error {
   readonly status: number
@@ -45,33 +47,6 @@ export interface DriveFile {
   duration?: number
   thumbnailLink?: string
   modifiedTime?: string
-}
-
-/** Shapes we read back from the API. Only the fields we ask for are declared. */
-interface RawFile {
-  id: string
-  name: string
-  mimeType: string
-  size?: string
-  thumbnailLink?: string
-  modifiedTime?: string
-  imageMediaMetadata?: { width?: number; height?: number }
-  videoMediaMetadata?: { width?: number; height?: number; durationMillis?: string }
-}
-
-interface FileListResponse {
-  files?: RawFile[]
-  nextPageToken?: string
-}
-
-/**
- * Escapes a value for interpolation into a Drive `q` string.
- *
- * Drive quotes query terms with single quotes, so a folder named "Trevor's
- * clips" would otherwise terminate the string early and produce a 400.
- */
-export function escapeQueryValue(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
 export function kindForMime(mimeType: string): AssetKind | null {
@@ -194,66 +169,8 @@ async function driveErrorFrom(response: Response): Promise<DriveError> {
   return new DriveError(response.status, `Google Drive error${detail ? `: ${detail}` : '.'}`)
 }
 
-/** Query parameters every call shares, so shared drives behave like My Drive. */
+/** Shared by every call, so shared drives behave like My Drive. */
 const SHARED_DRIVE_PARAMS = 'supportsAllDrives=true&includeItemsFromAllDrives=true'
-
-const FILE_FIELDS =
-  'id,name,mimeType,size,thumbnailLink,modifiedTime,imageMediaMetadata(width,height),videoMediaMetadata(width,height,durationMillis)'
-
-/**
- * Runs a `files.list` query to exhaustion.
- *
- * `maxPages` is a guard, not a preference: a query pointed at a very large
- * Drive would otherwise page forever while the user stares at a spinner.
- */
-async function listAll(query: string, maxPages = 20): Promise<RawFile[]> {
-  const files: RawFile[] = []
-  let pageToken: string | undefined
-
-  for (let page = 0; page < maxPages; page += 1) {
-    const params = new URLSearchParams({
-      q: query,
-      fields: `files(${FILE_FIELDS}),nextPageToken`,
-      pageSize: '200',
-      orderBy: 'folder,name_natural',
-    })
-    if (pageToken) params.set('pageToken', pageToken)
-
-    const response = await driveFetch(`${API}/files?${params.toString()}&${SHARED_DRIVE_PARAMS}`)
-    const body = (await response.json()) as FileListResponse
-    files.push(...(body.files ?? []))
-
-    pageToken = body.nextPageToken
-    if (!pageToken) break
-  }
-
-  return files
-}
-
-function toDriveFile(raw: RawFile): DriveFile | null {
-  const kind = kindForMime(raw.mimeType)
-  if (!kind) return null
-
-  const durationMillis = Number(raw.videoMediaMetadata?.durationMillis)
-  const size = Number(raw.size)
-
-  return {
-    id: raw.id,
-    name: raw.name,
-    mimeType: raw.mimeType,
-    kind,
-    ...(Number.isFinite(size) ? { size } : {}),
-    ...(raw.imageMediaMetadata?.width
-      ? { width: raw.imageMediaMetadata.width, height: raw.imageMediaMetadata.height }
-      : {}),
-    ...(raw.videoMediaMetadata?.width
-      ? { width: raw.videoMediaMetadata.width, height: raw.videoMediaMetadata.height }
-      : {}),
-    ...(Number.isFinite(durationMillis) ? { duration: durationMillis / 1000 } : {}),
-    ...(raw.thumbnailLink ? { thumbnailLink: raw.thumbnailLink } : {}),
-    ...(raw.modifiedTime ? { modifiedTime: raw.modifiedTime } : {}),
-  }
-}
 
 /** The account behind the current token, for display in Settings. */
 export async function currentUser(): Promise<{ email: string; name: string }> {
@@ -267,100 +184,14 @@ export async function currentUser(): Promise<{ email: string; name: string }> {
   }
 }
 
-/** Immediate subfolders of a folder, for the folder browser. */
-export async function listSubfolders(parentId: string): Promise<DriveFolder[]> {
-  const raw = await listAll(
-    `mimeType = '${FOLDER_MIME}' and '${escapeQueryValue(parentId)}' in parents and trashed = false`,
-  )
-  return raw.map((file) => ({ id: file.id, name: file.name }))
-}
-
-/** A folder's own name and parent, so the browser can show where it is. */
-export async function getFolder(folderId: string): Promise<DriveFolder & { parents?: string[] }> {
-  const response = await driveFetch(
-    `${API}/files/${encodeURIComponent(folderId)}?fields=id,name,parents&${SHARED_DRIVE_PARAMS}`,
-  )
-  const body = (await response.json()) as { id: string; name: string; parents?: string[] }
-  return body
-}
-
 /**
- * Every folder at or beneath `rootId`, breadth-first.
+ * Creates a folder and returns it.
  *
- * Drive has no recursive query, so the tree has to be walked. `maxFolders`
- * bounds the walk: pointed at the root of a large Drive this would otherwise
- * issue hundreds of sequential requests.
+ * Offered at first run as the one-click alternative to hunting through the
+ * Picker. Creating is something `drive.file` may always do, and the app keeps
+ * access to what it created.
  */
-async function collectFolderIds(rootId: string, maxFolders = 200): Promise<string[]> {
-  const seen = new Set<string>([rootId])
-  const queue = [rootId]
-  const ids: string[] = [rootId]
-
-  while (queue.length > 0 && ids.length < maxFolders) {
-    // One level at a time, so sibling folders are fetched together rather than
-    // one request deep per folder — but capped, so a wide level does not open
-    // a hundred parallel connections.
-    const level = queue.splice(0, queue.length)
-    const batches = await mapLimited(level, 5, (id) => listSubfolders(id))
-
-    for (const child of batches.flat()) {
-      if (seen.has(child.id) || ids.length >= maxFolders) continue
-      seen.add(child.id)
-      ids.push(child.id)
-      queue.push(child.id)
-    }
-  }
-
-  return ids
-}
-
-/** Splits parent ids into `q` clauses that stay under Drive's query length limit. */
-export function parentClauses(folderIds: string[], perQuery = 25): string[] {
-  const clauses: string[] = []
-  for (let index = 0; index < folderIds.length; index += perQuery) {
-    const group = folderIds
-      .slice(index, index + perQuery)
-      .map((id) => `'${escapeQueryValue(id)}' in parents`)
-      .join(' or ')
-    clauses.push(`(${group})`)
-  }
-  return clauses
-}
-
-export interface ListMediaOptions {
-  /** Include everything beneath the folder, not just its immediate children. */
-  recursive?: boolean
-  /** Which media types to return. Defaults to images only. */
-  kinds?: AssetKind[]
-}
-
-/** Media inside a folder, optionally including everything below it. */
-export async function listMedia(
-  folderId: string,
-  { recursive = true, kinds = ['image'] }: ListMediaOptions = {},
-): Promise<DriveFile[]> {
-  const folderIds = recursive ? await collectFolderIds(folderId) : [folderId]
-  const mimeFilter = kinds.map((kind) => `mimeType contains '${kind}/'`).join(' or ')
-
-  const results = await mapLimited(parentClauses(folderIds), 5, (clause) =>
-    listAll(`${clause} and (${mimeFilter}) and trashed = false`),
-  )
-
-  const files = results
-    .flat()
-    .map(toDriveFile)
-    .filter((file): file is DriveFile => file !== null)
-
-  // A file can sit in more than one Drive folder, so the same id can arrive
-  // from two different parent clauses.
-  const unique = new Map(files.map((file) => [file.id, file]))
-  return [...unique.values()].sort((a, b) =>
-    (b.modifiedTime ?? '').localeCompare(a.modifiedTime ?? ''),
-  )
-}
-
-/** Creates a folder and returns it. Used for the default "editor-cat" folder. */
-export async function createFolder(name: string, parentId = ROOT_FOLDER_ID): Promise<DriveFolder> {
+export async function createFolder(name: string, parentId = 'root'): Promise<DriveFolder> {
   const response = await driveFetch(`${API}/files?fields=id,name&${SHARED_DRIVE_PARAMS}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

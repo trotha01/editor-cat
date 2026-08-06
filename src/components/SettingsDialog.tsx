@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react'
 import { Button, Callout, Field, Modal, Spinner, TextInput } from './ui'
 import { LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
+import { AccountSettings } from './AccountSettings'
 import { DriveSettings } from './DriveSettings'
 import { verifyKey } from '../lib/elevenlabs'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
@@ -146,6 +147,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           onChange={(id) => settings.setPref('llmModel', id)}
           hint="Routed through fal.ai, so it is covered by this site's own key. Cheaper models are perfectly good at rewriting prompts."
         />
+
+        <AccountSettings />
 
         <DriveSettings />
 

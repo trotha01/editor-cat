@@ -1,17 +1,18 @@
 /**
- * Google sign-in for identity, as opposed to Drive authorisation.
+ * Signing in with Google, which is also how Drive is authorised.
  *
- * Two different halves of Google Identity Services are in play, and mixing them
- * up is the easy mistake here:
+ * One OAuth request asks for identity and Drive together and comes back with an
+ * ID token *and* a consent code. Supabase turns the first into a session; the
+ * second becomes the stored Drive connection. That is the only prompt this app
+ * shows, and the only place it talks to Google.
  *
- * - `google.accounts.id` (this file) issues an **ID token** — a signed JWT
- *   saying who the user is. That is what Supabase verifies to create a session.
- * - `google.accounts.oauth2` (gis.ts) issues an **access token** — permission
- *   to call Drive. It cannot produce an ID token.
- *
- * Both ride the same Google session, so choosing an account once covers both.
+ * Deliberately not Google Identity Services. GIS splits the two jobs across
+ * libraries that cannot do each other's — `google.accounts.id` issues an ID token
+ * and cannot authorise Drive, `google.accounts.oauth2` authorises Drive and
+ * cannot issue an ID token — so anything built on it asks the user twice.
  */
-import { clientId, loadGisScript } from './gis'
+import { clientId, SIGN_IN_SCOPES } from './gis'
+import { requestAuthorization } from './oauthPopup'
 
 /**
  * A nonce ties one ID token to one sign-in attempt.
@@ -39,59 +40,38 @@ export async function createNonce(): Promise<Nonce> {
   return { raw, hashed }
 }
 
-/** Cleans up a rendered button so a re-render does not stack two of them. */
-export type Rendered = () => void
+export interface SignInGrant {
+  /** Proves who the user is. Exchanged with Supabase for a session. */
+  idToken: string
+  /** Becomes the stored Drive connection, once there is a session to file it under. */
+  code: string
+}
 
 /**
- * Draws Google's own sign-in button into `container` and resolves the ID token
- * when it is used.
+ * Signs in and authorises Drive in one pass.
  *
- * The rendered button is used rather than One Tap because One Tap is silently
- * suppressed for a user who has dismissed it a few times — leaving no way to
- * sign in at all, which is fatal for a gate.
+ * `select_account` so the account in use is always a deliberate choice, and
+ * `consent` because Google only issues a refresh token alongside a fresh grant —
+ * without it a returning user would sign in fine and have no Drive connection
+ * worth keeping.
+ *
+ * Must be called straight from a click, or the pop-up is blocked.
  */
-export async function renderSignInButton(
-  container: HTMLElement,
-  nonce: Nonce,
-  onCredential: (idToken: string) => void,
-  onError: (message: string) => void,
-): Promise<Rendered> {
+export async function requestSignIn(nonce: Nonce): Promise<SignInGrant> {
   const id = clientId()
   if (!id) {
-    onError('Google sign-in is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.')
-    return () => {}
+    throw new Error(
+      'Google sign-in is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.',
+    )
   }
 
-  try {
-    await loadGisScript()
-  } catch (cause) {
-    onError(cause instanceof Error ? cause.message : String(cause))
-    return () => {}
-  }
-
-  google.accounts.id.initialize({
-    client_id: id,
+  const result = await requestAuthorization({
+    clientId: id,
+    scope: SIGN_IN_SCOPES,
     nonce: nonce.hashed,
-    // The gate is the only way in, so a cancelled tap must leave the button
-    // usable rather than blocking future prompts.
-    cancel_on_tap_outside: false,
-    callback: (response: google.accounts.id.CredentialResponse) => {
-      if (response.credential) onCredential(response.credential)
-      else onError('Google did not return a sign-in token. Try again.')
-    },
+    prompt: 'select_account consent',
   })
 
-  google.accounts.id.renderButton(container, {
-    type: 'standard',
-    theme: 'filled_blue',
-    size: 'large',
-    text: 'signin_with',
-    shape: 'pill',
-    logo_alignment: 'left',
-  })
-
-  return () => {
-    google.accounts.id.cancel()
-    container.replaceChildren()
-  }
+  if (!result.idToken) throw new Error('Google did not return a sign-in token. Try again.')
+  return { idToken: result.idToken, code: result.code }
 }

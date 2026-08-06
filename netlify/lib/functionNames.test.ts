@@ -36,6 +36,6 @@ describe('netlify/functions directory', () => {
     // A test or helper here is not just badly named — it also ships as a live
     // endpoint, which is not something to do by accident.
     const names = entries.map((entry) => entry.name).sort()
-    expect(names).toEqual(['elevenlabs.ts', 'fal.ts', 'media.ts'])
+    expect(names).toEqual(['elevenlabs.ts', 'fal.ts', 'google.ts', 'media.ts'])
   })
 })
