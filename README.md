@@ -209,6 +209,13 @@ GOOGLE_CLIENT_SECRET=            # same OAuth client as the ID above
 SUPABASE_SERVICE_ROLE_KEY=       # Supabase → Project settings → API
 ```
 
+Both are genuinely secret, so mark them as such and **scope them to Functions**
+— they are read at request time, not at build time. The `VITE_` variables are the
+opposite: they are inlined into the browser bundle by design, so marking one
+secret makes secrets scanning fail the build. If sign-in is refused after setting
+these, the function log for `/api/google/status` names exactly which half is
+still missing.
+
 Then run `supabase/migrations/0002_google_connections.sql`, the same way as the
 first migration.
 

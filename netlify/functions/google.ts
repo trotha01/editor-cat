@@ -61,6 +61,27 @@ function setup(): Setup | null {
   return { oauth, store }
 }
 
+/**
+ * Says which half is missing, into the function log.
+ *
+ * The browser is told only that the site is not set up — naming environment
+ * variables to anonymous callers tells them nothing they need and something
+ * about how the site is built. But the operator who has to fix it needs the
+ * specifics, and the function log is theirs alone. Without this, a site that
+ * refuses every sign-in looks identical whichever variable is absent.
+ */
+function reportMissingSetup(): void {
+  const missing = [
+    oauthConfig() ? null : 'GOOGLE_CLIENT_SECRET (and GOOGLE_CLIENT_ID, or VITE_GOOGLE_CLIENT_ID)',
+    storeConfig() ? null : 'SUPABASE_SERVICE_ROLE_KEY (and SUPABASE_URL, or VITE_SUPABASE_URL)',
+  ].filter((entry): entry is string => entry !== null)
+
+  console.warn(
+    `[google] Sign-in is disabled: this deployment is missing ${missing.join(' and ')}. ` +
+      'Scope them to Functions, redeploy, and run supabase/migrations/0002_google_connections.sql.',
+  )
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -130,7 +151,10 @@ export default async (request: Request): Promise<Response> => {
   // All it discloses is whether the deployment is set up for that, which the
   // README states publicly; anything about a *user* still needs their token.
   if (route === 'status') {
-    if (!ready) return json({ durable: false, connected: false })
+    if (!ready) {
+      reportMissingSetup()
+      return json({ durable: false, connected: false })
+    }
 
     const caller = await requireSession(request)
     // Signed out, or an anonymous development build with no account to file a
@@ -152,8 +176,10 @@ export default async (request: Request): Promise<Response> => {
   const session = await requireSession(request)
   if (!session.ok) return session.response
 
-  if (!ready)
+  if (!ready) {
+    reportMissingSetup()
     return jsonError(503, 'This site does not keep Drive connected.', NOT_CONFIGURED_DETAIL)
+  }
   if (!session.userId) {
     return jsonError(
       503,

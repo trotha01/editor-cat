@@ -26,6 +26,7 @@ describe('storeConfig', () => {
 
   beforeEach(() => {
     delete process.env.SUPABASE_URL
+    delete process.env.VITE_SUPABASE_URL
     delete process.env.SUPABASE_SERVICE_ROLE_KEY
   })
 
@@ -39,6 +40,24 @@ describe('storeConfig', () => {
 
     process.env.SUPABASE_SERVICE_ROLE_KEY = config.serviceKey
     expect(storeConfig()).toEqual(config)
+  })
+
+  it('accepts the build-time project URL, since it is the same public string', () => {
+    // Only the service key is a secret. Making an operator set the URL under two
+    // names is how the two drift apart — and the failure when they do is a site
+    // that refuses every sign-in without saying which half is missing.
+    process.env.VITE_SUPABASE_URL = config.url
+    process.env.SUPABASE_SERVICE_ROLE_KEY = config.serviceKey
+
+    expect(storeConfig()).toEqual(config)
+  })
+
+  it('prefers the unprefixed name when both are set', () => {
+    process.env.SUPABASE_URL = 'https://server.supabase.co'
+    process.env.VITE_SUPABASE_URL = 'https://bundle.supabase.co'
+    process.env.SUPABASE_SERVICE_ROLE_KEY = config.serviceKey
+
+    expect(storeConfig()?.url).toBe('https://server.supabase.co')
   })
 
   it('tolerates a trailing slash on a pasted project URL', () => {
