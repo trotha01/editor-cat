@@ -196,12 +196,25 @@ type Readiness = 'ready' | 'no-client-id' | StatusProblem | null
  * set — so the message sent people to re-check correct configuration while the
  * real gap went unmentioned.
  */
-function SetupProblem({ problem }: { problem: Exclude<Readiness, 'ready' | null> }) {
+function SetupProblem({
+  problem,
+  detail,
+}: {
+  problem: Exclude<Readiness, 'ready' | null>
+  detail?: string
+}) {
   if (problem === 'unreachable') {
     return (
       <Callout tone="error" title="Cannot reach this site's server">
-        Signing in needs an answer from it, and it did not give one. This is usually temporary —
-        reload to try again.
+        {detail ? (
+          <>
+            The place it keeps Drive connections answered: <code>{detail}</code>. If that is a
+            permission or credential complaint, <code>SUPABASE_SERVICE_ROLE_KEY</code> is the thing
+            to check — otherwise it is usually temporary, and reloading will do.
+          </>
+        ) : (
+          'Signing in needs an answer from it, and it did not give one. This is usually temporary — reload to try again.'
+        )}
       </Callout>
     )
   }
@@ -241,6 +254,7 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
 
   const [nonce, setNonce] = useState<Nonce | null>(null)
   const [readiness, setReadiness] = useState<Readiness>(null)
+  const [readinessDetail, setReadinessDetail] = useState<string>()
   const [opening, setOpening] = useState(false)
 
   // One nonce per mounted screen: Google signs its hash into the token and
@@ -266,12 +280,13 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
   // Google's consent screen and fail afterwards.
   useEffect(() => {
     let cancelled = false
-    void loadConnectionStatus().then(({ durable, problem }) => {
+    void loadConnectionStatus().then(({ durable, problem, detail }) => {
       if (cancelled) return
       // Checked first: without a client id there is nothing to sign in against,
       // however well the server half is configured.
       if (!isDriveConfigured()) setReadiness('no-client-id')
       else setReadiness(durable ? 'ready' : (problem ?? 'not-configured'))
+      setReadinessDetail(detail)
     })
     return () => {
       cancelled = true
@@ -333,7 +348,7 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
       ) : null}
 
       {readiness !== null && readiness !== 'ready' ? (
-        <SetupProblem problem={readiness} />
+        <SetupProblem problem={readiness} detail={readinessDetail} />
       ) : busy || opening ? (
         <span className="flex items-center gap-2 text-sm text-ink-dim">
           <Spinner /> Signing in…

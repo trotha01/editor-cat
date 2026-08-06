@@ -30,7 +30,16 @@ class FakeGoogleOauthError extends Error {
   }
 }
 
-class FakeMissingTableError extends Error {}
+class FakeStoreError extends Error {
+  readonly summary: string
+
+  constructor(summary: string) {
+    super(summary)
+    this.summary = summary
+  }
+}
+
+class FakeMissingTableError extends FakeStoreError {}
 
 vi.mock('./auth', () => ({
   requireSession: (request: Request) => requireSession(request) as unknown,
@@ -43,6 +52,7 @@ vi.mock('./googleConnections', () => ({
     writeConnection(userId, connection) as unknown,
   deleteConnection: (userId: string) => deleteConnection(userId) as unknown,
   MissingTableError: FakeMissingTableError,
+  StoreError: FakeStoreError,
 }))
 
 vi.mock('./googleOauth', () => ({
@@ -143,16 +153,39 @@ describe('status', () => {
     it('separates a store that is merely down from one that was never migrated', async () => {
       // Distinct because the advice differs: one is "reload in a minute", the
       // other is "nobody will ever get in until someone runs the migration".
-      readConnection.mockRejectedValue(new Error('503 upstream connect error'))
+      readConnection.mockRejectedValue(new FakeStoreError('503 · upstream connect error'))
 
       const response = await call('status')
 
       expect(response.status).toBe(200)
-      await expect(response.json()).resolves.toEqual({
+      await expect(response.json()).resolves.toMatchObject({
         durable: false,
         connected: false,
         problem: 'unreachable',
       })
+    })
+
+    it('repeats what the database said, to a caller who has already signed in', async () => {
+      // Whoever stands a deployment up is the first person to sign into it, and
+      // this is the difference between fixing it now and going to find a log.
+      readConnection.mockRejectedValue(
+        new FakeStoreError('401 · 42501 · permission denied for table google_connections'),
+      )
+
+      await expect(call('status').then((r) => r.json())).resolves.toMatchObject({
+        detail: '401 · 42501 · permission denied for table google_connections',
+      })
+    })
+
+    it('says nothing extra when the failure was not the store answering', async () => {
+      // A DNS failure or an aborted fetch has no database complaint attached,
+      // and inventing one would put a guess on the sign-in screen.
+      readConnection.mockRejectedValue(new Error('fetch failed'))
+
+      const body = (await call('status').then((r) => r.json())) as Record<string, unknown>
+
+      expect(body.problem).toBe('unreachable')
+      expect(body).not.toHaveProperty('detail')
     })
   })
 })

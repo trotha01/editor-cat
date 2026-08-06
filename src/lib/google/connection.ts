@@ -34,7 +34,16 @@ export interface ConnectionStatus {
   connected: boolean
   /** Why not, when `durable` is false. */
   problem?: StatusProblem
+  /**
+   * What the store said, when it said anything — PostgREST's status, code and
+   * message. Present only for a signed-in caller, and only worth showing to
+   * someone who could act on it.
+   */
+  detail?: string
 }
+
+/** Beyond this it is not a diagnostic any more, it is a payload. */
+const DETAIL_LIMIT = 300
 
 export interface DriveGrant {
   accessToken: string
@@ -166,6 +175,11 @@ export async function connectionStatus(): Promise<ConnectionStatus> {
       problem: PROBLEMS.includes(body.problem as string)
         ? (body.problem as StatusProblem)
         : 'not-configured',
+      // Truncated here as well as at the source: this ends up on screen, and
+      // what reaches it is only as trustworthy as whatever answered /api.
+      ...(typeof body.detail === 'string' && body.detail
+        ? { detail: body.detail.slice(0, DETAIL_LIMIT) }
+        : {}),
     }
   } catch {
     return noAnswer

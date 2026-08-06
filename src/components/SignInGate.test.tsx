@@ -51,7 +51,9 @@ vi.mock('../state/useDriveStore', () => ({
 }))
 
 const loadConnectionStatus =
-  vi.fn<() => Promise<{ durable: boolean; connected: boolean; problem?: string }>>()
+  vi.fn<
+    () => Promise<{ durable: boolean; connected: boolean; problem?: string; detail?: string }>
+  >()
 let driveConfigured = true
 
 vi.mock('../lib/google/gis', () => ({
@@ -166,8 +168,8 @@ describe('the gate', () => {
    * deployed the site to go and re-check something that was already correct.
    */
   describe('what it says is wrong', () => {
-    async function blockedBy(problem: string): Promise<HTMLElement> {
-      loadConnectionStatus.mockResolvedValue({ durable: false, connected: false, problem })
+    async function blockedBy(problem: string, detail?: string): Promise<HTMLElement> {
+      loadConnectionStatus.mockResolvedValue({ durable: false, connected: false, problem, detail })
       mount()
       return await screen.findByRole('alert')
     }
@@ -186,6 +188,18 @@ describe('the gate', () => {
 
       expect(callout).toHaveTextContent(/reload/i)
       expect(callout).not.toHaveTextContent(/not set up/i)
+    })
+
+    it('quotes the database rather than making someone find the function log', async () => {
+      const callout = await blockedBy(
+        'unreachable',
+        '401 · 42501 · permission denied for table google_connections',
+      )
+
+      expect(callout).toHaveTextContent('permission denied for table google_connections')
+      // Because that is what a permission complaint from the store points at,
+      // and guessing wrong here is how the last three rounds were spent.
+      expect(callout).toHaveTextContent('SUPABASE_SERVICE_ROLE_KEY')
     })
 
     it('names the two secrets only when the deployment really is missing them', async () => {

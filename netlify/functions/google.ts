@@ -5,6 +5,7 @@ import {
   deleteConnection,
   MissingTableError,
   readConnection,
+  StoreError,
   storeConfig,
   writeConnection,
   type StoreConfig,
@@ -171,7 +172,8 @@ export default async (request: Request): Promise<Response> => {
   // All it discloses is whether the deployment is set up for that, which the
   // README states publicly; anything about a *user* still needs their token.
   if (route === 'status') {
-    const unusable = (problem: StatusProblem) => json({ durable: false, connected: false, problem })
+    const unusable = (problem: StatusProblem, detail?: string) =>
+      json({ durable: false, connected: false, problem, ...(detail ? { detail } : {}) })
 
     if (!ready) {
       reportMissingSetup()
@@ -200,7 +202,11 @@ export default async (request: Request): Promise<Response> => {
       }
 
       console.warn(`[google] Could not reach the connection store: ${describe(error)}`)
-      return unusable('unreachable')
+      // The database's own words, and only to a caller who is already signed in.
+      // Whoever is standing a deployment up is the first person to sign into it,
+      // and "permission denied for table google_connections" is the difference
+      // between fixing it now and going to look for a function log.
+      return unusable('unreachable', error instanceof StoreError ? error.summary : undefined)
     }
   }
 

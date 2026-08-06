@@ -64,18 +64,44 @@ function endpoint(config: StoreConfig, query = ''): string {
 }
 
 /**
+ * A failed call to the store, with the database's own account of why.
+ *
+ * `summary` is built to be shown to a signed-in user, not just logged. Whoever
+ * is standing up a deployment is usually the first person to sign into it, and
+ * making them go and find the function log to learn that PostgREST said
+ * "permission denied" turns a ten-second fix into an afternoon. It carries
+ * PostgREST's status, its error code and its message — none of which is a
+ * credential, and all of which name the thing to go and change.
+ *
+ * `details` and `hint` are deliberately left out: those are the two fields that
+ * can quote row values back.
+ */
+export class StoreError extends Error {
+  readonly status: number
+  readonly summary: string
+
+  constructor(action: string, status: number, summary: string, body: string) {
+    super(`Could not ${action} the Google connection (${status}). ${body}`)
+    this.name = 'StoreError'
+    this.status = status
+    this.summary = summary
+  }
+}
+
+/**
  * Raised when the table is not in the database at all.
  *
- * Worth its own type because it is the one storage failure an operator can act
- * on, and because it is otherwise indistinguishable from Supabase having a
- * moment. Telling the two apart is the difference between a site that says "run
- * the migration" and one that says "not set up for sign-in" — the second sends
- * whoever deployed it to re-check environment variables that were fine.
+ * Worth its own type because it is the one storage failure with a specific,
+ * one-line fix, and because it is otherwise indistinguishable from Supabase
+ * having a moment. Telling the two apart is the difference between a site that
+ * says "run the migration" and one that says "not set up for sign-in" — the
+ * second sends whoever deployed it to re-check variables that were fine.
  */
-export class MissingTableError extends Error {
-  constructor(detail: string) {
-    super(`The ${TABLE} table is not there. ${detail}`)
+export class MissingTableError extends StoreError {
+  constructor(status: number, summary: string, body: string) {
+    super('read', status, summary, body)
     this.name = 'MissingTableError'
+    this.message = `The ${TABLE} table is not there. ${body}`
   }
 }
 
@@ -86,27 +112,41 @@ export class MissingTableError extends Error {
  */
 const MISSING_TABLE_CODES = new Set(['42P01', 'PGRST205'])
 
-/** Turns a PostgREST failure into something a log line can be read from. */
-async function failed(action: string, response: Response): Promise<Error> {
-  let detail = ''
+/** Long enough for anything PostgREST says, short enough not to fill a screen. */
+const SUMMARY_LIMIT = 200
+
+/** Turns a PostgREST failure into something both a log and a person can read. */
+async function failed(action: string, response: Response): Promise<StoreError> {
+  let body = ''
   try {
-    detail = await response.text()
+    body = await response.text()
   } catch {
     // Body already consumed or unreadable; the status still says enough.
   }
 
   let code: unknown
+  let message: unknown
   try {
-    code = (JSON.parse(detail) as { code?: unknown }).code
+    // Not JSON when something between here and PostgREST answered instead — a
+    // gateway timeout page, say. Both stay undefined and the status carries it.
+    ;({ code, message } = JSON.parse(body) as { code?: unknown; message?: unknown })
   } catch {
-    // Not JSON: something between here and PostgREST answered instead. The
-    // generic error below is the right reading of that.
-  }
-  if (typeof code === 'string' && MISSING_TABLE_CODES.has(code)) {
-    return new MissingTableError(detail)
+    /* empty */
   }
 
-  return new Error(`Could not ${action} the Google connection (${response.status}). ${detail}`)
+  const summary = [
+    `${response.status}`,
+    typeof code === 'string' ? code : null,
+    typeof message === 'string' ? message : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+    .slice(0, SUMMARY_LIMIT)
+
+  if (typeof code === 'string' && MISSING_TABLE_CODES.has(code)) {
+    return new MissingTableError(response.status, summary, body)
+  }
+  return new StoreError(action, response.status, summary, body)
 }
 
 export async function readConnection(

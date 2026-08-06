@@ -3,6 +3,7 @@ import {
   deleteConnection,
   MissingTableError,
   readConnection,
+  StoreError,
   storeConfig,
   writeConnection,
 } from './googleConnections'
@@ -138,6 +139,39 @@ describe('readConnection', () => {
       const error = await readConnection('user_42', config, impl).catch((cause: unknown) => cause)
       expect(error).toBeInstanceOf(Error)
       expect(error).not.toBeInstanceOf(MissingTableError)
+    })
+
+    it('carries the database’s own words, so a person can be shown them', async () => {
+      // This ends up on the sign-in screen. `code` and `message` name the table
+      // and the permission; `details` and `hint` can quote row values, which is
+      // why they are not here.
+      const { impl } = serve(403, {
+        code: '42501',
+        message: 'permission denied for table google_connections',
+        details: 'Failing row contains (...)',
+        hint: null,
+      })
+
+      const error = (await readConnection('user_42', config, impl).catch(
+        (cause: unknown) => cause,
+      )) as StoreError
+
+      expect(error.summary).toBe('403 · 42501 · permission denied for table google_connections')
+      expect(error.status).toBe(403)
+      expect(error.summary).not.toContain('Failing row')
+    })
+
+    it('still summarises when nothing PostgREST-shaped came back', async () => {
+      const impl = (async () =>
+        new Response('<html>504 Gateway Timeout</html>', {
+          status: 504,
+        })) as unknown as typeof fetch
+
+      const error = (await readConnection('user_42', config, impl).catch(
+        (cause: unknown) => cause,
+      )) as StoreError
+
+      expect(error.summary).toBe('504')
     })
 
     it('does not choke when whatever answered was not PostgREST at all', async () => {
