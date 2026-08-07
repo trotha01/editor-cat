@@ -13,11 +13,14 @@ import {
  *   GET  /api/elevenlabs/v1/voices                       -> list target voices
  *   GET  /api/elevenlabs/v1/models                       -> find a conversion-capable model
  *   POST /api/elevenlabs/v1/speech-to-speech/<voice_id>  -> convert a recording
+ *   POST /api/elevenlabs/v1/speech-to-text               -> transcribe, with word timings
  *
- * The conversion request is multipart with the recording attached. Opus audio
- * runs about 4KB/s, so a take would have to be roughly twenty minutes long
- * before it approached the 6MB function payload ceiling — and takes are
- * recorded per pass, not per project.
+ * Both POSTs are multipart with audio attached, and both have to stay under the
+ * 6MB function payload ceiling. Conversion sends the recording as it was made —
+ * Opus runs about 4KB/s, so a take would have to be roughly twenty minutes long
+ * to come close, and takes are recorded per pass, not per project. Transcription
+ * sends 16kHz mono PCM, which is denser at 32KB/s, so the caller cuts long audio
+ * into chunks before it gets here (see src/lib/speechAudio.ts).
  */
 
 const ELEVENLABS_ORIGIN = 'https://api.elevenlabs.io'

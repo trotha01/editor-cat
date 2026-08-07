@@ -25,12 +25,31 @@ import {
   moveAudioClip,
   placeAudioClip,
 } from '../lib/audioTracks'
+import {
+  captionCuesOf,
+  captionTracksOf,
+  createCaptionTrack,
+  cuesFromWords,
+  cuesOnTrack,
+  fitBetweenNeighbours,
+  mergeCues,
+  moveCue,
+  setCueText,
+  setWordTiming,
+  splitCue,
+  spreadWordsEvenly,
+  trimCue,
+  type TimedWord,
+} from '../lib/captions'
 import { newId } from '../lib/media'
 import type {
   Asset,
   AudioClip,
   AudioTrack,
   AudioTrackKind,
+  CaptionCue,
+  CaptionStyle,
+  CaptionTrack,
   Clip,
   PositionedClip,
   Project,
@@ -68,10 +87,18 @@ export interface PlacementOutcome {
   createdTrack: boolean
 }
 
+/** Which caption, and which word inside it, the editor is working on. */
+export interface CaptionSelection {
+  cueId: string
+  /** Null when the whole caption is selected rather than one of its words. */
+  wordId: string | null
+}
+
 interface ProjectState {
   project: Project
   selectedClipId: string | null
   selectedAudioClipId: string | null
+  selectedCaption: CaptionSelection | null
   loaded: boolean
 
   /** Opens the local project. Used when signed out or running unconfigured. */
@@ -117,6 +144,31 @@ interface ProjectState {
   updateTrack: (id: string, patch: Partial<AudioTrack>) => void
   removeTrack: (id: string) => void
 
+  /** The caption track, creating the first one if there is none yet. */
+  ensureCaptionTrack: () => string
+  updateCaptionTrack: (id: string, patch: Partial<Omit<CaptionTrack, 'id' | 'style'>>) => void
+  setCaptionStyle: (id: string, patch: Partial<CaptionStyle>) => void
+  removeCaptionTrack: (id: string) => void
+
+  /**
+   * Replaces a track's captions with a freshly grouped transcript. Replaces
+   * rather than appends: transcribing again is how you redo a bad take, and
+   * ending up with two overlapping copies of the same words is nobody's intent.
+   */
+  setCaptionsFromWords: (trackId: string, words: readonly TimedWord[]) => number
+  selectCaption: (selection: CaptionSelection | null) => void
+  updateCue: (cueId: string, update: (cue: CaptionCue) => CaptionCue | null) => void
+  /** Retimes a caption, refusing a move that would land on another one. */
+  moveCueTo: (cueId: string, startTime: number) => boolean
+  trimCueEdge: (cueId: string, edge: 'start' | 'end', value: number) => boolean
+  setCueWordTiming: (cueId: string, wordId: string, patch: { start?: number; end?: number }) => void
+  setCueTextAt: (cueId: string, text: string) => void
+  splitCueAt: (cueId: string, wordIndex: number) => boolean
+  /** Joins a caption onto the one before it on the same track. */
+  mergeCueBack: (cueId: string) => boolean
+  respaceCue: (cueId: string) => void
+  removeCue: (cueId: string) => void
+
   clearTimeline: () => void
 
   positioned: () => PositionedClip[]
@@ -142,6 +194,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     project: emptyProject(),
     selectedClipId: null,
     selectedAudioClipId: null,
+    selectedCaption: null,
     loaded: false,
 
     load: async () => {
@@ -155,7 +208,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         // migrating on read means old work opens with its layers intact.
         const project = stored ? migrateProject(stored, newId) : emptyProject(id)
         if (stored && project !== stored) persist(project)
-        set({ project, loaded: true, selectedClipId: null, selectedAudioClipId: null })
+        set({
+          project,
+          loaded: true,
+          selectedClipId: null,
+          selectedAudioClipId: null,
+          selectedCaption: null,
+        })
       } catch {
         set({ project: emptyProject(id), loaded: true })
       }
@@ -163,7 +222,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     adopt: (project) => {
       persist(project)
-      set({ project, loaded: true, selectedClipId: null, selectedAudioClipId: null })
+      set({
+        project,
+        loaded: true,
+        selectedClipId: null,
+        selectedAudioClipId: null,
+        selectedCaption: null,
+      })
     },
 
     rename: (name) => mutate((project) => ({ ...project, name })),
@@ -330,9 +395,159 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         audioClips: project.audioClips.filter((clip) => clip.trackId !== id),
       })),
 
+    // --- Captions ---------------------------------------------------------
+
+    ensureCaptionTrack: () => {
+      const existing = captionTracksOf(get().project)[0]
+      if (existing) return existing.id
+
+      const track = createCaptionTrack(newId('ctrack'))
+      mutate((project) => ({
+        ...project,
+        captionTracks: [...captionTracksOf(project), track],
+        captionCues: [...captionCuesOf(project)],
+      }))
+      return track.id
+    },
+
+    updateCaptionTrack: (id, patch) =>
+      mutate((project) => ({
+        ...project,
+        captionTracks: captionTracksOf(project).map((track) =>
+          track.id === id ? { ...track, ...patch } : track,
+        ),
+      })),
+
+    setCaptionStyle: (id, patch) =>
+      mutate((project) => ({
+        ...project,
+        captionTracks: captionTracksOf(project).map((track) =>
+          track.id === id ? { ...track, style: { ...track.style, ...patch } } : track,
+        ),
+      })),
+
+    removeCaptionTrack: (id) => {
+      mutate((project) => ({
+        ...project,
+        captionTracks: captionTracksOf(project).filter((track) => track.id !== id),
+        captionCues: captionCuesOf(project).filter((cue) => cue.trackId !== id),
+      }))
+      set({ selectedCaption: null })
+    },
+
+    setCaptionsFromWords: (trackId, words) => {
+      const cues = cuesFromWords(words, trackId, newId)
+      mutate((project) => ({
+        ...project,
+        captionCues: [...captionCuesOf(project).filter((cue) => cue.trackId !== trackId), ...cues],
+      }))
+      set({ selectedCaption: cues[0] ? { cueId: cues[0].id, wordId: null } : null })
+      return cues.length
+    },
+
+    selectCaption: (selection) => set({ selectedCaption: selection }),
+
+    // Every caption edit funnels through here, so there is one place that knows
+    // how a cue is replaced, one place where returning null deletes it — which
+    // is how an emptied line stops being a caption at all — and one place that
+    // keeps a growing cue off the one after it.
+    updateCue: (cueId, update) => {
+      let removed = false
+      mutate((project) => {
+        const cues = captionCuesOf(project)
+        const next: CaptionCue[] = []
+        for (const cue of cues) {
+          if (cue.id !== cueId) {
+            next.push(cue)
+            continue
+          }
+          const result = update(cue)
+          if (result) next.push(fitBetweenNeighbours(result, cues))
+          else removed = true
+        }
+        return { ...project, captionCues: next }
+      })
+      if (removed) {
+        set((state) => ({
+          selectedCaption: state.selectedCaption?.cueId === cueId ? null : state.selectedCaption,
+        }))
+      }
+    },
+
+    moveCueTo: (cueId, startTime) => {
+      const { project } = get()
+      const cue = captionCuesOf(project).find((entry) => entry.id === cueId)
+      if (!cue) return false
+      const moved = moveCue(cue, startTime)
+      if (overlapsAnother(captionCuesOf(project), moved)) return false
+      get().updateCue(cueId, () => moved)
+      return true
+    },
+
+    trimCueEdge: (cueId, edge, value) => {
+      const { project } = get()
+      const cue = captionCuesOf(project).find((entry) => entry.id === cueId)
+      if (!cue) return false
+      const trimmed = trimCue(cue, edge, value)
+      if (overlapsAnother(captionCuesOf(project), trimmed)) return false
+      get().updateCue(cueId, () => trimmed)
+      return true
+    },
+
+    setCueWordTiming: (cueId, wordId, patch) =>
+      get().updateCue(cueId, (cue) => setWordTiming(cue, wordId, patch)),
+
+    setCueTextAt: (cueId, text) => get().updateCue(cueId, (cue) => setCueText(cue, text, newId)),
+
+    splitCueAt: (cueId, wordIndex) => {
+      const { project } = get()
+      const cue = captionCuesOf(project).find((entry) => entry.id === cueId)
+      if (!cue) return false
+      const halves = splitCue(cue, wordIndex, newId)
+      if (!halves) return false
+
+      mutate((current) => ({
+        ...current,
+        captionCues: captionCuesOf(current).flatMap((entry) =>
+          entry.id === cueId ? halves : [entry],
+        ),
+      }))
+      // Follow the split: the half you were aiming at is the second one.
+      set({ selectedCaption: { cueId: halves[1].id, wordId: null } })
+      return true
+    },
+
+    mergeCueBack: (cueId) => {
+      const { project } = get()
+      const cues = captionCuesOf(project)
+      const cue = cues.find((entry) => entry.id === cueId)
+      if (!cue) return false
+
+      const onTrack = cuesOnTrack(cues, cue.trackId)
+      const index = onTrack.findIndex((entry) => entry.id === cueId)
+      const previous = onTrack[index - 1]
+      if (!previous) return false
+
+      const merged = mergeCues(previous, cue)
+      mutate((current) => ({
+        ...current,
+        captionCues: captionCuesOf(current)
+          .filter((entry) => entry.id !== cueId)
+          .map((entry) => (entry.id === previous.id ? merged : entry)),
+      }))
+      // The cue that was selected has just been absorbed, so follow the merge
+      // rather than leaving the selection pointing at an id that is gone.
+      set({ selectedCaption: { cueId: merged.id, wordId: null } })
+      return true
+    },
+
+    respaceCue: (cueId) => get().updateCue(cueId, spreadWordsEvenly),
+
+    removeCue: (cueId) => get().updateCue(cueId, () => null),
+
     clearTimeline: () => {
-      mutate((project) => ({ ...project, clips: [], audioClips: [] }))
-      set({ selectedClipId: null, selectedAudioClipId: null })
+      mutate((project) => ({ ...project, clips: [], audioClips: [], captionCues: [] }))
+      set({ selectedClipId: null, selectedAudioClipId: null, selectedCaption: null })
     },
 
     positioned: () => {
@@ -346,4 +561,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 /** Convenience selector: the currently selected clip, if any. */
 export function selectSelectedClip(state: ProjectState): Clip | undefined {
   return state.project.clips.find((clip) => clip.id === state.selectedClipId)
+}
+
+/**
+ * Whether a retimed cue would land on top of another on its own track.
+ *
+ * Refused rather than allowed, for the same reason two audio clips may not share
+ * a lane: two captions on screen at once cannot both be the caption, and which
+ * one wins would depend on array order — an invisible property of the document.
+ */
+function overlapsAnother(cues: readonly CaptionCue[], cue: CaptionCue): boolean {
+  return cues.some(
+    (other) =>
+      other.id !== cue.id &&
+      other.trackId === cue.trackId &&
+      cue.start < other.end - 1e-6 &&
+      other.start < cue.end - 1e-6,
+  )
 }

@@ -12,3 +12,4 @@ coverage
 npm-debug.log*
 .vite
 public/ffmpeg
+public/fonts

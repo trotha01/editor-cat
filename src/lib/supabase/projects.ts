@@ -47,6 +47,10 @@ export function toDoc(project: Project): ProjectDoc {
     // Only written when there is one, so documents that never had a lead-in
     // stay byte-identical and an older client reading one is unaffected.
     ...(project.leadIn ? { leadIn: project.leadIn } : {}),
+    // Same reasoning for captions: a project with none writes neither key, so
+    // adding the feature does not rewrite every stored document.
+    ...(project.captionTracks?.length ? { captionTracks: project.captionTracks } : {}),
+    ...(project.captionCues?.length ? { captionCues: project.captionCues } : {}),
   }
 }
 

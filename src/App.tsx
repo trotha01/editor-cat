@@ -3,6 +3,7 @@ import { ImagePanel } from './components/ImagePanel'
 import { VideoPanel } from './components/VideoPanel'
 import { LibraryPanel } from './components/LibraryPanel'
 import { AudioPanel } from './components/AudioPanel'
+import { CaptionsPanel } from './components/CaptionsPanel'
 import { OrientationToggle } from './components/OrientationToggle'
 import { Preview } from './components/Preview'
 import { Timeline } from './components/Timeline'
@@ -28,6 +29,7 @@ const TABS = [
   { id: 'video', label: '2 · Video', hint: 'Animate an image into a clip' },
   { id: 'library', label: 'Library', hint: 'Everything you have made' },
   { id: 'audio', label: '3 · Audio', hint: 'Record voiceovers, layer takes, add music' },
+  { id: 'captions', label: '4 · Captions', hint: 'Transcribe the audio into karaoke captions' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -127,6 +129,9 @@ export default function App() {
                 onPlay={playback.play}
                 onPause={playback.pause}
               />
+            ) : null}
+            {tab === 'captions' ? (
+              <CaptionsPanel currentTime={playback.currentTime} onSeek={playback.seek} />
             ) : null}
           </div>
         </section>

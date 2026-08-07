@@ -284,3 +284,60 @@ export async function mockConvert(audio: Blob): Promise<Blob> {
   await new Promise((resolve) => setTimeout(resolve, 700))
   return audio
 }
+
+/**
+ * Long enough to be split into more than one caption, short enough that the
+ * words land at something like a speaking pace once they are spread across the
+ * audio. Packing thirty words into a three-second take would leave every word a
+ * tenth of a second wide, and nothing downstream — grouping, retiming, the
+ * highlight — would be exercised at the spacing it will really see.
+ */
+const MOCK_TRANSCRIPT = 'This is a mock transcript. No real speech was recognised.'
+
+/**
+ * Mock transcription. Invents words rather than recognising any, and says so in
+ * the words themselves.
+ *
+ * The timings are the part that has to be real: they are spread across the
+ * actual length of the audio handed in, so grouping, the karaoke highlight, and
+ * the burnt-in subtitle file are all exercised against a transcript that lines
+ * up with something. Reading the length out of the WAV header rather than
+ * decoding is deliberate — this must work in a headless test with no audio
+ * device, and by the time it is called the audio is always a WAV we encoded.
+ */
+export async function mockTranscribe(audio: Blob): Promise<{
+  words: { text: string; start: number; end: number }[]
+  languageCode?: string
+}> {
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const seconds = await wavSeconds(audio)
+  const tokens = MOCK_TRANSCRIPT.split(' ')
+  const step = seconds / tokens.length
+
+  return {
+    words: tokens.map((text, index) => ({
+      text,
+      start: step * index,
+      // A short gap after each word, so the grouping code sees pauses rather
+      // than one unbroken run.
+      end: step * (index + 0.8),
+    })),
+    languageCode: 'eng',
+  }
+}
+
+/** Length of a PCM WAV from its header, or a nominal few seconds if unreadable. */
+async function wavSeconds(blob: Blob): Promise<number> {
+  const FALLBACK = 4
+  try {
+    const header = new DataView(await blob.slice(0, 44).arrayBuffer())
+    if (header.byteLength < 44) return FALLBACK
+    const sampleRate = header.getUint32(24, true)
+    const byteRate = header.getUint32(28, true)
+    if (!sampleRate || !byteRate) return FALLBACK
+    return Math.max(0.5, (blob.size - 44) / byteRate)
+  } catch {
+    return FALLBACK
+  }
+}

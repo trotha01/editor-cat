@@ -365,4 +365,44 @@ describe('buildExportPlan', () => {
     // 0.1 + 0.2 is 0.30000000000000004 in binary floating point.
     expect(args[1]).toBe('0.3')
   })
+
+  describe('captions', () => {
+    const captions = { file: 'captions.ass', fontsDir: '/fonts' }
+
+    it('leaves the graph untouched when there are none', () => {
+      const graph = graphOf(buildExportPlan({ ...base, clips: [img('a.png', 2)], audio: [] }).args)
+      expect(graph).not.toContain('ass=')
+    })
+
+    it('burns them in, naming the fonts directory libass needs', () => {
+      const graph = graphOf(
+        buildExportPlan({ ...base, clips: [img('a.png', 2)], audio: [], captions }).args,
+      )
+      expect(graph).toContain('[vcat]ass=filename=captions.ass:fontsdir=/fonts[vout]')
+    })
+
+    it('burns them in after the lead-in, so cue times mean timeline times', () => {
+      const graph = graphOf(
+        buildExportPlan({ ...base, clips: [img('a.png', 2)], audio: [], leadIn: 3, captions }).args,
+      )
+      // One chain, in this order: the black goes on first and the captions are
+      // laid over the padded stream, whose clock is the timeline's.
+      expect(graph).toContain(
+        '[vcat]tpad=start_mode=add:start_duration=3:color=black,' +
+          'ass=filename=captions.ass:fontsdir=/fonts[vout]',
+      )
+    })
+
+    it('still holds the last frame for audio that outruns the picture', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 2)],
+          audio: [aud('music.mp3', 0, 8)],
+          captions,
+        }).args,
+      )
+      expect(graph).toContain('tpad=stop_mode=clone:stop_duration=6,ass=filename=captions.ass')
+    })
+  })
 })
