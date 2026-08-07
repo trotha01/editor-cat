@@ -52,6 +52,13 @@ export interface ExportSpec {
   height: number
   fps: number
   outputFile: string
+  /**
+   * Seconds of black before the first clip. The picture and the sound it
+   * carries both move by it; the audio tracks do not, since their start times
+   * are already absolute — which is the whole point, as it is what lets a
+   * count-in play before anything is on screen.
+   */
+  leadIn?: number
   /** 18 is visually lossless, 28 is small. 23 is a good middle. */
   crf?: number
   preset?: string
@@ -92,12 +99,14 @@ function placeAudio(startTime: number, volume: number): string {
 
 /**
  * Pairs each clip with where it starts on the timeline and which input it is.
- * Clips sit end to end with no gaps, so the start is the sum of what precedes.
+ * Clips sit end to end with no gaps, so the start is the lead-in plus the sum
+ * of what precedes.
  */
 function withStarts(
   clips: readonly ExportClip[],
+  leadIn = 0,
 ): { clip: ExportClip; input: number; start: number }[] {
-  let cursor = 0
+  let cursor = Math.max(0, leadIn)
   return clips.map((clip, input) => {
     const start = cursor
     cursor += Math.max(0, clip.duration)
@@ -124,9 +133,10 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // zero-length one would produce an empty stream that amix chokes on.
   const audio = spec.audio.filter((clip) => clip.volume > 0 && clip.duration > 0)
 
-  const visualDuration = totalVisualDuration(clips)
+  const leadIn = Math.max(0, spec.leadIn ?? 0)
+  const visualEnd = leadIn + totalVisualDuration(clips)
   const audioEnd = totalAudioEnd(audio)
-  const outputDuration = Math.max(visualDuration, audioEnd)
+  const outputDuration = Math.max(visualEnd, audioEnd)
 
   const args: string[] = []
 
@@ -162,15 +172,22 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     normalized.push(`[${label}]`)
   })
 
-  const needsPad = audioEnd > visualDuration + 0.01
-  const concatOut = needsPad ? '[vcat]' : '[vout]'
-  chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${concatOut}`)
-
-  if (needsPad) {
+  // Padding at either end, both done with tpad on the concatenated picture:
+  // black in front for the lead-in, and the last frame held at the back when
+  // the sound outlasts the picture.
+  const padding: string[] = []
+  if (leadIn > 0) {
+    padding.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
+  }
+  if (audioEnd > visualEnd + 0.01) {
     // The audio runs past the last clip, so hold its final frame rather than
     // cutting to black mid-sentence.
-    chains.push(`[vcat]tpad=stop_mode=clone:stop_duration=${sec(audioEnd - visualDuration)}[vout]`)
+    padding.push(`tpad=stop_mode=clone:stop_duration=${sec(audioEnd - visualEnd)}`)
   }
+
+  const concatOut = padding.length > 0 ? '[vcat]' : '[vout]'
+  chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${concatOut}`)
+  if (padding.length > 0) chains.push(`[vcat]${padding.join(',')}[vout]`)
 
   // --- Audio graph -------------------------------------------------------
   const placed: string[] = []
@@ -178,7 +195,7 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // A clip's own sound needs no trimming of its own: the input-level -ss/-t
   // that cut the picture cut its audio to exactly the same stretch, so all
   // that is left is to move it to where the clip sits on the timeline.
-  for (const { clip, input, start } of withStarts(clips)) {
+  for (const { clip, input, start } of withStarts(clips, leadIn)) {
     const volume = clip.volume ?? 1
     if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0 || clip.duration <= 0) continue
     chains.push(`[${input}:a]${placeAudio(start, volume)}[c${input}]`)

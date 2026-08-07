@@ -17,7 +17,7 @@
  * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
 import { useEffect, useMemo, useRef, type ReactNode } from 'react'
-import { clipAtTime, clipGain, formatTime, layoutClips } from '../lib/timeline'
+import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetUrl } from '../hooks/useAssetUrl'
@@ -167,8 +167,15 @@ export function Preview({
   const assets = useAssetStore((state) => state.assets)
 
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
-  const positioned = useMemo(() => layoutClips(project.clips), [project.clips])
-  const active = useMemo(() => clipAtTime(project.clips, currentTime), [project.clips, currentTime])
+  const leadIn = leadInOf(project)
+  const positioned = useMemo(() => layoutClips(project.clips, leadIn), [project.clips, leadIn])
+  const active = useMemo(
+    () => clipAtTime(project.clips, currentTime, leadIn),
+    [project.clips, currentTime, leadIn],
+  )
+  // Before the picture starts there is nothing to show, which is the point —
+  // but it is not the end of the timeline, and must not say so.
+  const beforePicture = currentTime < leadIn
 
   const { ref, active: fullscreen, supported, toggle } = useFullscreen<HTMLElement>()
 
@@ -238,8 +245,16 @@ export function Preview({
         )}
 
         {active === null && !empty ? (
-          <div className={`absolute inset-0 flex items-center justify-center ${panel}`}>
-            <p className="text-sm">End of timeline</p>
+          <div
+            className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${
+              // The lead-in is black in the export, so it is black here too.
+              beforePicture ? 'bg-black text-white/70' : panel
+            }`}
+          >
+            <p className="text-sm">{beforePicture ? 'Lead-in' : 'End of timeline'}</p>
+            {beforePicture ? (
+              <p className="text-xs">The picture starts at {formatTime(leadIn)}</p>
+            ) : null}
           </div>
         ) : null}
 

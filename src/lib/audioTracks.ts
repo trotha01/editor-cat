@@ -14,9 +14,22 @@
  */
 import type { AudioClip, AudioTrack, AudioTrackKind, LegacyVoiceoverTake, Project } from './types'
 
-/** Unity gain for narration; score sits under it by default. */
-const DEFAULT_VOICE_VOLUME = 1
-const DEFAULT_MUSIC_VOLUME = 0.5
+/**
+ * Unity gain for narration; score sits under it by default. Cues are left at
+ * unity too — a count-in you have to strain to hear is no use to play to, and
+ * the beeps are synthesised short of full scale so there is room for them.
+ */
+const DEFAULT_VOLUME: Record<AudioTrackKind, number> = {
+  voice: 1,
+  music: 0.5,
+  countdown: 1,
+}
+
+const TRACK_LABEL: Record<AudioTrackKind, string> = {
+  voice: 'Voice',
+  music: 'Music',
+  countdown: 'Countdown',
+}
 
 /** Clips closer than this are treated as touching, not overlapping. */
 const OVERLAP_EPSILON = 0.001
@@ -72,7 +85,7 @@ export function findTrackWithRoom(
 
 /** Names new tracks "Voice 1", "Voice 2", … counting only that kind. */
 export function nextTrackName(tracks: readonly AudioTrack[], kind: AudioTrackKind): string {
-  const label = kind === 'voice' ? 'Voice' : 'Music'
+  const label = TRACK_LABEL[kind]
   const used = new Set(tracks.filter((track) => track.kind === kind).map((track) => track.name))
   for (let index = 1; ; index += 1) {
     const candidate = `${label} ${index}`
@@ -90,7 +103,7 @@ export function createTrack(
     kind,
     name: nextTrackName(tracks, kind),
     muted: false,
-    volume: kind === 'music' ? DEFAULT_MUSIC_VOLUME : DEFAULT_VOICE_VOLUME,
+    volume: DEFAULT_VOLUME[kind],
   }
 }
 
@@ -210,11 +223,16 @@ export function gainFor(tracks: readonly AudioTrack[], clip: AudioClip): number 
   return Math.max(0, track.volume)
 }
 
-/** The tracks a project should start with. */
+/**
+ * The tracks a project should start with.
+ *
+ * No countdown lane: it appears the first time beeps are added and stays out of
+ * the way of everyone who never asks for one.
+ */
 export function defaultTracks(voiceId: string, musicId: string): AudioTrack[] {
   return [
-    { id: voiceId, kind: 'voice', name: 'Voice 1', muted: false, volume: DEFAULT_VOICE_VOLUME },
-    { id: musicId, kind: 'music', name: 'Music 1', muted: false, volume: DEFAULT_MUSIC_VOLUME },
+    { id: voiceId, kind: 'voice', name: 'Voice 1', muted: false, volume: DEFAULT_VOLUME.voice },
+    { id: musicId, kind: 'music', name: 'Music 1', muted: false, volume: DEFAULT_VOLUME.music },
   ]
 }
 

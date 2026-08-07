@@ -9,7 +9,7 @@ import {
 } from '../lib/export/render'
 import { getBlob } from '../lib/db'
 import { downloadBlob } from '../lib/media'
-import { clipDuration, clipGain, formatTime, layoutClips } from '../lib/timeline'
+import { clipDuration, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { audioEnd, gainFor } from '../lib/audioTracks'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
@@ -51,7 +51,10 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const abortRef = useRef<AbortController | null>(null)
 
   const resolutions = resolutionOptions(project.width, project.height)
-  const positioned = layoutClips(project.clips)
+  const leadIn = leadInOf(project)
+  // Positions already carry the lead-in, so the last clip's end is where the
+  // picture really finishes rather than how long it runs for.
+  const positioned = layoutClips(project.clips, leadIn)
   const visualDuration = positioned.at(-1)?.end ?? 0
   const outputDuration = Math.max(visualDuration, audioEnd(project.audioClips))
 
@@ -147,6 +150,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           width: project.width,
           height: project.height,
           fps: project.fps,
+          leadIn,
           crf,
         },
         { onProgress: setProgress, signal: controller.signal },
@@ -217,7 +221,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
         <p className="text-sm text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
-          {formatTime(outputDuration)} · {sound.join(' · ')}
+          {formatTime(outputDuration)}
+          {/* Worth saying outright: it explains an export that is longer than
+              the clips add up to, and confirms the count-in has room. */}
+          {leadIn > 0 ? ` · ${formatTime(leadIn)} of black before the picture` : ''} ·{' '}
+          {sound.join(' · ')}
         </p>
 
         {progress ? (

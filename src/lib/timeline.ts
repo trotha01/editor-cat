@@ -15,13 +15,39 @@ export const DEFAULT_IMAGE_DURATION = 4
 /** Longest a single still image may be held on screen. */
 export const MAX_IMAGE_DURATION = 60
 
+/**
+ * Longest lead-in we allow. Past this it stops being a count-in and becomes a
+ * minute of black someone has to sit through, probably by accident.
+ */
+export const MAX_LEAD_IN = 60
+
+export function clampLeadIn(seconds: number): number {
+  return clamp(Number.isFinite(seconds) ? seconds : 0, 0, MAX_LEAD_IN)
+}
+
+/**
+ * A project's lead-in, guarded.
+ *
+ * Absent — which is every project saved before it existed — is none, so the
+ * picture starts where it always did.
+ */
+export function leadInOf(project: { leadIn?: number }): number {
+  return clampLeadIn(project.leadIn ?? 0)
+}
+
 export function clipDuration(clip: Clip): number {
   return Math.max(0, clip.outPoint - clip.inPoint)
 }
 
-/** Resolves every clip to an absolute start/end on the timeline. */
-export function layoutClips(clips: readonly Clip[]): PositionedClip[] {
-  let cursor = 0
+/**
+ * Resolves every clip to an absolute start/end on the timeline.
+ *
+ * The lead-in is applied here rather than at each call site, so everything
+ * built on these positions — what is on screen, where a cut lands, how long the
+ * export runs — moves with the picture instead of some of it being left behind.
+ */
+export function layoutClips(clips: readonly Clip[], leadIn = 0): PositionedClip[] {
+  let cursor = clampLeadIn(leadIn)
   return clips.map((clip, index) => {
     const duration = clipDuration(clip)
     const positioned: PositionedClip = {
@@ -36,22 +62,33 @@ export function layoutClips(clips: readonly Clip[]): PositionedClip[] {
   })
 }
 
+/** How long the picture itself runs, ignoring where it starts. */
 export function totalDuration(clips: readonly Clip[]): number {
   return clips.reduce((sum, clip) => sum + clipDuration(clip), 0)
 }
 
-/**
- * Total length of the project, which is the longer of the visual track and the
- * audio tracks — a voiceover or a music bed may run past the last clip.
- */
-export function projectDuration(project: Project): number {
-  return Math.max(totalDuration(project.clips), audioEnd(project.audioClips ?? []))
+/** When the picture finishes: its length plus whatever precedes it. */
+export function pictureEnd(project: Pick<Project, 'clips' | 'leadIn'>): number {
+  return leadInOf(project) + totalDuration(project.clips)
 }
 
-/** The clip playing at time `t`, or null if `t` is past the end. */
-export function clipAtTime(clips: readonly Clip[], t: number): PositionedClip | null {
+/**
+ * Total length of the project, which is the longer of the visual track and the
+ * audio tracks — a count-in, a voiceover or a music bed may run before the
+ * first clip or past the last one.
+ */
+export function projectDuration(project: Project): number {
+  return Math.max(pictureEnd(project), audioEnd(project.audioClips ?? []))
+}
+
+/**
+ * The clip playing at time `t`, or null if `t` is past the end — or before the
+ * picture starts, which is what makes a lead-in read as black rather than as a
+ * frozen first frame.
+ */
+export function clipAtTime(clips: readonly Clip[], t: number, leadIn = 0): PositionedClip | null {
   if (t < 0) return null
-  const laid = layoutClips(clips)
+  const laid = layoutClips(clips, leadIn)
   for (const positioned of laid) {
     // Half-open interval so a boundary time belongs to exactly one clip.
     if (t >= positioned.start && t < positioned.end) return positioned
@@ -142,11 +179,12 @@ export function cutTargetAt(
   clips: readonly Clip[],
   time: number,
   fps: number,
+  leadIn = 0,
 ): PositionedClip | null {
   const at = snapToFrame(time, fps)
   // Strictly inside: a cut exactly on a clip boundary is one that already
   // exists, and would otherwise produce an empty clip.
-  const target = layoutClips(clips).find((entry) => at > entry.start && at < entry.end)
+  const target = layoutClips(clips, leadIn).find((entry) => at > entry.start && at < entry.end)
   if (!target) return null
 
   const offset = at - target.start
@@ -179,8 +217,9 @@ export function splitClipAt(
   time: number,
   fps: number,
   makeId: () => string,
+  leadIn = 0,
 ): CutResult | null {
-  const target = cutTargetAt(clips, time, fps)
+  const target = cutTargetAt(clips, time, fps, leadIn)
   if (!target) return null
 
   const { clip } = target
