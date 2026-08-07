@@ -7,16 +7,17 @@
 import { create } from 'zustand'
 import { loadProject, saveProject } from '../lib/db'
 import {
+  clampLeadIn,
   clipForAsset,
   joinCutAt,
   layoutClips,
+  leadInOf,
+  projectDuration,
   reorder,
   splitClipAt,
-  totalDuration,
   trimClip,
 } from '../lib/timeline'
 import {
-  audioEnd,
   createTrack,
   defaultTracks,
   insertTrack,
@@ -81,6 +82,13 @@ interface ProjectState {
   open: (id: string) => Promise<void>
   rename: (name: string) => void
   setResolution: (width: number, height: number) => void
+  /**
+   * Slides the whole picture track later, leaving black in front of it.
+   *
+   * Audio stays where it is: the point of the gap is to have something play
+   * over it, and nothing placed by hand should move on its own.
+   */
+  setLeadIn: (seconds: number) => void
 
   addClip: (asset: Asset) => void
   removeClip: (clipId: string) => void
@@ -162,6 +170,8 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setResolution: (width, height) => mutate((project) => ({ ...project, width, height })),
 
+    setLeadIn: (seconds) => mutate((project) => ({ ...project, leadIn: clampLeadIn(seconds) })),
+
     addClip: (asset) => {
       const clip = clipForAsset(asset, newId('clip'))
       mutate((project) => ({ ...project, clips: [...project.clips, clip] }))
@@ -196,7 +206,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     // comes back with the project.
     cutAt: (time) => {
       const { project } = get()
-      const result = splitClipAt(project.clips, time, project.fps, () => newId('clip'))
+      const result = splitClipAt(
+        project.clips,
+        time,
+        project.fps,
+        () => newId('clip'),
+        leadInOf(project),
+      )
       if (!result) return false
       mutate((current) => ({ ...current, clips: result.clips }))
       set({ selectedClipId: result.clipId })
@@ -319,11 +335,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set({ selectedClipId: null, selectedAudioClipId: null })
     },
 
-    positioned: () => layoutClips(get().project.clips),
-    duration: () => {
+    positioned: () => {
       const { project } = get()
-      return Math.max(totalDuration(project.clips), audioEnd(project.audioClips))
+      return layoutClips(project.clips, leadInOf(project))
     },
+    duration: () => projectDuration(get().project),
   }
 })
 

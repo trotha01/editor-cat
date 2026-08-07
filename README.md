@@ -13,14 +13,14 @@ ElevenLabs key**, held in your browser.
 
 ## What it does
 
-| Step          | What happens                                                                                                                                                                                                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                            |
-| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                 |
-| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below. |
-| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                 |
-| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.               |
-| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                                                                                                                             |
+| Step          | What happens                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                         |
+| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                              |
+| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. Audio sits on its own stacked tracks below. |
+| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                              |
+| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                            |
+| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                          |
 
 ## What you need
 
@@ -433,6 +433,20 @@ of the pure timeline maths.
 no-op with a red outline rather than a silent collision, because two clips
 stacked on one lane cannot both be heard and you would only find out on export.
 
+**One gap, always at the front.** Visual clips sit end to end, so there is
+nowhere to put something that has to happen _before_ the video — which is what a
+count-in is. The lead-in is that one place: a number of seconds on the project
+that slides the whole picture track later and fills the space with black. It
+stays one number rather than becoming arbitrary gaps between clips, so nothing
+about trimming, cutting or reordering changes; `layoutClips` applies it, and
+everything built on those positions — what is on screen, where a cut lands, how
+long the render runs — moves with the picture instead of some of it being left
+behind. The export does it with `tpad=start_mode=add`, which pads the front of
+the concatenated picture rather than adding an input to composite. Audio does
+not move: its start times are already absolute, and that is precisely what lets
+the beeps play over the black. A clip's own sound _does_ move, because it is
+locked to its picture and always was.
+
 **The count-in is three sine bursts, not a file.** `src/lib/countdown.ts`
 synthesises the beeps into a WAV in about a millisecond, which is cheaper than
 shipping an asset and finding out at export time that it never made it into the
@@ -514,9 +528,11 @@ without Drive, and no ejection once inside.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track, cutting a clip and
-reloading the page to see the cut come back, and dragging a count-in along its
-lane to prove the beeps can be put exactly where they belong — then parses the
-exported MP4 to confirm it has the tracks and duration it should. It earns its keep: it is
+reloading the page to see the cut come back, and putting a count-in in front of
+the video and then dragging both it and the picture's lead-in — then parses the
+exported MP4 to confirm it has the tracks it should and runs for exactly as long
+as the export dialog promised, which is how the black at the head is known to
+have been encoded rather than merely requested. It earns its keep: it is
 what caught the ffmpeg core being loaded as UMD when Vite's module worker needs
 ESM. The reload is there because the round trip through IndexedDB is the one
 part of persistence a unit test cannot stand in for.
@@ -542,6 +558,14 @@ If your CI image ships its own browser, point the test at it with
   visual clips sit end to end with no gaps, which removes most of what makes a
   timeline confusing. Audio is the part that genuinely needs layers, so that is
   where the multiple tracks are.
+- **The only gap is the lead-in, and it is at the front.** You can slide the
+  whole picture track later to open black in front of it, but there is no way to
+  leave a hole between two clips, or to start the picture before an earlier one
+  has finished.
+- **A lead-in does not carry the audio with it.** Adding one after a voiceover
+  is placed moves the picture out from under it; the takes stay where they are
+  and have to be dragged. That is what makes the count-in possible, but it does
+  mean the order to work in is lead-in first, narration second.
 
 ## Licence
 

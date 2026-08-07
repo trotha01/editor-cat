@@ -121,6 +121,62 @@ describe('buildExportPlan', () => {
     expect(args.at(-2)).toBe('6')
   })
 
+  it('opens with black when the picture has a lead-in', () => {
+    const { args, durationSeconds } = buildExportPlan({
+      ...base,
+      clips: [img('a.png', 4)],
+      audio: [aud('beeps.wav', 0, 3)],
+      leadIn: 3,
+    })
+    const graph = graphOf(args)
+
+    // The count-in plays over the black, so the render is 3s longer than the
+    // clips add up to — and the beeps stay at 0, where they were placed.
+    expect(graph).toContain('[vcat]tpad=start_mode=add:start_duration=3:color=black[vout]')
+    expect(graph).toContain('adelay=0:all=1')
+    expect(durationSeconds).toBe(7)
+    expect(args.at(-2)).toBe('7')
+  })
+
+  it('pushes a clip’s own sound back with its picture', () => {
+    // Clip audio is locked to the picture; leaving it at zero while the frames
+    // moved would put every filmed clip out of sync by the lead-in.
+    const graph = graphOf(
+      buildExportPlan({
+        ...base,
+        clips: [loud('a.mp4', 0, 2), loud('b.mp4', 0, 2)],
+        audio: [],
+        leadIn: 1.5,
+      }).args,
+    )
+    expect(graph).toContain('[0:a]adelay=1500:all=1')
+    expect(graph).toContain('[1:a]adelay=3500:all=1')
+  })
+
+  it('pads both ends when a lead-in and an overrunning voiceover meet', () => {
+    const { args, durationSeconds } = buildExportPlan({
+      ...base,
+      clips: [img('a.png', 2)],
+      audio: [aud('v.mp3', 0, 9)],
+      leadIn: 3,
+    })
+    const graph = graphOf(args)
+
+    // Picture runs 3s–5s, audio 0s–9s: black in front, last frame held after.
+    expect(graph).toContain(
+      '[vcat]tpad=start_mode=add:start_duration=3:color=black,tpad=stop_mode=clone:stop_duration=4[vout]',
+    )
+    expect(durationSeconds).toBe(9)
+  })
+
+  it('leaves the graph alone when there is no lead-in', () => {
+    const graph = graphOf(
+      buildExportPlan({ ...base, clips: [img('a.png', 2)], audio: [], leadIn: 0 }).args,
+    )
+    expect(graph).not.toContain('tpad')
+    expect(graph).toContain('concat=n=1:v=1:a=0[vout]')
+  })
+
   it('does not pad when the visuals already cover the audio', () => {
     const { args, durationSeconds } = buildExportPlan({
       ...base,

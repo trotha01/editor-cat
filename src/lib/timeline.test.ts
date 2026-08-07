@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_LEAD_IN,
   MIN_CLIP_DURATION,
   clipAtTime,
   clipDuration,
@@ -11,6 +12,7 @@ import {
   isThroughCut,
   joinCutAt,
   layoutClips,
+  leadInOf,
   projectDuration,
   reorder,
   snapToFrame,
@@ -68,6 +70,34 @@ describe('layoutClips', () => {
   it('returns an empty layout for an empty timeline', () => {
     expect(layoutClips([])).toEqual([])
   })
+
+  it('starts the whole strip after a lead-in, still with no gaps in it', () => {
+    const laid = layoutClips([clip('1', 0, 3), clip('2', 0, 2)], 4)
+
+    expect(laid.map((entry) => [entry.start, entry.end])).toEqual([
+      [4, 7],
+      [7, 9],
+    ])
+  })
+
+  it('refuses a lead-in that is negative or nonsense', () => {
+    expect(layoutClips([clip('1', 0, 3)], -5)[0]?.start).toBe(0)
+    expect(layoutClips([clip('1', 0, 3)], Number.NaN)[0]?.start).toBe(0)
+  })
+
+  it('caps an absurd lead-in rather than exporting an hour of black', () => {
+    expect(layoutClips([clip('1', 0, 3)], 10_000)[0]?.start).toBe(MAX_LEAD_IN)
+  })
+})
+
+describe('leadInOf', () => {
+  it('reads none from a project saved before lead-ins existed', () => {
+    expect(leadInOf({})).toBe(0)
+  })
+
+  it('reads the value when there is one', () => {
+    expect(leadInOf({ leadIn: 2.5 })).toBe(2.5)
+  })
 })
 
 describe('totalDuration', () => {
@@ -103,6 +133,15 @@ describe('clipAtTime', () => {
     expect(clipAtTime(clips, 5.1)).toBeNull()
     expect(clipAtTime(clips, -1)).toBeNull()
     expect(clipAtTime([], 0)).toBeNull()
+  })
+
+  it('shows nothing during a lead-in, then the first clip', () => {
+    // Black while the count-in plays. Holding the first frame there instead
+    // would be worse than useless: it would look like playback had stalled.
+    expect(clipAtTime(clips, 1, 3)).toBeNull()
+    expect(clipAtTime(clips, 2.99, 3)).toBeNull()
+    expect(clipAtTime(clips, 3, 3)?.clip.id).toBe('1')
+    expect(clipAtTime(clips, 5, 3)?.clip.id).toBe('2')
   })
 })
 
@@ -232,6 +271,15 @@ describe('cutTargetAt', () => {
     expect(cutTargetAt(clips, 99, 30)).toBeNull()
     expect(cutTargetAt([], 1, 30)).toBeNull()
   })
+
+  it('cuts where the picture actually is once it has been pushed back', () => {
+    // The playhead is read in timeline time, so a lead-in has to move the
+    // target with the picture — otherwise the cut lands somewhere else than
+    // the frame line you parked on.
+    expect(cutTargetAt(clips, 1.5, 30, 2)).toBeNull()
+    expect(cutTargetAt(clips, 3.5, 30, 2)?.clip.id).toBe('1')
+    expect(cutTargetAt(clips, 6, 30, 2)?.clip.id).toBe('2')
+  })
 })
 
 describe('splitClipAt', () => {
@@ -293,6 +341,18 @@ describe('splitClipAt', () => {
     const original = [clip('1', 2, 8)]
     splitClipAt(original, 2, 30, ids())
     expect(original).toEqual([clip('1', 2, 8)])
+  })
+
+  it('cuts at the right point in the source once the picture starts later', () => {
+    // The playhead sits 2s into a clip that begins at 3s, so the boundary is
+    // 2s into the source — not 5s, which is where it would land if the lead-in
+    // were forgotten between finding the clip and splitting it.
+    const result = splitClipAt(clips, 5, 30, ids(), 3)
+
+    expect(result!.clips.map((entry) => [entry.inPoint, entry.outPoint])).toEqual([
+      [2, 4],
+      [4, 8],
+    ])
   })
 })
 
@@ -408,6 +468,30 @@ describe('projectDuration', () => {
       ],
     }
     expect(projectDuration(project)).toBe(8)
+  })
+
+  it('counts the lead-in, since the export has to render it', () => {
+    expect(projectDuration({ ...base, leadIn: 3 })).toBe(6)
+  })
+
+  it('does not extend past audio that fits inside the lead-in', () => {
+    // The beeps run 0–3s and the picture 3–6s: the project is still 6s long.
+    const withCountIn: Project = {
+      ...base,
+      leadIn: 3,
+      audioClips: [
+        {
+          id: 'beeps',
+          trackId: 'c',
+          assetId: 'a',
+          useConverted: false,
+          startTime: 0,
+          inPoint: 0,
+          duration: 3,
+        },
+      ],
+    }
+    expect(projectDuration(withCountIn)).toBe(6)
   })
 })
 

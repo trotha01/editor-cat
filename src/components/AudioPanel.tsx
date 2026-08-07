@@ -22,7 +22,7 @@ import { useRecorder } from '../hooks/useRecorder'
 import { convertVoice, listVoices, type Voice } from '../lib/elevenlabs'
 import { getBlob } from '../lib/db'
 import { ingestBlob } from '../lib/media'
-import { formatTime } from '../lib/timeline'
+import { formatTime, leadInOf } from '../lib/timeline'
 import {
   COUNTDOWN_ASSET_NAME,
   COUNTDOWN_LABEL,
@@ -53,6 +53,8 @@ export function AudioPanel({
   const assets = useAssetStore((state) => state.assets)
   const audioClips = useProjectStore((state) => state.project.audioClips)
   const addAudioClip = useProjectStore((state) => state.addAudioClip)
+  const leadIn = useProjectStore((state) => leadInOf(state.project))
+  const setLeadIn = useProjectStore((state) => state.setLeadIn)
   const timelineDuration = useProjectStore((state) => state.duration())
 
   const anchorRef = useRef(0)
@@ -104,6 +106,35 @@ export function AudioPanel({
   }
 
   /**
+   * Places the beeps at `startTime`, generating them the first time.
+   *
+   * The count-in is the same three seconds every time, so a second one points
+   * at the bytes already stored rather than ingesting — and backing up to
+   * Drive — another copy of an identical file.
+   */
+  const placeCountdown = async (startTime: number) => {
+    const existing = assets.find(
+      (asset) => asset.kind === 'audio' && asset.name === COUNTDOWN_ASSET_NAME,
+    )
+    let asset = existing
+    if (!asset) {
+      asset = await ingestBlob(countdownWav(), { kind: 'audio', name: COUNTDOWN_ASSET_NAME })
+      addAsset(asset)
+    }
+
+    // The generated file's length is known exactly, so it is taken from the
+    // spec rather than from whatever the browser probed it as.
+    return addAudioClip('countdown', {
+      assetId: asset.id,
+      useConverted: false,
+      startTime,
+      inPoint: 0,
+      duration: COUNT_IN_SECONDS,
+      label: COUNTDOWN_LABEL,
+    })
+  }
+
+  /**
    * Drops the three beeps so that they *lead into* the playhead: park it where
    * the take should begin, and the last beep is the second before it. Anywhere
    * else is a drag away, but this is the placement that needs no thought.
@@ -113,34 +144,35 @@ export function AudioPanel({
     setPlacement(null)
     try {
       const startTime = Math.max(0, currentTime - COUNT_IN_SECONDS)
-
-      // The beeps are the same three seconds every time, so a second count-in
-      // points at the bytes already stored rather than ingesting — and backing
-      // up to Drive — another copy of an identical file.
-      const existing = assets.find(
-        (asset) => asset.kind === 'audio' && asset.name === COUNTDOWN_ASSET_NAME,
-      )
-      let asset = existing
-      if (!asset) {
-        asset = await ingestBlob(countdownWav(), { kind: 'audio', name: COUNTDOWN_ASSET_NAME })
-        addAsset(asset)
-      }
-
-      // The generated file's length is known exactly, so it is taken from the
-      // spec rather than from whatever the browser probed it as.
-      const outcome = addAudioClip('countdown', {
-        assetId: asset.id,
-        useConverted: false,
-        startTime,
-        inPoint: 0,
-        duration: COUNT_IN_SECONDS,
-        label: COUNTDOWN_LABEL,
-      })
-
+      const outcome = await placeCountdown(startTime)
       setPlacement(
         `Count-in added to ${outcome.trackName}, running into ${formatTime(
           startTime + COUNT_IN_SECONDS,
         )}. Drag it along its lane to put it exactly where you want it.`,
+      )
+    } catch (cause) {
+      setError(toDisplayMessage(cause))
+    }
+  }
+
+  /**
+   * Beeps in front of everything, with the picture pushed back to make room.
+   *
+   * The two halves of that are separately available — a lead-in is a property
+   * of the picture track, the beeps are audio — but wanting one without the
+   * other here is rare enough that asking for both would just be a step to
+   * forget. An existing lead-in that is already long enough is left alone.
+   */
+  const addCountdownBeforeVideo = async () => {
+    setError(null)
+    setPlacement(null)
+    try {
+      if (leadIn < COUNT_IN_SECONDS) setLeadIn(COUNT_IN_SECONDS)
+      const outcome = await placeCountdown(0)
+      setPlacement(
+        `Count-in added to ${outcome.trackName}, in front of the picture. ` +
+          `The video now starts at ${formatTime(Math.max(leadIn, COUNT_IN_SECONDS))} — ` +
+          `drag the hatched block at the head of the picture track to change that.`,
       )
     } catch (cause) {
       setError(toDisplayMessage(cause))
@@ -236,15 +268,24 @@ export function AudioPanel({
       <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
         <p className="text-sm font-medium">Count-in beeps</p>
         <p className="text-xs leading-relaxed text-ink-dim">
-          {COUNTDOWN_SPEC.beeps} beeps, one a second, on their own lane. They land leading into the
-          playhead — the clip ends on the beat you come in on — and you can drag them anywhere from
-          there. They play while you record, and they are mixed into the exported MP4, so anyone
-          performing to the finished video gets the same count-in.
+          {COUNTDOWN_SPEC.beeps} beeps, one a second, on their own lane. They play while you record,
+          and they are mixed into the exported MP4, so anyone performing to the finished video gets
+          the same count-in. Drag them along their lane afterwards to land them exactly.
         </p>
-        <Button className="self-start" onClick={() => void addCountdown()}>
-          <span aria-hidden>⏱️</span> Add {COUNTDOWN_SPEC.beeps}-beep count-in at{' '}
-          {formatTime(Math.max(0, currentTime - COUNT_IN_SECONDS))}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" onClick={() => void addCountdownBeforeVideo()}>
+            <span aria-hidden>⏮️</span> Add before the video
+          </Button>
+          <Button onClick={() => void addCountdown()}>
+            <span aria-hidden>⏱️</span> Add leading into{' '}
+            {formatTime(Math.max(COUNT_IN_SECONDS, currentTime))}
+          </Button>
+        </div>
+        <p className="text-xs leading-relaxed text-ink-dim">
+          <b>Before the video</b> pushes the whole picture track back by {COUNT_IN_SECONDS}s and
+          puts the beeps in the gap, so the count-in is over before the first frame. The other drops
+          them so the last beep leads into the playhead, for counting into a take partway through.
+        </p>
       </div>
 
       <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">

@@ -127,6 +127,16 @@ export interface Project {
   clips: Clip[]
   audioTracks: AudioTrack[]
   audioClips: AudioClip[]
+  /**
+   * Seconds of black before the first clip, so something can be heard before
+   * anything is seen — a count-in, a slate, a beat of silence.
+   *
+   * One number on the project rather than a gap between clips: clips still sit
+   * end to end with nothing between them, and all this moves is where the
+   * strip starts. Absent on everything saved before it existed, which is why
+   * it is optional and read through `leadInOf`.
+   */
+  leadIn?: number
   width: number
   height: number
   fps: number

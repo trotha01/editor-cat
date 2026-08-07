@@ -37,6 +37,8 @@ export interface RenderRequest {
   width: number
   height: number
   fps: number
+  /** Seconds of black before the first clip. Audio keeps its own timing. */
+  leadIn?: number
   crf?: number
 }
 
@@ -180,6 +182,7 @@ export async function renderProject(
     height: request.height,
     fps: request.fps,
     outputFile,
+    ...(request.leadIn ? { leadIn: request.leadIn } : {}),
     ...(request.crf !== undefined ? { crf: request.crf } : {}),
   })
 

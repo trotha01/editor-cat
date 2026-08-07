@@ -44,6 +44,9 @@ export function toDoc(project: Project): ProjectDoc {
     width: project.width,
     height: project.height,
     fps: project.fps,
+    // Only written when there is one, so documents that never had a lead-in
+    // stay byte-identical and an older client reading one is unaffected.
+    ...(project.leadIn ? { leadIn: project.leadIn } : {}),
   }
 }
 

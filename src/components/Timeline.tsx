@@ -6,6 +6,12 @@
  * leave behind, and no way to end up with silent black frames you did not ask
  * for — trimming a clip simply pulls everything after it earlier.
  *
+ * The one exception is the lead-in: a single stretch of black in front of the
+ * first clip, which slides the whole picture track later so a count-in can play
+ * before anything is on screen. It stays an exception rather than becoming
+ * arbitrary gaps because there is only ever one of them, it is always at the
+ * front, and it is one number on the project rather than a property of a clip.
+ *
  * Widths are proportional to duration, with a pixels-per-second zoom, so what
  * you see matches what you get.
  */
@@ -24,6 +30,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
 import {
+  MAX_LEAD_IN,
   MIN_CLIP_DURATION,
   clipAtTime,
   clipDuration,
@@ -33,7 +40,9 @@ import {
   frameDuration,
   isThroughCut,
   layoutClips,
+  leadInOf,
   snapToFrame,
+  totalDuration,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { isTypingTarget } from '../lib/shortcuts'
@@ -256,6 +265,84 @@ function ClipCard({
   )
 }
 
+/**
+ * Diagonal hatching, so the gap in front of the picture reads as deliberately
+ * empty rather than as a clip that failed to load.
+ */
+const LEAD_IN_HATCH =
+  'repeating-linear-gradient(45deg, var(--color-line) 0 5px, transparent 5px 12px)'
+
+/**
+ * The black in front of the picture, and the handle for changing it.
+ *
+ * Dragging it is the direct way to slide the whole picture track later: what
+ * you grab is the gap, and everything after it moves. The clips themselves
+ * still sit end to end — there is only ever one gap, and it is always at the
+ * front, which is what keeps this from turning into a timeline full of holes.
+ */
+function LeadInBlock({
+  seconds,
+  zoom,
+  onChange,
+}: {
+  seconds: number
+  zoom: number
+  onChange: (seconds: number) => void
+}) {
+  const dragState = useRef<{ startX: number; origin: number } | null>(null)
+
+  const beginDrag = (event: React.PointerEvent) => {
+    if (event.button !== 0) return
+    const target = event.currentTarget as HTMLElement
+    target.setPointerCapture(event.pointerId)
+    dragState.current = { startX: event.clientX, origin: seconds }
+  }
+
+  const moveDrag = (event: React.PointerEvent) => {
+    const state = dragState.current
+    if (!state) return
+    onChange(state.origin + (event.clientX - state.startX) / zoom)
+  }
+
+  const endDrag = (event: React.PointerEvent) => {
+    if (!dragState.current) return
+    dragState.current = null
+    const target = event.currentTarget as HTMLElement
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
+  }
+
+  const width = seconds * zoom
+
+  return (
+    <div
+      role="slider"
+      tabIndex={0}
+      aria-label="Lead-in before the picture"
+      aria-valuenow={Math.round(seconds * 10) / 10}
+      aria-valuemin={0}
+      aria-valuemax={MAX_LEAD_IN}
+      aria-valuetext={`${formatTime(seconds)} of black before the first clip`}
+      title={`${formatTime(seconds)} of black before the picture — drag to slide the whole picture track`}
+      onPointerDown={beginDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onKeyDown={(event) => {
+        if (event.key === 'ArrowLeft') onChange(seconds - 0.1)
+        if (event.key === 'ArrowRight') onChange(seconds + 0.1)
+      }}
+      style={{ width, backgroundImage: LEAD_IN_HATCH }}
+      className="relative h-20 shrink-0 cursor-ew-resize overflow-hidden rounded-l-lg border border-r-0 border-dashed border-line bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+    >
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-surface/80 px-1.5 py-0.5 text-[10px] text-ink-dim">
+        ⏱ {formatTime(seconds)}
+      </span>
+      {/* The edge you are really dragging, marked so it can be aimed at. */}
+      <span aria-hidden className="absolute inset-y-0 right-0 w-1 bg-accent/60" />
+    </div>
+  )
+}
+
 /** Whether the clip at `index` begins at a cut rather than at its own start. */
 function cutBefore(positioned: readonly PositionedClip[], index: number): boolean {
   const previous = positioned[index - 1]?.clip
@@ -281,22 +368,25 @@ export function Timeline({
   const assets = useAssetStore((state) => state.assets)
 
   const addTrack = useProjectStore((state) => state.addTrack)
+  const setLeadIn = useProjectStore((state) => state.setLeadIn)
 
   const [zoom, setZoom] = useState(40)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
-  const positioned = useMemo(() => layoutClips(project.clips), [project.clips])
-  const visualDuration = positioned.at(-1)?.end ?? 0
+  const leadIn = leadInOf(project)
+  const positioned = useMemo(() => layoutClips(project.clips, leadIn), [project.clips, leadIn])
+  const visualDuration = totalDuration(project.clips)
+  const pictureEndTime = leadIn + visualDuration
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   // Where a cut would land, and whether one can land there at all. Recomputed
   // as the playhead moves, so the button says what pressing it would do.
   const cutTarget = useMemo(
-    () => cutTargetAt(project.clips, currentTime, project.fps),
-    [project.clips, currentTime, project.fps],
+    () => cutTargetAt(project.clips, currentTime, project.fps, leadIn),
+    [project.clips, currentTime, project.fps, leadIn],
   )
 
   // The shortcut reads the playhead from a ref so it can be registered once.
@@ -328,7 +418,7 @@ export function Timeline({
 
   const cutTitle = cutTarget
     ? `Cut at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
-    : clipAtTime(project.clips, currentTime)
+    : clipAtTime(project.clips, currentTime, leadIn)
       ? `Too close to the edge of this clip — a cut has to leave ${MIN_CLIP_DURATION}s on both sides.`
       : 'Park the playhead over a clip to cut it.'
 
@@ -359,7 +449,7 @@ export function Timeline({
   const audioEndTime = audioEnd(project.audioClips)
   // The lanes must span the audio too — a music bed longer than the picture
   // still has to be reachable and scrubbable.
-  const contentWidth = Math.max(visualDuration, audioEndTime) * zoom
+  const contentWidth = Math.max(pictureEndTime, audioEndTime) * zoom
 
   return (
     <section className="flex flex-col gap-2" aria-label="Timeline">
@@ -368,6 +458,7 @@ export function Timeline({
         <span className="text-xs text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
           {formatTime(visualDuration)}
+          {leadIn > 0 ? ` · from ${formatTime(leadIn)}` : ''}
           {project.audioTracks.length > 0
             ? ` · ${project.audioTracks.length} audio track${
                 project.audioTracks.length === 1 ? '' : 's'
@@ -418,8 +509,29 @@ export function Timeline({
           style={{ width: TRACK_GUTTER_WIDTH }}
         >
           <div className="mb-2 h-6" aria-hidden />
-          <div className="mb-2 flex h-20 items-center text-xs font-medium text-ink-dim">
-            Picture
+          {/* The picture track's own controls, in the same gutter the audio
+              tracks keep theirs in. Lead-in lives here because it is a property
+              of the track rather than of any one clip — and because at zero
+              there is nothing on the lane left to grab. */}
+          <div className="mb-2 flex h-20 flex-col justify-center gap-1.5 text-xs text-ink-dim">
+            <span className="font-medium">Picture</span>
+            <label
+              className="flex items-center gap-1"
+              title="Black before the first clip, so a count-in can play before anything is on screen. Audio stays where it is."
+            >
+              Lead-in
+              <input
+                type="number"
+                min={0}
+                max={MAX_LEAD_IN}
+                step={0.5}
+                value={leadIn.toFixed(1)}
+                onChange={(event) => setLeadIn(Number(event.target.value))}
+                aria-label="Lead-in before the picture, in seconds"
+                className="w-12 rounded border border-line bg-surface-2 px-1 py-0.5 text-xs text-ink"
+              />
+              s
+            </label>
           </div>
           <AudioTrackHeaders />
         </div>
@@ -463,6 +575,9 @@ export function Timeline({
                       the ruler, and a frame line is no use if the picture under
                       it has drifted. */}
                   <div className="flex h-20">
+                    {leadIn > 0 ? (
+                      <LeadInBlock seconds={leadIn} zoom={zoom} onChange={setLeadIn} />
+                    ) : null}
                     {positioned.length === 0 ? (
                       <p className="px-2 py-6 text-sm text-ink-dim">
                         Nothing on the timeline yet. Add a clip from the Library.
@@ -492,8 +607,11 @@ export function Timeline({
               {frameLines && visualDuration > 0 ? (
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute top-0 bottom-0 left-0"
+                  className="pointer-events-none absolute top-0 bottom-0"
                   style={{
+                    // Starts where the picture does: the grid is the frames of
+                    // the clips, and the lead-in has none of its own.
+                    left: leadIn * zoom,
                     width: visualDuration * zoom,
                     backgroundImage: frameGrid(framePx, true),
                   }}
@@ -555,6 +673,7 @@ function SelectedClipControls() {
           min={0.2}
           max={isImage ? 60 : (asset?.duration ?? 60)}
           step={0.1}
+          aria-label="Selected clip length, in seconds"
           value={duration.toFixed(1)}
           onChange={(event) => {
             const seconds = Number(event.target.value)

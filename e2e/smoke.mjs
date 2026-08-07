@@ -155,11 +155,21 @@ try {
   step('an exit made from outside the app is noticed by the button')
 
   // --- Trimming ------------------------------------------------------------
+  // The first m:ss.d in the header is how long the picture runs for. Comparing
+  // that rather than the whole line matters: the line carries other numbers,
+  // and a change to any of them would otherwise pass for a trim.
+  const pictureSeconds = (text) => {
+    const found = /(\d+):(\d+\.\d)/.exec(text)
+    return found ? Number(found[1]) * 60 + Number(found[2]) : 0
+  }
+
   await page.locator('section[aria-label="Timeline"] .group').first().click()
-  await page.fill('input[type="number"]', '2')
+  await page.fill('input[aria-label="Selected clip length, in seconds"]', '2')
   await page.waitForTimeout(300)
   const trimmed = await page.textContent('section[aria-label="Timeline"] header span')
-  if (trimmed === twoClips) fail('trimming a clip did not change the timeline duration')
+  if (pictureSeconds(trimmed) >= pictureSeconds(twoClips)) {
+    fail(`trimming a clip did not shorten the picture: "${twoClips}" -> "${trimmed}"`)
+  }
   step(`trimming shortens the timeline (${twoClips.trim()} -> ${trimmed.trim()})`)
 
   // --- Cutting -------------------------------------------------------------
@@ -265,8 +275,8 @@ try {
   // of its own, draggable to an exact spot, and — by the export summary and the
   // MP4 below — carried into the render.
   const tracksBeforeCountIn = await trackCount()
-  await page.locator('input[aria-label="Scrub through the timeline"]').fill('3')
-  await page.getByRole('button', { name: /Add 3-beep count-in/ }).click()
+  const leadInField = page.locator('input[aria-label="Lead-in before the picture, in seconds"]')
+  await page.getByRole('button', { name: /Add before the video/ }).click()
   await page.waitForSelector('text=/Count-in added to/', { timeout: 30000 })
   const tracksAfterCountIn = await trackCount()
   if (tracksAfterCountIn !== tracksBeforeCountIn + 1) {
@@ -276,6 +286,13 @@ try {
     )
   }
   step('count-in beeps generated and placed on a lane of their own')
+
+  // The beeps only fit in front of the picture because the picture moved, so
+  // the lead-in has to have been opened by the same click.
+  const leadInValue = Number(await leadInField.inputValue())
+  if (leadInValue < 3)
+    fail(`the picture should have been pushed back 3s, field reads ${leadInValue}`)
+  step(`picture slid right to make room for the count-in (lead-in ${leadInValue}s)`)
 
   // Dragging is the point of putting them on the timeline rather than playing
   // them at the recorder: the cue has to be movable to the exact moment.
@@ -296,6 +313,43 @@ try {
   const beepsAfter = await beeps.getAttribute('aria-label')
   if (beepsBefore === beepsAfter) fail(`dragging the count-in did not retime it: "${beepsAfter}"`)
   step(`count-in dragged along its lane (${beepsBefore} -> ${beepsAfter})`)
+
+  // Put them back in front of the picture, which is where this project wants
+  // them and what the exported file is checked against below.
+  await page.mouse.move(beepsBox.x + beepsBox.width / 2 + 40, beepsBox.y + beepsBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(beepsBox.x + beepsBox.width / 2 - 200, beepsBox.y + beepsBox.height / 2, {
+    steps: 8,
+  })
+  await page.mouse.up()
+  await page.waitForTimeout(200)
+  if (!/at 0:00.0/.test((await beeps.getAttribute('aria-label')) ?? '')) {
+    fail('the count-in should clamp at zero when dragged past the start of the timeline')
+  }
+  step('count-in dragged back to the top and clamped at zero')
+
+  // Dragging the hatched block at the head of the picture track is the direct
+  // way to slide the video: what moves is everything after it.
+  const leadInBlock = page.locator('[role="slider"][aria-label="Lead-in before the picture"]')
+  await leadInBlock.scrollIntoViewIfNeeded()
+  const leadInBox = await leadInBlock.boundingBox()
+  if (!leadInBox) fail('the lead-in block is not on the picture track to drag')
+  await page.mouse.move(leadInBox.x + leadInBox.width / 2, leadInBox.y + leadInBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(
+    leadInBox.x + leadInBox.width / 2 + 40,
+    leadInBox.y + leadInBox.height / 2,
+    {
+      steps: 8,
+    },
+  )
+  await page.mouse.up()
+  await page.waitForTimeout(200)
+  const draggedLeadIn = Number(await leadInField.inputValue())
+  if (draggedLeadIn <= leadInValue) {
+    fail(`dragging the lead-in should have lengthened it, ${leadInValue} -> ${draggedLeadIn}`)
+  }
+  step(`picture slid further right by dragging its lead-in (${leadInValue}s -> ${draggedLeadIn}s)`)
 
   // --- Voice conversion -----------------------------------------------------
   await page.waitForSelector('select')
@@ -334,6 +388,18 @@ try {
   const trackTotal = Number(/across (\d+) track/.exec(summary)?.[1] ?? 0)
   if (clipCount !== 4) fail(`expected 4 audio clips in the export, summary said: "${summary}"`)
   if (trackTotal !== 4) fail(`expected 4 audio tracks in the export, summary said: "${summary}"`)
+  if (!/of black before the picture/.test(summary)) {
+    fail(`the export should carry the lead-in, summary said: "${summary}"`)
+  }
+
+  // The first m:ss.d in the summary is the length of the render, which is what
+  // the MP4 is checked against below — the two agreeing is how we know the
+  // black at the head was really encoded rather than just promised.
+  const promised = /(\d+):(\d+\.\d)/.exec(summary)
+  const promisedSeconds = promised ? Number(promised[1]) * 60 + Number(promised[2]) : 0
+  if (promisedSeconds < 9) {
+    fail(`a 7s picture pushed back past 3s should render longer than 9s, got ${promisedSeconds}s`)
+  }
   if (!/keep their own sound/.test(summary)) {
     fail(`export should keep the video clips' sound, summary said: "${summary}"`)
   }
@@ -352,6 +418,12 @@ try {
   if (!mp4.hasVideo) fail('exported MP4 has no H.264 video track')
   if (!mp4.hasAudio) fail('exported MP4 has no AAC audio track despite four audio layers')
   if (mp4.durationSeconds < 1) fail(`exported MP4 duration looks wrong: ${mp4.durationSeconds}s`)
+  if (Math.abs(mp4.durationSeconds - promisedSeconds) > 0.5) {
+    fail(
+      `the MP4 is ${mp4.durationSeconds.toFixed(2)}s but the export promised ` +
+        `${promisedSeconds}s — the lead-in did not make it into the file`,
+    )
+  }
   if (mp4.boxes[1] !== 'moov') fail('moov is not first, so +faststart did not take effect')
   step(
     `export verified: ${mp4.durationSeconds.toFixed(2)}s, ${mp4.width}x${mp4.height}, ` +
