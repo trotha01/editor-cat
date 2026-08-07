@@ -47,6 +47,7 @@ import {
 import { audioEnd } from '../lib/audioTracks'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
+import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
@@ -380,6 +381,18 @@ export function Timeline({
   const visualDuration = totalDuration(project.clips)
   const pictureEndTime = leadIn + visualDuration
 
+  // The clips that could have sound of their own. Worked out once here rather
+  // than in the lane and again in the gutter, because the two have to agree
+  // about whether the row exists or every row below it is a lane out of line.
+  const soundEntries = useMemo<WaveformEntry[]>(
+    () =>
+      positioned.flatMap((entry) => {
+        const asset = assetById.get(entry.clip.assetId)
+        return asset?.kind === 'video' ? [{ entry, asset }] : []
+      }),
+    [positioned, assetById],
+  )
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   // Where a cut would land, and whether one can land there at all. Recomputed
@@ -533,6 +546,18 @@ export function Timeline({
               s
             </label>
           </div>
+
+          {soundEntries.length > 0 ? (
+            <div
+              className="mt-2 flex items-center gap-1.5 rounded bg-surface-2 px-2 text-[11px] text-ink-dim"
+              style={{ height: WAVEFORM_LANE_HEIGHT }}
+              title="What the video clips' own sound looks like. It belongs to the clips, so it is shown here rather than being a track you can drag."
+            >
+              <span aria-hidden>〰️</span>
+              <span className="truncate font-medium">Clip sound</span>
+            </div>
+          ) : null}
+
           <AudioTrackHeaders />
         </div>
 
@@ -618,6 +643,8 @@ export function Timeline({
                 />
               ) : null}
             </div>
+
+            <ClipWaveformLane entries={soundEntries} zoom={zoom} />
 
             <AudioTrackLanes zoom={zoom} />
 

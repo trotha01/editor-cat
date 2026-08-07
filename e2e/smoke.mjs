@@ -172,6 +172,29 @@ try {
   }
   step(`trimming shortens the timeline (${twoClips.trim()} -> ${trimmed.trim()})`)
 
+  // --- Waveforms of the clips' own sound -----------------------------------
+  // Mock clips are recorded with a real tone, so the lane has something to
+  // draw. Counting ink rather than asserting the canvas exists is the point:
+  // an undecoded file, a wrong colour or a zero-sized backing store all leave
+  // an element on the page that looks fine and shows nothing.
+  const waveform = page.locator('canvas[aria-label^="Sound from"]').first()
+  await waveform.waitFor({ timeout: 30000 })
+  const ink = await waveform.evaluate((canvas) => {
+    const context = canvas.getContext('2d')
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height)
+    let opaque = 0
+    for (let index = 3; index < data.length; index += 4) if (data[index] > 0) opaque += 1
+    return { opaque, pixels: data.length / 4, width: canvas.width, height: canvas.height }
+  })
+  if (ink.width < 2 || ink.height < 2)
+    fail(`the waveform canvas has no size: ${ink.width}x${ink.height}`)
+  // A centre hairline alone would be roughly 1/height of the canvas, so this
+  // threshold is what separates "drew a waveform" from "drew the empty lane".
+  if (ink.opaque < ink.pixels * 0.05) {
+    fail(`the waveform lane is blank: ${ink.opaque} of ${ink.pixels} pixels have ink`)
+  }
+  step(`clip sound drawn as a waveform (${ink.opaque} of ${ink.pixels} pixels inked)`)
+
   // --- Cutting -------------------------------------------------------------
   // A cut is not stored as anything of its own: it *is* the two clips it leaves
   // behind. So the thing worth checking in a real browser is that it comes back

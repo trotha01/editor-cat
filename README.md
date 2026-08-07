@@ -13,14 +13,14 @@ ElevenLabs key**, held in your browser.
 
 ## What it does
 
-| Step          | What happens                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                         |
-| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                              |
-| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. Audio sits on its own stacked tracks below. |
-| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                              |
-| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                            |
-| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                          |
+| Step          | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                               |
+| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                    |
+| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. |
+| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                    |
+| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                  |
+| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## What you need
 
@@ -471,6 +471,22 @@ what each file actually contains before it builds the graph
 (`src/lib/export/probe.ts`). Preview and export always agree; hearing something
 in one that vanishes from the other would be worse than silence.
 
+**The waveform lane is a view, not a track.** A clip's sound belongs to its
+clip — trimmed with it, mixed where it sits — so drawing it under the picture
+answers "where does anyone actually speak" without pretending it is something
+you can drag. Peaks are computed once per asset, at a magnitude for every
+hundredth of a second, and everything after that is a slice of that one array:
+a trim moves the waveform with the picture, both halves of a cut already have
+their peaks, and zooming redraws without touching the file. What is kept is the
+peaks, a few kilobytes, not the decoded buffer, which for a minute of stereo is
+ten megabytes. It is drawn on a square-root scale rather than straight
+amplitude — speech at a sensible level peaks around a tenth of full scale, which
+in a lane this size is one pixel and reads as silence — and deliberately not
+normalised per clip, which would make two clips look equally loud however far
+apart their levels really were. A file that will not decode, or has no audio at
+all, draws the centre line and nothing else: a waveform is a convenience and
+must never be why an edit fails.
+
 **Fullscreen takes the player, not the video.** The preview is a stack of media
 elements chased to a clock above them, so handing one `<video>` to the browser's
 own fullscreen would show a single clip, drop the audio layered over it, and
@@ -511,7 +527,10 @@ that the two halves of a cut still add up to the clip they came from),
 pre-multitrack projects),
 `src/lib/countdown.ts` (a beep on each second, silence to the mark, headroom
 left in the mix, and a WAV header whose declared sizes match the samples — the
-usual way to produce a file that plays for a moment and then stops) and
+usual way to produce a file that plays for a moment and then stops),
+`src/lib/waveform.ts` (peak bucketing, the slice a trimmed clip shows, and the
+rule that squeezing a waveform into fewer pixels keeps the loudest bucket rather
+than averaging the transients away) and
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
@@ -528,8 +547,10 @@ without Drive, and no ejection once inside.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track, cutting a clip and
-reloading the page to see the cut come back, and putting a count-in in front of
-the video and then dragging both it and the picture's lead-in — then parses the
+reloading the page to see the cut come back, putting a count-in in front of the
+video and then dragging both it and the picture's lead-in, and counting the inked
+pixels in the waveform lane, since an undecoded file leaves a canvas that looks
+fine and shows nothing — then parses the
 exported MP4 to confirm it has the tracks it should and runs for exactly as long
 as the export dialog promised, which is how the black at the head is known to
 have been encoded rather than merely requested. It earns its keep: it is
@@ -545,7 +566,11 @@ If your CI image ships its own browser, point the test at it with
 - **A clip's sound cannot be moved off its clip.** It is mixed where the clip
   sits and trimmed with it, which is what you want for filmed footage; but there
   is no way to slide it, keep it running under the next clip, or drop it onto an
-  audio track as its own layer.
+  audio track as its own layer. The clip sound lane shows you where it is; it
+  does not let you take it anywhere.
+- **Only video clips get a waveform.** The audio tracks show named blocks rather
+  than their contents, and a clip whose file this browser cannot decode shows an
+  empty lane rather than an error.
 - **Audio clips cannot be trimmed from the timeline.** They can be retimed and
   moved between tracks, but shortening a take means re-recording it.
 - **A cut cannot leave a sliver.** Both halves have to clear 0.2s, the same floor

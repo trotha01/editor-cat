@@ -7,6 +7,7 @@
  */
 import { create } from 'zustand'
 import { deleteAsset as dbDeleteAsset, getBlob, listAssets, putAsset } from '../lib/db'
+import { forgetPeaks } from '../lib/audioPeaks'
 import type { Asset } from '../lib/types'
 
 const urlCache = new Map<string, string>()
@@ -47,6 +48,9 @@ export const useAssetStore = create<AssetState>((set, get) => ({
   remove: async (id) => {
     await dbDeleteAsset(id)
     releaseAssetUrl(id)
+    // The bytes these were read from are gone, so holding on to them would be
+    // caching a waveform for a file that no longer exists.
+    forgetPeaks(id)
     set((state) => ({ assets: state.assets.filter((asset) => asset.id !== id) }))
   },
 
