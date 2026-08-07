@@ -12,7 +12,10 @@ describe('chunkRanges', () => {
 
   it('cuts a long source into chunks that tile it exactly', () => {
     const ranges = chunkRanges(0, 300)
-    expect(ranges).toHaveLength(3)
+    // Counted from the constant rather than written out, since the payload the
+    // chunk is sized against is a property of the transport and has changed
+    // once already — what has to hold is the tiling, not the number.
+    expect(ranges).toHaveLength(Math.ceil(300 / CHUNK_SECONDS))
     expect(ranges[0]).toEqual({ from: 0, to: CHUNK_SECONDS })
     expect(ranges.at(-1)?.to).toBe(300)
     // No gaps and no overlaps: every second of audio is transcribed once.

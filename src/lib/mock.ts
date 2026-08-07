@@ -301,8 +301,7 @@ const MOCK_TRANSCRIPT = 'This is a mock transcript. No real speech was recognise
  * The timings are the part that has to be real: they are spread across the
  * length of audio handed in, so grouping, the karaoke highlight, and the
  * burnt-in subtitle file are all exercised against a transcript that lines up
- * with something. Both engines route through this, so mock mode covers the
- * engine picker as well as the captioning.
+ * with something.
  */
 export async function mockTranscribe(seconds: number): Promise<{
   words: { text: string; start: number; end: number }[]

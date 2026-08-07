@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_SPEECH_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
-import { migratePrefs, useSettingsStore } from './useSettingsStore'
+import { DEFAULT_VIDEO_MODEL } from '../lib/models'
+import { migratePrefs, useSettingsStore, type StoredPrefs } from './useSettingsStore'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
 
@@ -47,24 +47,11 @@ describe('migratePrefs', () => {
     expect(prefs.videoModel).toBe(DEFAULT_VIDEO_MODEL)
   })
 
-  it('moves a captured speech default off the model that will not run', () => {
-    // Reported from the field: ONNX Runtime refuses to build a session for any
-    // export of it. Anyone who ever changed another preference has this value
-    // written into storage and would otherwise never see the new default.
-    const prefs = migratePrefs({ speechModel: 'onnx-community/whisper-base_timestamped', v: 2 })
-    expect(prefs.speechModel).toBe(DEFAULT_SPEECH_MODEL)
-  })
-
-  it('leaves a speech model someone typed in alone', () => {
-    const prefs = migratePrefs({ speechModel: 'onnx-community/whisper-large-v3-turbo', v: 2 })
-    expect(prefs.speechModel).toBe('onnx-community/whisper-large-v3-turbo')
-  })
-
-  it('does not move the speech model back after someone chooses it deliberately', () => {
-    // Still reachable from the Settings box, and a browser where it does work
-    // should keep it.
-    const prefs = migratePrefs({ speechModel: 'onnx-community/whisper-base_timestamped', v: 3 })
-    expect(prefs.speechModel).toBe('onnx-community/whisper-base_timestamped')
+  it('drops a preference the app no longer has, rather than carrying it around', () => {
+    // Captions moved to a hosted transcriber, so the in-browser speech model is
+    // gone. Anyone who used the app before that has one written into storage.
+    const prefs = migratePrefs({ speechModel: 'Xenova/whisper-base', v: 3 } as StoredPrefs)
+    expect(prefs).not.toHaveProperty('speechModel')
   })
 })
 

@@ -1,12 +1,7 @@
 /** API keys and model preferences. */
 import { create } from 'zustand'
 import { clearKeys, loadKeys, saveKeys, type KeyState } from '../lib/keys'
-import {
-  DEFAULT_IMAGE_MODEL,
-  DEFAULT_LLM_MODEL,
-  DEFAULT_SPEECH_MODEL,
-  DEFAULT_VIDEO_MODEL,
-} from '../lib/models'
+import { DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
 
@@ -21,15 +16,12 @@ interface Prefs {
   imageModel: string
   videoModel: string
   llmModel: string
-  /** Hugging Face repo id for in-browser transcription. */
-  speechModel: string
 }
 
 const DEFAULT_PREFS: Prefs = {
   imageModel: DEFAULT_IMAGE_MODEL,
   videoModel: DEFAULT_VIDEO_MODEL,
   llmModel: DEFAULT_LLM_MODEL,
-  speechModel: DEFAULT_SPEECH_MODEL,
 }
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[]
@@ -73,26 +65,17 @@ function snapshotPrefs(source: Partial<Prefs>): Prefs {
 }
 
 /**
- * The speech model this app defaulted to before a field report showed ONNX
- * Runtime refusing to build a session for any export of it.
+ * Pure, and exported for tests: stored preferences in, current-shape prefs out.
  *
- * Same reasoning as the video models above, and the same reason it needs a
- * migration at all: `setPref` writes every field, so anyone who ever changed
- * their image model has this default captured in storage and would otherwise be
- * stuck on it forever. Moved across; a repo id typed into the custom box is
- * unmistakably deliberate and is left alone.
+ * Preferences that no longer exist need no migration — `snapshotPrefs` reads
+ * only the keys `Prefs` declares, so a retired one (the in-browser speech model,
+ * say) is simply not carried forward.
  */
-const PRE_XENOVA_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
-
-/** Pure, and exported for tests: stored preferences in, current-shape prefs out. */
 export function migratePrefs(stored: StoredPrefs): Prefs {
   const prefs = snapshotPrefs(stored)
   const version = stored.v ?? 0
   if (version < 1 && PRE_SEEDANCE_VIDEO_MODELS.includes(prefs.videoModel)) {
     prefs.videoModel = DEFAULT_VIDEO_MODEL
-  }
-  if (version < 3 && prefs.speechModel === PRE_XENOVA_SPEECH_MODEL) {
-    prefs.speechModel = DEFAULT_SPEECH_MODEL
   }
   return prefs
 }

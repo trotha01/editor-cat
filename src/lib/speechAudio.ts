@@ -9,7 +9,7 @@
  * is lost by downsampling to it, and it makes the request size predictable
  * instead of depending on how a provider happened to encode a clip.
  *
- * Predictable matters, because the proxy in front of ElevenLabs is a serverless
+ * Predictable matters, because the proxy in front of fal is a serverless
  * function with a payload ceiling. At this format audio costs 32KB a second, so
  * long sources are cut into chunks and transcribed one at a time — see
  * `chunkRanges`, which is pure and is where the arithmetic that has to line back
@@ -23,10 +23,15 @@ export const SPEECH_SAMPLE_RATE = 16000
 /**
  * How much audio goes in one request.
  *
- * Two minutes is ~3.8MB at the format above, comfortably inside the 6MB
- * serverless payload ceiling with room for the multipart envelope.
+ * The audio travels to fal as a base64 data URI inside a JSON body, and base64
+ * costs a third again on top of the 32KB a second above — so 75 seconds is 2.4MB
+ * of audio arriving as about 3.2MB of request. That is well inside the 6MB
+ * serverless payload ceiling, which is deliberate rather than timid: this proxy
+ * re-encodes the body on its own way through, so a request sized against the
+ * ceiling exactly is a request that fails at the ceiling. Most short-form takes
+ * are shorter than this and go in one piece with no seams at all.
  */
-export const CHUNK_SECONDS = 120
+export const CHUNK_SECONDS = 75
 
 export interface TimeRange {
   /** Seconds into the source file. */

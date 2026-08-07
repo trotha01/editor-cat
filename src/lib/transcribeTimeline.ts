@@ -2,8 +2,8 @@
  * "Add captions", end to end.
  *
  * Walks the sources chosen by `speechSources`, decodes each one, hands it to
- * whichever engine was picked, and maps every word back onto the timeline. The
- * only interesting part is the mapping, and it is worth stating plainly:
+ * Scribe, and maps every word back onto the timeline. The only interesting part
+ * is the mapping, and it is worth stating plainly:
  *
  *   timeline time = clip.startTime + (word time in the file − clip.inPoint)
  *
@@ -14,8 +14,8 @@
 import { getBlob } from './db'
 import { dedupeOverlappingWords, wordsOntoTimeline, type TimedWord } from './captions'
 import { decodeAudio } from './speechAudio'
+import { transcribeStretch } from './scribe'
 import { toDisplayMessage } from './errors'
-import type { TranscriptionEngine } from './transcribeEngines'
 import type { SpeechSource } from './captionSources'
 import type { Asset } from './types'
 
@@ -25,9 +25,9 @@ export interface TranscribeProgress {
   total: number
   /** What is being worked on right now. */
   label: string
-  /** What the engine is doing, where it has something to say. */
+  /** What the job is doing, where there is something to say. */
   detail?: string
-  /** 0–1 within the current source, where the engine can measure it. */
+  /** 0–1 within the current source, where it can be measured. */
   ratio?: number
 }
 
@@ -36,27 +36,20 @@ export interface TimelineTranscript {
   words: TimedWord[]
   /** Sources that produced nothing, with the reason. Shown, never swallowed. */
   failures: string[]
-  /** Languages the engine detected, so a mis-detection is visible in the UI. */
+  /** Languages Scribe detected, so a mis-detection is visible in the UI. */
   languages: string[]
-  /**
-   * Anything the user should know about how these words were produced — a
-   * fallback model, say. Deduplicated, because every source hits the same one.
-   */
-  notes: string[]
 }
 
 export interface TranscribeTimelineOptions {
-  engine: TranscriptionEngine
   sources: readonly SpeechSource[]
   assets: readonly Asset[]
-  /** Leave unset to let the engine detect the language. */
+  /** Leave unset to let Scribe detect the language. */
   languageCode?: string
   onProgress?: (progress: TranscribeProgress) => void
   signal?: AbortSignal
 }
 
 export async function transcribeTimeline({
-  engine,
   sources,
   assets,
   languageCode,
@@ -67,7 +60,6 @@ export async function transcribeTimeline({
   const words: TimedWord[] = []
   const failures: string[] = []
   const languages = new Set<string>()
-  const notes = new Set<string>()
 
   let done = 0
   for (const source of sources) {
@@ -80,7 +72,7 @@ export async function transcribeTimeline({
       const blob = await getBlob(asset.blobKey)
       if (!blob) throw new Error('its media is no longer stored in this browser')
 
-      const result = await engine.transcribeSource({
+      const result = await transcribeStretch({
         buffer: await decodeAudio(blob),
         from: source.inPoint,
         to: source.inPoint + source.duration,
@@ -97,7 +89,6 @@ export async function transcribeTimeline({
       })
 
       if (result.languageCode) languages.add(result.languageCode)
-      for (const note of result.notes ?? []) notes.add(note)
       words.push(...wordsOntoTimeline(result.words, source))
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
@@ -115,6 +106,5 @@ export async function transcribeTimeline({
     words: dedupeOverlappingWords(words.sort((a, b) => a.start - b.start)),
     failures,
     languages: [...languages],
-    notes: [...notes],
   }
 }

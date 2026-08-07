@@ -197,79 +197,15 @@ export const LLM_MODELS: readonly LlmModel[] = [
 export const LLM_ENDPOINT = 'fal-ai/any-llm'
 
 /**
- * The speech model captioning downloads and runs in the browser.
+ * The transcriber behind captions: ElevenLabs Scribe v2, hosted by fal.
  *
- * A Hugging Face repo id, resolved by transformers.js. Three things about it are
- * load-bearing and none is obvious from the name:
- *
- *  - it must be an ONNX export, and specifically one with the weights in a
- *    subfolder called `onnx`. transformers.js hardcodes that name; the
- *    `Xenova/*` and `onnx-community/*` repos are laid out for it, and their
- *    model cards say as much — "structuring your repo like this one (with ONNX
- *    weights located in a subfolder named onnx)".
- *  - it must publish `encoder_model` and `decoder_model_merged` under that
- *    folder, since those are the two sessions a Whisper pipeline opens;
- *  - its generation config must carry `alignment_heads`, or word-level
- *    timestamps are unavailable and captions have nothing to highlight on.
- *
- * `Xenova/*` are the original transformers.js conversions of OpenAI's own
- * releases, and are what the library's own word-timestamp examples use — which
- * is the reason to lead with one. Multilingual, so it does not quietly turn a
- * French project English.
- *
- * Like every other model id here, this is one line to change — and Settings has
- * a box to override it without one, since a browser that has already downloaded
- * a model is a bad place to be told to wait for a release.
+ * Not offered as a choice, and deliberately so. It is here for one property —
+ * a timestamp on every word, which is what karaoke captions are made of — and a
+ * model without that property would not be a cheaper alternative but a different
+ * feature. Running it through fal means it is paid for by this deployment
+ * alongside image and video generation, so captions need no key from the user.
  */
-export const DEFAULT_SPEECH_MODEL = 'Xenova/whisper-base'
-
-/**
- * A second model to fall back to, from a different conversion lineage.
- *
- * Exported years apart from the `Xenova/*` ones and by different tooling, which
- * is the point: a repo whose weights this runtime cannot load is not fixed by
- * another export of the same repo, only by a differently produced one. This one
- * is built for word timings specifically, so it is also the answer if the
- * configured model turns out not to publish alignment heads.
- */
-export const FALLBACK_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
-
-/** One way of trying to open a speech model. */
-export interface SpeechModelAttempt {
-  /** Repo to load. Omitted means the one configured in Settings. */
-  model?: string
-  /** Which export to download. `q8` is quantised, `fp32` the model as trained. */
-  dtype: string
-}
-
-/**
- * Ways to open a speech model, tried in order until one works.
- *
- * A ladder rather than a single choice, because "downloaded" and "runnable" are
- * different things and only the browser can tell them apart. A model can arrive
- * intact and then have ONNX Runtime refuse to build a session for it:
- *
- *   qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale
- *
- * That one is worth knowing about in detail, because it taught us the shape of
- * this ladder the hard way. It survives every export its repo publishes,
- * quantised and full-precision alike, *and* every graph optimisation level
- * including none — which together mean it is neither the weights nor an optional
- * rewrite, but how the runtime has to execute those weights at all. Nothing
- * passed to the session can work around it; only a different repo can.
- *
- * So every rung is a different *file*, cheapest first:
- *
- *  1. the configured model, compressed — the small download and the common case;
- *  2. a model from an entirely different conversion lineage;
- *  3. the configured model unquantised, which is the largest download here and
- *     the one making the fewest assumptions about what this runtime supports.
- */
-export const SPEECH_MODEL_ATTEMPTS: readonly SpeechModelAttempt[] = [
-  { dtype: 'q8' },
-  { model: FALLBACK_SPEECH_MODEL, dtype: 'q8' },
-  { dtype: 'fp32' },
-]
+export const SPEECH_TO_TEXT_MODEL = 'fal-ai/elevenlabs/speech-to-text/scribe-v2'
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id
 export const DEFAULT_VIDEO_MODEL = VIDEO_MODELS[0]!.id

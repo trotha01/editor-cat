@@ -6,32 +6,30 @@ Write a prompt → get images → animate one into a clip → arrange clips on a
 timeline → layer voiceovers and music → swap your voice for another one →
 caption it karaoke-style → export an MP4.
 
-Images and video are generated on the deployment's own fal.ai account, so
-visitors need no key for them. Captions can be transcribed **in the browser for
-free**, with no key at all. Voice conversion — and faster, more accurate
-transcription — use **your own ElevenLabs key**, held in your browser.
+Images, video and caption transcription all run on the deployment's own fal.ai
+account, so visitors need **no key** for any of them. Voice conversion uses
+**your own ElevenLabs key**, held in your browser.
 
 ---
 
 ## What it does
 
-| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                               |
-| **Timeline**     | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below.                                                                                            |
-| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                               |
-| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                             |
-| **4 · Captions** | **Add captions** transcribes the speech on the timeline — with a speech model running in this tab for free, or with ElevenLabs if you have a key — and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable. |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                            |
+| **Timeline**     | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below.                         |
+| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                            |
+| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                          |
+| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable. |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## What you need
 
-**As a visitor:** nothing. Image and video generation run on the site's own
-fal.ai account, and captions can be transcribed in your own browser. A key buys
-you voice conversion, and a better transcriber if you want one.
+**As a visitor:** nothing. Image and video generation and caption transcription
+all run on the site's own fal.ai account. A key buys you voice conversion.
 
-- **[ElevenLabs](https://elevenlabs.io)** — entered in **Settings**. Needed for changing your recorded voice; optional for captions, where it is the faster and more accurate of the two transcribers. Everything else works without it. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, and is never written to a server or a log.
+- **[ElevenLabs](https://elevenlabs.io)** — entered in **Settings**. Needed for changing your recorded voice, and for nothing else. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, and is never written to a server or a log.
 
 **As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key set as
 `FAL_KEY` in the site environment. See [Deploying to Netlify](#deploying-to-netlify).
@@ -346,16 +344,14 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Library   — blobs in IndexedDB                   /api/elevenlabs/* → api.elevenlabs.io
   Timeline  — picture + audio + caption lanes        the caller's own key, forwarded once
   Captions  — words with their own timings         /api/media        → streams provider media
-  Speech    — Whisper in a worker, or Scribe       /api/google/*     → oauth2.googleapis.com
+  Speech    — audio decoded here, Scribe there     /api/google/*     → oauth2.googleapis.com
   Projects  — timelines in Supabase (no media)       holds the refresh token, mints
   Drive     — media in your own Drive                an access token per request
   Preview   — custom player over <video>
   Export    — ffmpeg.wasm → MP4, captions burnt in
 
                                                  Supabase and Drive themselves talk to the
-                                                 browser directly, not through us — and the
-                                                 in-browser speech model talks to nobody at
-                                                 all once it has been downloaded.
+                                                 browser directly, not through us.
 ```
 
 A few decisions worth knowing about:
@@ -523,103 +519,51 @@ keys are written only when there is something in them, so a project with no
 captions saves exactly the document it always did, and deleting the last caption
 removes them again rather than leaving an empty list behind.
 
-**Two transcribers, one interface.** Captions can be written by ElevenLabs
-Scribe or by Whisper running in the tab, and they differ in more than a network
-call — which is why `src/lib/transcribeEngines.ts` makes them an interface rather
-than a flag. Scribe is accurate and fast, needs a key, and has to stay under a
-serverless payload ceiling, so it slices the audio up and posts it. The browser
-model is free, needs no key, and never sends your voice anywhere, but downloads
-about 80MB once and then thinks for roughly the length of the audio again — so it
-takes the whole stretch and reports progress instead. What they share is the
-currency: mono 16kHz samples in, words timed from the start of the source file
-out. Both hear exactly the same audio, so switching engines changes the accuracy
-of the transcript and nothing about how it lands on the timeline. With a key the
-paid one is the default; with none, the free one is not a consolation prize but
-the only one that can run — and it can.
+**One transcriber, chosen for one property.** Captions are written by
+ElevenLabs Scribe v2, reached through fal — `src/lib/scribe.ts`. It is not
+offered as a choice, and that is the point: it is here because it returns a
+timestamp on every _word_, which is the whole requirement for karaoke captions. A
+transcript with only sentence-level timings would have its word timings guessed,
+and guessed word timings are exactly what a highlight moving across a line makes
+obvious. A cheaper model without that property would not be a cheaper
+alternative, it would be a different feature.
 
-**The speech runtime is self-hosted and loaded on demand.** transformers.js and
-the ONNX Runtime it executes the model with both come from our own origin
-(`scripts/copy-speech-runtime.mjs`), for the same reasons as the ffmpeg core: the
-Content-Security-Policy only allows scripts from 'self', and a CDN outage should
-not break a feature. They are fetched at the moment they are first needed rather
-than bundled, so a visitor who never captions in the browser downloads none of
-it. Bundling was tried and is worse than it sounds — transformers.js picks its
-ONNX build at runtime, per browser, and asking a bundler to guess got a 23MB
-WebAssembly file inlined into the output that nothing would ever load. Handing
-over the whole directory leaves the choice where it belongs. The model weights
-themselves come from Hugging Face on first use and are cached by the browser.
+Through fal rather than through ElevenLabs directly because that is where this
+app's other model calls already go, and the difference is who pays: the fal key
+belongs to the deployment and is attached inside the proxy, so captions need no
+key from the user and work on a first visit with nothing entered. The user's own
+ElevenLabs key is now only the voice changer.
 
-**Downloaded is not the same as runnable.** A model can arrive intact and then
-have ONNX Runtime refuse to build a session for it. One such failure taught this
-ladder its shape, and the diagnosis is worth keeping:
+**What is sent is the audio, not the video.** The browser decodes each source and
+re-encodes exactly the stretch a clip actually uses as mono 16kHz WAV, which is
+what separates the audio from the picture — a decoded MP4 is samples like
+anything else, so no demuxing step is needed and no container has to be
+understood. Downsampling loses nothing a speech recogniser was listening to, and
+it makes the request size predictable rather than dependent on how a provider
+happened to encode a clip. That matters because the audio travels to fal as a
+base64 data URI inside the JSON body, and base64 costs a third again on top of
+the 32KB a second above.
 
-    qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale
+So `CHUNK_SECONDS` in `src/lib/speechAudio.ts` is set at 75 — 2.4MB of audio
+arriving as about 3.2MB of request, well inside the 6MB serverless payload
+ceiling. Deliberately well inside rather than exactly at it, because the proxy
+re-encodes the body on its own way through. Chunk boundaries are blunt, so a word
+straddling one is split; most short-form takes are shorter than a chunk and go in
+one piece with no seams at all. `chunkRanges` is pure and is where the arithmetic
+that has to line back up lives.
 
-It survived every export the repo publishes, quantised and full-precision alike —
-so not the weights. It survived every graph optimisation level including none —
-so not an optional rewrite either. That second one was worth checking rather than
-assuming: transformers.js forwards `session_options` to ONNX Runtime untouched,
-and the runtime does read `graphOptimizationLevel`, so the option really did
-arrive and the transform really did run regardless. Between them those two facts
-leave the model file itself, which nothing on this side can repair. The lesson
-generalises: when a model will not load, the thing to vary is not _how_ it is
-opened but _which_ it is.
+**`words` does not mean words.** Scribe's list interleaves the words with the
+spacing between them, each entry tagged `word`, `spacing` or `audio_event`:
 
-So every rung of `SPEECH_MODEL_ATTEMPTS` is a different file, cheapest first —
-the configured model compressed; a model from an entirely different conversion
-lineage; then the configured one unquantised, the largest download and the fewest
-assumptions. Nothing on the ladder re-reads a download it has already been
-refused. A rung that fails is remembered with its reason, so a project with six
-voice takes walks the ladder once rather than six times.
+    { "text": "Hey,", "start": 0.079, "end": 0.539, "type": "word" }
+    { "text": " ",    "start": 0.539, "end": 0.599, "type": "spacing" }
 
-Which repo goes first follows from the same constraint. transformers.js hardcodes
-the subfolder it reads weights from — `onnx` — and opens two sessions per Whisper
-model, `encoder_model` and `decoder_model_merged`. The `Xenova/*` repos are the
-original transformers.js conversions of OpenAI's releases, laid out for exactly
-that and used by the library's own word-timestamp examples, so that is where the
-default sits; the repo that would not load is still on the ladder behind it, and
-still typeable into Settings for a browser where it works. A stored preference
-pointing at it is migrated across, because `setPref` writes every field and
-someone who once changed their image model has the old default captured in
-storage whether they chose it or not.
-
-**Word timings are asked for, not required.** Whisper can time text two ways and
-only one of them is fussy. Measured word timings come from aligning the model's
-cross-attention against the audio, which needs `alignment_heads` in its
-generation config — plenty of ONNX exports do not carry them, and the failure
-arrives late, from the first inference rather than from the session, because that
-config is not read until the model is asked to transcribe. The other way is the
-timestamp tokens Whisper emits as part of its ordinary vocabulary: every export
-has them, they need no alignment heads at all, and they bound a phrase rather
-than a word.
-
-So the worker asks for words, and on being told it cannot have them asks the same
-loaded model for phrases instead and shares each phrase's span out between the
-words in it, weighted by length — `splitSegments` in `src/lib/whisperWords.ts`.
-Both paths then go through the same cleanup, so a hallucinated phrase is no more
-real for having arrived whole. The captions are unaffected; the highlight follows
-the line at about the right pace rather than measured against it, which is
-disclosed rather than hidden, and every word stays individually draggable.
-
-This is why the feature does not need a `_timestamped` repo, and why karaoke is
-not the thing standing between a model and a caption: a model that "cannot do
-timestamps" can still be captioned from.
-
-Falling back to a different model is reported rather than hidden, because unlike
-the other rungs it changes what the transcript _says_, not just how long it took.
-Reading those failures apart — "no connection" from "this repo does not publish
-that format" from "the runtime refused it" from "this model has no word timings"
-— is the whole of `src/lib/speechModel.ts`, because the errors themselves say
-none of it: "Failed to fetch" is what a browser reports for being offline, for a
-blocked network and for a repo that does not exist.
-
-**Whisper needs cleaning up after.** It was trained on subtitled video, so given
-silence or music it reaches for what subtitles say when nobody is speaking —
-"Thanks for watching", "Subtitles by…" — with confident timings, and it falls
-into loops that emit one word thirty times. It also leaves a space on the front
-of every word, and sometimes never closes the last one. All of that is handled in
-`src/lib/whisperWords.ts`, which is deliberately free of any import from the
-runtime so the fiddly part can be tested without a 12MB engine and an 80MB model.
+Taking the list as it comes puts a caption on screen for every gap between two
+words. `wordsFromScribe` is the one function in that file with any judgement in
+it and is where the tests are, against a real response kept verbatim. Words with
+no timing are dropped rather than defaulted to zero — a word with no time cannot
+be highlighted at the right moment, and one silently pinned to the start of the
+clip is worse than one that is missing.
 
 **One highlight, one definition.** `wordSpans` in `src/lib/captions.ts` says
 which stretch of time each word owns; a word stays lit until the next one
@@ -693,7 +637,7 @@ and the fix is one line — no code change and no waiting for a release.
 
 ```bash
 npm test          # unit tests — timeline maths, caption grouping and retiming,
-                  # the karaoke subtitle file, Whisper's output quirks, ffmpeg
+                  # the karaoke subtitle file, reading Scribe's word list, ffmpeg
                   # argv, SSRF guard, session
                   # verification and persistence, the Drive connection flow, the
                   # video request body, orientation, key storage

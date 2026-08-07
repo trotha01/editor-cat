@@ -25,43 +25,13 @@ import {
   splitBoundary,
 } from '../lib/captions'
 import { speechSources } from '../lib/captionSources'
-import {
-  browserEngine,
-  defaultEngineId,
-  elevenLabsEngine,
-  type EngineId,
-} from '../lib/transcribeEngines'
-import { DEFAULT_SPEECH_MODEL, SPEECH_MODEL_ATTEMPTS } from '../lib/models'
+import { SPEECH_LANGUAGES } from '../lib/scribe'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
-import { hasAccess } from '../lib/mock'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
-import { useSettingsStore } from '../state/useSettingsStore'
 import type { CaptionCue, CaptionStyle, CaptionTrack } from '../lib/types'
-
-/**
- * Languages offered explicitly, on top of detection.
- *
- * Detection is right nearly always and wrong in a way you cannot edit your way
- * out of — a wrongly detected language does not mishear a word, it invents the
- * whole line. Being able to say which language it is turns that from a dead end
- * into a second press of the button.
- */
-const LANGUAGES = [
-  { code: '', label: 'Detect automatically' },
-  { code: 'eng', label: 'English' },
-  { code: 'spa', label: 'Spanish' },
-  { code: 'por', label: 'Portuguese' },
-  { code: 'fra', label: 'French' },
-  { code: 'deu', label: 'German' },
-  { code: 'ita', label: 'Italian' },
-  { code: 'hin', label: 'Hindi' },
-  { code: 'jpn', label: 'Japanese' },
-  { code: 'kor', label: 'Korean' },
-  { code: 'cmn', label: 'Mandarin Chinese' },
-]
 
 export function CaptionsPanel({
   currentTime,
@@ -74,8 +44,6 @@ export function CaptionsPanel({
   const ensureCaptionTrack = useProjectStore((state) => state.ensureCaptionTrack)
   const setCaptionsFromWords = useProjectStore((state) => state.setCaptionsFromWords)
   const assets = useAssetStore((state) => state.assets)
-  const elevenKey = useSettingsStore((state) => state.elevenlabs)
-  const speechModel = useSettingsStore((state) => state.speechModel)
 
   const [language, setLanguage] = useState('')
   const [progress, setProgress] = useState<TranscribeProgress | null>(null)
@@ -87,18 +55,6 @@ export function CaptionsPanel({
   const tracks = captionTracksOf(project)
   const cues = captionCuesOf(project)
   const track = tracks[0]
-  const hasKey = hasAccess(elevenKey)
-
-  // Chosen when the panel opens, and left alone after that: someone who has
-  // switched to the browser because they would rather their voice stayed on the
-  // machine should not have that undone mid-session.
-  const [chosenEngine, setChosenEngine] = useState<EngineId>(() => defaultEngineId(hasKey))
-
-  // Except when the choice has stopped being possible. Settings is a dialog over
-  // this panel, so a key can be cleared without the picker ever remounting, and
-  // the request that followed would go out with no key at all. The free engine
-  // is always available, which is what makes falling back to it honest.
-  const engineId: EngineId = chosenEngine === 'elevenlabs' && !hasKey ? 'browser' : chosenEngine
 
   const sources = useMemo(() => speechSources(project, assets), [project, assets])
   const speechSeconds = sources.reduce((sum, source) => sum + source.duration, 0)
@@ -113,14 +69,6 @@ export function CaptionsPanel({
     try {
       const trackId = ensureCaptionTrack()
       const transcript = await transcribeTimeline({
-        engine:
-          engineId === 'elevenlabs'
-            ? elevenLabsEngine(elevenKey)
-            : browserEngine({
-                // An emptied box in Settings means "the default", not "no model".
-                model: speechModel.trim() || DEFAULT_SPEECH_MODEL,
-                attempts: SPEECH_MODEL_ATTEMPTS,
-              }),
         sources,
         assets,
         ...(language ? { languageCode: language } : {}),
@@ -129,9 +77,7 @@ export function CaptionsPanel({
       })
 
       const count = setCaptionsFromWords(trackId, transcript.words)
-      // Notes sit with the failures rather than in the success line: a transcript
-      // made by a model you did not choose is a caveat, not a footnote.
-      setWarnings([...transcript.notes, ...transcript.failures])
+      setWarnings(transcript.failures)
       setNotice(
         count === 0
           ? 'No speech was recognised in the audio on the timeline.'
@@ -163,27 +109,14 @@ export function CaptionsPanel({
         </p>
 
         <div className="grid gap-2 sm:grid-cols-2">
-          <Field label="Transcribe with">
-            <Select
-              value={engineId}
-              disabled={busy}
-              onChange={(event) => setChosenEngine(event.target.value as EngineId)}
-              aria-label="Which transcriber to use"
-            >
-              <option value="browser">In this browser — free</option>
-              <option value="elevenlabs" disabled={!hasKey}>
-                ElevenLabs Scribe{hasKey ? '' : ' — needs a key'}
-              </option>
-            </Select>
-          </Field>
-
           <Field label="Spoken language">
             <Select
               value={language}
               disabled={busy}
               onChange={(event) => setLanguage(event.target.value)}
+              aria-label="Which language is spoken"
             >
-              {LANGUAGES.map((entry) => (
+              {SPEECH_LANGUAGES.map((entry) => (
                 <option key={entry.code} value={entry.code}>
                   {entry.label}
                 </option>
@@ -193,18 +126,9 @@ export function CaptionsPanel({
         </div>
 
         <p className="text-xs leading-relaxed text-ink-dim">
-          {engineId === 'browser' ? (
-            <>
-              A speech model runs in this tab — no key, no cost, and your voice never leaves the
-              machine. The first run downloads it, which is 80MB or more depending on which format
-              this browser will run, and transcribing takes roughly the length of the audio again.
-            </>
-          ) : (
-            <>
-              Fastest and most accurate, and it handles accents and noise better. Your audio is sent
-              to ElevenLabs, and your key pays for it.
-            </>
-          )}
+          Transcribed by ElevenLabs Scribe, which times every word — that timing is what the
+          highlight follows. It runs on this site&apos;s own account, so it needs no key from you.
+          Only the audio is sent, separated from the picture first.
         </p>
 
         <div className="flex flex-wrap items-center gap-2">

@@ -412,25 +412,15 @@ try {
   // WebAudio decode, which no unit test can reach.
   await page.getByRole('button', { name: /4 · Captions/ }).click()
 
-  // Two transcribers, and the free one has to be reachable with no key at all —
-  // that is the whole point of it. Both are faked in mock mode, so what this
-  // covers is the wiring either side: the picker, the engine each one builds,
-  // and the words coming back on the timeline's own clock.
-  const engine = page.locator('select[aria-label="Which transcriber to use"]')
-  await engine.selectOption('browser')
+  // Transcription needs no key from the user — it runs on the site's fal
+  // account — so the button has to work on a first visit with nothing entered.
+  // Recognition is faked in mock mode; the wiring either side of it is not.
   await page.getByRole('button', { name: /Add captions/ }).click()
-  await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
-  const fromBrowser = await page.locator('[role="group"][aria-label^="Caption "]').count()
-  if (fromBrowser < 2) fail(`the in-browser transcriber produced ${fromBrowser} captions`)
-  step(`captions transcribed in the browser with no key (${fromBrowser} captions)`)
-
-  await engine.selectOption('elevenlabs')
-  await page.getByRole('button', { name: /Redo captions/ }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
   const captionCues = await page.locator('[role="group"][aria-label^="Caption "]').count()
   if (captionCues < 2) fail(`expected several captions on the timeline, got ${captionCues}`)
-  step(`transcript became ${captionCues} captions on a lane of their own`)
+  step(`transcript became ${captionCues} captions on a lane of their own, with no key entered`)
 
   // The transcript is the editing surface, so a word typed here has to reach the
   // captions — and take the other words' timings with it untouched.

@@ -1,14 +1,11 @@
 /**
- * ElevenLabs: the voice changer, and the transcriber behind captions.
+ * ElevenLabs: the voice changer.
  *
- * The voice changer takes a microphone recording and re-performs it in a
- * different voice, keeping the timing and delivery of the original.
- *
- * Transcription is Scribe, and it is here rather than behind some other provider
- * for one reason: it returns a timestamp per *word*, which is the whole
- * requirement for karaoke captions. A transcript with only sentence-level
- * timings would have to have its word timings guessed, and guessed word timings
- * are exactly what a highlight moving across the line makes obvious.
+ * Takes a microphone recording and re-performs it in a different voice, keeping
+ * the timing and delivery of the original. This is the one thing the user's own
+ * key pays for, which is why it is the only thing left here — captions used to
+ * call ElevenLabs directly too, and now reach the same company's Scribe through
+ * fal, on this deployment's account. See `scribe.ts`.
  *
  * All traffic goes through /api/elevenlabs so we do not depend on ElevenLabs'
  * browser CORS policy.
@@ -112,91 +109,6 @@ export async function convertVoice({
   })
 
   return await response.blob()
-}
-
-/** The Scribe model. Named explicitly so a transcription is reproducible. */
-export const TRANSCRIPTION_MODEL = 'scribe_v1'
-
-/**
- * One entry of Scribe's word list.
- *
- * `type` matters: the list interleaves real words with the spacing between them
- * and, when asked, with audio events like `(laughter)`. Only `word` entries are
- * words, and taking the rest would put punctuation-shaped captions on screen.
- */
-interface ScribeWord {
-  text: string
-  start?: number
-  end?: number
-  type?: 'word' | 'spacing' | 'audio_event'
-}
-
-interface ScribeResponse {
-  text?: string
-  language_code?: string
-  words?: ScribeWord[]
-}
-
-export interface TranscriptionResult {
-  /** Words in spoken order, timed in seconds from the start of the file. */
-  words: { text: string; start: number; end: number }[]
-  /** What Scribe detected, e.g. "eng". Shown so a mis-detection is visible. */
-  languageCode?: string
-}
-
-export interface TranscribeOptions {
-  key: string
-  audio: Blob
-  /**
-   * ISO-639 code to transcribe as. Left unset, Scribe detects it — which is
-   * right nearly always, and wrong in a way worth being able to override on
-   * short or noisy takes.
-   */
-  languageCode?: string
-  signal?: AbortSignal
-}
-
-/**
- * Transcribes one piece of audio, with a timestamp on every word.
- *
- * Words with no timing are dropped rather than defaulted to zero: a word with no
- * time cannot be highlighted at the right moment, and one silently pinned to the
- * start of the clip is worse than one that is missing.
- */
-export async function transcribe({
-  key,
-  audio,
-  languageCode,
-  signal,
-}: TranscribeOptions): Promise<TranscriptionResult> {
-  const form = new FormData()
-  form.append('file', audio, filenameFor(audio.type))
-  form.append('model_id', TRANSCRIPTION_MODEL)
-  // Word-level timestamps are what this is for; ask for them explicitly rather
-  // than relying on the default staying what it is today.
-  form.append('timestamps_granularity', 'word')
-  form.append('diarize', 'false')
-  if (languageCode) form.append('language_code', languageCode)
-
-  const response = await elevenFetch('/v1/speech-to-text', key, {
-    method: 'POST',
-    body: form,
-    headers: { accept: 'application/json' },
-    signal,
-  })
-
-  const body = (await response.json()) as ScribeResponse
-
-  const words = (body.words ?? [])
-    .filter((word) => (word.type ?? 'word') === 'word')
-    .filter(
-      (word): word is ScribeWord & { start: number; end: number } =>
-        typeof word.start === 'number' && typeof word.end === 'number',
-    )
-    .map((word) => ({ text: word.text.trim(), start: word.start, end: word.end }))
-    .filter((word) => word.text.length > 0)
-
-  return { words, ...(body.language_code ? { languageCode: body.language_code } : {}) }
 }
 
 function filenameFor(mimeType: string): string {
