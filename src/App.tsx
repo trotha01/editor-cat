@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { IdeaPanel } from './components/IdeaPanel'
 import { ImagePanel } from './components/ImagePanel'
 import { VideoPanel } from './components/VideoPanel'
 import { LibraryPanel } from './components/LibraryPanel'
@@ -24,16 +25,17 @@ import { recordAsset } from './lib/sync/assetSync'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
-  { id: 'image', label: '1 · Image', hint: 'Make images from a prompt' },
-  { id: 'video', label: '2 · Video', hint: 'Animate an image into a clip' },
+  { id: 'idea', label: '1 · Idea', hint: 'Turn one word into one sentence' },
+  { id: 'image', label: '2 · Image', hint: 'Make images from a prompt' },
+  { id: 'video', label: '3 · Video', hint: 'Animate an image into a clip' },
   { id: 'library', label: 'Library', hint: 'Everything you have made' },
-  { id: 'audio', label: '3 · Audio', hint: 'Record voiceovers, layer takes, add music' },
+  { id: 'audio', label: '4 · Audio', hint: 'Record voiceovers, layer takes, add music' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>('image')
+  const [tab, setTab] = useState<TabId>('idea')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
 
@@ -102,7 +104,7 @@ export default function App() {
                 onClick={() => setTab(entry.id)}
                 title={entry.hint}
                 aria-current={tab === entry.id}
-                className={`flex-1 rounded-lg px-2 py-2 text-xs font-medium transition ${
+                className={`flex-1 rounded-lg px-1.5 py-2 text-xs font-medium transition ${
                   tab === entry.id ? 'bg-accent text-accent-ink' : 'text-ink-dim hover:text-ink'
                 }`}
               >
@@ -118,6 +120,7 @@ export default function App() {
           <DriveUploads />
 
           <div className="rounded-xl border border-line bg-surface p-4">
+            {tab === 'idea' ? <IdeaPanel /> : null}
             {tab === 'image' ? <ImagePanel /> : null}
             {tab === 'video' ? <VideoPanel /> : null}
             {tab === 'library' ? <LibraryPanel /> : null}

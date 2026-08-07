@@ -2,8 +2,9 @@
 
 A small AI video editor that runs in your browser.
 
-Write a prompt → get images → animate one into a clip → arrange clips on a
-timeline → layer voiceovers and music → swap your voice for another one → export an MP4.
+Turn a word into a sentence → write a prompt → get images → animate one into a
+clip → arrange clips on a timeline → layer voiceovers and music → swap your
+voice for another one → export an MP4.
 
 Images and video are generated on the deployment's own fal.ai account, so
 visitors need no key for them. Voice conversion still uses **your own
@@ -15,10 +16,11 @@ ElevenLabs key**, held in your browser.
 
 | Step          | What happens                                                                                                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                            |
-| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
+| **1 · Idea**  | Start from one word in one language — Latin by default. Ask for **verbs** or **objects** to build a single sentence with, then pick any word in that sentence and ask for other ideas built around it.             |
+| **2 · Image** | Generate images from a text prompt, which your idea can start. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                 |
+| **3 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
 | **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below.                  |
-| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.      |
+| **4 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.      |
 | **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                             |
 
 ## What you need
@@ -36,6 +38,29 @@ $0.003–$0.04 each; video is roughly $0.04 per second at 480p on the default
 model, rising to $0.40 on the most expensive one in the picker. The app shows an
 estimate before every generate button, because a mis-click on a video model is
 expensive.
+
+## The idea step
+
+The first tab asks for **one word** and **one language**, and wants **one
+sentence** out of you. That is the whole constraint, and it is deliberate: the
+tabs after it are prompt boxes, and a prompt is much easier to write once you
+know what the shot is actually about.
+
+The AI is there three times over and never writes the sentence for you. It
+offers **verbs** the word could do and **objects** it could act on — picked ones
+are appended to what you have, never swapped for it — and once a sentence
+exists, you can select **any word inside it** and ask for other one-sentence
+ideas built around that word. Take one and the sentence you had is still one
+Undo away.
+
+Suggestions come back in the language you chose, each with a short English
+gloss, so the step is usable in a language you are still assembling sentences
+in a word at a time. That is why the default is Latin rather than English.
+
+Your idea is kept — across tabs and across reloads — and the Image tab offers it
+as a starting prompt while that box is still empty. Offered, not filled in: a
+sentence in Latin is a starting point for a prompt, not always the prompt
+itself.
 
 ## Shape
 

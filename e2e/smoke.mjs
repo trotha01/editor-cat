@@ -66,7 +66,29 @@ try {
   await page.goto(BASE, { waitUntil: 'networkidle' })
   step('app loads')
 
+  // --- The idea: one word, one sentence ------------------------------------
+  // Mock mode answers the LLM endpoint with a list here rather than the
+  // enhancer's paragraph, so this exercises the list parser as well as the tab.
+  await page.fill('#idea-word', 'canis')
+  await page.getByRole('button', { name: /Suggest verbs/ }).click()
+  await page.getByRole('button', { name: /^carries/ }).click()
+  const started = await page.inputValue('#idea-sentence')
+  if (started !== 'canis carries') fail(`a picked verb should join the word, got "${started}"`)
+  step('AI suggests verbs and one joins the sentence')
+
+  await page.getByRole('button', { name: 'canis', exact: true }).click()
+  await page.getByRole('button', { name: /New ideas for/ }).click()
+  await page.getByRole('button', { name: 'Use this' }).first().click()
+  const idea = await page.inputValue('#idea-sentence')
+  if (!idea.includes('canis')) fail(`a new idea should keep the chosen word, got "${idea}"`)
+  step('a word in the idea can be explored, and a new idea taken')
+
   // --- Image generation, including the AI prompt rewrite -------------------
+  await page.getByRole('button', { name: /2 · Image/ }).click()
+  await page.getByRole('button', { name: /Start from your idea/ }).click()
+  if ((await page.inputValue('#prompt-image')) !== idea) fail('the idea did not reach the prompt')
+  step('the idea is offered to the image prompt')
+
   await page.fill('#prompt-image', 'a lighthouse on a cliff at dusk')
   await page.getByRole('button', { name: /Improve with AI/ }).click()
   await page.waitForSelector('text=Suggested image prompt', { timeout: 20000 })
@@ -87,7 +109,7 @@ try {
   step('image added to the timeline')
 
   // --- Video generation ----------------------------------------------------
-  await page.getByRole('button', { name: /2 · Video/ }).click()
+  await page.getByRole('button', { name: /3 · Video/ }).click()
   await page.fill('#prompt-video', 'slow push in as the beam sweeps across the water')
   await page.getByRole('button', { name: /^Generate video/ }).click()
   await page.waitForSelector('text=Clip added to your library', { timeout: 120000 })
@@ -124,7 +146,7 @@ try {
   const trackCount = () =>
     page.locator('section[aria-label="Timeline"] [aria-label$="volume"]').count()
 
-  await page.getByRole('button', { name: /3 · Audio/ }).click()
+  await page.getByRole('button', { name: /4 · Audio/ }).click()
   const tracksAtStart = await trackCount()
 
   const recordFrom = async (seconds) => {

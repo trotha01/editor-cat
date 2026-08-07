@@ -228,8 +228,43 @@ async function mockVideo(
   return { video: { url: URL.createObjectURL(blob), content_type: blob.type } }
 }
 
+/**
+ * The one LLM endpoint is asked for three quite different shapes: a rewritten
+ * prompt (a paragraph), verbs or objects (a list of words), and new ideas (a
+ * list of sentences). Handing back a paragraph for all three would leave the
+ * Idea tab looking broken offline, so the mock reads the system prompt to see
+ * which was asked for. The phrases it matches are written in
+ * `src/lib/idea.ts` — the comment there points back here.
+ */
 function mockLlm(input: Record<string, unknown>): { output: string } {
   const prompt = String(input.prompt ?? '')
+  const system = String(input.system_prompt ?? '')
+  const field = (name: string) =>
+    new RegExp(`^${name}:\\s*(.+)$`, 'im').exec(prompt)?.[1]?.trim() ?? ''
+
+  // Checked first: the ideas prompt also says "one per line".
+  if (/one-sentence ideas/i.test(system)) {
+    const focus = field('Build on') || 'it'
+    return {
+      output: [
+        `${focus} waits at the harbour wall as the lamps come on. — mock idea 1`,
+        `A child watches ${focus} from the top of the stairs. — mock idea 2`,
+        `${focus} crosses an empty market square in the rain. — mock idea 3`,
+        `Snow settles on ${focus} while the town sleeps. — mock idea 4`,
+      ].join('\n'),
+    }
+  }
+
+  if (/one per line/i.test(system)) {
+    const word = field('Word') || 'the word'
+    const terms = /\bverbs\b/i.test(system)
+      ? ['carries', 'unearths', 'guards', 'scatters', 'outruns', 'remembers']
+      : ['lantern', 'harbour', 'staircase', 'orchard', 'letter', 'thunderstorm']
+    return {
+      output: terms.map((term, i) => `${term} — mock ${i + 1} for “${word}”`).join('\n'),
+    }
+  }
+
   // Echo back something clearly shaped like an enhanced prompt so the diff UI
   // has real content to show, while staying obviously fake.
   const subject = prompt.split('\n').at(-1)?.slice(0, 200) ?? prompt

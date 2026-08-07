@@ -11,6 +11,7 @@ import { ingestFromUrl } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
+import { useIdeaStore } from '../state/useIdeaStore'
 import { useProjectStore } from '../state/useProjectStore'
 
 export function ImagePanel() {
@@ -20,6 +21,7 @@ export function ImagePanel() {
   const addClip = useProjectStore((state) => state.addClip)
   const projectWidth = useProjectStore((state) => state.project.width)
   const projectHeight = useProjectStore((state) => state.project.height)
+  const idea = useIdeaStore((state) => state.sentence.trim())
 
   const [prompt, setPrompt] = useState('')
   const [imageSizeChoice, setImageSizeChoice] = useState<string | null>(null)
@@ -103,6 +105,19 @@ export function ImagePanel() {
         onChange={setPrompt}
         disabled={busy}
       />
+
+      {/* Offered rather than filled in: the idea from step 1 is a sentence in
+          whatever language it was written in, which is a starting point for a
+          prompt and not always the prompt itself. */}
+      {idea && !prompt.trim() ? (
+        <button
+          type="button"
+          onClick={() => setPrompt(idea)}
+          className="rounded-lg border border-dashed border-line px-3 py-2 text-left text-xs leading-relaxed text-ink-dim transition hover:border-accent hover:text-ink"
+        >
+          Start from your idea: <span className="text-ink">“{idea}”</span>
+        </button>
+      ) : null}
 
       <ModelPicker
         label="Image model"
