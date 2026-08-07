@@ -544,6 +544,16 @@ happened to encode a clip. That matters because the audio travels to fal as a
 base64 data URI inside the JSON body, and base64 costs a third again on top of
 the 32KB a second above.
 
+A data URI rather than an upload, and that is a choice rather than a shortcut.
+fal takes a file input three ways — a public URL, a data URI, or a file put into
+its own storage with `fal.storage.upload` — and the last of those is the one its
+docs recommend. It wants credentials in the browser, which is the whole thing
+this app's proxy exists to avoid, and it leaves the audio sitting at a publicly
+reachable URL afterwards. Someone's voiceover is not ours to park somewhere
+public. A data URI exists for the life of the request and nowhere else. fal's
+own caveat is that large files sent this way cost request performance, which is
+the other half of the reasoning below.
+
 So `CHUNK_SECONDS` in `src/lib/speechAudio.ts` is set at 75 — 2.4MB of audio
 arriving as about 3.2MB of request, well inside the 6MB serverless payload
 ceiling. Deliberately well inside rather than exactly at it, because the proxy

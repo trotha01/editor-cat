@@ -16,7 +16,9 @@
  * What is sent is not the media file. The browser decodes each source and
  * re-encodes exactly the part a clip actually uses as mono 16kHz WAV — which is
  * also how the audio gets separated from a video, since a decoded MP4 is just
- * samples like anything else. See `speechAudio.ts`.
+ * samples like anything else. See `speechAudio.ts`. It travels inside the
+ * request as a data URI rather than being uploaded first, for reasons set out
+ * where it happens.
  */
 import { run } from './falClient'
 import { chunkRanges, speechChunkWav } from './speechAudio'
@@ -204,11 +206,15 @@ async function transcribeChunk({
 }: ChunkOptions): Promise<ScribeResult> {
   const output = await run<ScribeOutput>(
     SPEECH_TO_TEXT_MODEL,
-    // The schema calls this a URL of an audio file, and fal takes a data URI
-    // wherever it takes one — which is what lets the audio go straight through
-    // the existing queue proxy rather than needing an upload endpoint and a
-    // second set of credentials. It is also why the chunks are sized the way
-    // they are; see CHUNK_SECONDS.
+    // A data URI rather than an uploaded file. fal offers both, and documents
+    // the third option — `fal.storage.upload` — as the convenient one, but it
+    // wants credentials in the browser, which is the whole thing this app's
+    // proxy exists to avoid. It also leaves the audio at a publicly reachable
+    // URL, and someone's voiceover is not ours to park somewhere public. A data
+    // URI exists for the life of the request and nowhere else.
+    //
+    // fal notes that large files sent this way cost request performance, which
+    // is the other half of why the chunks are sized the way they are.
     scribeInput(await toDataUrl(audio), languageCode),
     {
       ...(signal ? { signal } : {}),
