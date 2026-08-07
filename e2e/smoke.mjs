@@ -482,6 +482,74 @@ try {
   if (beforeTrim === afterTrim) fail(`dragging a caption's edge did nothing: "${afterTrim}"`)
   step(`a caption brought up later by dragging its edge (${beforeTrim} -> ${afterTrim})`)
 
+  // --- Captions survive being put down and picked up again ----------------
+  // Nothing about a caption is derived: the words, their timings and the style
+  // are all document, and all of it has to reach storage. A reload is the only
+  // place the round trip through IndexedDB actually happens — and the same
+  // document is what gets pushed to Supabase, so a key missing from one is
+  // missing from both.
+  const captionState = () =>
+    page.$$eval('[role="group"][aria-label^="Caption "]', (nodes) =>
+      nodes.map((node) => node.getAttribute('aria-label')),
+    )
+  const wordMarks = () =>
+    page.$$eval('button[aria-label^="Word "]', (nodes) =>
+      nodes.map((node) => node.getAttribute('aria-label')),
+    )
+
+  const captionsBefore = await captionState()
+  const wordsBefore = await wordMarks()
+
+  await page.waitForTimeout(600) // let the write to IndexedDB land
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('section[aria-label="Timeline"] .group', { timeout: 30000 })
+
+  const captionsAfter = await captionState()
+  const wordsAfter = await wordMarks()
+
+  if (captionsAfter.length !== captionsBefore.length) {
+    fail(
+      `captions did not survive a reload: ${captionsBefore.length} before, ` +
+        `${captionsAfter.length} after`,
+    )
+  }
+  if (JSON.stringify(captionsAfter) !== JSON.stringify(captionsBefore)) {
+    const changed = captionsBefore.find((label, index) => label !== captionsAfter[index])
+    fail(
+      `a caption came back changed: "${changed}" -> "${captionsAfter[captionsBefore.indexOf(changed)]}"`,
+    )
+  }
+  if (JSON.stringify(wordsAfter) !== JSON.stringify(wordsBefore)) {
+    fail('word timings did not survive a reload')
+  }
+  // The edits made above specifically, since those are the ones a save could
+  // plausibly have missed: a retyped word, a retimed word, a dragged edge.
+  if (!captionsAfter.some((label) => label?.includes('SPLICED'))) {
+    fail('the edited transcript did not survive a reload')
+  }
+  step(
+    `${captionsAfter.length} captions and ${wordsAfter.length} word timings came back ` +
+      `unchanged after a reload`,
+  )
+
+  // The style lives on the caption track, not on any cue, so it is saved by a
+  // different path and worth checking separately.
+  await page.getByRole('button', { name: /4 · Captions/ }).click()
+  await page.waitForSelector('input[aria-label="Caption size, as a fraction of the frame height"]')
+  const sizeSlider = page.locator(
+    'input[aria-label="Caption size, as a fraction of the frame height"]',
+  )
+  await sizeSlider.fill('0.12')
+  await page.waitForTimeout(600)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: /4 · Captions/ }).click()
+  await page.waitForSelector('input[aria-label="Caption size, as a fraction of the frame height"]')
+  const savedSize = Number(await sizeSlider.inputValue())
+  if (Math.abs(savedSize - 0.12) > 0.001) {
+    fail(`the caption style did not survive a reload: size is ${savedSize}, not 0.12`)
+  }
+  step(`caption styling saved too (size ${savedSize} of the frame)`)
+
   // Drawn over the picture, with exactly one word picked out. Checking the
   // computed colour rather than the markup is the point: a caption that renders
   // in the wrong place, at the wrong size or with every word the same colour is
@@ -579,11 +647,13 @@ try {
         `${Math.round(framed.pictureWidth)}px picture — they are following the black bars`,
     )
   }
-  // 7.5% of the frame, the same fraction the exported subtitle file is built to.
-  if (Math.abs(framed.fontPx / framed.pictureHeight - 0.075) > 0.015) {
+  // The style's own fraction, which is the one the exported subtitle file is
+  // built to — read back rather than hardcoded, since it is adjustable above.
+  const styleSize = Number(await sizeSlider.inputValue())
+  if (Math.abs(framed.fontPx / framed.pictureHeight - styleSize) > 0.015) {
     fail(
       `fullscreen caption size is ${(framed.fontPx / framed.pictureHeight).toFixed(3)} of the ` +
-        `picture height, not the 0.075 the export uses`,
+        `picture height, not the ${styleSize} the export uses`,
     )
   }
   step(

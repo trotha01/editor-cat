@@ -99,8 +99,8 @@ the site cannot sign anyone in at all, and says so rather than falling back to
 asking for Google twice.
 
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
-placement, resolution — and a catalogue of asset metadata. It never holds media
-bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
+placement, resolution, and the captions with every word timing in them — plus a
+catalogue of asset metadata. It never holds media bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
 Opening a project on a new machine restores the timeline from metadata
 immediately, so you can rearrange it while the media is still coming down from
 Drive behind you.
@@ -513,6 +513,15 @@ caption, which would leave two representations to fall out of step every time
 something moved. That single choice is what makes the rest work: the word being
 spoken at any moment is a lookup, moving a caption moves its words with it, and
 retiming one word is an edit to that word alone.
+
+**Captions are part of the document, not a table beside it.** Words with their
+own timings go into the same jsonb blob as the clips, save on the same
+two-second debounce, and come back with the project on any machine you sign in
+from. Rows would mean one per spoken word, order-significant, rewritten wholesale
+every time a line is retyped — for data that is only ever read as a whole. The
+keys are written only when there is something in them, so a project with no
+captions saves exactly the document it always did, and deleting the last caption
+removes them again rather than leaving an empty list behind.
 
 **Two transcribers, one interface.** Captions can be written by ElevenLabs
 Scribe or by Whisper running in the tab, and they differ in more than a network
