@@ -165,6 +165,26 @@ describe('trimming a layer', () => {
     expect(trimmed).toMatchObject({ startTime: 10, duration: 2 })
   })
 
+  it('never moves the tail while the head is being pulled', () => {
+    // Dragged further left than there is timeline in front of it. Clamping the
+    // resulting start time on its own let the in-point and the duration go on
+    // describing a longer clip, so the tail slid right and every frame with it.
+    const before = clip('a', 'v1', 0.5, 4, { inPoint: 2 })
+    const after = trimVideoClip(before, video, 'start', 0)
+
+    expect(after.startTime).toBe(0)
+    expect(after.startTime + after.duration).toBeCloseTo(before.startTime + before.duration, 6)
+  })
+
+  it('keeps every remaining frame at the moment it was already at', () => {
+    const sourceAt = (entry: VideoClip, t: number) => entry.inPoint + (t - entry.startTime)
+    const before = clip('a', 'v1', 0.5, 4, { inPoint: 2 })
+    const after = trimVideoClip(before, video, 'start', 0)
+
+    expect(sourceAt(after, 2)).toBeCloseTo(sourceAt(before, 2), 6)
+    expect(after.inPoint).toBeGreaterThanOrEqual(0)
+  })
+
   it('never trims a layer away to nothing', () => {
     const trimmed = trimVideoClip(clip('a', 'v1', 0, 4), video, 'end', -5)
     expect(trimmed.duration).toBeCloseTo(MIN_OVERLAY_DURATION)

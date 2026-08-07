@@ -23,9 +23,12 @@ import { videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import type { Asset, VideoClip, VideoTrack } from '../lib/types'
 
 export const VIDEO_LANE_HEIGHT = 40
+/** The `gap-1` between lanes. A lane's pitch is its height plus this. */
+const LANE_GAP = 4
+const LANE_PITCH = VIDEO_LANE_HEIGHT + LANE_GAP
 
 /** Vertical travel needed before a drag changes lanes, in pixels. */
-const LANE_SWITCH_THRESHOLD = VIDEO_LANE_HEIGHT * 0.6
+const LANE_SWITCH_THRESHOLD = LANE_PITCH * 0.6
 
 interface DragState {
   clipId: string
@@ -84,7 +87,7 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
     if (Math.abs(dy) > LANE_SWITCH_THRESHOLD) {
       // Lanes are drawn bottom-first, so dragging *up* the screen is a step
       // later in the array.
-      const laneDelta = -Math.round(dy / VIDEO_LANE_HEIGHT)
+      const laneDelta = -Math.round(dy / LANE_PITCH)
       const candidate = tracks[originIndex + laneDelta]
       if (candidate) targetTrackId = candidate.id
     }

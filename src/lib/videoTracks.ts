@@ -149,12 +149,17 @@ export function trimVideoClip(
     // A still has no in-point to move; only its length means anything.
     if (isImage) return clip
     const latest = clip.inPoint + clip.duration - MIN_OVERLAY_DURATION
-    const inPoint = clamp(nextValue, 0, Math.max(0, latest))
-    const moved = inPoint - clip.inPoint
+    const wanted = clamp(nextValue, 0, Math.max(0, latest))
+    // How far the head moves — and the one clamp that matters here. Limiting
+    // the *distance* rather than the resulting start time is what keeps the
+    // three numbers agreeing: clamping `startTime` on its own would leave the
+    // in-point and the duration describing a clip that begins somewhere else,
+    // sliding every frame and dragging the tail along with it.
+    const moved = Math.max(wanted - clip.inPoint, -clip.startTime)
     return {
       ...clip,
-      inPoint,
-      startTime: Math.max(0, clip.startTime + moved),
+      inPoint: clip.inPoint + moved,
+      startTime: clip.startTime + moved,
       duration: Math.max(MIN_OVERLAY_DURATION, clip.duration - moved),
     }
   }

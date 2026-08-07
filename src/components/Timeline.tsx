@@ -49,6 +49,7 @@ import {
   totalDuration,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
+import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
 import { isTypingTarget } from '../lib/shortcuts'
@@ -539,7 +540,15 @@ export function Timeline({
   // than the picture still has to be reachable and scrubbable, and a caption
   // dragged past the end has to stay visible enough to drag back.
   const contentWidth =
-    Math.max(pictureEndTime, audioEndTime, captionsEnd(captionCuesOf(project))) * zoom
+    Math.max(
+      pictureEndTime,
+      audioEndTime,
+      // Layers too. A layer held past everything else would otherwise fall off
+      // the end of the scrollable area — drawn, but out where it cannot be
+      // reached to be dragged back.
+      videoLayersEnd(videoClipsOf(project)),
+      captionsEnd(captionCuesOf(project)),
+    ) * zoom
 
   // Never shrinks. Beside the panels the preview above is what gives way to make
   // room, because a timeline squeezed to a few pixels is not a timeline, and

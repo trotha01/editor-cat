@@ -17,6 +17,15 @@ import type { CaptionTarget } from '../lib/captionSources'
 import type { AudioClip, AudioTrack, AudioTrackKind } from '../lib/types'
 
 export const LANE_HEIGHT = 44
+/**
+ * The `gap-1` between lanes, in pixels.
+ *
+ * Counted rather than ignored: a lane occupies its height *plus* this before
+ * the next one starts, so a drag that divides by the height alone gains a lane
+ * every eleventh one and drops the clip on the wrong track.
+ */
+const LANE_GAP = 4
+const LANE_PITCH = LANE_HEIGHT + LANE_GAP
 export const TRACK_GUTTER_WIDTH = 168
 
 /** One colour per kind, so a lane says what it carries before you read it. */
@@ -44,7 +53,7 @@ interface DragState {
 }
 
 /** Vertical travel needed before a drag changes lanes, in pixels. */
-const LANE_SWITCH_THRESHOLD = LANE_HEIGHT * 0.6
+const LANE_SWITCH_THRESHOLD = LANE_PITCH * 0.6
 
 export function AudioTrackLanes({
   zoom,
@@ -105,7 +114,7 @@ export function AudioTrackLanes({
     // bed would be mixed at the music track's gain, which is never intended.
     let targetTrackId = drag.originTrackId
     if (kind && Math.abs(dy) > LANE_SWITCH_THRESHOLD) {
-      const laneDelta = Math.round(dy / LANE_HEIGHT)
+      const laneDelta = Math.round(dy / LANE_PITCH)
       const candidate = tracks[originIndex + laneDelta]
       if (candidate?.kind === kind) targetTrackId = candidate.id
     }
