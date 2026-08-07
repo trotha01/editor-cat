@@ -19,7 +19,7 @@ ElevenLabs key**, held in your browser.
 | **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                 |
 | **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below. |
 | **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                 |
-| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                      |
+| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.               |
 | **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                                                                                                                             |
 
 ## What you need
@@ -433,6 +433,21 @@ of the pure timeline maths.
 no-op with a red outline rather than a silent collision, because two clips
 stacked on one lane cannot both be heard and you would only find out on export.
 
+**The count-in is three sine bursts, not a file.** `src/lib/countdown.ts`
+synthesises the beeps into a WAV in about a millisecond, which is cheaper than
+shipping an asset and finding out at export time that it never made it into the
+build — and it makes the timing exact: a beep on each whole second, then silence
+to the mark, so the _end_ of the clip is the moment to come in on. From there it
+is ordinary audio on an ordinary track: it plays in the preview while you record,
+it drags to the frame you want, and the exporter mixes it into the MP4 with
+everything else, so whoever performs to the finished video hears the same
+count-in you did. It gets a lane of its own for two reasons — a cue you are
+trying to place to the exact second should never be blocked by a take that
+happens to sit under it, and one mute button should be enough to leave the beeps
+out of a particular export. The beeps are generated at half scale, because the
+mixer sums tracks without normalising and a cue at full level would clip
+whatever it counts into.
+
 **Clips keep their own sound.** A video that arrives with audio — filmed
 footage from Drive, or a model that returns sound — plays it in the preview and
 mixes it into the export, locked to its picture, with a mute and a level on the
@@ -479,7 +494,10 @@ The unit tests concentrate on the pure logic where the real bugs live:
 `src/lib/timeline.ts` (clip layout, trim clamping, frame snapping and the rule
 that the two halves of a cut still add up to the clip they came from),
 `src/lib/audioTracks.ts` (track assignment, overlap rules, migration of
-pre-multitrack projects) and
+pre-multitrack projects),
+`src/lib/countdown.ts` (a beep on each second, silence to the mark, headroom
+left in the mix, and a WAV header whose declared sizes match the samples — the
+usual way to produce a file that plays for a moment and then stops) and
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
@@ -495,9 +513,10 @@ holds the two gate rules that decide whether anyone can use the app — no entry
 without Drive, and no ejection once inside.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
-takes and checking that the second one lands on a new track, and cutting a clip
-and reloading the page to see the cut come back — then parses the exported MP4
-to confirm it has the tracks and duration it should. It earns its keep: it is
+takes and checking that the second one lands on a new track, cutting a clip and
+reloading the page to see the cut come back, and dragging a count-in along its
+lane to prove the beeps can be put exactly where they belong — then parses the
+exported MP4 to confirm it has the tracks and duration it should. It earns its keep: it is
 what caught the ffmpeg core being loaded as UMD when Vite's module worker needs
 ESM. The reload is there because the round trip through IndexedDB is the one
 part of persistence a unit test cannot stand in for.

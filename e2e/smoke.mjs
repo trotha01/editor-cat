@@ -259,6 +259,44 @@ try {
   await page.waitForSelector('text=/score.wav.+added to/', { timeout: 30000 })
   step('music added to a music track, under the voice tracks')
 
+  // --- Count-in beeps -------------------------------------------------------
+  // The beeps are synthesised in the browser and then treated as ordinary
+  // audio, so this covers the whole path at once: generated, placed on a lane
+  // of its own, draggable to an exact spot, and — by the export summary and the
+  // MP4 below — carried into the render.
+  const tracksBeforeCountIn = await trackCount()
+  await page.locator('input[aria-label="Scrub through the timeline"]').fill('3')
+  await page.getByRole('button', { name: /Add 3-beep count-in/ }).click()
+  await page.waitForSelector('text=/Count-in added to/', { timeout: 30000 })
+  const tracksAfterCountIn = await trackCount()
+  if (tracksAfterCountIn !== tracksBeforeCountIn + 1) {
+    fail(
+      `the count-in should open a lane of its own, went ` +
+        `${tracksBeforeCountIn} -> ${tracksAfterCountIn}`,
+    )
+  }
+  step('count-in beeps generated and placed on a lane of their own')
+
+  // Dragging is the point of putting them on the timeline rather than playing
+  // them at the recorder: the cue has to be movable to the exact moment.
+  const beeps = page.locator('[role="group"][aria-label^="Countdown"]')
+  const beepsBefore = await beeps.getAttribute('aria-label')
+  // page.mouse works in viewport coordinates and, unlike a locator action,
+  // scrolls nothing into view first — so the box has to be on screen already.
+  await beeps.scrollIntoViewIfNeeded()
+  const beepsBox = await beeps.boundingBox()
+  if (!beepsBox) fail('the count-in clip is not on the timeline to drag')
+  await page.mouse.move(beepsBox.x + beepsBox.width / 2, beepsBox.y + beepsBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(beepsBox.x + beepsBox.width / 2 + 40, beepsBox.y + beepsBox.height / 2, {
+    steps: 8,
+  })
+  await page.mouse.up()
+  await page.waitForTimeout(200)
+  const beepsAfter = await beeps.getAttribute('aria-label')
+  if (beepsBefore === beepsAfter) fail(`dragging the count-in did not retime it: "${beepsAfter}"`)
+  step(`count-in dragged along its lane (${beepsBefore} -> ${beepsAfter})`)
+
   // --- Voice conversion -----------------------------------------------------
   await page.waitForSelector('select')
   await page
@@ -284,8 +322,8 @@ try {
   await page.getByRole('button', { name: 'Export' }).first().click()
   await page.waitForSelector('text=Render and download MP4')
 
-  // The summary is how we know all three layers reach the mixer, rather than
-  // one take quietly replacing another.
+  // The summary is how we know all four layers — two takes, the score and the
+  // count-in — reach the mixer, rather than one quietly replacing another.
   const summary = await page.evaluate(
     () =>
       [...document.querySelectorAll('dialog[open] p')]
@@ -294,8 +332,8 @@ try {
   )
   const clipCount = Number(/(\d+) audio clips?/.exec(summary)?.[1] ?? 0)
   const trackTotal = Number(/across (\d+) track/.exec(summary)?.[1] ?? 0)
-  if (clipCount !== 3) fail(`expected 3 audio clips in the export, summary said: "${summary}"`)
-  if (trackTotal !== 3) fail(`expected 3 audio tracks in the export, summary said: "${summary}"`)
+  if (clipCount !== 4) fail(`expected 4 audio clips in the export, summary said: "${summary}"`)
+  if (trackTotal !== 4) fail(`expected 4 audio tracks in the export, summary said: "${summary}"`)
   if (!/keep their own sound/.test(summary)) {
     fail(`export should keep the video clips' sound, summary said: "${summary}"`)
   }
@@ -312,7 +350,7 @@ try {
   const mp4 = unpack(readFileSync(target))
   if (!mp4.complete) fail('exported MP4 box structure is truncated')
   if (!mp4.hasVideo) fail('exported MP4 has no H.264 video track')
-  if (!mp4.hasAudio) fail('exported MP4 has no AAC audio track despite three audio layers')
+  if (!mp4.hasAudio) fail('exported MP4 has no AAC audio track despite four audio layers')
   if (mp4.durationSeconds < 1) fail(`exported MP4 duration looks wrong: ${mp4.durationSeconds}s`)
   if (mp4.boxes[1] !== 'moov') fail('moov is not first, so +faststart did not take effect')
   step(

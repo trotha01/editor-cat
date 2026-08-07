@@ -10,10 +10,23 @@ import { useRef, useState } from 'react'
 import { Button } from './ui'
 import { formatTime } from '../lib/timeline'
 import { useProjectStore } from '../state/useProjectStore'
-import type { AudioClip, AudioTrack } from '../lib/types'
+import type { AudioClip, AudioTrack, AudioTrackKind } from '../lib/types'
 
 export const LANE_HEIGHT = 44
 export const TRACK_GUTTER_WIDTH = 150
+
+/** One colour per kind, so a lane says what it carries before you read it. */
+const CLIP_TONE: Record<AudioTrackKind, string> = {
+  voice: 'border-emerald-600/40 bg-emerald-500/15 text-emerald-900',
+  music: 'border-violet-600/40 bg-violet-500/15 text-violet-900',
+  countdown: 'border-amber-600/50 bg-amber-500/20 text-amber-900',
+}
+
+const KIND_ICON: Record<AudioTrackKind, string> = {
+  voice: '🎙️',
+  music: '🎵',
+  countdown: '⏱️',
+}
 
 interface DragState {
   clipId: string
@@ -151,11 +164,7 @@ function ClipChip({
   onPointerUp: (event: React.PointerEvent) => void
   onRemove: () => void
 }) {
-  const isVoice = track.kind === 'voice'
-  const tone = isVoice
-    ? 'border-emerald-600/40 bg-emerald-500/15 text-emerald-900'
-    : 'border-violet-600/40 bg-violet-500/15 text-violet-900'
-
+  const tone = CLIP_TONE[track.kind]
   const label = clip.label ?? (clip.useConverted ? (clip.voiceName ?? 'Converted') : 'Your voice')
 
   return (
@@ -176,7 +185,7 @@ function ClipChip({
           : `${label} · ${formatTime(clip.duration)}`
       }
     >
-      <span aria-hidden>{isVoice ? '🎙️' : '🎵'}</span>
+      <span aria-hidden>{KIND_ICON[track.kind]}</span>
       <span className="truncate">{label}</span>
       <Button
         variant="ghost"
@@ -221,7 +230,7 @@ export function AudioTrackHeaders() {
               title={track.muted ? 'Muted — click to unmute' : 'Mute this track'}
               className={`shrink-0 text-xs ${track.muted ? 'opacity-40' : ''}`}
             >
-              {track.muted ? '🔇' : track.kind === 'voice' ? '🎙️' : '🎵'}
+              {track.muted ? '🔇' : KIND_ICON[track.kind]}
             </button>
 
             <div className="min-w-0 flex-1">

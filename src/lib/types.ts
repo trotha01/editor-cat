@@ -60,12 +60,18 @@ export interface Clip {
 }
 
 /**
- * Voice and music live on separate kinds of track because they are mixed
+ * Voice, music and cues live on separate kinds of track because they are mixed
  * differently: narration wants to sit on top at full level, score wants to sit
  * underneath. Keeping the kind on the track means a new recording can never
  * land in the middle of the music bed.
+ *
+ * `countdown` is the count-in beeps. They get a lane of their own for the same
+ * reason, plus one more: a cue you want to nudge to an exact spot should never
+ * be blocked by a take that happens to be under it, and on its own lane it
+ * never is. It also makes them one click to mute if you want them out of a
+ * particular export.
  */
-export type AudioTrackKind = 'voice' | 'music'
+export type AudioTrackKind = 'voice' | 'music' | 'countdown'
 
 /** One lane of audio. Layering is just having more than one of these. */
 export interface AudioTrack {

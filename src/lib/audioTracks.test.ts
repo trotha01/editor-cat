@@ -14,11 +14,11 @@ import {
   rangesOverlap,
   trackHasRoom,
 } from './audioTracks'
-import type { AudioClip, AudioTrack, Project } from './types'
+import type { AudioClip, AudioTrack, AudioTrackKind, Project } from './types'
 
 const track = (
   id: string,
-  kind: 'voice' | 'music' = 'voice',
+  kind: AudioTrackKind = 'voice',
   extra: Partial<AudioTrack> = {},
 ): AudioTrack => ({
   id,
@@ -179,6 +179,40 @@ describe('placeAudioClip', () => {
     expect(result.tracks[0]).toMatchObject({ id: 'm1', kind: 'music' })
   })
 
+  it('gives the count-in a lane of its own rather than any existing one', () => {
+    // Beeps dropped onto a voice lane would be at the mercy of the takes around
+    // them: a drag onto an occupied stretch is refused, so a cue could not be
+    // nudged to the exact spot it has to hit.
+    const tracks = [track('v1'), track('m1', 'music')]
+
+    const result = placeAudioClip(tracks, [], {
+      kind: 'countdown',
+      newTrackId: 'c1',
+      clip: newClip('beeps', 4, 3),
+    })
+
+    expect(result.createdTrack).toBe(true)
+    expect(result.tracks.find((entry) => entry.id === 'c1')).toMatchObject({
+      kind: 'countdown',
+      name: 'Countdown 1',
+    })
+    expect(result.clips[0]?.trackId).toBe('c1')
+  })
+
+  it('reuses the countdown lane for a second count-in that fits', () => {
+    const tracks = [track('c1', 'countdown')]
+    const clips = [clip('beeps', 'c1', 0, 3)]
+
+    const result = placeAudioClip(tracks, clips, {
+      kind: 'countdown',
+      newTrackId: 'unused',
+      clip: newClip('beeps2', 10, 3),
+    })
+
+    expect(result.trackId).toBe('c1')
+    expect(result.createdTrack).toBe(false)
+  })
+
   it('does not mutate the arrays it was given', () => {
     const tracks = [track('v1')]
     const clips = [clip('a', 'v1', 0, 5)]
@@ -240,6 +274,16 @@ describe('moveAudioClip', () => {
   it('is a no-op for an unknown clip', () => {
     expect(moveAudioClip(clips, 'missing', { startTime: 1 }).moved).toBe(false)
   })
+
+  it('slides a count-in freely under the takes it counts into', () => {
+    // The whole reason the beeps get their own lane: wherever the takes are,
+    // the cue can be parked to the exact frame it has to lead into.
+    const withCountdown = [clip('take', 'v1', 5, 10), clip('beeps', 'c1', 0, 3)]
+    const result = moveAudioClip(withCountdown, 'beeps', { startTime: 2 })
+
+    expect(result.moved).toBe(true)
+    expect(result.clips.find((entry) => entry.id === 'beeps')?.startTime).toBe(2)
+  })
 })
 
 describe('nextTrackName', () => {
@@ -251,6 +295,7 @@ describe('nextTrackName', () => {
     ]
     expect(nextTrackName(tracks, 'voice')).toBe('Voice 3')
     expect(nextTrackName(tracks, 'music')).toBe('Music 2')
+    expect(nextTrackName(tracks, 'countdown')).toBe('Countdown 1')
   })
 
   it('reuses a number freed by deleting a track', () => {
@@ -274,6 +319,11 @@ describe('createTrack', () => {
 
   it('starts unmuted', () => {
     expect(createTrack('v', 'voice', []).muted).toBe(false)
+  })
+
+  it('does not duck the count-in the way it ducks music', () => {
+    // A cue you have to strain to hear is no use to perform to.
+    expect(createTrack('c', 'countdown', []).volume).toBe(createTrack('v', 'voice', []).volume)
   })
 })
 
