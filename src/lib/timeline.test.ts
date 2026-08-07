@@ -4,6 +4,7 @@ import {
   clipAtTime,
   clipDuration,
   clipForAsset,
+  clipGain,
   formatTime,
   layoutClips,
   projectDuration,
@@ -169,6 +170,27 @@ describe('clipForAsset', () => {
   it('falls back to a default when a video reports no duration', () => {
     const unknown = { ...video, duration: undefined }
     expect(clipDuration(clipForAsset(unknown, 'c'))).toBeGreaterThan(0)
+  })
+})
+
+describe('clipGain', () => {
+  it('plays a clip that says nothing about sound at full volume', () => {
+    // Every clip authored before clips had sound looks like this, and they
+    // must not all export silent.
+    expect(clipGain(clip('1', 0, 3))).toBe(1)
+  })
+
+  it('silences a muted clip whatever its volume says', () => {
+    expect(clipGain({ ...clip('1', 0, 3), muted: true, volume: 0.8 })).toBe(0)
+  })
+
+  it('takes the clip volume when it has one, including a boost', () => {
+    expect(clipGain({ ...clip('1', 0, 3), volume: 0.25 })).toBe(0.25)
+    expect(clipGain({ ...clip('1', 0, 3), volume: 1.5 })).toBe(1.5)
+  })
+
+  it('never returns a negative gain', () => {
+    expect(clipGain({ ...clip('1', 0, 3), volume: -2 })).toBe(0)
   })
 })
 

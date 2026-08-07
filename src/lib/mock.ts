@@ -114,6 +114,38 @@ async function mockImage(
 }
 
 /**
+ * Adds a quiet tone to a captured canvas stream, so mock clips arrive with a
+ * real audio track like footage from a camera — or from the video models that
+ * now return sound. Silent mocks would leave the whole clip-sound path
+ * (probing, mixing, preview) unexercised by the end-to-end run.
+ *
+ * Returns a teardown, or null where WebAudio will not start: a mock clip
+ * without sound is much better than a mock clip that fails to record.
+ */
+function attachTone(stream: MediaStream): (() => void) | null {
+  try {
+    const context = new AudioContext()
+    void context.resume()
+    const oscillator = context.createOscillator()
+    oscillator.frequency.value = 220
+    const gain = context.createGain()
+    // Loud enough to hear the cut between clips, quiet enough not to startle.
+    gain.gain.value = 0.04
+    const destination = context.createMediaStreamDestination()
+    oscillator.connect(gain).connect(destination)
+    oscillator.start()
+    for (const track of destination.stream.getAudioTracks()) stream.addTrack(track)
+
+    return () => {
+      oscillator.stop()
+      void context.close()
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Mock clips have to follow the requested orientation, not just be small.
  * The export letterboxes rather than crops, so a 640×360 mock dropped into a
  * vertical project would come out as a thin strip inside black bars — and the
@@ -146,6 +178,7 @@ async function mockVideo(
   }
 
   const stream = canvas.captureStream(30)
+  const stopTone = attachTone(stream)
   const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((type) =>
     MediaRecorder.isTypeSupported(type),
   )
@@ -167,6 +200,7 @@ async function mockVideo(
       if (signal?.aborted) {
         recorder.stop()
         stream.getTracks().forEach((track) => track.stop())
+        stopTone?.()
         reject(new DOMException('Aborted', 'AbortError'))
         return
       }
@@ -188,6 +222,7 @@ async function mockVideo(
 
   recorder.stop()
   stream.getTracks().forEach((track) => track.stop())
+  stopTone?.()
   const blob = await done
 
   return { video: { url: URL.createObjectURL(blob), content_type: blob.type } }

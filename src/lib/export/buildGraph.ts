@@ -7,16 +7,17 @@
  * can be caught by a unit test asserting on the arguments instead of by
  * rendering a video and squinting at it.
  *
- * Audio is mixed from the timeline's audio tracks: every clip is delayed to
- * its start time, scaled by its track's volume, and summed. Muted tracks are
- * expected to have been dropped by the caller — silence is cheaper to produce
- * by not encoding a stream than by encoding one at zero gain.
+ * Two things feed the mixer, and both are placed the same way — delayed to
+ * where they belong on the timeline, scaled, and summed. The audio tracks are
+ * one; the sound a video clip carries itself is the other, which keeps a
+ * filmed clip's own audio locked to its picture without the user having to
+ * lift it onto a track. Muted tracks are expected to have been dropped by the
+ * caller — silence is cheaper to produce by not encoding a stream than by
+ * encoding one at zero gain.
  *
- * Video clips' own audio is not mixed in. Most image-to-video models return
- * silent footage, and conditionally wiring per-clip audio requires knowing
- * which inputs have an audio stream at all, which cannot be known without
- * probing every file first. The preview mutes clips to match, so what you hear
- * is what you export.
+ * `hasAudio` must be the truth about the file rather than an assumption:
+ * referencing `[n:a]` on an input with no audio stream fails the whole render,
+ * so the caller probes each file first (see probe.ts).
  */
 
 export interface ExportClip {
@@ -27,6 +28,10 @@ export interface ExportClip {
   inPoint: number
   /** Seconds of output this clip contributes. */
   duration: number
+  /** Whether this file really carries an audio stream. Probed, never guessed. */
+  hasAudio?: boolean
+  /** Gain for that audio. Absent is unity; 0 keeps it out of the mix. */
+  volume?: number
 }
 
 export interface ExportAudioClip {
@@ -66,6 +71,38 @@ function sec(value: number): string {
 /** Gain to three decimals — finer than anyone can hear, and keeps argv tidy. */
 function roundGain(value: number): string {
   return (Math.round(value * 1000) / 1000).toString()
+}
+
+/**
+ * The chain that puts one source where it belongs: delayed to its start on the
+ * timeline, levelled, and resampled so everything reaching the mixer agrees on
+ * a rate.
+ */
+function placeAudio(startTime: number, volume: number): string {
+  const delayMs = Math.max(0, Math.round(startTime * 1000))
+  // all=1 applies the delay to every channel, so it works for mono and stereo
+  // sources alike without knowing the layout up front.
+  const stages = [`adelay=${delayMs}:all=1`]
+  // Skip the filter at unity so an untouched mix stays byte-identical to what
+  // it produced before volumes existed.
+  if (volume !== 1) stages.push(`volume=${roundGain(volume)}`)
+  stages.push('aresample=48000')
+  return stages.join(',')
+}
+
+/**
+ * Pairs each clip with where it starts on the timeline and which input it is.
+ * Clips sit end to end with no gaps, so the start is the sum of what precedes.
+ */
+function withStarts(
+  clips: readonly ExportClip[],
+): { clip: ExportClip; input: number; start: number }[] {
+  let cursor = 0
+  return clips.map((clip, input) => {
+    const start = cursor
+    cursor += Math.max(0, clip.duration)
+    return { clip, input, start }
+  })
 }
 
 export function totalVisualDuration(clips: readonly ExportClip[]): number {
@@ -136,35 +173,34 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   }
 
   // --- Audio graph -------------------------------------------------------
-  const hasAudio = audio.length > 0
-  if (hasAudio) {
-    const placed: string[] = []
-    audio.forEach((clip, index) => {
-      const input = audioInputOffset + index
-      const label = `a${index}`
-      const delayMs = Math.max(0, Math.round(clip.startTime * 1000))
-      // all=1 applies the delay to every channel, so it works for mono and
-      // stereo sources alike without knowing the layout up front.
-      const stages = [`adelay=${delayMs}:all=1`]
-      // Skip the filter at unity so an untouched mix stays byte-identical to
-      // what it produced before track volumes existed.
-      if (clip.volume !== 1) stages.push(`volume=${roundGain(clip.volume)}`)
-      stages.push('aresample=48000')
+  const placed: string[] = []
 
-      chains.push(`[${input}:a]${stages.join(',')}[${label}]`)
-      placed.push(`[${label}]`)
-    })
+  // A clip's own sound needs no trimming of its own: the input-level -ss/-t
+  // that cut the picture cut its audio to exactly the same stretch, so all
+  // that is left is to move it to where the clip sits on the timeline.
+  for (const { clip, input, start } of withStarts(clips)) {
+    const volume = clip.volume ?? 1
+    if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0 || clip.duration <= 0) continue
+    chains.push(`[${input}:a]${placeAudio(start, volume)}[c${input}]`)
+    placed.push(`[c${input}]`)
+  }
 
-    if (placed.length === 1) {
-      chains.push(`${placed[0]}anull[aout]`)
-    } else {
-      // normalize=0 keeps every clip at its own level; the default would
-      // quietly divide the volume by the number of inputs, so adding a music
-      // bed would duck the narration it is supposed to sit under.
-      chains.push(
-        `${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0[aout]`,
-      )
-    }
+  audio.forEach((clip, index) => {
+    const label = `a${index}`
+    chains.push(
+      `[${audioInputOffset + index}:a]${placeAudio(clip.startTime, clip.volume)}[${label}]`,
+    )
+    placed.push(`[${label}]`)
+  })
+
+  const hasAudio = placed.length > 0
+  if (placed.length === 1) {
+    chains.push(`${placed[0]}anull[aout]`)
+  } else if (placed.length > 1) {
+    // normalize=0 keeps every clip at its own level; the default would quietly
+    // divide the volume by the number of inputs, so adding a music bed would
+    // duck the narration it is supposed to sit under.
+    chains.push(`${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0[aout]`)
   }
 
   args.push('-filter_complex', chains.join(';'))

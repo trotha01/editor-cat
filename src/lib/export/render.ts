@@ -13,6 +13,7 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
 import { buildExportPlan, type ExportAudioClip, type ExportClip } from './buildGraph'
+import { hasAudioStream } from './probe'
 
 export interface ExportAsset {
   /** Stable key used to name the file inside the ffmpeg filesystem. */
@@ -22,7 +23,14 @@ export interface ExportAsset {
 }
 
 export interface RenderRequest {
-  clips: { assetId: string; kind: 'image' | 'video'; inPoint: number; duration: number }[]
+  clips: {
+    assetId: string
+    kind: 'image' | 'video'
+    inPoint: number
+    duration: number
+    /** Gain for the clip's own sound. Absent is unity; 0 leaves it out. */
+    volume?: number
+  }[]
   /** Already resolved to a track volume; muted tracks are dropped by the caller. */
   audio: { assetId: string; startTime: number; inPoint: number; duration: number; volume: number }[]
   assets: Map<string, ExportAsset>
@@ -129,12 +137,33 @@ export async function renderProject(
 
   const outputFile = 'editor-cat-export.mp4'
 
-  const exportClips: ExportClip[] = request.clips.map((clip) => ({
-    file: fileNameFor.get(clip.assetId) as string,
-    kind: clip.kind,
-    inPoint: clip.inPoint,
-    duration: clip.duration,
-  }))
+  // --- Find out which clips have sound of their own ----------------------
+  // Only the files whose sound would actually be used are probed: a muted clip
+  // or a still cannot contribute one either way.
+  const soundIn = new Map<string, boolean>()
+  const candidates = request.clips.filter((clip) => clip.kind === 'video' && (clip.volume ?? 1) > 0)
+  if (candidates.length > 0) {
+    onProgress?.({ phase: 'writing', message: 'Checking your clips for sound…' })
+    for (const clip of candidates) {
+      const file = fileNameFor.get(clip.assetId) as string
+      if (soundIn.has(file)) continue
+      soundIn.set(file, await hasAudioStream(ffmpeg, file))
+    }
+  }
+
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
+  const exportClips: ExportClip[] = request.clips.map((clip) => {
+    const file = fileNameFor.get(clip.assetId) as string
+    return {
+      file,
+      kind: clip.kind,
+      inPoint: clip.inPoint,
+      duration: clip.duration,
+      hasAudio: soundIn.get(file) ?? false,
+      volume: clip.volume ?? 1,
+    }
+  })
 
   const exportAudio: ExportAudioClip[] = request.audio.map((clip) => ({
     file: fileNameFor.get(clip.assetId) as string,

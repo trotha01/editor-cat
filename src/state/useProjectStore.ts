@@ -80,6 +80,8 @@ interface ProjectState {
   moveClip: (from: number, to: number) => void
   trim: (clipId: string, asset: Asset | undefined, edge: 'start' | 'end', value: number) => void
   setImageDuration: (clipId: string, seconds: number) => void
+  /** Mutes or levels the sound a clip carries in its own file. */
+  setClipAudio: (clipId: string, patch: { muted?: boolean; volume?: number }) => void
 
   /** Places audio, adding a track only if every existing one is busy there. */
   addAudioClip: (kind: AudioTrackKind, clip: Omit<AudioClip, 'id' | 'trackId'>) => PlacementOutcome
@@ -180,6 +182,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         clips: project.clips.map((clip) =>
           clip.id === clipId ? { ...clip, inPoint: 0, outPoint: Math.max(0.2, seconds) } : clip,
         ),
+      })),
+
+    setClipAudio: (clipId, patch) =>
+      mutate((project) => ({
+        ...project,
+        clips: project.clips.map((clip) => (clip.id === clipId ? { ...clip, ...patch } : clip)),
       })),
 
     addAudioClip: (kind, clip) => {

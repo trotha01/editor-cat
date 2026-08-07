@@ -45,6 +45,13 @@ export interface Clip {
   inPoint: number
   /** Seconds into the source asset. For images this is the authored duration. */
   outPoint: number
+  /**
+   * Silences whatever sound the source carries. Absent means audible: a clip
+   * saved before clips had sound should start playing it, not stay mute.
+   */
+  muted?: boolean
+  /** Gain for that sound. Absent is unity, matching the audio tracks. */
+  volume?: number
 }
 
 /**

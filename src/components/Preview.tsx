@@ -7,13 +7,13 @@
  * drifted past a tolerance, because seeking every frame makes playback stutter
  * badly.
  *
- * Clip audio is muted here on purpose. The exporter mixes only the voiceover,
- * so muting keeps preview and output honest with each other — hearing
- * something in preview that vanishes from the export would be worse than
- * silence.
+ * Clips play whatever sound they carry, at the level set on the clip, because
+ * that is what the exporter mixes. Preview and output have to agree: hearing
+ * something here that vanishes from the export — or the reverse — is worse
+ * than either being silent.
  */
 import { useEffect, useMemo, useRef } from 'react'
-import { clipAtTime, formatTime, layoutClips } from '../lib/timeline'
+import { clipAtTime, clipGain, formatTime, layoutClips } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetUrl } from '../hooks/useAssetUrl'
@@ -31,6 +31,7 @@ function ClipLayer({
   currentTime,
   playing,
   start,
+  gain,
 }: {
   clip: Clip
   asset: Asset | undefined
@@ -39,9 +40,15 @@ function ClipLayer({
   currentTime: number
   playing: boolean
   start: number
+  /** Resolved clip gain. 0 means muted, and the element stays silent. */
+  gain: number
 }) {
   const url = useAssetUrl(asset)
   const videoRef = useRef<HTMLVideoElement>(null)
+  // Set once the browser has refused to start audible playback, so the next
+  // frame does not ask again and get refused again. Pressing play is a user
+  // gesture, so this stays false outside of automated browsers.
+  const refusedSound = useRef(false)
 
   useEffect(() => {
     const element = videoRef.current
@@ -52,19 +59,27 @@ function ClipLayer({
       return
     }
 
+    element.volume = Math.max(0, Math.min(1, gain))
+    element.muted = gain <= 0 || refusedSound.current
+
     const target = clip.inPoint + Math.max(0, currentTime - start)
     if (Math.abs(element.currentTime - target) > SEEK_TOLERANCE) {
       element.currentTime = target
     }
 
     if (playing && element.paused) {
-      // Autoplay can be refused; muted playback is normally allowed, and the
-      // preview is muted anyway.
-      void element.play().catch(() => undefined)
+      void element.play().catch(() => {
+        // Audible playback can be refused where muted playback would be
+        // allowed. Dropping the sound keeps the picture moving, which beats
+        // freezing the preview on one frame.
+        refusedSound.current = true
+        element.muted = true
+        return element.play().catch(() => undefined)
+      })
     } else if (!playing && !element.paused) {
       element.pause()
     }
-  }, [active, asset?.kind, clip.inPoint, currentTime, playing, start])
+  }, [active, asset?.kind, clip.inPoint, currentTime, gain, playing, start])
 
   if (!asset || !url) return null
 
@@ -74,7 +89,6 @@ function ClipLayer({
         <video
           ref={videoRef}
           src={url}
-          muted
           playsInline
           preload={active || nearby ? 'auto' : 'metadata'}
           className="size-full object-contain"
@@ -144,7 +158,7 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
   const aspect = `${project.width} / ${project.height}`
 
   return (
-    <div className="flex flex-col gap-2">
+    <section className="flex flex-col gap-2" aria-label="Preview">
       <div
         className="relative w-full overflow-hidden rounded-xl border border-line bg-surface-2"
         style={{ aspectRatio: aspect }}
@@ -170,6 +184,7 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
               currentTime={currentTime}
               playing={playing}
               start={entry.start}
+              gain={clipGain(entry.clip)}
             />
           ))
         )}
@@ -197,9 +212,9 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
       })}
 
       <p className="text-xs text-ink-dim">
-        Clip audio is muted — your audio tracks are the soundtrack, and the export mixes exactly
-        what you hear here. Playhead at {formatTime(currentTime)}.
+        Clips play their own sound, mixed with your audio tracks — the export is exactly what you
+        hear here. Select a clip to mute it or set its level. Playhead at {formatTime(currentTime)}.
       </p>
-    </div>
+    </section>
   )
 }

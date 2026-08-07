@@ -17,6 +17,13 @@ const vid = (file: string, inPoint: number, duration: number): ExportClip => ({
   duration,
 })
 
+/** A video clip that was probed and really does carry sound. */
+const loud = (file: string, inPoint: number, duration: number, volume = 1): ExportClip => ({
+  ...vid(file, inPoint, duration),
+  hasAudio: true,
+  volume,
+})
+
 const aud = (
   file: string,
   startTime: number,
@@ -196,6 +203,83 @@ describe('buildExportPlan', () => {
     expect(graph).toContain('[1:a]adelay=1000:all=1')
     expect(graph).toContain('[2:a]adelay=1000:all=1')
     expect(graph).toContain('amix=inputs=2')
+  })
+
+  it('mixes a video clip’s own sound in at its place on the timeline', () => {
+    const graph = graphOf(
+      buildExportPlan({
+        ...base,
+        clips: [img('a.png', 2), loud('b.mp4', 0, 3)],
+        audio: [],
+      }).args,
+    )
+    // The still occupies the first two seconds, so the clip's audio belongs
+    // 2000ms in — the same input index as its picture.
+    expect(graph).toContain('[1:a]adelay=2000:all=1')
+    expect(graph).toContain('[c1]anull[aout]')
+  })
+
+  it('mixes clip sound together with the audio tracks', () => {
+    const { args } = buildExportPlan({
+      ...base,
+      clips: [loud('a.mp4', 0, 4)],
+      audio: [aud('v.mp3', 1, 2)],
+    })
+    const graph = graphOf(args)
+    expect(graph).toContain('[0:a]adelay=0:all=1')
+    expect(graph).toContain('[1:a]adelay=1000:all=1')
+    expect(graph).toContain('amix=inputs=2:duration=longest:normalize=0')
+    expect(args).toContain('-c:a')
+  })
+
+  it('leaves a clip out of the mix when the file has no audio stream', () => {
+    // Naming [0:a] on an input with no audio does not degrade — it fails the
+    // whole render — so an unprobed or silent clip must never be referenced.
+    const { args } = buildExportPlan({ ...base, clips: [vid('a.mp4', 0, 4)], audio: [] })
+    expect(graphOf(args)).not.toContain(':a]')
+    expect(args).toContain('-an')
+  })
+
+  it('leaves out a clip the user silenced, even though it has sound', () => {
+    const { args } = buildExportPlan({
+      ...base,
+      clips: [loud('a.mp4', 0, 4, 0)],
+      audio: [],
+    })
+    expect(graphOf(args)).not.toContain('[0:a]')
+    expect(args).toContain('-an')
+  })
+
+  it('applies a clip volume as a gain filter', () => {
+    const graph = graphOf(
+      buildExportPlan({ ...base, clips: [loud('a.mp4', 0, 4, 0.3)], audio: [] }).args,
+    )
+    expect(graph).toContain('[0:a]adelay=0:all=1,volume=0.3,aresample=48000[c0]')
+  })
+
+  it('never takes audio from a still, whatever it claims', () => {
+    const { args } = buildExportPlan({
+      ...base,
+      clips: [{ ...img('a.png', 3), hasAudio: true }],
+      audio: [],
+    })
+    // An image input is `-loop 1`; there is no audio stream to name.
+    expect(args).toContain('-an')
+  })
+
+  it('places every clip’s sound after the trims that precede it', () => {
+    const graph = graphOf(
+      buildExportPlan({
+        ...base,
+        clips: [loud('a.mp4', 0, 1.5), loud('b.mp4', 4, 2), loud('c.mp4', 0, 1)],
+        audio: [],
+      }).args,
+    )
+    // Positions follow the trimmed lengths, not the source durations.
+    expect(graph).toContain('[0:a]adelay=0:all=1')
+    expect(graph).toContain('[1:a]adelay=1500:all=1')
+    expect(graph).toContain('[2:a]adelay=3500:all=1')
+    expect(graph).toContain('amix=inputs=3')
   })
 
   it('emits web-friendly encoder settings and the output path last', () => {
