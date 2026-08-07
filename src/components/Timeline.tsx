@@ -539,8 +539,11 @@ export function Timeline({
   const contentWidth =
     Math.max(pictureEndTime, audioEndTime, captionsEnd(captionCuesOf(project))) * zoom
 
+  // Never shrinks. Beside the panels the preview above is what gives way to make
+  // room, because a timeline squeezed to a few pixels is not a timeline, and
+  // this is the half of the screen the work happens in.
   return (
-    <section className="flex flex-col gap-2" aria-label="Timeline">
+    <section className="flex shrink-0 flex-col gap-2" aria-label="Timeline">
       <header className="flex flex-wrap items-center gap-3">
         <h2 className="text-sm font-semibold">Timeline</h2>
         <span className="text-xs text-ink-dim">

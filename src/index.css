@@ -59,6 +59,56 @@ input[type='range'] {
   accent-color: var(--color-accent);
 }
 
+/*
+ * The preview, fitted to the room rather than filling it.
+ *
+ * Side by side with the panels the editor is exactly as tall as the window, and
+ * the timeline sits under the picture — so the picture is what has to give way.
+ * A box given the column's full width and the project's shape does the
+ * opposite: a 9:16 project in a 950px column comes out about 1700px high and
+ * pushes the timeline off the bottom of the screen, which is the one thing you
+ * always want in view.
+ *
+ * So the box takes whichever constraint binds first: the width available, or
+ * the width that the available *height* allows at this shape. That is
+ * `object-fit: contain` for a box, and container query units are what make it
+ * expressible — a percentage of the container's height is not something `min()`
+ * can compare against a percentage of its width, but `cqh` and `cqw` are both
+ * lengths.
+ *
+ * Stacked on a narrow screen none of this applies. There the page scrolls, the
+ * picture keeps its natural size, and squeezing it in under the panels would
+ * leave a stamp rather than a preview.
+ */
+@media (width >= 64rem) {
+  /*
+   * Giving way has a limit. Below about this the picture is narrower than the
+   * controls sitting on it, and a preview you can neither read nor press is not
+   * worth the room it saves — on a window that short, a short scroll to the end
+   * of the timeline is the better trade.
+   *
+   * The floor is here rather than on the room below because the room's height
+   * has to stay something the flex layout hands down: a box whose height comes
+   * from its own `min-height` does not count as a definite height, and `cqh`
+   * inside it then resolves to zero — which collapses the picture to nothing at
+   * exactly the sizes the floor exists to protect.
+   */
+  .preview-column {
+    flex: 1;
+    min-height: 21rem;
+  }
+
+  .preview-room {
+    flex: 1;
+    min-height: 0;
+    container-type: size;
+  }
+
+  .preview-picture {
+    width: min(100cqw, calc(100cqh * var(--frame-aspect)));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

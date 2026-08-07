@@ -301,10 +301,53 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
-/** Formats seconds as m:ss.d for the ruler and clip labels. */
+/** Formats a length of time as m:ss.d, for clip labels and durations. */
 export function formatTime(seconds: number): string {
   const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
   const mins = Math.floor(safe / 60)
   const secs = safe - mins * 60
   return `${mins}:${secs.toFixed(1).padStart(4, '0')}`
+}
+
+/**
+ * A *position* on the timeline, as m:ss:ff — minutes, seconds, and the frame
+ * within that second.
+ *
+ * Where a clip's length reads fine in tenths, a playhead does not: a tenth of a
+ * second is three frames at 30fps, so it names a moment nothing can actually be
+ * cut on. The frame is the unit everything else here works in — it is what the
+ * arrow keys step by, what a cut snaps to, and what the grid draws — so it is
+ * what the readout should count in.
+ *
+ * A colon before the frames rather than a point, because they are a count and
+ * not a fraction: `0:01:24` is the twenty-fifth frame of that second, and
+ * writing it `0:01.24` invites reading it as a quarter of one.
+ */
+export function formatTimecode(seconds: number, fps: number): string {
+  const rate = frameRate(fps)
+  // Whole frames per second, for the part that is displayed. A rate like 29.97
+  // still counts 0–29 within a second; only how long each lasts differs.
+  const perSecond = Math.max(1, Math.round(rate))
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+  // Rounded once, to frames, and the seconds derived from that — rounding the
+  // two separately is how a readout ends up claiming a thirtieth frame.
+  const total = Math.round(safe * rate)
+  const whole = Math.floor(total / perSecond)
+  const frame = total - whole * perSecond
+  const mins = Math.floor(whole / 60)
+  return `${mins}:${String(whole % 60).padStart(2, '0')}:${String(frame).padStart(2, '0')}`
+}
+
+/**
+ * Moves a time by whole frames.
+ *
+ * Counted in frames rather than by adding a frame's length, for the reason
+ * `snapToFrame` is counted that way too: repeatedly adding 1/30 drifts far
+ * enough to skip a frame, and a step that sometimes moves two is worse than no
+ * step at all. Lands on a frame boundary whatever it was given.
+ */
+export function stepFrames(seconds: number, frames: number, fps: number): number {
+  const rate = frameRate(fps)
+  const from = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+  return Math.max(0, Math.round(from * rate) + Math.round(frames)) / rate
 }

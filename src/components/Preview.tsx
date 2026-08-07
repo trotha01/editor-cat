@@ -16,8 +16,15 @@
  * handing one `<video>` to the browser's own fullscreen — would show a single
  * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  clipAtTime,
+  clipGain,
+  formatTime,
+  formatTimecode,
+  layoutClips,
+  leadInOf,
+} from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
@@ -264,96 +271,114 @@ export function Preview({
     return () => window.removeEventListener('keydown', onKey)
   }, [offerFullscreen, toggle])
 
-  const aspect = `${project.width} / ${project.height}`
+  // The project's shape, in the two forms the stylesheet needs it: one for
+  // `aspect-ratio`, and one it can multiply a height by. See `.preview-picture`.
+  const shape = {
+    aspectRatio: `${project.width} / ${project.height}`,
+    '--frame-aspect': String(project.width / project.height),
+  } as CSSProperties
   // Fullscreen puts everything on black, where the page's ink colours vanish.
   const panel = fullscreen ? 'bg-black text-white/70' : 'bg-surface-2 text-ink-dim'
 
   return (
     <section
       ref={ref}
-      className={`flex flex-col gap-3 ${fullscreen ? 'justify-center bg-black p-4' : ''}`}
+      className={`flex flex-col gap-3 ${
+        // Beside the panels this is one row of a column that has to fit the
+        // window, so it gives way to the timeline below rather than the reverse.
+        fullscreen ? 'justify-center bg-black p-4' : 'preview-column'
+      }`}
       aria-label="Preview"
     >
+      {/* The room the picture has, and the box it takes up inside it. Two
+          elements rather than one because the box is fitted to the room, and
+          nothing can be measured against a container it is itself sizing. */}
       <div
-        className={`relative w-full overflow-hidden ${
-          // Out of fullscreen the box is the project's shape. In it, the box is
-          // whatever is left over and the media letterboxes itself inside.
-          fullscreen ? 'min-h-0 flex-1' : 'rounded-xl border border-line bg-surface-2'
+        className={`flex items-center justify-center ${
+          fullscreen ? 'min-h-0 flex-1' : 'preview-room'
         }`}
-        style={fullscreen ? undefined : { aspectRatio: aspect }}
       >
-        {empty ? (
-          <div
-            className={`flex size-full flex-col items-center justify-center gap-1 text-center ${panel}`}
-          >
-            <span aria-hidden className="text-3xl">
-              🎞️
-            </span>
-            <p className="text-sm">Your timeline is empty</p>
-            <p className="max-w-xs text-xs">
-              Generate an image, animate it into a clip, then add it below.
-            </p>
-          </div>
-        ) : (
-          positioned.map((entry) => (
-            <ClipLayer
-              key={entry.clip.id}
-              clip={entry.clip}
-              asset={assetById.get(entry.clip.assetId)}
-              active={active?.clip.id === entry.clip.id}
-              warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
-              currentTime={currentTime}
-              playing={playing}
-              start={entry.start}
-              gain={clipGain(entry.clip)}
-            />
-          ))
-        )}
+        <div
+          className={`relative w-full overflow-hidden ${
+            // Out of fullscreen the box is the project's shape. In it, the box is
+            // whatever is left over and the media letterboxes itself inside.
+            fullscreen ? 'size-full' : 'preview-picture rounded-xl border border-line bg-surface-2'
+          }`}
+          style={fullscreen ? undefined : shape}
+        >
+          {empty ? (
+            <div
+              className={`flex size-full flex-col items-center justify-center gap-1 text-center ${panel}`}
+            >
+              <span aria-hidden className="text-3xl">
+                🎞️
+              </span>
+              <p className="text-sm">Your timeline is empty</p>
+              <p className="max-w-xs text-xs">
+                Generate an image, animate it into a clip, then add it below.
+              </p>
+            </div>
+          ) : (
+            positioned.map((entry) => (
+              <ClipLayer
+                key={entry.clip.id}
+                clip={entry.clip}
+                asset={assetById.get(entry.clip.assetId)}
+                active={active?.clip.id === entry.clip.id}
+                warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
+                currentTime={currentTime}
+                playing={playing}
+                start={entry.start}
+                gain={clipGain(entry.clip)}
+              />
+            ))
+          )}
 
-        {active === null && !empty ? (
-          <div
-            className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${
-              // The lead-in is black in the export, so it is black here too.
-              beforePicture ? 'bg-black text-white/70' : panel
-            }`}
-          >
-            <p className="text-sm">{beforePicture ? 'Lead-in' : 'End of timeline'}</p>
-            {beforePicture ? (
-              <p className="text-xs">The picture starts at {formatTime(leadIn)}</p>
-            ) : null}
-          </div>
-        ) : null}
+          {active === null && !empty ? (
+            <div
+              className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${
+                // The lead-in is black in the export, so it is black here too.
+                beforePicture ? 'bg-black text-white/70' : panel
+              }`}
+            >
+              <p className="text-sm">{beforePicture ? 'Lead-in' : 'End of timeline'}</p>
+              {beforePicture ? (
+                <p className="text-xs">The picture starts at {formatTime(leadIn)}</p>
+              ) : null}
+            </div>
+          ) : null}
 
-        {/* Above the picture and above the lead-in card, because captions are
+          {/* Above the picture and above the lead-in card, because captions are
             part of the frame: narration over black is exactly when you want to
             see them. Below the fullscreen button, which is chrome. */}
-        <CaptionOverlay
-          tracks={captionTracksOf(project)}
-          cues={captionCuesOf(project)}
-          width={project.width}
-          height={project.height}
-          currentTime={currentTime}
-        />
+          <CaptionOverlay
+            tracks={captionTracksOf(project)}
+            cues={captionCuesOf(project)}
+            width={project.width}
+            height={project.height}
+            currentTime={currentTime}
+          />
 
-        {/* Opposite the fullscreen button, on the same layer of chrome: both
+          {/* Opposite the fullscreen button, on the same layer of chrome: both
             sit over the picture and neither should cover the other. */}
-        <ReadinessBanner />
+          <ReadinessBanner />
 
-        {offerFullscreen ? (
-          <button
-            type="button"
-            onClick={toggle}
-            aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            aria-pressed={fullscreen}
-            title={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-            // Its own colours rather than the shared Button: this sits over
-            // arbitrary picture, so it has to stay legible against anything.
-            className="absolute top-2 right-2 inline-flex items-center gap-1.5 rounded-lg bg-black/55 px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-          >
-            <span aria-hidden>⛶</span>
-            {fullscreen ? 'Exit' : 'Fullscreen'}
-          </button>
-        ) : null}
+          {offerFullscreen ? (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              aria-pressed={fullscreen}
+              title={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+              // Its own colours rather than the shared Button: this sits over
+              // arbitrary picture, so it has to stay legible against anything.
+              className="absolute top-2 right-2 inline-flex items-center gap-1.5 rounded-lg bg-black/55 px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            >
+              <span aria-hidden>⛶</span>
+              {fullscreen ? 'Exit' : 'Fullscreen'}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {project.audioClips.map((clip) => {
@@ -383,7 +408,7 @@ export function Preview({
         <p className="text-xs text-ink-dim">
           Clips play their own sound, mixed with your audio tracks — the export is exactly what you
           hear here. Select a clip to mute it or set its level. Playhead at{' '}
-          {formatTime(currentTime)}.
+          {formatTimecode(currentTime, project.fps)}, and the arrow keys move it a frame at a time.
         </p>
       )}
     </section>

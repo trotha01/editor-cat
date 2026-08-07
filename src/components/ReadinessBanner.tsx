@@ -47,16 +47,19 @@ export function ReadinessBanner() {
       role="status"
       // Its own colours rather than the shared Callout: this sits over
       // arbitrary picture, so it has to stay legible against anything.
-      className={`pointer-events-none absolute top-2 left-2 inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-white ${
+      // Never wider than the picture it sits on: a vertical project on a short
+      // window is a narrow strip, and half a sentence disappearing off the edge
+      // of it reads worse than the same sentence cut short on purpose.
+      className={`pointer-events-none absolute top-2 left-2 inline-flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-white ${
         loading === 0 ? 'bg-red-900/80' : 'bg-black/60'
       }`}
     >
       {/* The spinner announces itself as "Working", which would be a second
           status inside this one saying less than this one already does. */}
-      <span aria-hidden className="inline-flex">
+      <span aria-hidden className="inline-flex shrink-0">
         {loading > 0 ? <Spinner className="size-3 text-white" /> : '⚠'}
       </span>
-      {parts.join(' · ')}
+      <span className="truncate">{parts.join(' · ')}</span>
     </div>
   )
 }

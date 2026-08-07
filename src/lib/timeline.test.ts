@@ -8,6 +8,7 @@ import {
   clipGain,
   cutTargetAt,
   formatTime,
+  formatTimecode,
   frameDuration,
   isThroughCut,
   joinCutAt,
@@ -16,6 +17,7 @@ import {
   projectDuration,
   reorder,
   snapToFrame,
+  stepFrames,
   sourceTimeFor,
   splitClipAt,
   totalDuration,
@@ -506,5 +508,71 @@ describe('formatTime', () => {
     expect(formatTime(Number.NaN)).toBe('0:00.0')
     expect(formatTime(-4)).toBe('0:00.0')
     expect(formatTime(Number.POSITIVE_INFINITY)).toBe('0:00.0')
+  })
+})
+
+describe('formatTimecode', () => {
+  it('counts frames after the seconds, not tenths of a second', () => {
+    expect(formatTimecode(0, 30)).toBe('0:00:00')
+    expect(formatTimecode(1, 30)).toBe('0:01:00')
+    expect(formatTimecode(1.5, 30)).toBe('0:01:15')
+    expect(formatTimecode(73.8, 30)).toBe('1:13:24')
+  })
+
+  it('counts in the project’s own rate', () => {
+    // Half a second is twelve frames at 24 and thirty at 60. A readout that
+    // said "15" either way would be naming a frame that does not exist.
+    expect(formatTimecode(0.5, 24)).toBe('0:00:12')
+    expect(formatTimecode(0.5, 60)).toBe('0:00:30')
+  })
+
+  it('never shows a frame the rate does not have', () => {
+    // The failure this guards: rounding the seconds and the frame apart, and
+    // arriving at 0:00:30 on a thirty-frame second, which has 0 to 29.
+    for (let frame = 0; frame <= 60; frame += 1) {
+      const shown = formatTimecode(frame / 30 + 1e-9, 30)
+      expect(Number(shown.split(':')[2])).toBeLessThan(30)
+    }
+    expect(formatTimecode(0.9999, 30)).toBe('0:01:00')
+  })
+
+  it('rolls over into minutes', () => {
+    expect(formatTimecode(59.999, 30)).toBe('1:00:00')
+    expect(formatTimecode(600, 30)).toBe('10:00:00')
+  })
+
+  it('does not blow up on nonsense input', () => {
+    expect(formatTimecode(Number.NaN, 30)).toBe('0:00:00')
+    expect(formatTimecode(-4, 30)).toBe('0:00:00')
+    expect(formatTimecode(1, 0)).toBe('0:01:00')
+  })
+})
+
+describe('stepFrames', () => {
+  it('moves exactly one frame', () => {
+    expect(stepFrames(0, 1, 30)).toBeCloseTo(1 / 30, 10)
+    expect(stepFrames(1, -1, 30)).toBeCloseTo(29 / 30, 10)
+  })
+
+  it('lands on a frame boundary from anywhere between two', () => {
+    // Arrow keys are how you park the playhead where a cut can go, so a step
+    // has to leave it somewhere a cut is allowed.
+    const landed = stepFrames(0.4321, 1, 30)
+    expect(landed).toBeCloseTo(snapToFrame(landed, 30), 10)
+  })
+
+  it('does not drift over many presses, which adding 1/30 would', () => {
+    let time = 0
+    for (let press = 0; press < 300; press += 1) time = stepFrames(time, 1, 30)
+    expect(time).toBeCloseTo(10, 9)
+  })
+
+  it('stops at the top rather than going negative', () => {
+    expect(stepFrames(1 / 30, -5, 30)).toBe(0)
+  })
+
+  it('steps a second at a time when asked for a rate’s worth', () => {
+    expect(stepFrames(2, 30, 30)).toBeCloseTo(3, 10)
+    expect(stepFrames(2, -24, 24)).toBeCloseTo(1, 10)
   })
 })

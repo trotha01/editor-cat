@@ -1,18 +1,21 @@
 import { useEffect } from 'react'
 import { Button } from './ui'
-import { formatTime } from '../lib/timeline'
+import { formatTimecode, stepFrames } from '../lib/timeline'
 import { isTypingTarget } from '../lib/shortcuts'
 
 /** Play/pause, scrub, and the keyboard shortcuts people expect. */
 export function Transport({
   currentTime,
   duration,
+  fps,
   playing,
   onToggle,
   onSeek,
 }: {
   currentTime: number
   duration: number
+  /** The project's frame rate: what the arrows step by and the readout counts in. */
+  fps: number
   playing: boolean
   onToggle: () => void
   onSeek: (time: number) => void
@@ -22,15 +25,22 @@ export function Transport({
       // Never steal keys from a field the user is typing in.
       if (isTypingTarget(event.target)) return
 
+      // One frame per press, which is the smallest move that means anything:
+      // a cut lands on a frame boundary, so a playhead that parks between two
+      // is a playhead you cannot cut at. Shift covers a second at a time, for
+      // getting across the timeline rather than aiming within it.
+      const step = (frames: number) => {
+        event.preventDefault()
+        onSeek(stepFrames(currentTime, event.shiftKey ? frames * fps : frames, fps))
+      }
+
       if (event.code === 'Space') {
         event.preventDefault()
         onToggle()
       } else if (event.key === 'ArrowLeft') {
-        event.preventDefault()
-        onSeek(currentTime - (event.shiftKey ? 1 : 0.1))
+        step(-1)
       } else if (event.key === 'ArrowRight') {
-        event.preventDefault()
-        onSeek(currentTime + (event.shiftKey ? 1 : 0.1))
+        step(1)
       } else if (event.key === 'Home') {
         onSeek(0)
       } else if (event.key === 'End') {
@@ -40,7 +50,7 @@ export function Transport({
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [currentTime, duration, onSeek, onToggle])
+  }, [currentTime, duration, fps, onSeek, onToggle])
 
   return (
     <div className="flex items-center gap-3">
@@ -66,8 +76,11 @@ export function Transport({
         className="min-w-0 flex-1"
       />
 
-      <span className="shrink-0 text-xs tabular-nums text-ink-dim">
-        {formatTime(currentTime)} / {formatTime(duration)}
+      <span
+        className="shrink-0 text-xs tabular-nums text-ink-dim"
+        title={`Minutes : seconds : frame, at ${fps}fps`}
+      >
+        {formatTimecode(currentTime, fps)} / {formatTimecode(duration, fps)}
       </span>
     </div>
   )
