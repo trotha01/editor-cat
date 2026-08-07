@@ -177,6 +177,48 @@ describe('captions reach storage', () => {
     expect(stored()).toBe(after)
   })
 
+  /**
+   * Redoing one clip is the one caption action that is defined by what it does
+   * *not* touch, so it is checked on its own rather than in the table above: the
+   * point is not merely that the new words were saved, but that the other clip's
+   * line came back out of storage as the very object that went in.
+   */
+  it('saves one clip’s captions being redone, and keeps every other clip’s', () => {
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'First', start: 0, end: 0.4, source: { id: 'clip-a', label: 'take-1.webm' } },
+      { text: 'take.', start: 0.5, end: 0.9, source: { id: 'clip-a', label: 'take-1.webm' } },
+      { text: 'Second', start: 3, end: 3.4, source: { id: 'clip-b', label: 'take-2.webm' } },
+      { text: 'take.', start: 3.5, end: 3.9, source: { id: 'clip-b', label: 'take-2.webm' } },
+    ])
+    const untouched = captionCuesOf(useProjectStore.getState().project).find(
+      (cue) => cue.source?.id === 'clip-b',
+    )!
+    const before = useProjectStore.getState().project
+    saveProject.mockClear()
+
+    const result = useProjectStore.getState().setCaptionsFromSource(trackId, 'clip-a', [
+      { text: 'Better', start: 0, end: 0.4, source: { id: 'clip-a', label: 'take-1.webm' } },
+      { text: 'take.', start: 0.5, end: 0.9, source: { id: 'clip-a', label: 'take-1.webm' } },
+    ])
+
+    expect(result).toEqual({ added: 1, replaced: 1, dropped: 0 })
+    expect(useProjectStore.getState().project).not.toBe(before)
+    expect(saveProject).toHaveBeenCalled()
+
+    const saved = captionCuesOf(stored())
+    expect(
+      saved
+        .filter((cue) => cue.source?.id === 'clip-a')
+        .flatMap((cue) => cue.words.map((entry) => entry.text)),
+    ).toEqual(['Better', 'take.'])
+    expect(saved.find((cue) => cue.source?.id === 'clip-b')).toBe(untouched)
+    // Land on what just arrived, which is what a redo is asking to be shown.
+    expect(useProjectStore.getState().selectedCaption?.cueId).toBe(
+      saved.find((cue) => cue.source?.id === 'clip-a')?.id,
+    )
+  })
+
   it('leaves captions alone when the timeline is cleared', () => {
     // Clearing empties the picture and the audio. The captions belong to audio
     // that has gone, so they go too — but the track stays, ready to be used

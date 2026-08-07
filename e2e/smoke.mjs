@@ -425,7 +425,9 @@ try {
   // Transcription needs no key from the user — it runs on the site's fal
   // account — so the button has to work on a first visit with nothing entered.
   // Recognition is faked in mock mode; the wiring either side of it is not.
-  await page.getByRole('button', { name: /Add captions/ }).click()
+  // Exactly, because every clip below it offers to be captioned on its own and
+  // says so in the same words — this is the one that does the whole timeline.
+  await page.getByRole('button', { name: 'Add captions', exact: true }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
   // The setup card folds away once there is a transcript. Left open it pushes
@@ -475,6 +477,64 @@ try {
     fail(`editing the transcript did not reach the timeline: "${splicedLabel}"`)
   }
   step('a word typed into the transcript appears on the timeline caption')
+
+  // --- Redoing one clip on its own -----------------------------------------
+  // The blunt press re-transcribes the whole timeline and discards every
+  // correction on it, which is the wrong tool for the common failure: one take
+  // that came back badly among several that came back fine. So a clip can be
+  // redone on its own, and what has to be true of it is a negative — every
+  // caption from every other clip is still there, still saying the same thing,
+  // still at the same time, including the word typed in by hand just above.
+  const captionLabels = () =>
+    page.$$eval('[role="group"][aria-label^="Caption "]', (nodes) =>
+      nodes.map((node) => node.getAttribute('aria-label')),
+    )
+  const clipOf = (label) => /, from (.+)$/.exec(label ?? '')?.[1] ?? ''
+
+  await page.getByRole('button', { name: 'Karaoke captions' }).click()
+  // Only a clip that has captions offers "Redo" — one with none says "Add" —
+  // and it must not be the clip the edit above landed on, or replacing it is
+  // exactly what was asked for.
+  const redoButtons = page.getByRole('button', { name: /^Redo captions for / })
+  const redoNames = await redoButtons.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('aria-label')),
+  )
+  const redoTarget = redoNames.findIndex((name) => !name.includes(clipOf(splicedLabel)))
+  if (redoTarget === -1) {
+    fail(`no other captioned clip to redo on its own, out of ${redoNames.length}`)
+  }
+  const redoneClip = /^Redo captions for (.+) at /.exec(redoNames[redoTarget])?.[1] ?? ''
+
+  const beforeRedo = await captionLabels()
+  const elsewhereBefore = beforeRedo.filter((label) => clipOf(label) !== redoneClip)
+  if (elsewhereBefore.length === 0) fail('nothing from another clip to be left alone')
+
+  await redoButtons.nth(redoTarget).click()
+  // A clip is named after its file, so the name reaches this as text rather
+  // than as a pattern — "take-1.webm" has a wildcard in it either way.
+  const named = redoneClip.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  await page.waitForSelector(`text=/(words|recognised) in ${named}/`, { timeout: 120000 })
+
+  const afterRedo = await captionLabels()
+  const elsewhereAfter = afterRedo.filter((label) => clipOf(label) !== redoneClip)
+  if (JSON.stringify(elsewhereAfter) !== JSON.stringify(elsewhereBefore)) {
+    fail(
+      `redoing ${redoneClip} disturbed another clip's captions: ` +
+        `${elsewhereBefore.length} before, ${elsewhereAfter.length} after`,
+    )
+  }
+  if (!afterRedo.some((label) => label?.includes('SPLICED'))) {
+    fail('redoing one clip lost the word typed into another clip’s caption')
+  }
+  if (!afterRedo.some((label) => clipOf(label) === redoneClip)) {
+    fail(`redoing ${redoneClip} left it with no captions at all`)
+  }
+  step(
+    `one clip redone on its own (${redoneClip}), leaving ${elsewhereAfter.length} captions ` +
+      `from other clips untouched`,
+  )
+  // Fold the setup card back away, which is where the rest of this run found it.
+  await page.getByRole('button', { name: 'Karaoke captions' }).click()
 
   // Retiming one word is the other half of the job, and the part that makes this
   // karaoke rather than subtitles. Asking for an absurd time is deliberate: a

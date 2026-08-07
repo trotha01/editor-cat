@@ -401,6 +401,67 @@ export function wordsOntoTimeline(
     }))
 }
 
+/** What redoing one clip's captions did, counted so the panel can say it out loud. */
+export interface Recaption {
+  /** Every cue the project should now hold, the swap applied. */
+  cues: CaptionCue[]
+  /** What the clip has just produced, as it landed. */
+  fresh: CaptionCue[]
+  /** Captions from that clip that were thrown away to make room for them. */
+  replaced: number
+  /** Captions the clip produced that had nowhere to go. Never silent — see below. */
+  dropped: number
+}
+
+/**
+ * Replaces the captions transcribed from one clip, and only those.
+ *
+ * "Redo captions" transcribes the whole timeline and replaces the lot, which is
+ * right when the transcript is bad everywhere and wrong when one clip is bad and
+ * the rest has been corrected by hand: you pay to transcribe what was already
+ * right, and lose the corrections into the bargain. This is the other half of
+ * that button. One clip's words come back; every other line stays exactly as it
+ * was, down to its identity, so nothing edited elsewhere can be disturbed.
+ *
+ * Which captions belong to the clip is `cue.source`, stamped when the transcript
+ * was made. A caption that claims no source — typed by hand, or made before
+ * provenance was recorded — belongs to nobody and is never swapped out.
+ *
+ * The fresh captions defer to the ones that stayed: each is pulled inside the
+ * room left between its neighbours, and one with no room at all is dropped
+ * rather than laid over a caption from another clip. Deferring is the whole
+ * point of doing one clip at a time — a redo asked for on clip A must not move a
+ * word on clip B — and it is the same resolution `dedupeOverlappingWords` makes
+ * when both clips are transcribed at once, which is what stops the two paths
+ * disagreeing about layered takes. What was dropped is counted and handed back,
+ * because a caption quietly missing is exactly what nobody would think to look
+ * for.
+ */
+export function recaptionSource(
+  cues: readonly CaptionCue[],
+  trackId: string,
+  sourceId: string,
+  words: readonly TimedWord[],
+  makeId: (prefix: string) => string,
+  options: GroupOptions = DEFAULT_GROUPING,
+): Recaption {
+  const kept = cues.filter((cue) => cue.trackId !== trackId || cue.source?.id !== sourceId)
+  const grouped = cuesFromWords(words, trackId, makeId, options)
+  // Fitted one at a time against `kept` alone: `cuesFromWords` already leaves no
+  // overlap within its own output, and fitting only ever shrinks a cue, so the
+  // two sets together still hold one caption on screen at a time.
+  const fresh = grouped
+    .map((cue) => fitBetweenNeighbours(cue, kept))
+    .filter((cue) => cue.end - cue.start >= MIN_CUE_DURATION - EPSILON)
+
+  return {
+    cues: [...kept, ...fresh],
+    fresh,
+    replaced: cues.length - kept.length,
+    dropped: grouped.length - fresh.length,
+  }
+}
+
 // --- Editing -----------------------------------------------------------------
 
 /**
