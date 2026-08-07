@@ -16,7 +16,7 @@
  * — and everything downstream of the model lives in whisperWords.ts, where it
  * can be tested without any of this.
  */
-import { whisperWords, type WhisperChunk } from '../lib/whisperWords'
+import { whisperWords, type WhisperChunk, type WhisperGranularity } from '../lib/whisperWords'
 import {
   describeAttempt,
   isMissingAlignment,
@@ -48,7 +48,15 @@ export interface WhisperRequest {
 /** What comes back. A `progress` stream, then exactly one end state. */
 export type WhisperResponse =
   | { type: 'progress'; id: number; message: string; ratio?: number }
-  | { type: 'done'; id: number; words: TimedWord[]; usedModel?: string }
+  | {
+      type: 'done'
+      id: number
+      words: TimedWord[]
+      /** Set only when it is not the model that was asked for. */
+      usedModel?: string
+      /** Set only when word timings were estimated rather than measured. */
+      estimatedTiming?: boolean
+    }
   | { type: 'error'; id: number; message: string }
 
 /** Where the runtime and its WebAssembly are served from. */
@@ -131,18 +139,15 @@ let loadedModel = ''
 const unusable = new Map<string, string>()
 
 /**
- * Models with no word-level timing in them, to why we know.
+ * Models that cannot time individual words, so we stop asking them to.
  *
- * Kept apart from the above because it condemns the repo rather than one
- * download from it: no other export of a model without alignment heads will have
- * them either, so the rest of that model's rungs are skipped rather than
- * fetched.
- *
- * Filled in mostly by `run` rather than by the loader, since that is where this
- * particular failure shows up — but by the loader too, in case a future runtime
- * notices earlier.
+ * Not a blacklist: such a model transcribes perfectly well and still emits the
+ * timestamp tokens a phrase is bounded by, which is enough to caption from. This
+ * only remembers which models need asking the other way, so the discovery — a
+ * whole inference that ends in an exception — happens once per session rather
+ * than once per voice take.
  */
-const untimed = new Map<string, string>()
+const untimed = new Set<string>()
 
 async function loadModel(
   request: WhisperRequest,
@@ -182,7 +187,7 @@ async function openPipeline(
     const label = labelAttempt(attempt)
     const key = `${model}|${label}`
 
-    const condemned = untimed.get(model) ?? unusable.get(key)
+    const condemned = unusable.get(key)
     if (condemned !== undefined) {
       failures.push(`${label} — ${condemned}`)
       continue
@@ -216,8 +221,7 @@ async function openPipeline(
       // A network failure is about today, not about this way of opening the
       // model, so it must not be blacklisted for the rest of the session.
       if (verdictFor(detail) === 'give-up') break
-      if (isMissingAlignment(detail)) untimed.set(model, detail)
-      else unusable.set(key, detail)
+      unusable.set(key, detail)
     }
   }
 
@@ -242,45 +246,58 @@ async function run(request: WhisperRequest): Promise<void> {
     )
   }
 
-  // Loops only for the one failure that arrives too late to be a load failure:
-  // alignment heads live in the generation config, which is read when the model
-  // is first asked to transcribe rather than when its session is built. So a
-  // repo with none loads perfectly and then cannot do the single thing captions
-  // need. It is still the repo that is wrong, so condemn it and walk the ladder
-  // on — the alternative is telling someone their model is fine and captions are
-  // not available. Terminates because each turn condemns a different model and
-  // the ladder holds finitely many.
-  for (;;) {
-    const { transcriber, usedModel } = await loadModel(request)
-    post({ type: 'progress', id: request.id, message: 'listening' })
+  const { transcriber, usedModel } = await loadModel(request)
+  post({ type: 'progress', id: request.id, message: 'listening' })
 
-    let output: AsrOutput | AsrOutput[]
-    try {
-      output = await transcriber(request.audio, {
-        return_timestamps: 'word',
-        chunk_length_s: CHUNK_SECONDS,
-        stride_length_s: STRIDE_SECONDS,
-        ...(request.language ? { language: request.language, task: 'transcribe' } : {}),
-      })
-    } catch (cause) {
-      const detail = cause instanceof Error ? cause.message : String(cause)
-      if (!isMissingAlignment(detail) || untimed.has(usedModel)) throw cause
-      untimed.set(usedModel, detail)
-      loading = null
-      continue
-    }
+  // Word timings are measured against the audio and are what the highlight
+  // deserves, but they need alignment heads in the model's generation config —
+  // which is read at the first inference, not at load, so a model without them
+  // gets all the way to here before saying so. That is recoverable rather than
+  // fatal: the same model, asked instead for the timestamp tokens every Whisper
+  // emits, bounds each phrase, and the words inside one can be spread across it.
+  // Captions from a model that "cannot do timestamps" beat no captions.
+  let granularity: WhisperGranularity = untimed.has(usedModel) ? 'segment' : 'word'
+  let output: AsrOutput | AsrOutput[]
+  try {
+    output = await listen(transcriber, request, granularity)
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    if (granularity === 'segment' || !isMissingAlignment(detail)) throw cause
 
-    const result = Array.isArray(output) ? output[0] : output
-    post({
-      type: 'done',
-      id: request.id,
-      words: whisperWords(result?.chunks ?? [], {
-        duration: request.audio.length / request.sampleRate,
-      }),
-      // Named only when it is not the model that was asked for, since that is a
-      // different transcript rather than merely a slower one.
-      ...(usedModel === request.model ? {} : { usedModel }),
-    })
-    return
+    untimed.add(usedModel)
+    granularity = 'segment'
+    post({ type: 'progress', id: request.id, message: 'listening again for phrase timings' })
+    output = await listen(transcriber, request, granularity)
   }
+
+  const result = Array.isArray(output) ? output[0] : output
+  post({
+    type: 'done',
+    id: request.id,
+    words: whisperWords(result?.chunks ?? [], {
+      duration: request.audio.length / request.sampleRate,
+      granularity,
+    }),
+    // Named only when it is not the model that was asked for, since that is a
+    // different transcript rather than merely a slower one.
+    ...(usedModel === request.model ? {} : { usedModel }),
+    ...(granularity === 'segment' ? { estimatedTiming: true } : {}),
+  })
+}
+
+/** One pass over the audio, asking for timings at the granularity given. */
+function listen(
+  transcriber: Transcriber,
+  request: WhisperRequest,
+  granularity: WhisperGranularity,
+): Promise<AsrOutput | AsrOutput[]> {
+  return transcriber(request.audio, {
+    // 'word' asks for timings measured against the audio and needs alignment
+    // heads; `true` asks for the timestamp tokens that are part of every
+    // Whisper's ordinary vocabulary, and bound a phrase rather than a word.
+    return_timestamps: granularity === 'word' ? 'word' : true,
+    chunk_length_s: CHUNK_SECONDS,
+    stride_length_s: STRIDE_SECONDS,
+    ...(request.language ? { language: request.language, task: 'transcribe' } : {}),
+  })
 }

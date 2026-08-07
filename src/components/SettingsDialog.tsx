@@ -154,12 +154,12 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             <>
               The speech model captioning downloads when you transcribe in this browser. A Hugging
               Face repo id; it must be an ONNX export with its weights in an{' '}
-              <span className="text-ink">onnx</span> subfolder and a config carrying alignment
-              heads, or there are no word timings to highlight on. If it will not run here another
-              model is tried automatically and the swap is reported, so this mostly only needs
-              changing to trade accuracy for size:{' '}
-              <span className="text-ink">Xenova/whisper-tiny.en</span> is a much smaller download
-              than <span className="text-ink">whisper-base</span>, and{' '}
+              <span className="text-ink">onnx</span> subfolder. Word timings are used where the
+              model can produce them and estimated from its phrase timings where it cannot, so most
+              Whisper exports will do. If it will not run here another model is tried automatically
+              and the swap is reported, so this mostly only needs changing to trade accuracy for
+              size: <span className="text-ink">Xenova/whisper-tiny.en</span> is a much smaller
+              download than <span className="text-ink">whisper-base</span>, and{' '}
               <span className="text-ink">whisper-small</span> a much larger one.
             </>
           }

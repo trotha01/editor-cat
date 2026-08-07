@@ -51,10 +51,13 @@ function ensureWorker(): Worker {
  * that took a minute to download. The reply for an abandoned request is dropped
  * when it arrives.
  */
-/** Words, plus the model that produced them if it was not the one asked for. */
+/** Words, plus anything about how they were made that changes what they mean. */
 export interface BrowserTranscribeResult {
   words: TimedWord[]
+  /** The model that produced them, if it was not the one asked for. */
   usedModel?: string
+  /** Whether each word's timing was interpolated within a phrase, not measured. */
+  estimatedTiming?: boolean
 }
 
 export function transcribeInBrowser({
@@ -91,6 +94,7 @@ export function transcribeInBrowser({
           resolve({
             words: message.words,
             ...(message.usedModel ? { usedModel: message.usedModel } : {}),
+            ...(message.estimatedTiming ? { estimatedTiming: true } : {}),
           }),
         )
       } else finish(() => reject(new Error(message.message)))

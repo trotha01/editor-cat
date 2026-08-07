@@ -97,7 +97,7 @@ export async function transcribeTimeline({
       })
 
       if (result.languageCode) languages.add(result.languageCode)
-      if (result.note) notes.add(result.note)
+      for (const note of result.notes ?? []) notes.add(note)
       words.push(...wordsOntoTimeline(result.words, source))
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause

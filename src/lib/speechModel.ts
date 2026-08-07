@@ -22,16 +22,14 @@ export type LoadVerdict =
   | 'give-up'
 
 /**
- * Whether a model lacks the word-level timing captions are built on.
+ * Whether a model cannot time individual words.
  *
- * Worth its own question because it is a property of the *repo*, not of the
- * export: no other download from the same place will have them, so there is no
- * point trying one — but a different repo may well.
- *
- * It is also the one failure that does not surface while loading. Alignment
- * heads live in the generation config, which is only consulted once the model is
- * asked to transcribe, so this arrives from the first inference rather than from
- * the session — see the worker, which walks the ladder on for it anyway.
+ * The one failure here that is not a failure at all, and the only one that does
+ * not surface while loading: alignment heads live in the generation config,
+ * which is not read until the model is first asked to transcribe. A model
+ * without them still emits the timestamp tokens that bound a phrase, which is
+ * enough to caption from — so the worker asks again the other way rather than
+ * giving up on a model that loaded perfectly well.
  */
 export function isMissingAlignment(detail: string): boolean {
   return /alignment_heads/i.test(detail)
@@ -82,20 +80,13 @@ export function labelAttempt(attempt: SpeechModelAttempt): string {
  * every set of weights that was tried — the interesting part is usually that all
  * of them failed the same way, which points at the repo rather than at the
  * browser.
+ *
+ * Only ever reached by a genuine load failure. A model that loads and then turns
+ * out not to time words is handled where it happens and never gets here.
  */
 export function loadFailureMessage(model: string, attempts: readonly string[]): string {
   const last = attempts[attempts.length - 1] ?? ''
 
-  // Judged across all of them, because the ladder tries more than one repo: a
-  // single model without alignment heads is not the same story as every one of
-  // them lacking them.
-  if (attempts.length > 0 && attempts.every(isMissingAlignment)) {
-    return (
-      `No word-level timing was available from any model tried, so there is nothing for the ` +
-      `highlight to follow. Pick a model published with alignment heads — the "_timestamped" ` +
-      `repos are built for this — in Settings.`
-    )
-  }
   if (verdictFor(last) === 'give-up') {
     return (
       `The speech model "${model}" could not be downloaded. It comes from huggingface.co the ` +

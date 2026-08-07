@@ -10,12 +10,24 @@
  */
 import type { TimedWord } from './captions'
 
-/** One entry of a `return_timestamps: 'word'` result. */
+/** One entry of a `return_timestamps` result: a word, or a whole phrase. */
 export interface WhisperChunk {
   text: string
-  /** Start and end in seconds. The end is null on an unterminated last word. */
+  /** Start and end in seconds. The end is null on an unterminated last entry. */
   timestamp: [number, number | null] | [number, number]
 }
+
+/**
+ * How finely the model was able to time what it heard.
+ *
+ * Two different mechanisms, not two settings. `word` is measured: Whisper's
+ * cross-attention is aligned against the audio, which needs `alignment_heads` in
+ * the model's generation config and is therefore not on offer everywhere.
+ * `segment` is the timestamp tokens the model emits as part of its ordinary
+ * vocabulary — every Whisper export has them, and they bound a phrase rather
+ * than a word.
+ */
+export type WhisperGranularity = 'word' | 'segment'
 
 /**
  * Whisper's stock hallucinations on silence.
@@ -46,6 +58,8 @@ const MAX_REPEATS = 3
 export interface WhisperWordsOptions {
   /** Seconds of audio submitted, so timings past the end can be dropped. */
   duration: number
+  /** What the chunks are. Defaults to one word each. */
+  granularity?: WhisperGranularity
 }
 
 /**
@@ -57,11 +71,12 @@ export interface WhisperWordsOptions {
  */
 export function whisperWords(
   chunks: readonly WhisperChunk[],
-  { duration }: WhisperWordsOptions,
+  { duration, granularity = 'word' }: WhisperWordsOptions,
 ): TimedWord[] {
   const words: TimedWord[] = []
+  const source = granularity === 'segment' ? splitSegments(chunks, duration) : chunks
 
-  for (const chunk of chunks) {
+  for (const chunk of source) {
     const text = chunk.text.trim()
     if (!text) continue
 
@@ -78,6 +93,54 @@ export function whisperWords(
   }
 
   return dropStutters(dropHallucinations(words))
+}
+
+/**
+ * Cuts a phrase into words and shares its span out between them.
+ *
+ * Exported for tests, and the one honest piece of guesswork in the pipeline: the
+ * model has said "this phrase occupies these two seconds" and nothing about
+ * where inside it each word fell. Long words are given proportionally more of
+ * the span than short ones, which is closer to speech than an even split — "an
+ * extraordinary claim" is not three equal thirds — and the trailing space is
+ * counted so a one-letter word still gets a moment rather than a sliver.
+ *
+ * The result is a highlight that follows the line at about the right pace
+ * instead of one measured against the audio. Every word stays individually
+ * draggable, so a reading that lands wrong is a correction rather than a
+ * dead end.
+ */
+export function splitSegments(chunks: readonly WhisperChunk[], duration: number): WhisperChunk[] {
+  const out: WhisperChunk[] = []
+
+  for (const chunk of chunks) {
+    const words = chunk.text.trim().split(/\s+/).filter(Boolean)
+    if (words.length === 0) continue
+
+    const [start, rawEnd] = chunk.timestamp
+    if (typeof start !== 'number' || !Number.isFinite(start)) continue
+
+    // A null end means Whisper never closed the phrase; the rest of the audio is
+    // the only defensible reading, and it is what the word path assumes too.
+    const end =
+      typeof rawEnd === 'number' && Number.isFinite(rawEnd) && rawEnd > start ? rawEnd : duration
+    const span = Math.max(0, end - start)
+
+    const weights = words.map((word) => word.length + 1)
+    const total = weights.reduce((sum, weight) => sum + weight, 0)
+
+    let at = start
+    for (const [index, word] of words.entries()) {
+      // The last word is closed on the phrase's own end rather than on an
+      // accumulated sum, so rounding cannot leave or steal a sliver at the seam.
+      const isLast = index === words.length - 1
+      const next = isLast ? end : at + (span * weights[index]!) / total
+      out.push({ text: word, timestamp: [at, next] })
+      at = next
+    }
+  }
+
+  return out
 }
 
 /** Removes the phrases Whisper reaches for when there is nothing to transcribe. */

@@ -583,12 +583,27 @@ pointing at it is migrated across, because `setPref` writes every field and
 someone who once changed their image model has the old default captured in
 storage whether they chose it or not.
 
-A model with no word timings condemns the whole repo rather than one download from
-it, since no other export of it will have them — and that failure arrives late.
-Alignment heads live in the generation config, which is not read until the model
-is first asked to transcribe, so such a repo loads perfectly and only then cannot
-do the one thing captions need. The worker walks the ladder on from there too,
-rather than reporting a load that worked.
+**Word timings are asked for, not required.** Whisper can time text two ways and
+only one of them is fussy. Measured word timings come from aligning the model's
+cross-attention against the audio, which needs `alignment_heads` in its
+generation config — plenty of ONNX exports do not carry them, and the failure
+arrives late, from the first inference rather than from the session, because that
+config is not read until the model is asked to transcribe. The other way is the
+timestamp tokens Whisper emits as part of its ordinary vocabulary: every export
+has them, they need no alignment heads at all, and they bound a phrase rather
+than a word.
+
+So the worker asks for words, and on being told it cannot have them asks the same
+loaded model for phrases instead and shares each phrase's span out between the
+words in it, weighted by length — `splitSegments` in `src/lib/whisperWords.ts`.
+Both paths then go through the same cleanup, so a hallucinated phrase is no more
+real for having arrived whole. The captions are unaffected; the highlight follows
+the line at about the right pace rather than measured against it, which is
+disclosed rather than hidden, and every word stays individually draggable.
+
+This is why the feature does not need a `_timestamped` repo, and why karaoke is
+not the thing standing between a model and a caption: a model that "cannot do
+timestamps" can still be captioned from.
 
 Falling back to a different model is reported rather than hidden, because unlike
 the other rungs it changes what the transcript _says_, not just how long it took.

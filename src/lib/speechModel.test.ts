@@ -43,12 +43,13 @@ describe('verdictFor', () => {
     expect(verdictFor('Load failed')).toBe('give-up')
   })
 
-  it('tries another model when this one has no word timings', () => {
-    // No other download from the same repo will have them — but another repo may,
-    // and the ladder now reaches one.
+  it('recognises the model that cannot time words, which is not a load failure', () => {
+    // Recovered where it happens by asking the same model for phrase timings
+    // instead, so it never reaches the ladder — but it has to be told apart from
+    // a real failure first.
     const detail = 'Model generation config has no `alignment_heads`, token-level timestamps…'
     expect(isMissingAlignment(detail)).toBe(true)
-    expect(verdictFor(detail)).toBe('try-next')
+    expect(isMissingAlignment(SESSION_REFUSED)).toBe(false)
   })
 
   it('treats an unrecognised failure as worth trying the next weights', () => {
@@ -138,22 +139,15 @@ describe('loadFailureMessage', () => {
     expect(message).not.toContain('would not run')
   })
 
-  it('says what is wrong when nothing tried had word timings', () => {
+  it('never blames word timings, which are no longer a reason to fail', () => {
+    // A model that loads and cannot time words is captioned from anyway, so this
+    // message is only ever about a model that would not load at all. Telling
+    // someone to go and find a "_timestamped" repo would send them after a
+    // requirement that no longer exists.
     const message = loadFailureMessage('some/model', [
       'q8 — Model generation config has no `alignment_heads`',
-      'other/model q8 — Model generation config has no `alignment_heads`',
-    ])
-    expect(message).toContain('No word-level timing')
-    expect(message).toContain('_timestamped')
-  })
-
-  it('does not blame word timings when only one model lacked them', () => {
-    // The ladder moved on and something else went wrong; saying "no timings"
-    // would send the reader after the wrong thing.
-    const message = loadFailureMessage('some/model', [
-      'q8 — Model generation config has no `alignment_heads`',
-      `other/model q8 — ${SESSION_REFUSED}`,
     ])
     expect(message).not.toContain('No word-level timing')
+    expect(message).not.toContain('_timestamped')
   })
 })

@@ -48,11 +48,11 @@ export interface TranscriptionEngine {
     /** What the engine reckoned the language was, where it says. */
     languageCode?: string
     /**
-     * Something the user should know about how this transcript was made, where
-     * there is anything — a fallback model changes what the words say, not just
-     * how long they took.
+     * Anything the user should know about how this transcript was made — a
+     * fallback model changes what the words say, and estimated timings change
+     * what the highlight is following. Both are caveats, not footnotes.
      */
-    note?: string
+    notes?: readonly string[]
   }>
 }
 
@@ -170,7 +170,7 @@ export function browserEngine({ model, attempts }: BrowserEngineOptions): Transc
       if (isMockEnabled()) return { words: await mockWords(request), languageCode: 'eng' }
 
       const audio = await speechSamples(request.buffer, { from: request.from, to: request.to })
-      const { words, usedModel } = await transcribeInBrowser({
+      const { words, usedModel, estimatedTiming } = await transcribeInBrowser({
         audio,
         sampleRate: SPEECH_SAMPLE_RATE,
         model,
@@ -182,6 +182,18 @@ export function browserEngine({ model, attempts }: BrowserEngineOptions): Transc
         ...(request.signal ? { signal: request.signal } : {}),
       })
 
+      const notes: string[] = []
+      if (usedModel) {
+        notes.push(`"${model}" would not run here, so "${usedModel}" transcribed this instead`)
+      }
+      if (estimatedTiming) {
+        notes.push(
+          `"${usedModel ?? model}" cannot time individual words, so it timed each phrase and ` +
+            `the words within one are spread across it. The captions are right; the highlight ` +
+            `may drift a little inside a line. Drag any word to correct it.`,
+        )
+      }
+
       // Timed from the start of the stretch we handed over, so shift them back
       // onto the source file's own clock.
       return {
@@ -190,9 +202,7 @@ export function browserEngine({ model, attempts }: BrowserEngineOptions): Transc
           start: word.start + request.from,
           end: word.end + request.from,
         })),
-        ...(usedModel
-          ? { note: `"${model}" would not run here, so "${usedModel}" transcribed this instead` }
-          : {}),
+        ...(notes.length > 0 ? { notes } : {}),
       }
     },
   }
