@@ -299,21 +299,20 @@ const MOCK_TRANSCRIPT = 'This is a mock transcript. No real speech was recognise
  * the words themselves.
  *
  * The timings are the part that has to be real: they are spread across the
- * actual length of the audio handed in, so grouping, the karaoke highlight, and
- * the burnt-in subtitle file are all exercised against a transcript that lines
- * up with something. Reading the length out of the WAV header rather than
- * decoding is deliberate — this must work in a headless test with no audio
- * device, and by the time it is called the audio is always a WAV we encoded.
+ * length of audio handed in, so grouping, the karaoke highlight, and the
+ * burnt-in subtitle file are all exercised against a transcript that lines up
+ * with something. Both engines route through this, so mock mode covers the
+ * engine picker as well as the captioning.
  */
-export async function mockTranscribe(audio: Blob): Promise<{
+export async function mockTranscribe(seconds: number): Promise<{
   words: { text: string; start: number; end: number }[]
   languageCode?: string
 }> {
   await new Promise((resolve) => setTimeout(resolve, 300))
 
-  const seconds = await wavSeconds(audio)
+  const length = Number.isFinite(seconds) && seconds > 0.5 ? seconds : 4
   const tokens = MOCK_TRANSCRIPT.split(' ')
-  const step = seconds / tokens.length
+  const step = length / tokens.length
 
   return {
     words: tokens.map((text, index) => ({
@@ -324,20 +323,5 @@ export async function mockTranscribe(audio: Blob): Promise<{
       end: step * (index + 0.8),
     })),
     languageCode: 'eng',
-  }
-}
-
-/** Length of a PCM WAV from its header, or a nominal few seconds if unreadable. */
-async function wavSeconds(blob: Blob): Promise<number> {
-  const FALLBACK = 4
-  try {
-    const header = new DataView(await blob.slice(0, 44).arrayBuffer())
-    if (header.byteLength < 44) return FALLBACK
-    const sampleRate = header.getUint32(24, true)
-    const byteRate = header.getUint32(28, true)
-    if (!sampleRate || !byteRate) return FALLBACK
-    return Math.max(0.5, (blob.size - 44) / byteRate)
-  } catch {
-    return FALLBACK
   }
 }

@@ -78,19 +78,23 @@ export async function decodeAudio(blob: Blob): Promise<AudioBuffer> {
 }
 
 /**
- * One chunk of a decoded source, as a mono 16kHz WAV.
+ * One stretch of a decoded source, as mono samples at `SPEECH_SAMPLE_RATE`.
+ *
+ * This is the common currency of transcription: the WAV below is an encoding of
+ * it for the provider that wants a file, and the in-browser model takes it as it
+ * is. Both therefore hear exactly the same audio, which is what makes the two
+ * engines comparable rather than merely both present.
  *
  * Channels are averaged rather than one being taken: a take recorded with the
  * voice panned, or a stereo clip whose dialogue sits on one side, would
  * otherwise come back half transcribed.
  */
-export async function speechChunkWav(buffer: AudioBuffer, range: TimeRange): Promise<Blob> {
+export async function speechSamples(buffer: AudioBuffer, range: TimeRange): Promise<Float32Array> {
   const rate = buffer.sampleRate
   const first = Math.max(0, Math.floor(range.from * rate))
   const last = Math.min(buffer.length, Math.ceil(range.to * rate))
   const frames = Math.max(0, last - first)
-  if (frames === 0)
-    return new Blob([encodeWav(new Float32Array(0), SPEECH_SAMPLE_RATE)], { type: WAV_MIME })
+  if (frames === 0) return new Float32Array(0)
 
   const mono = new Float32Array(frames)
   for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
@@ -105,9 +109,13 @@ export async function speechChunkWav(buffer: AudioBuffer, range: TimeRange): Pro
     }
   }
 
-  return new Blob([encodeWav(await resample(mono, rate, SPEECH_SAMPLE_RATE), SPEECH_SAMPLE_RATE)], {
-    type: WAV_MIME,
-  })
+  return resample(mono, rate, SPEECH_SAMPLE_RATE)
+}
+
+/** The same stretch, wrapped as a WAV file for a provider that wants one. */
+export async function speechChunkWav(buffer: AudioBuffer, range: TimeRange): Promise<Blob> {
+  const samples = await speechSamples(buffer, range)
+  return new Blob([encodeWav(samples, SPEECH_SAMPLE_RATE)], { type: WAV_MIME })
 }
 
 /**

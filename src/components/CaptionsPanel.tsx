@@ -25,6 +25,13 @@ import {
   splitBoundary,
 } from '../lib/captions'
 import { speechSources } from '../lib/captionSources'
+import {
+  browserEngine,
+  defaultEngineId,
+  elevenLabsEngine,
+  type EngineId,
+} from '../lib/transcribeEngines'
+import { DEFAULT_SPEECH_MODEL, SPEECH_MODEL_DTYPE } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
@@ -68,6 +75,7 @@ export function CaptionsPanel({
   const setCaptionsFromWords = useProjectStore((state) => state.setCaptionsFromWords)
   const assets = useAssetStore((state) => state.assets)
   const elevenKey = useSettingsStore((state) => state.elevenlabs)
+  const speechModel = useSettingsStore((state) => state.speechModel)
 
   const [language, setLanguage] = useState('')
   const [progress, setProgress] = useState<TranscribeProgress | null>(null)
@@ -80,6 +88,17 @@ export function CaptionsPanel({
   const cues = captionCuesOf(project)
   const track = tracks[0]
   const hasKey = hasAccess(elevenKey)
+
+  // Chosen when the panel opens, and left alone after that: someone who has
+  // switched to the browser because they would rather their voice stayed on the
+  // machine should not have that undone mid-session.
+  const [chosenEngine, setChosenEngine] = useState<EngineId>(() => defaultEngineId(hasKey))
+
+  // Except when the choice has stopped being possible. Settings is a dialog over
+  // this panel, so a key can be cleared without the picker ever remounting, and
+  // the request that followed would go out with no key at all. The free engine
+  // is always available, which is what makes falling back to it honest.
+  const engineId: EngineId = chosenEngine === 'elevenlabs' && !hasKey ? 'browser' : chosenEngine
 
   const sources = useMemo(() => speechSources(project, assets), [project, assets])
   const speechSeconds = sources.reduce((sum, source) => sum + source.duration, 0)
@@ -94,7 +113,14 @@ export function CaptionsPanel({
     try {
       const trackId = ensureCaptionTrack()
       const transcript = await transcribeTimeline({
-        key: elevenKey,
+        engine:
+          engineId === 'elevenlabs'
+            ? elevenLabsEngine(elevenKey)
+            : browserEngine({
+                // An emptied box in Settings means "the default", not "no model".
+                model: speechModel.trim() || DEFAULT_SPEECH_MODEL,
+                dtype: SPEECH_MODEL_DTYPE,
+              }),
         sources,
         assets,
         ...(language ? { languageCode: language } : {}),
@@ -134,33 +160,56 @@ export function CaptionsPanel({
           captions and their word marks on the timeline.
         </p>
 
-        {!hasKey ? (
-          <Callout tone="warn">
-            Add your ElevenLabs key in Settings to transcribe. Everything else here — editing,
-            retiming, styling — works without one.
-          </Callout>
-        ) : null}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Field label="Transcribe with">
+            <Select
+              value={engineId}
+              disabled={busy}
+              onChange={(event) => setChosenEngine(event.target.value as EngineId)}
+              aria-label="Which transcriber to use"
+            >
+              <option value="browser">In this browser — free</option>
+              <option value="elevenlabs" disabled={!hasKey}>
+                ElevenLabs Scribe{hasKey ? '' : ' — needs a key'}
+              </option>
+            </Select>
+          </Field>
 
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="min-w-44 flex-1">
-            <Field label="Spoken language">
-              <Select
-                value={language}
-                disabled={busy}
-                onChange={(event) => setLanguage(event.target.value)}
-              >
-                {LANGUAGES.map((entry) => (
-                  <option key={entry.code} value={entry.code}>
-                    {entry.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
+          <Field label="Spoken language">
+            <Select
+              value={language}
+              disabled={busy}
+              onChange={(event) => setLanguage(event.target.value)}
+            >
+              {LANGUAGES.map((entry) => (
+                <option key={entry.code} value={entry.code}>
+                  {entry.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <p className="text-xs leading-relaxed text-ink-dim">
+          {engineId === 'browser' ? (
+            <>
+              A speech model runs in this tab — no key, no cost, and your voice never leaves the
+              machine. It downloads about 80MB the first time and is slower than the paid option,
+              roughly the length of the audio again.
+            </>
+          ) : (
+            <>
+              Fastest and most accurate, and it handles accents and noise better. Your audio is sent
+              to ElevenLabs, and your key pays for it.
+            </>
+          )}
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="primary"
             onClick={() => void run()}
-            disabled={!hasKey || busy || sources.length === 0}
+            disabled={busy || sources.length === 0}
             title={
               sources.length === 0
                 ? 'Record a voiceover, or add a video clip with sound, first.'
@@ -172,24 +221,37 @@ export function CaptionsPanel({
             {busy ? <Spinner /> : <span aria-hidden>💬</span>}
             {cues.length > 0 ? 'Redo captions' : 'Add captions'}
           </Button>
+
+          {sources.length === 0 ? (
+            <span className="text-xs text-ink-dim">
+              Nothing to transcribe yet — record a voiceover on the Audio step, or put a video clip
+              with its own sound on the timeline.
+            </span>
+          ) : null}
         </div>
 
-        {sources.length === 0 ? (
-          <p className="text-xs text-ink-dim">
-            Nothing to transcribe yet. Record a voiceover on the Audio step, or put a video clip
-            with its own sound on the timeline.
-          </p>
-        ) : null}
-
         {busy ? (
-          <div className="flex items-center gap-2 text-xs text-ink-dim">
-            <span>
-              Transcribing {Math.min(progress.done + 1, progress.total)} of {progress.total}
-              {progress.label ? ` · ${progress.label}` : ''}
-            </span>
-            <Button variant="ghost" onClick={() => abortRef.current?.abort()}>
-              Cancel
-            </Button>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 text-xs text-ink-dim">
+              <span>
+                Transcribing {Math.min(progress.done + 1, progress.total)} of {progress.total}
+                {progress.label ? ` · ${progress.label}` : ''}
+                {progress.detail ? ` · ${progress.detail}` : ''}
+              </span>
+              <Button variant="ghost" onClick={() => abortRef.current?.abort()}>
+                Cancel
+              </Button>
+            </div>
+            {/* The model download is the one part with a real total, and it is
+                also the long silent wait, so it gets a bar of its own. */}
+            {progress.ratio === undefined ? null : (
+              <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
+                <div
+                  className="h-full bg-accent transition-[width]"
+                  style={{ width: `${Math.round(progress.ratio * 100)}%` }}
+                />
+              </div>
+            )}
           </div>
         ) : null}
 
@@ -517,34 +579,18 @@ function CueEditor({
       {selectedWord ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg bg-surface-2 px-2.5 py-2">
           <span className="text-xs font-medium">“{selectedWord.text}”</span>
-          <label className="flex items-center gap-1.5 text-xs text-ink-dim">
-            Highlights at
-            <input
-              type="number"
-              step={0.01}
-              value={selectedWord.start.toFixed(2)}
-              aria-label={`When "${selectedWord.text}" is highlighted, in seconds`}
-              onChange={(event) =>
-                setCueWordTiming(cue.id, selectedWord.id, { start: Number(event.target.value) })
-              }
-              className="w-20 rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-ink"
-            />
-            s
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-ink-dim">
-            until
-            <input
-              type="number"
-              step={0.01}
-              value={selectedWord.end.toFixed(2)}
-              aria-label={`When "${selectedWord.text}" stops being spoken, in seconds`}
-              onChange={(event) =>
-                setCueWordTiming(cue.id, selectedWord.id, { end: Number(event.target.value) })
-              }
-              className="w-20 rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-ink"
-            />
-            s
-          </label>
+          <SecondsInput
+            label="Highlights at"
+            title={`When "${selectedWord.text}" is highlighted, in seconds`}
+            seconds={selectedWord.start}
+            onCommit={(start) => setCueWordTiming(cue.id, selectedWord.id, { start })}
+          />
+          <SecondsInput
+            label="until"
+            title={`When "${selectedWord.text}" stops being spoken, in seconds`}
+            seconds={selectedWord.end}
+            onCommit={(end) => setCueWordTiming(cue.id, selectedWord.id, { end })}
+          />
           {/* Offered only where a break can actually land: both halves have to
               be long enough to read, so two words a heartbeat apart cannot
               become two captions. */}
@@ -561,5 +607,61 @@ function CueEditor({
         </div>
       ) : null}
     </li>
+  )
+}
+
+/**
+ * A time in seconds, committed when you have finished typing it.
+ *
+ * Every keystroke would otherwise be a retime, and each one is clamped against
+ * the word's neighbours — so clearing the field to type a new number commits
+ * `0`, which clamps to the earliest allowed time and moves the word before you
+ * have typed a digit. Committing on the way out lets the field hold a
+ * half-written number without the model seeing it.
+ *
+ * `key` is the committed value, so a clamp — or an edit made on the timeline —
+ * remounts this with what actually landed rather than leaving what was typed.
+ */
+function SecondsInput({
+  label,
+  title,
+  seconds,
+  onCommit,
+}: {
+  label: string
+  title: string
+  seconds: number
+  onCommit: (seconds: number) => void
+}) {
+  const text = seconds.toFixed(2)
+
+  const commit = (value: string) => {
+    const parsed = Number(value)
+    // An emptied or nonsense field means "leave it alone", not "move it to zero".
+    if (value.trim() === '' || !Number.isFinite(parsed)) return
+    if (parsed !== seconds) onCommit(parsed)
+  }
+
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-ink-dim">
+      {label}
+      <input
+        key={text}
+        type="number"
+        step={0.01}
+        defaultValue={text}
+        aria-label={title}
+        onBlur={(event) => commit(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur()
+          if (event.key === 'Escape') {
+            event.currentTarget.value = text
+            event.currentTarget.blur()
+          }
+        }}
+        className="w-20 rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-ink"
+      />
+      s
+    </label>
   )
 }

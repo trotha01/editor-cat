@@ -78,6 +78,29 @@ describe('cuesFromWords', () => {
     expect(cues[0]?.end).toBeLessThan(cues[1]!.start)
   })
 
+  it('never overlaps two captions, whatever the transcriber said', () => {
+    // Words that run together across a sentence break, which a transcriber does
+    // emit — and which would otherwise leave two captions on screen at once.
+    const cues = cuesFromWords(
+      [timed('Hello.', 0, 0.5), timed('there', 0.45, 0.9), timed('friend', 0.95, 1.4)],
+      'track-1',
+      makeId,
+    )
+    expect(cues).toHaveLength(2)
+    expect(cues[0]!.end).toBeLessThanOrEqual(cues[1]!.start)
+  })
+
+  it('leaves no overlap when a one-word caption is padded to the minimum length', () => {
+    // "Right." is a caption of its own and shorter than MIN_CUE_DURATION, so it
+    // gets padded — straight into the caption after it, without this.
+    const cues = cuesFromWords(
+      [timed('Right.', 0, 0.05), timed('Next', 0.08, 0.4)],
+      'track-1',
+      makeId,
+    )
+    expect(cues[0]!.end).toBeLessThanOrEqual(cues[1]!.start)
+  })
+
   it('holds a caption through the breath before the next one, so it does not blink', () => {
     // Five words at a steady pace: the fourth starts a new caption, a tenth of
     // a second after the third ends.

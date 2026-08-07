@@ -13,3 +13,4 @@ npm-debug.log*
 .vite
 public/ffmpeg
 public/fonts
+public/speech

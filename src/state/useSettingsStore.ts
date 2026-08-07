@@ -1,7 +1,12 @@
 /** API keys and model preferences. */
 import { create } from 'zustand'
 import { clearKeys, loadKeys, saveKeys, type KeyState } from '../lib/keys'
-import { DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
+import {
+  DEFAULT_IMAGE_MODEL,
+  DEFAULT_LLM_MODEL,
+  DEFAULT_SPEECH_MODEL,
+  DEFAULT_VIDEO_MODEL,
+} from '../lib/models'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
 
@@ -16,12 +21,15 @@ interface Prefs {
   imageModel: string
   videoModel: string
   llmModel: string
+  /** Hugging Face repo id for in-browser transcription. */
+  speechModel: string
 }
 
 const DEFAULT_PREFS: Prefs = {
   imageModel: DEFAULT_IMAGE_MODEL,
   videoModel: DEFAULT_VIDEO_MODEL,
   llmModel: DEFAULT_LLM_MODEL,
+  speechModel: DEFAULT_SPEECH_MODEL,
 }
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[]

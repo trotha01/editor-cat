@@ -1,21 +1,21 @@
 /**
  * "Add captions", end to end.
  *
- * Walks the sources chosen by `speechSources`, decodes each one, sends it to be
- * transcribed a chunk at a time, and maps every word back onto the timeline.
- * The only interesting part is the mapping, and it is worth stating plainly:
+ * Walks the sources chosen by `speechSources`, decodes each one, hands it to
+ * whichever engine was picked, and maps every word back onto the timeline. The
+ * only interesting part is the mapping, and it is worth stating plainly:
  *
  *   timeline time = clip.startTime + (word time in the file − clip.inPoint)
  *
  * Everything else here is sequencing and error handling. One source failing —
- * an undecodable file, a chunk the provider rejects — must not lose the words
- * from the others, so failures are collected and reported rather than thrown.
+ * an undecodable file, a model that will not load — must not lose the words from
+ * the others, so failures are collected and reported rather than thrown.
  */
-import { transcribe } from './elevenlabs'
 import { getBlob } from './db'
 import { dedupeOverlappingWords, wordsOntoTimeline, type TimedWord } from './captions'
-import { chunkRanges, decodeAudio, speechChunkWav } from './speechAudio'
+import { decodeAudio } from './speechAudio'
 import { toDisplayMessage } from './errors'
+import type { TranscriptionEngine } from './transcribeEngines'
 import type { SpeechSource } from './captionSources'
 import type { Asset } from './types'
 
@@ -25,6 +25,10 @@ export interface TranscribeProgress {
   total: number
   /** What is being worked on right now. */
   label: string
+  /** What the engine is doing, where it has something to say. */
+  detail?: string
+  /** 0–1 within the current source, where the engine can measure it. */
+  ratio?: number
 }
 
 export interface TimelineTranscript {
@@ -32,22 +36,22 @@ export interface TimelineTranscript {
   words: TimedWord[]
   /** Sources that produced nothing, with the reason. Shown, never swallowed. */
   failures: string[]
-  /** Languages Scribe detected, so a mis-detection is visible in the UI. */
+  /** Languages the engine detected, so a mis-detection is visible in the UI. */
   languages: string[]
 }
 
 export interface TranscribeTimelineOptions {
-  key: string
+  engine: TranscriptionEngine
   sources: readonly SpeechSource[]
   assets: readonly Asset[]
-  /** Leave unset to let Scribe detect the language. */
+  /** Leave unset to let the engine detect the language. */
   languageCode?: string
   onProgress?: (progress: TranscribeProgress) => void
   signal?: AbortSignal
 }
 
 export async function transcribeTimeline({
-  key,
+  engine,
   sources,
   assets,
   languageCode,
@@ -70,31 +74,24 @@ export async function transcribeTimeline({
       const blob = await getBlob(asset.blobKey)
       if (!blob) throw new Error('its media is no longer stored in this browser')
 
-      const buffer = await decodeAudio(blob)
-      const fromFile: TimedWord[] = []
+      const result = await engine.transcribeSource({
+        buffer: await decodeAudio(blob),
+        from: source.inPoint,
+        to: source.inPoint + source.duration,
+        ...(languageCode ? { languageCode } : {}),
+        onProgress: (progress) =>
+          onProgress?.({
+            done,
+            total: sources.length,
+            label: source.label,
+            ...(progress.message ? { detail: progress.message } : {}),
+            ...(progress.ratio === undefined ? {} : { ratio: progress.ratio }),
+          }),
+        ...(signal ? { signal } : {}),
+      })
 
-      for (const range of chunkRanges(source.inPoint, source.inPoint + source.duration)) {
-        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-        const chunk = await speechChunkWav(buffer, range)
-        const result = await transcribe({
-          key,
-          audio: chunk,
-          ...(languageCode ? { languageCode } : {}),
-          ...(signal ? { signal } : {}),
-        })
-        if (result.languageCode) languages.add(result.languageCode)
-        // Each chunk is timed from its own start, so put it back where it came
-        // from before anything downstream sees it.
-        for (const word of result.words) {
-          fromFile.push({
-            text: word.text,
-            start: word.start + range.from,
-            end: word.end + range.from,
-          })
-        }
-      }
-
-      words.push(...wordsOntoTimeline(fromFile, source))
+      if (result.languageCode) languages.add(result.languageCode)
+      words.push(...wordsOntoTimeline(result.words, source))
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
       failures.push(`${source.label}: ${toDisplayMessage(cause)}`)

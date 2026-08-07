@@ -196,6 +196,32 @@ export const LLM_MODELS: readonly LlmModel[] = [
 
 export const LLM_ENDPOINT = 'fal-ai/any-llm'
 
+/**
+ * The speech model captioning downloads and runs in the browser.
+ *
+ * A Hugging Face repo id, resolved by transformers.js. Two things about it are
+ * load-bearing and neither is obvious from the name:
+ *
+ *  - it must be an ONNX export, which is what the `onnx-community` and `Xenova`
+ *    namespaces publish;
+ *  - its generation config must carry `alignment_heads`, or word-level
+ *    timestamps are unavailable and captions have nothing to highlight on. The
+ *    `_timestamped` repos exist for exactly that, and transformers.js says so
+ *    plainly when they are missing.
+ *
+ * Like every other model id here, this is one line to change — and Settings has
+ * a box to override it without one, since a browser that has already downloaded
+ * a model is a bad place to be told to wait for a release.
+ */
+export const DEFAULT_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
+
+/**
+ * Weights format. `q8` is the quantised export: roughly a quarter the download
+ * of fp32 and several times faster on a CPU, at a small cost in accuracy that
+ * an editable transcript absorbs easily.
+ */
+export const SPEECH_MODEL_DTYPE = 'q8'
+
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id
 export const DEFAULT_VIDEO_MODEL = VIDEO_MODELS[0]!.id
 export const DEFAULT_LLM_MODEL = LLM_MODELS[0]!.id

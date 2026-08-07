@@ -272,16 +272,28 @@ export function cuesFromWords(
   }
 
   flush()
-  return holdThroughGaps(cues, options.holdThroughGap)
+  return closeSeams(cues, options.holdThroughGap)
 }
 
-/** Stretches each caption up to the next one where the gap is only a breath. */
-function holdThroughGaps(cues: CaptionCue[], threshold: number): CaptionCue[] {
+/**
+ * Makes each caption meet the next one exactly, where they are close.
+ *
+ * Two problems, one answer. A caption that ends a breath before the next begins
+ * leaves the screen blank for a tenth of a second, over and over, which reads as
+ * a fault rather than as a pause. A caption that *overlaps* the next — which
+ * happens when a transcriber times two words as running together across a
+ * sentence break, and again whenever a one-word caption is padded up to the
+ * minimum length — is worse: only one can be on screen, so the preview shows one
+ * and the export stacks both.
+ *
+ * Setting the end to the next start fixes both, and leaves a real pause alone.
+ */
+function closeSeams(cues: CaptionCue[], threshold: number): CaptionCue[] {
   return cues.map((cue, index) => {
     const next = cues[index + 1]
     if (!next) return cue
     const gap = next.start - cue.end
-    return gap > 0 && gap < threshold ? { ...cue, end: next.start } : cue
+    return gap < threshold ? { ...cue, end: Math.max(cue.start, next.start) } : cue
   })
 }
 

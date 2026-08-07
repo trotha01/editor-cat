@@ -266,6 +266,8 @@ export function Preview({
         <CaptionOverlay
           tracks={captionTracksOf(project)}
           cues={captionCuesOf(project)}
+          width={project.width}
+          height={project.height}
           currentTime={currentTime}
         />
 

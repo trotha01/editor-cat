@@ -14,7 +14,7 @@
  * browser CORS policy.
  */
 import { providerErrorFrom } from './errors'
-import { isMockEnabled, mockConvert, mockTranscribe, mockVoices } from './mock'
+import { isMockEnabled, mockConvert, mockVoices } from './mock'
 
 const PROXY_BASE = '/api/elevenlabs'
 
@@ -169,8 +169,6 @@ export async function transcribe({
   languageCode,
   signal,
 }: TranscribeOptions): Promise<TranscriptionResult> {
-  if (isMockEnabled()) return mockTranscribe(audio)
-
   const form = new FormData()
   form.append('file', audio, filenameFor(audio.type))
   form.append('model_id', TRANSCRIPTION_MODEL)

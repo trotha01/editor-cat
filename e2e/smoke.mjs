@@ -411,7 +411,21 @@ try {
   // mocked — everything either side of it is the real code, including the
   // WebAudio decode, which no unit test can reach.
   await page.getByRole('button', { name: /4 · Captions/ }).click()
+
+  // Two transcribers, and the free one has to be reachable with no key at all —
+  // that is the whole point of it. Both are faked in mock mode, so what this
+  // covers is the wiring either side: the picker, the engine each one builds,
+  // and the words coming back on the timeline's own clock.
+  const engine = page.locator('select[aria-label="Which transcriber to use"]')
+  await engine.selectOption('browser')
   await page.getByRole('button', { name: /Add captions/ }).click()
+  await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
+  const fromBrowser = await page.locator('[role="group"][aria-label^="Caption "]').count()
+  if (fromBrowser < 2) fail(`the in-browser transcriber produced ${fromBrowser} captions`)
+  step(`captions transcribed in the browser with no key (${fromBrowser} captions)`)
+
+  await engine.selectOption('elevenlabs')
+  await page.getByRole('button', { name: /Redo captions/ }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
   const captionCues = await page.locator('[role="group"][aria-label^="Caption "]').count()
@@ -443,6 +457,9 @@ try {
   const wordStart = page.locator('input[aria-label^="When \\"is\\" is highlighted"]')
   const wasAt = Number(await wordStart.inputValue())
   await wordStart.fill('999')
+  // Committed on the way out, not per keystroke — clearing the field to type a
+  // new number would otherwise land as a retime to zero on the way past.
+  await wordStart.press('Enter')
   await page.waitForTimeout(200)
   const nowAt = Number(await wordStart.inputValue())
   if (nowAt === wasAt) fail(`retiming a word did nothing: still at ${nowAt}s`)
@@ -528,6 +545,51 @@ try {
       `(${Math.round(drawn.fontFraction * 100)}% of the frame, ${Math.round(
         drawn.bottomFraction * 100,
       )}% down)`,
+  )
+
+  // Fullscreen drops the preview's aspect ratio and lets the picture letterbox
+  // itself inside the whole screen. Captions have to follow the picture, not the
+  // black around it, or they are sized and placed against the wrong frame — and
+  // the export, which knows only the project's own size, disagrees with what was
+  // positioned here.
+  await page.getByRole('button', { name: 'Fullscreen' }).click()
+  await page.waitForTimeout(400)
+  const framed = await page.evaluate(() => {
+    const line = document.querySelector('p[data-caption-track]')
+    const video = document.querySelector('section[aria-label="Preview"] video')
+    if (!line || !video) return null
+    const text = line.getBoundingClientRect()
+    return {
+      lineWidth: text.width,
+      screenWidth: window.innerWidth,
+      // The picture's own width, which for a 9:16 project on a wide screen is a
+      // strip down the middle.
+      pictureWidth: (video.getBoundingClientRect().height * 720) / 1280,
+      fontPx: parseFloat(getComputedStyle(line).fontSize),
+      pictureHeight: video.getBoundingClientRect().height,
+    }
+  })
+  await page.getByRole('button', { name: 'Exit fullscreen' }).click()
+  await page.waitForTimeout(300)
+
+  if (!framed) fail('no caption drawn over the fullscreen preview')
+  if (framed.lineWidth > framed.pictureWidth) {
+    fail(
+      `fullscreen captions are ${Math.round(framed.lineWidth)}px wide across a ` +
+        `${Math.round(framed.pictureWidth)}px picture — they are following the black bars`,
+    )
+  }
+  // 7.5% of the frame, the same fraction the exported subtitle file is built to.
+  if (Math.abs(framed.fontPx / framed.pictureHeight - 0.075) > 0.015) {
+    fail(
+      `fullscreen caption size is ${(framed.fontPx / framed.pictureHeight).toFixed(3)} of the ` +
+        `picture height, not the 0.075 the export uses`,
+    )
+  }
+  step(
+    `fullscreen captions stay on the picture ` +
+      `(${Math.round(framed.lineWidth)}px inside a ${Math.round(framed.pictureWidth)}px frame, ` +
+      `not ${framed.screenWidth}px)`,
   )
 
   if (!fontResponses.some((response) => response.status === 200)) {

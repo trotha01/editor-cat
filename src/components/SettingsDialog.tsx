@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout, Field, Modal, Spinner, TextInput } from './ui'
-import { LLM_MODELS } from '../lib/models'
+import { DEFAULT_SPEECH_MODEL, LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
 import { AccountSettings } from './AccountSettings'
 import { DriveSettings } from './DriveSettings'
@@ -147,6 +147,30 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           onChange={(id) => settings.setPref('llmModel', id)}
           hint="Routed through fal.ai, so it is covered by this site's own key. Cheaper models are perfectly good at rewriting prompts."
         />
+
+        <Field
+          label="Caption model (in-browser)"
+          hint={
+            <>
+              The speech model captioning downloads when you transcribe without an ElevenLabs key. A
+              Hugging Face repo id; it must be an ONNX export whose config carries alignment heads,
+              or there are no word timings to highlight on. Swap{' '}
+              <span className="text-ink">whisper-base</span> for{' '}
+              <span className="text-ink">whisper-tiny.en</span> to trade accuracy for a much smaller
+              download, or <span className="text-ink">whisper-small</span> the other way.
+            </>
+          }
+          htmlFor="speech-model"
+        >
+          <TextInput
+            id="speech-model"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={DEFAULT_SPEECH_MODEL}
+            value={settings.speechModel}
+            onChange={(event) => settings.setPref('speechModel', event.target.value.trim())}
+          />
+        </Field>
 
         <AccountSettings />
 

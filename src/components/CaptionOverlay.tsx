@@ -18,51 +18,92 @@ import type { CaptionCue, CaptionStyle, CaptionTrack } from '../lib/types'
 export function CaptionOverlay({
   tracks,
   cues,
+  width,
+  height,
   currentTime,
 }: {
   tracks: readonly CaptionTrack[]
   cues: readonly CaptionCue[]
+  /** The project's frame size, which is what the captions are authored against. */
+  width: number
+  height: number
   currentTime: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [height, setHeight] = useState(0)
+  const [box, setBox] = useState({ width: 0, height: 0 })
 
   // Measured rather than taken from the project: the preview is scaled to fit
   // whatever room it has, and fullscreen changes it again.
   useEffect(() => {
     const element = ref.current
     if (!element || typeof ResizeObserver === 'undefined') return
+    const measure = (rect: { width: number; height: number }) =>
+      setBox({ width: rect.width, height: rect.height })
     const observer = new ResizeObserver(([entry]) => {
-      setHeight(entry?.contentRect.height ?? 0)
+      if (entry) measure(entry.contentRect)
     })
     observer.observe(element)
-    setHeight(element.getBoundingClientRect().height)
+    measure(element.getBoundingClientRect())
     return () => observer.disconnect()
   }, [])
 
+  const frame = containedFrame(box, { width, height })
   const visible = tracks.filter((track) => !track.hidden)
 
   return (
-    <div ref={ref} className="pointer-events-none absolute inset-0 overflow-hidden">
-      {visible.map((track) => {
-        const cue = cueAtTime(
-          cues.filter((entry) => entry.trackId === track.id),
-          currentTime,
-        )
-        if (!cue || height <= 0) return null
-        return (
-          <CaptionLine
-            key={track.id}
-            trackId={track.id}
-            cue={cue}
-            style={track.style}
-            frameHeight={height}
-            activeIndex={activeWordIndexAt(cue, currentTime)}
-          />
-        )
-      })}
+    // Two boxes, because they are not the same box. The outer one is whatever
+    // room the preview has; the inner one is the picture inside it. Out of
+    // fullscreen they coincide, but fullscreen drops the aspect ratio and lets
+    // the media letterbox itself, and captions measured against the whole screen
+    // would then be sized and placed against the black bars — disagreeing with an
+    // export that knows only the project's own frame.
+    <div
+      ref={ref}
+      className="pointer-events-none absolute inset-0 flex items-center justify-center"
+    >
+      <div
+        className="relative overflow-hidden"
+        style={{ width: frame.width, height: frame.height }}
+      >
+        {visible.map((track) => {
+          const cue = cueAtTime(
+            cues.filter((entry) => entry.trackId === track.id),
+            currentTime,
+          )
+          if (!cue || frame.height <= 0) return null
+          return (
+            <CaptionLine
+              key={track.id}
+              trackId={track.id}
+              cue={cue}
+              style={track.style}
+              frameHeight={frame.height}
+              activeIndex={activeWordIndexAt(cue, currentTime)}
+            />
+          )
+        })}
+      </div>
     </div>
   )
+}
+
+/**
+ * The picture's own rectangle inside the space available to it.
+ *
+ * `object-contain` in arithmetic. Done here rather than in CSS because a box
+ * given both a width and a height ignores `aspect-ratio` altogether, and one
+ * given only a ratio and a `max-height` clamps the height without narrowing —
+ * which is exactly the case fullscreen produces.
+ */
+function containedFrame(
+  available: { width: number; height: number },
+  frame: { width: number; height: number },
+): { width: number; height: number } {
+  if (available.width <= 0 || available.height <= 0 || frame.width <= 0 || frame.height <= 0) {
+    return { width: 0, height: 0 }
+  }
+  const scale = Math.min(available.width / frame.width, available.height / frame.height)
+  return { width: frame.width * scale, height: frame.height * scale }
 }
 
 /**
