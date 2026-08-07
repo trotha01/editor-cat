@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { wordsFromScribe, type ScribeOutput } from './scribe'
+import { scribeInput, wordsFromScribe, type ScribeOutput } from './scribe'
 import { SPEECH_TO_TEXT_MODEL } from './models'
 
 /**
@@ -84,6 +84,36 @@ describe('wordsFromScribe', () => {
   it('says nothing rather than throwing when there are no words at all', () => {
     expect(wordsFromScribe({})).toEqual([])
     expect(wordsFromScribe({ words: [] })).toEqual([])
+  })
+})
+
+describe('scribeInput', () => {
+  it('turns off the two things that are on by default and thrown away', () => {
+    // Both default to true at fal. Audio events are description rather than
+    // speech and are filtered out on the way back in; a speaker label has
+    // nowhere to go in a karaoke line. Asking for either is paying for work
+    // this app then discards.
+    const input = scribeInput('data:audio/wav;base64,AAAA')
+    expect(input.tag_audio_events).toBe(false)
+    expect(input.diarize).toBe(false)
+  })
+
+  it('does not ask for keyterms, which carry a 30% premium', () => {
+    // Absent rather than sent empty: biasing the model towards a word list is a
+    // feature to add knowingly, not to leave switched on by accident.
+    expect(scribeInput('data:audio/wav;base64,AAAA')).not.toHaveProperty('keyterms')
+  })
+
+  it('sends the audio wherever the schema asks for a URL', () => {
+    expect(scribeInput('data:audio/wav;base64,AAAA').audio_url).toBe('data:audio/wav;base64,AAAA')
+  })
+
+  it('names the language only when one was chosen', () => {
+    // Absent means detect, which is right nearly always. Sending an empty
+    // string instead would be asking Scribe to transcribe as nothing.
+    expect(scribeInput('data:audio/wav;base64,AAAA', 'spa').language_code).toBe('spa')
+    expect(scribeInput('data:audio/wav;base64,AAAA')).not.toHaveProperty('language_code')
+    expect(scribeInput('data:audio/wav;base64,AAAA', '')).not.toHaveProperty('language_code')
   })
 })
 

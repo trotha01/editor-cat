@@ -32,6 +32,9 @@ import type { TimedWord } from './captions'
  * are asked for — with things like `(laughter)`. Only `word` entries are words.
  * Taking the list as it comes would put a caption on screen for every gap
  * between two words.
+ *
+ * `speaker_id` is present when diarization is on. Captions have no use for it —
+ * a karaoke line does not care who said it — which is why it is off, below.
  */
 export interface ScribeWord {
   text: string
@@ -39,6 +42,29 @@ export interface ScribeWord {
   end?: number
   type?: 'word' | 'spacing' | 'audio_event'
   speaker_id?: string
+}
+
+/**
+ * What to ask Scribe for.
+ *
+ * Pure, and worth its own function because two of these are the model's own
+ * defaults being turned *off*. `tag_audio_events` and `diarize` both default to
+ * true at fal, and both produce something captions discard: audio events are
+ * description rather than speech, and a speaker label has nowhere to go in a
+ * karaoke line. Left at their defaults they would be work asked for, paid for
+ * and thrown away.
+ *
+ * `keyterms` is deliberately absent rather than sent empty — it carries a 30%
+ * premium, and biasing the model towards a list of words is a feature to add
+ * knowingly, not to leave switched on by accident.
+ */
+export function scribeInput(audioUrl: string, languageCode?: string): Record<string, unknown> {
+  return {
+    audio_url: audioUrl,
+    ...(languageCode ? { language_code: languageCode } : {}),
+    tag_audio_events: false,
+    diarize: false,
+  }
 }
 
 export interface ScribeOutput {
@@ -178,13 +204,12 @@ async function transcribeChunk({
 }: ChunkOptions): Promise<ScribeResult> {
   const output = await run<ScribeOutput>(
     SPEECH_TO_TEXT_MODEL,
-    {
-      // fal accepts a data URI wherever it accepts a file URL, which is what
-      // lets the audio go straight through the existing queue proxy rather than
-      // needing an upload endpoint and a second set of credentials.
-      audio_url: await toDataUrl(audio),
-      ...(languageCode ? { language_code: languageCode } : {}),
-    },
+    // The schema calls this a URL of an audio file, and fal takes a data URI
+    // wherever it takes one — which is what lets the audio go straight through
+    // the existing queue proxy rather than needing an upload endpoint and a
+    // second set of credentials. It is also why the chunks are sized the way
+    // they are; see CHUNK_SECONDS.
+    scribeInput(await toDataUrl(audio), languageCode),
     {
       ...(signal ? { signal } : {}),
       onProgress: (progress) =>

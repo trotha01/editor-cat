@@ -565,6 +565,15 @@ no timing are dropped rather than defaulted to zero — a word with no time cann
 be highlighted at the right moment, and one silently pinned to the start of the
 clip is worse than one that is missing.
 
+**Two of the defaults are turned off.** `tag_audio_events` and `diarize` both
+default to _true_, and both produce something captions discard: audio events are
+description rather than speech, and a speaker label has nowhere to go in a
+karaoke line, where one word is lit and nobody is credited. Left alone they would
+be work asked for, paid for and thrown away. `keyterms` — which biases the model
+towards a word list for a 30% premium — is absent rather than sent empty, so it
+stays a thing to add knowingly. `scribeInput` is pure and tested for exactly
+this: the defaults are the kind of thing that silently comes back.
+
 **One highlight, one definition.** `wordSpans` in `src/lib/captions.ts` says
 which stretch of time each word owns; a word stays lit until the next one
 starts, so the highlight never blinks out in the pause after a word. The preview
