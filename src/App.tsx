@@ -133,14 +133,20 @@ export default function App() {
 
         <section className="flex min-w-0 flex-1 flex-col gap-4">
           <OrientationToggle />
-          <Preview currentTime={playback.currentTime} playing={playback.playing} />
-          <Transport
-            currentTime={playback.currentTime}
-            duration={duration}
-            playing={playback.playing}
-            onToggle={playback.toggle}
-            onSeek={playback.seek}
-          />
+
+          {/* The transport lives inside the preview rather than beside it, so
+              that fullscreen takes both: a picture you cannot pause or scrub
+              is barely worth going fullscreen for. */}
+          <Preview currentTime={playback.currentTime} playing={playback.playing}>
+            <Transport
+              currentTime={playback.currentTime}
+              duration={duration}
+              playing={playback.playing}
+              onToggle={playback.toggle}
+              onSeek={playback.seek}
+            />
+          </Preview>
+
           <Timeline currentTime={playback.currentTime} onSeek={playback.seek} />
         </section>
       </main>
