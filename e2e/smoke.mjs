@@ -57,6 +57,15 @@ const context = await browser.newContext({ permissions: ['microphone'] })
 const page = await context.newPage({ viewport: { width: 1500, height: 950 } })
 
 const pageErrors = []
+// The caption typeface is copied out of node_modules at build time and is the
+// one thing captions cannot be drawn without — in the browser or, more quietly,
+// inside ffmpeg, where a missing font draws nothing and still exits successfully.
+const fontResponses = []
+page.on('response', (response) => {
+  if (/\/fonts\/.+\.ttf$/.test(response.url())) {
+    fontResponses.push({ url: response.url(), status: response.status() })
+  }
+})
 page.on('pageerror', (error) => pageErrors.push(error.message))
 page.on('console', (message) => {
   if (message.type() === 'error') pageErrors.push(message.text())
@@ -395,6 +404,343 @@ try {
   await page.locator('button[aria-label^="Unmute"]').first().click()
   step('track mute toggles without error')
 
+  // --- Karaoke captions -----------------------------------------------------
+  // The whole path in one go: the timeline's audio is decoded and re-encoded in
+  // the browser, transcribed, grouped into captions, put on a lane of their own,
+  // and drawn over the picture with one word lit. Only the recognition itself is
+  // mocked — everything either side of it is the real code, including the
+  // WebAudio decode, which no unit test can reach.
+  await page.getByRole('button', { name: /4 · Captions/ }).click()
+
+  // The bill lands on the deployment, so what it will cost has to be visible
+  // before the press rather than after — and pressing again re-transcribes the
+  // whole timeline. Read from the real timeline's own audio length, so a wrong
+  // sum shows up here rather than in an invoice.
+  const estimate = await page.locator('text=/Costs about .* of audio/').first().innerText()
+  if (!/Costs about (~\$\d|<\$0\.01)/.test(estimate)) {
+    fail(`expected a caption cost estimate next to the button, got "${estimate}"`)
+  }
+  step(`cost shown before transcribing (${estimate.replace(/\s+/g, ' ')})`)
+
+  // Transcription needs no key from the user — it runs on the site's fal
+  // account — so the button has to work on a first visit with nothing entered.
+  // Recognition is faked in mock mode; the wiring either side of it is not.
+  await page.getByRole('button', { name: /Add captions/ }).click()
+  await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
+
+  // The setup card folds away once there is a transcript. Left open it pushes
+  // the words far enough down that following the playhead scrolls the page.
+  const setupToggle = page.getByRole('button', { name: 'Karaoke captions' })
+  if ((await setupToggle.getAttribute('aria-expanded')) !== 'false') {
+    fail('the setup section stayed open after captions were generated')
+  }
+  const lookToggle = page.getByRole('button', { name: 'Look' })
+  if ((await lookToggle.getAttribute('aria-expanded')) !== 'false') {
+    fail('the styling section was open before it was asked for')
+  }
+  await setupToggle.click()
+  if ((await setupToggle.getAttribute('aria-expanded')) !== 'true') {
+    fail('the setup section would not open again')
+  }
+  await setupToggle.click()
+  step('setup and styling fold away once there is a transcript, and open on request')
+
+  // Provenance: each caption says which clip it was heard in, which is the only
+  // way to tell layered takes apart once their words are on one lane.
+  const firstLabel = await page
+    .locator('[role="group"][aria-label^="Caption "]')
+    .first()
+    .getAttribute('aria-label')
+  if (!/, from .+$/.test(firstLabel ?? '')) {
+    fail(`expected the caption to name the clip it came from, got "${firstLabel}"`)
+  }
+  step(`captions record their source clip (${/, from (.+)$/.exec(firstLabel)?.[1]})`)
+
+  const captionCues = await page.locator('[role="group"][aria-label^="Caption "]').count()
+  if (captionCues < 2) fail(`expected several captions on the timeline, got ${captionCues}`)
+  step(`transcript became ${captionCues} captions on a lane of their own, with no key entered`)
+
+  // The transcript is the editing surface, so a word typed here has to reach the
+  // captions — and take the other words' timings with it untouched.
+  const firstCue = page.locator('[aria-label="Caption 1 text"]')
+  const originalLine = await firstCue.inputValue()
+  await firstCue.fill(`${originalLine} SPLICED`)
+  await firstCue.blur()
+  await page.waitForTimeout(300)
+  const splicedLabel = await page
+    .locator('[role="group"][aria-label^="Caption "]')
+    .first()
+    .getAttribute('aria-label')
+  if (!/SPLICED/.test(splicedLabel ?? '')) {
+    fail(`editing the transcript did not reach the timeline: "${splicedLabel}"`)
+  }
+  step('a word typed into the transcript appears on the timeline caption')
+
+  // Retiming one word is the other half of the job, and the part that makes this
+  // karaoke rather than subtitles. Asking for an absurd time is deliberate: a
+  // word must move, and must stop short of overtaking the one after it, so this
+  // covers the retime and the clamp in one go.
+  await page.locator('[aria-label="Caption 1 text"]').scrollIntoViewIfNeeded()
+  await page.locator('[data-cue] button', { hasText: /^is$/ }).first().click()
+  const wordStart = page.locator('input[aria-label^="When \\"is\\" is highlighted"]')
+  const wasAt = Number(await wordStart.inputValue())
+  await wordStart.fill('999')
+  // Committed on the way out, not per keystroke — clearing the field to type a
+  // new number would otherwise land as a retime to zero on the way past.
+  await wordStart.press('Enter')
+  await page.waitForTimeout(200)
+  const nowAt = Number(await wordStart.inputValue())
+  if (nowAt === wasAt) fail(`retiming a word did nothing: still at ${nowAt}s`)
+  if (nowAt >= 999) fail(`a word overtook the one after it, landing at ${nowAt}s`)
+  step(`a single word retimed and clamped short of its neighbour (${wasAt}s -> ${nowAt}s)`)
+
+  // Retiming a word from the timeline itself, with the keyboard. Dragging gets a
+  // word roughly right; this is the only way to place one exactly, and it is the
+  // half of word timing a mouse-only lane does not offer at all.
+  const wordMark = page.locator(
+    '[role="group"][aria-label^="Caption "] button[aria-label^="Word "]',
+  )
+  const firstMark = wordMark.first()
+  await firstMark.scrollIntoViewIfNeeded()
+  const markBox = await firstMark.boundingBox()
+  if (!markBox) fail('no word handle on the timeline caption')
+  // Big enough to hit without hunting: a handle a few pixels wide is a feature
+  // nobody finds.
+  if (markBox.width < 8 || markBox.height < 12) {
+    fail(`word handle is too small to grab: ${markBox.width}x${markBox.height}`)
+  }
+  const markName = /^Word "(.+)" at /.exec(await firstMark.getAttribute('aria-label'))?.[1]
+  // Clicking selects the word, which is what puts its exact timing on screen in
+  // the transcript. Read the number there rather than the handle's own label:
+  // that is rounded to a tenth, and a nudge is a hundredth.
+  await firstMark.click()
+  const nudged = page.locator(`input[aria-label^="When \\"${markName}\\" is highlighted"]`)
+  const beforeNudge = Number(await nudged.inputValue())
+  await firstMark.focus()
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(200)
+  const afterNudge = Number(await nudged.inputValue())
+  if (!(afterNudge > beforeNudge)) {
+    fail(`arrow keys did not retime the word on the timeline: ${beforeNudge}s -> ${afterNudge}s`)
+  }
+  step(
+    `word retimed from the timeline with the keyboard (${beforeNudge}s -> ${afterNudge}s, ` +
+      `${markBox.width}x${markBox.height} handle)`,
+  )
+
+  // Dragging the head of a caption is how you bring it up earlier or later
+  // without touching a word in it, and only a real browser exercises it.
+  const firstBlock = page.locator('[role="group"][aria-label^="Caption "]').first()
+  await firstBlock.scrollIntoViewIfNeeded()
+  const blockBox = await firstBlock.boundingBox()
+  if (!blockBox) fail('no caption block on the timeline to drag')
+  const beforeTrim = await firstBlock.getAttribute('aria-label')
+  await page.mouse.move(blockBox.x + 2, blockBox.y + blockBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(blockBox.x + 30, blockBox.y + blockBox.height / 2, { steps: 6 })
+  await page.mouse.up()
+  await page.waitForTimeout(200)
+  const afterTrim = await firstBlock.getAttribute('aria-label')
+  if (beforeTrim === afterTrim) fail(`dragging a caption's edge did nothing: "${afterTrim}"`)
+  step(`a caption brought up later by dragging its edge (${beforeTrim} -> ${afterTrim})`)
+
+  // --- Captions survive being put down and picked up again ----------------
+  // Nothing about a caption is derived: the words, their timings and the style
+  // are all document, and all of it has to reach storage. A reload is the only
+  // place the round trip through IndexedDB actually happens — and the same
+  // document is what gets pushed to Supabase, so a key missing from one is
+  // missing from both.
+  const captionState = () =>
+    page.$$eval('[role="group"][aria-label^="Caption "]', (nodes) =>
+      nodes.map((node) => node.getAttribute('aria-label')),
+    )
+  const wordMarks = () =>
+    page.$$eval('button[aria-label^="Word "]', (nodes) =>
+      nodes.map((node) => node.getAttribute('aria-label')),
+    )
+
+  const captionsBefore = await captionState()
+  const wordsBefore = await wordMarks()
+
+  await page.waitForTimeout(600) // let the write to IndexedDB land
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('section[aria-label="Timeline"] .group', { timeout: 30000 })
+
+  const captionsAfter = await captionState()
+  const wordsAfter = await wordMarks()
+
+  if (captionsAfter.length !== captionsBefore.length) {
+    fail(
+      `captions did not survive a reload: ${captionsBefore.length} before, ` +
+        `${captionsAfter.length} after`,
+    )
+  }
+  if (JSON.stringify(captionsAfter) !== JSON.stringify(captionsBefore)) {
+    const changed = captionsBefore.find((label, index) => label !== captionsAfter[index])
+    fail(
+      `a caption came back changed: "${changed}" -> "${captionsAfter[captionsBefore.indexOf(changed)]}"`,
+    )
+  }
+  if (JSON.stringify(wordsAfter) !== JSON.stringify(wordsBefore)) {
+    fail('word timings did not survive a reload')
+  }
+  // The edits made above specifically, since those are the ones a save could
+  // plausibly have missed: a retyped word, a retimed word, a dragged edge.
+  if (!captionsAfter.some((label) => label?.includes('SPLICED'))) {
+    fail('the edited transcript did not survive a reload')
+  }
+  step(
+    `${captionsAfter.length} captions and ${wordsAfter.length} word timings came back ` +
+      `unchanged after a reload`,
+  )
+
+  // The style lives on the caption track, not on any cue, so it is saved by a
+  // different path and worth checking separately.
+  await page.getByRole('button', { name: /4 · Captions/ }).click()
+  // Folded away by default now that there is a transcript to make room for, so
+  // this is also the check that what is inside still works once unfolded.
+  await page.getByRole('button', { name: 'Look' }).click()
+  await page.waitForSelector('input[aria-label="Caption size, as a fraction of the frame height"]')
+  const sizeSlider = page.locator(
+    'input[aria-label="Caption size, as a fraction of the frame height"]',
+  )
+  await sizeSlider.fill('0.12')
+  await page.waitForTimeout(600)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: /4 · Captions/ }).click()
+  // Folded again: which card is open is a view preference, not part of the
+  // document, and a fresh load should start compact however it was left.
+  await page.getByRole('button', { name: 'Look' }).click()
+  await page.waitForSelector('input[aria-label="Caption size, as a fraction of the frame height"]')
+  const savedSize = Number(await sizeSlider.inputValue())
+  if (Math.abs(savedSize - 0.12) > 0.001) {
+    fail(`the caption style did not survive a reload: size is ${savedSize}, not 0.12`)
+  }
+  step(`caption styling saved too (size ${savedSize} of the frame)`)
+
+  // Drawn over the picture, with exactly one word picked out. Checking the
+  // computed colour rather than the markup is the point: a caption that renders
+  // in the wrong place, at the wrong size or with every word the same colour is
+  // still a paragraph of text on the page.
+  //
+  // The moment to look at is taken from the timeline rather than guessed, so
+  // this lands mid-way through a caption with several words in it however the
+  // transcript happened to be grouped.
+  const wordy = await page.evaluate(() => {
+    const labels = [...document.querySelectorAll('[role="group"][aria-label^="Caption "]')].map(
+      (element) => element.getAttribute('aria-label') ?? '',
+    )
+    for (const label of labels) {
+      // The label carries the source clip after the times, so this cannot
+      // anchor straight onto the end of the string.
+      const found = /^Caption "(.+)", (\d+):(\d+\.\d) to (\d+):(\d+\.\d)(?:, from .*)?$/.exec(label)
+      if (!found) continue
+      if (found[1].split(/\s+/).length < 3) continue
+      const start = Number(found[2]) * 60 + Number(found[3])
+      const end = Number(found[4]) * 60 + Number(found[5])
+      return { text: found[1], at: (start + end) / 2 }
+    }
+    return null
+  })
+  if (!wordy) fail('no caption with enough words to show a highlight travelling')
+  await page.locator('input[aria-label="Scrub through the timeline"]').fill(String(wordy.at))
+  await page.waitForTimeout(300)
+  const drawn = await page.evaluate(() => {
+    const box = document.querySelector('section[aria-label="Preview"] > div')
+    const line = box?.querySelector('p[data-caption-track]')
+    if (!box || !line) return null
+    const spans = [...line.querySelectorAll('span')]
+    const colours = spans.map((span) => getComputedStyle(span).color)
+    const frame = box.getBoundingClientRect()
+    const text = line.getBoundingClientRect()
+    return {
+      words: spans.length,
+      distinct: new Set(colours).size,
+      // As fractions of the frame, which is how the style is defined.
+      fontFraction: parseFloat(getComputedStyle(line).fontSize) / frame.height,
+      // Anchored by its bottom edge, which is what libass does with a
+      // bottom-aligned subtitle — so this is the number the export honours.
+      bottomFraction: (text.bottom - frame.top) / frame.height,
+      family: getComputedStyle(line).fontFamily,
+    }
+  })
+  if (!drawn) fail(`no caption drawn over the preview at ${wordy.at}s ("${wordy.text}")`)
+  if (drawn.words < 2) fail(`caption has too few words to highlight one: ${drawn.words}`)
+  if (drawn.distinct !== 2) {
+    fail(`exactly one word should be picked out, found ${drawn.distinct} colours in the line`)
+  }
+  if (drawn.fontFraction < 0.05) fail(`captions are not large: ${drawn.fontFraction} of the frame`)
+  // 0.82 down the frame plus half a line: the style's position is the middle
+  // of a single line, and the block hangs from just below it.
+  if (Math.abs(drawn.bottomFraction - (0.82 + drawn.fontFraction / 2)) > 0.03) {
+    fail(`captions should sit low in the frame, bottom edge is at ${drawn.bottomFraction}`)
+  }
+  if (!/Inter Captions/.test(drawn.family)) {
+    fail(`captions should use the font that gets burnt in, got "${drawn.family}"`)
+  }
+  step(
+    `captions drawn over the picture with one word lit ` +
+      `(${Math.round(drawn.fontFraction * 100)}% of the frame, ${Math.round(
+        drawn.bottomFraction * 100,
+      )}% down)`,
+  )
+
+  // Fullscreen drops the preview's aspect ratio and lets the picture letterbox
+  // itself inside the whole screen. Captions have to follow the picture, not the
+  // black around it, or they are sized and placed against the wrong frame — and
+  // the export, which knows only the project's own size, disagrees with what was
+  // positioned here.
+  await page.getByRole('button', { name: 'Fullscreen' }).click()
+  await page.waitForTimeout(400)
+  const framed = await page.evaluate(() => {
+    const line = document.querySelector('p[data-caption-track]')
+    const video = document.querySelector('section[aria-label="Preview"] video')
+    if (!line || !video) return null
+    const text = line.getBoundingClientRect()
+    return {
+      lineWidth: text.width,
+      screenWidth: window.innerWidth,
+      // The picture's own width, which for a 9:16 project on a wide screen is a
+      // strip down the middle.
+      pictureWidth: (video.getBoundingClientRect().height * 720) / 1280,
+      fontPx: parseFloat(getComputedStyle(line).fontSize),
+      pictureHeight: video.getBoundingClientRect().height,
+    }
+  })
+  await page.getByRole('button', { name: 'Exit fullscreen' }).click()
+  await page.waitForTimeout(300)
+
+  if (!framed) fail('no caption drawn over the fullscreen preview')
+  if (framed.lineWidth > framed.pictureWidth) {
+    fail(
+      `fullscreen captions are ${Math.round(framed.lineWidth)}px wide across a ` +
+        `${Math.round(framed.pictureWidth)}px picture — they are following the black bars`,
+    )
+  }
+  // The style's own fraction, which is the one the exported subtitle file is
+  // built to — read back rather than hardcoded, since it is adjustable above.
+  const styleSize = Number(await sizeSlider.inputValue())
+  if (Math.abs(framed.fontPx / framed.pictureHeight - styleSize) > 0.015) {
+    fail(
+      `fullscreen caption size is ${(framed.fontPx / framed.pictureHeight).toFixed(3)} of the ` +
+        `picture height, not the ${styleSize} the export uses`,
+    )
+  }
+  step(
+    `fullscreen captions stay on the picture ` +
+      `(${Math.round(framed.lineWidth)}px inside a ${Math.round(framed.pictureWidth)}px frame, ` +
+      `not ${framed.screenWidth}px)`,
+  )
+
+  if (!fontResponses.some((response) => response.status === 200)) {
+    fail(
+      `the caption font was never served — ${JSON.stringify(fontResponses)}. ` +
+        `Check that scripts/copy-caption-font.mjs ran.`,
+    )
+  }
+  step('the caption typeface is served from this origin, so it can also be burnt in')
+
   // --- Export --------------------------------------------------------------
   await page.getByRole('button', { name: 'Export' }).first().click()
   await page.waitForSelector('text=Render and download MP4')
@@ -426,7 +772,14 @@ try {
   if (!/keep their own sound/.test(summary)) {
     fail(`export should keep the video clips' sound, summary said: "${summary}"`)
   }
-  step(`export receives ${clipCount} audio clips across ${trackTotal} tracks, plus clip sound`)
+  const burntIn = Number(/(\d+) captions? burnt in/.exec(summary)?.[1] ?? 0)
+  if (burntIn !== captionCues) {
+    fail(`all ${captionCues} captions should be burnt in, summary said: "${summary}"`)
+  }
+  step(
+    `export receives ${clipCount} audio clips across ${trackTotal} tracks, ` +
+      `plus clip sound and ${burntIn} captions`,
+  )
 
   const download = page.waitForEvent('download', { timeout: 420000 })
   await page.getByRole('button', { name: /Render and download MP4/ }).click()

@@ -196,6 +196,40 @@ export const LLM_MODELS: readonly LlmModel[] = [
 
 export const LLM_ENDPOINT = 'fal-ai/any-llm'
 
+/**
+ * The transcriber behind captions: ElevenLabs Scribe v2, hosted by fal.
+ *
+ * Not offered as a choice, and deliberately so. It is here for one property —
+ * a timestamp on every word, which is what karaoke captions are made of — and a
+ * model without that property would not be a cheaper alternative but a different
+ * feature. Running it through fal means it is paid for by this deployment
+ * alongside image and video generation, so captions need no key from the user.
+ */
+export const SPEECH_TO_TEXT_MODEL = 'fal-ai/elevenlabs/speech-to-text/scribe-v2'
+
+/**
+ * What a minute of audio costs to transcribe, in US dollars.
+ *
+ * Priced per minute of *input* audio rather than per word or per request, which
+ * is the useful kind of price: the timeline already knows how many seconds of
+ * speech are on it, so the estimate is exact rather than a guess about output
+ * length.
+ */
+export const SPEECH_COST_PER_MINUTE = 0.008
+
+/**
+ * What transcribing this much audio should cost.
+ *
+ * Pro-rata, because that is what the price as published says — a bill that
+ * rounds each request up to a whole minute would come out higher on a project
+ * made of several short takes. Like every other figure here it is an estimate
+ * and is labelled as one.
+ */
+export function speechCost(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0
+  return (seconds / 60) * SPEECH_COST_PER_MINUTE
+}
+
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id
 export const DEFAULT_VIDEO_MODEL = VIDEO_MODELS[0]!.id
 export const DEFAULT_LLM_MODEL = LLM_MODELS[0]!.id

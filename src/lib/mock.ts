@@ -284,3 +284,43 @@ export async function mockConvert(audio: Blob): Promise<Blob> {
   await new Promise((resolve) => setTimeout(resolve, 700))
   return audio
 }
+
+/**
+ * Long enough to be split into more than one caption, short enough that the
+ * words land at something like a speaking pace once they are spread across the
+ * audio. Packing thirty words into a three-second take would leave every word a
+ * tenth of a second wide, and nothing downstream — grouping, retiming, the
+ * highlight — would be exercised at the spacing it will really see.
+ */
+const MOCK_TRANSCRIPT = 'This is a mock transcript. No real speech was recognised.'
+
+/**
+ * Mock transcription. Invents words rather than recognising any, and says so in
+ * the words themselves.
+ *
+ * The timings are the part that has to be real: they are spread across the
+ * length of audio handed in, so grouping, the karaoke highlight, and the
+ * burnt-in subtitle file are all exercised against a transcript that lines up
+ * with something.
+ */
+export async function mockTranscribe(seconds: number): Promise<{
+  words: { text: string; start: number; end: number }[]
+  languageCode?: string
+}> {
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const length = Number.isFinite(seconds) && seconds > 0.5 ? seconds : 4
+  const tokens = MOCK_TRANSCRIPT.split(' ')
+  const step = length / tokens.length
+
+  return {
+    words: tokens.map((text, index) => ({
+      text,
+      start: step * index,
+      // A short gap after each word, so the grouping code sees pauses rather
+      // than one unbroken run.
+      end: step * (index + 0.8),
+    })),
+    languageCode: 'eng',
+  }
+}

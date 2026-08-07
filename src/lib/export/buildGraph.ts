@@ -59,6 +59,16 @@ export interface ExportSpec {
    * count-in play before anything is on screen.
    */
   leadIn?: number
+  /**
+   * An ASS subtitle file to burn in, and the directory holding the fonts it
+   * names. Both are filenames inside ffmpeg's own filesystem.
+   *
+   * `fontsDir` is not optional in practice: ffmpeg.wasm has no system fonts, and
+   * libass asked to render without any draws nothing at all while still exiting
+   * zero — an export that silently loses its captions. See
+   * scripts/copy-caption-font.mjs.
+   */
+  captions?: { file: string; fontsDir: string }
   /** 18 is visually lossless, 28 is small. 23 is a good middle. */
   crf?: number
   preset?: string
@@ -175,19 +185,28 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // Padding at either end, both done with tpad on the concatenated picture:
   // black in front for the lead-in, and the last frame held at the back when
   // the sound outlasts the picture.
-  const padding: string[] = []
+  const afterConcat: string[] = []
   if (leadIn > 0) {
-    padding.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
+    afterConcat.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
   }
   if (audioEnd > visualEnd + 0.01) {
     // The audio runs past the last clip, so hold its final frame rather than
     // cutting to black mid-sentence.
-    padding.push(`tpad=stop_mode=clone:stop_duration=${sec(audioEnd - visualEnd)}`)
+    afterConcat.push(`tpad=stop_mode=clone:stop_duration=${sec(audioEnd - visualEnd)}`)
   }
 
-  const concatOut = padding.length > 0 ? '[vcat]' : '[vout]'
+  // Captions go on last, and specifically after the lead-in padding: cue times
+  // are absolute timeline seconds, and it is the padding that makes the stream's
+  // own clock agree with the timeline. Burning them in first would date them
+  // from the first frame of picture instead, putting every caption late by the
+  // length of the lead-in — and losing outright any caption written over it.
+  if (spec.captions) {
+    afterConcat.push(`ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}`)
+  }
+
+  const concatOut = afterConcat.length > 0 ? '[vcat]' : '[vout]'
   chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${concatOut}`)
-  if (padding.length > 0) chains.push(`[vcat]${padding.join(',')}[vout]`)
+  if (afterConcat.length > 0) chains.push(`[vcat]${afterConcat.join(',')}[vout]`)
 
   // --- Audio graph -------------------------------------------------------
   const placed: string[] = []

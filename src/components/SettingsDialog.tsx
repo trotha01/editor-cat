@@ -84,8 +84,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         <Callout tone="info" title="Your key stays yours">
           Your ElevenLabs key is held in this browser and attached to each request as it passes
           through this site&apos;s proxy on its way to the provider. It is never stored on a server.
-          Image and video generation need no key from you — they run on this site&apos;s own fal.ai
-          account.
+          Image and video generation and caption transcription need no key from you — they run on
+          this site&apos;s own fal.ai account.
         </Callout>
 
         <Field

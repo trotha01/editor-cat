@@ -121,12 +121,116 @@ export interface LegacyVoiceoverTake {
   voiceName?: string
 }
 
+/**
+ * One spoken word, with the stretch of timeline it is *the* word for.
+ *
+ * Word times are absolute timeline seconds rather than offsets into a cue, so
+ * moving a cue and retiming a word are the same kind of edit and neither can
+ * leave the other stale. `start` is what the highlight moves on; `end` is where
+ * the word stops being spoken, which is not always where the next one starts —
+ * people pause.
+ */
+export interface CaptionWord {
+  id: string
+  text: string
+  /** Seconds from the start of the timeline. */
+  start: number
+  /** Seconds from the start of the timeline. Never before `start`. */
+  end: number
+}
+
+/**
+ * A caption: the group of words shown together on screen, one line's worth.
+ *
+ * Its own `start`/`end` are stored rather than derived from the words because
+ * they are separately editable — a caption can be brought up a beat before the
+ * first word and held after the last, which is what stops fast speech reading
+ * as a flicker.
+ */
+/**
+ * Which clip a caption was transcribed from.
+ *
+ * Provenance, kept because a caption on the timeline otherwise says nothing
+ * about where its words came from — and with several takes layered over the same
+ * seconds, "which one is this" is the first question worth being able to answer.
+ * The label is a snapshot taken when the transcript was made, so a caption whose
+ * clip has since been deleted still says where it came from rather than holding
+ * a dangling id.
+ */
+export interface CaptionSource {
+  /** The clip's id: an audio clip on a voice track, or a video clip. */
+  id: string
+  /** What that clip's media was called at the time. */
+  label: string
+}
+
+export interface CaptionCue {
+  id: string
+  trackId: string
+  /** Seconds from the start of the timeline. */
+  start: number
+  end: number
+  words: CaptionWord[]
+  /**
+   * Where these words were heard. Absent on a caption typed by hand, and on
+   * every project captioned before this was recorded.
+   */
+  source?: CaptionSource
+}
+
+/** How captions are drawn, on screen and in the export alike. */
+export interface CaptionStyle {
+  /**
+   * Cap height as a fraction of the frame height, not a point size: a project
+   * exported at 1080 and previewed at 300px high has to look the same, and the
+   * export resolution is changed from the export dialog after the fact.
+   */
+  fontScale: number
+  bold: boolean
+  uppercase: boolean
+  /** Words not currently being spoken. `#rrggbb`. */
+  color: string
+  /** The word being spoken right now. `#rrggbb`. */
+  highlightColor: string
+  /** Outline drawn around every glyph, so text survives a bright background. */
+  outlineColor: string
+  /** Outline thickness, as a fraction of the font size. */
+  outlineScale: number
+  /**
+   * Where the baseline block sits, 0 at the top of the frame and 1 at the
+   * bottom. Captions default low but clear of the very edge, where phone UI
+   * lives.
+   */
+  position: number
+}
+
+/**
+ * A lane of captions.
+ *
+ * Style lives on the track rather than on each cue: captions are meant to look
+ * like one thing, and a second track is how you get a second look (a
+ * translation, a title band) without restyling every line.
+ */
+export interface CaptionTrack {
+  id: string
+  name: string
+  /** Kept out of the preview and the export, without deleting the words. */
+  hidden: boolean
+  style: CaptionStyle
+}
+
 export interface Project {
   id: string
   name: string
   clips: Clip[]
   audioTracks: AudioTrack[]
   audioClips: AudioClip[]
+  /**
+   * Captions. Optional because every project saved before they existed has
+   * none — read through `captionsOf` rather than directly.
+   */
+  captionTracks?: CaptionTrack[]
+  captionCues?: CaptionCue[]
   /**
    * Seconds of black before the first clip, so something can be heard before
    * anything is seen — a count-in, a slate, a beat of silence.
@@ -155,11 +259,11 @@ export type ProjectDoc = Omit<Project, 'id' | 'name' | 'voiceovers'>
 /**
  * The shape version written alongside a stored document.
  *
- * 1 was the flat `voiceovers` list; 2 is multitrack audio. Recorded explicitly
- * so `migrateProject` upgrades from a known version rather than inferring one
- * from the shape.
+ * 1 was the flat `voiceovers` list; 2 is multitrack audio; 3 adds captions.
+ * Recorded explicitly so `migrateProject` upgrades from a known version rather
+ * than inferring one from the shape.
  */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 /** A clip with its resolved timeline position. Produced by `layoutClips`. */
 export interface PositionedClip {

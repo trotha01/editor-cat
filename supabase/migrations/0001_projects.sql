@@ -12,15 +12,20 @@ create table if not exists projects (
   user_id        uuid not null default auth.uid() references auth.users (id) on delete cascade,
   name           text not null default 'Untitled project',
 
-  -- The whole editor document: clips, audioTracks, audioClips, width, height,
-  -- fps. Kept as one value rather than relational rows because the clip list is
-  -- order-significant (a clip's start time is the sum of the durations before
-  -- it), so rows would need a position column renumbered on every drag.
+  -- The whole editor document: clips, audioTracks, audioClips, captionTracks,
+  -- captionCues, width, height, fps. Kept as one value rather than relational
+  -- rows because the clip list is order-significant (a clip's start time is the
+  -- sum of the durations before it), so rows would need a position column
+  -- renumbered on every drag — and because captions are words with their own
+  -- timings, which as rows would be a table with one entry per spoken word,
+  -- rewritten wholesale every time a line is retyped.
   doc            jsonb not null,
 
   -- Recorded rather than sniffed, so migrateProject upgrades old documents off
-  -- a known version.
-  schema_version integer not null default 2,
+  -- a known version. 1 was the flat voiceovers list, 2 multitrack audio, 3
+  -- captions. Only a default: the client writes this on every insert and update,
+  -- so an existing database needs no change when the shape moves on.
+  schema_version integer not null default 3,
 
   -- Optimistic concurrency. Writers update where version matches and bump it;
   -- zero rows affected means another tab or device moved ahead.

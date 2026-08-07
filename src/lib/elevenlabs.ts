@@ -1,9 +1,14 @@
 /**
- * ElevenLabs voice changer (speech-to-speech).
+ * ElevenLabs: the voice changer.
  *
  * Takes a microphone recording and re-performs it in a different voice, keeping
- * the timing and delivery of the original. All traffic goes through
- * /api/elevenlabs so we do not depend on ElevenLabs' browser CORS policy.
+ * the timing and delivery of the original. This is the one thing the user's own
+ * key pays for, which is why it is the only thing left here — captions used to
+ * call ElevenLabs directly too, and now reach the same company's Scribe through
+ * fal, on this deployment's account. See `scribe.ts`.
+ *
+ * All traffic goes through /api/elevenlabs so we do not depend on ElevenLabs'
+ * browser CORS policy.
  */
 import { providerErrorFrom } from './errors'
 import { isMockEnabled, mockConvert, mockVoices } from './mock'

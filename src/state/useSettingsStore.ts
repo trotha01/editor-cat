@@ -10,7 +10,7 @@ const PREFS_KEY = 'editor-cat.prefs.v1'
  * record rather than in the storage key so a migration can rewrite one field
  * without discarding the others.
  */
-const PREFS_VERSION = 2
+const PREFS_VERSION = 3
 
 interface Prefs {
   imageModel: string
@@ -64,10 +64,17 @@ function snapshotPrefs(source: Partial<Prefs>): Prefs {
   return prefs
 }
 
-/** Pure, and exported for tests: stored preferences in, current-shape prefs out. */
+/**
+ * Pure, and exported for tests: stored preferences in, current-shape prefs out.
+ *
+ * Preferences that no longer exist need no migration — `snapshotPrefs` reads
+ * only the keys `Prefs` declares, so a retired one (the in-browser speech model,
+ * say) is simply not carried forward.
+ */
 export function migratePrefs(stored: StoredPrefs): Prefs {
   const prefs = snapshotPrefs(stored)
-  if (stored.v === undefined && PRE_SEEDANCE_VIDEO_MODELS.includes(prefs.videoModel)) {
+  const version = stored.v ?? 0
+  if (version < 1 && PRE_SEEDANCE_VIDEO_MODELS.includes(prefs.videoModel)) {
     prefs.videoModel = DEFAULT_VIDEO_MODEL
   }
   return prefs

@@ -23,6 +23,8 @@ import { useProjectStore } from '../state/useProjectStore'
 import { useAssetUrl } from '../hooks/useAssetUrl'
 import { useFullscreen } from '../hooks/useFullscreen'
 import { gainFor } from '../lib/audioTracks'
+import { captionCuesOf, captionTracksOf } from '../lib/captions'
+import { CaptionOverlay } from './CaptionOverlay'
 import { isTypingTarget } from '../lib/shortcuts'
 import type { Asset, AudioClip, Clip } from '../lib/types'
 
@@ -257,6 +259,17 @@ export function Preview({
             ) : null}
           </div>
         ) : null}
+
+        {/* Above the picture and above the lead-in card, because captions are
+            part of the frame: narration over black is exactly when you want to
+            see them. Below the fullscreen button, which is chrome. */}
+        <CaptionOverlay
+          tracks={captionTracksOf(project)}
+          cues={captionCuesOf(project)}
+          width={project.width}
+          height={project.height}
+          currentTime={currentTime}
+        />
 
         {offerFullscreen ? (
           <button

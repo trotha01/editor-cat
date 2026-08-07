@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_VIDEO_MODEL,
+  SPEECH_COST_PER_MINUTE,
   VIDEO_MODELS,
   costPerSecondFor,
   defaultResolutionFor,
   encodeDuration,
   findVideoModel,
+  formatCost,
+  speechCost,
   type VideoModel,
 } from './models'
 
@@ -76,5 +79,38 @@ describe('registry integrity', () => {
         expect(options).toContain(key)
       }
     }
+  })
+})
+
+describe('speechCost', () => {
+  it('charges a minute of audio at the published minute rate', () => {
+    expect(speechCost(60)).toBeCloseTo(SPEECH_COST_PER_MINUTE, 10)
+  })
+
+  it('is pro-rata, which is what a price "per minute of input audio" says', () => {
+    // A bill that rounded each request up to a whole minute would come out
+    // higher on a project made of several short takes. Estimating the published
+    // price is the honest thing to do; guessing at the rounding is not.
+    expect(speechCost(30)).toBeCloseTo(SPEECH_COST_PER_MINUTE / 2, 10)
+    expect(speechCost(150)).toBeCloseTo(SPEECH_COST_PER_MINUTE * 2.5, 10)
+  })
+
+  it('costs nothing when there is nothing to transcribe', () => {
+    expect(speechCost(0)).toBe(0)
+    expect(speechCost(-5)).toBe(0)
+    expect(speechCost(Number.NaN)).toBe(0)
+  })
+
+  it('reads as "less than a cent" rather than as free for a short take', () => {
+    // Everything up to about a minute lands under $0.01, and "$0.00" next to a
+    // button would read as "this one is free".
+    expect(formatCost(speechCost(20))).toBe('<$0.01')
+    expect(formatCost(speechCost(0))).toBe('—')
+  })
+
+  it('is worth showing at the length a real project reaches', () => {
+    // Ten minutes of talking is an ordinary amount for a set of takes, and it
+    // is where the estimate stops being a rounding error.
+    expect(formatCost(speechCost(600))).toBe('~$0.08')
   })
 })

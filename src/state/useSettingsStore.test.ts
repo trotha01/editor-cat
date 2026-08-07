@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_VIDEO_MODEL } from '../lib/models'
-import { migratePrefs, useSettingsStore } from './useSettingsStore'
+import { migratePrefs, useSettingsStore, type StoredPrefs } from './useSettingsStore'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
 
@@ -46,6 +46,13 @@ describe('migratePrefs', () => {
     expect(prefs.imageModel).toBe('fal-ai/flux/schnell')
     expect(prefs.videoModel).toBe(DEFAULT_VIDEO_MODEL)
   })
+
+  it('drops a preference the app no longer has, rather than carrying it around', () => {
+    // Captions moved to a hosted transcriber, so the in-browser speech model is
+    // gone. Anyone who used the app before that has one written into storage.
+    const prefs = migratePrefs({ speechModel: 'Xenova/whisper-base', v: 3 } as StoredPrefs)
+    expect(prefs).not.toHaveProperty('speechModel')
+  })
 })
 
 describe('setPref', () => {
@@ -71,7 +78,7 @@ describe('setPref', () => {
 
   it('stamps the version so the migration does not re-run over a fresh choice', () => {
     useSettingsStore.getState().setPref('videoModel', 'fal-ai/veo3/image-to-video')
-    expect(stored().v).toBe(2)
+    expect(stored().v).toBe(3)
     expect(migratePrefs(stored()).videoModel).toBe('fal-ai/veo3/image-to-video')
   })
 })

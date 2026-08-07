@@ -39,8 +39,23 @@ export interface RenderRequest {
   fps: number
   /** Seconds of black before the first clip. Audio keeps its own timing. */
   leadIn?: number
+  /**
+   * Captions to burn in, as a ready-made ASS file plus the font faces it needs.
+   * Absent means no captions and no font is fetched at all.
+   */
+  captions?: { ass: string; fonts: readonly CaptionFont[] }
   crf?: number
 }
+
+/** One font face for libass, named as it should appear on disk. */
+export interface CaptionFont {
+  fileName: string
+  bytes: Uint8Array
+}
+
+/** Where the ASS file and the fonts are put inside ffmpeg's filesystem. */
+const CAPTIONS_FILE = 'captions.ass'
+const FONTS_DIR = '/fonts'
 
 export type RenderPhase = 'loading' | 'writing' | 'encoding' | 'done'
 
@@ -137,6 +152,21 @@ export async function renderProject(
   for (const clip of request.clips) await stage(clip.assetId, clip.kind)
   for (const clip of request.audio) await stage(clip.assetId, 'audio')
 
+  // --- Captions ----------------------------------------------------------
+  // The subtitle file and the fonts it names both have to exist before the
+  // filtergraph references them. libass without a font it can load draws
+  // nothing and does not fail, so the fonts are as load-bearing as the cues.
+  if (request.captions) {
+    await ffmpeg.writeFile(CAPTIONS_FILE, new TextEncoder().encode(request.captions.ass))
+    written.add(CAPTIONS_FILE)
+    await ffmpeg.createDir(FONTS_DIR).catch(() => undefined)
+    for (const font of request.captions.fonts) {
+      const path = `${FONTS_DIR}/${font.fileName}`
+      await ffmpeg.writeFile(path, font.bytes)
+      written.add(path)
+    }
+  }
+
   const outputFile = 'editor-cat-export.mp4'
 
   // --- Find out which clips have sound of their own ----------------------
@@ -183,6 +213,7 @@ export async function renderProject(
     fps: request.fps,
     outputFile,
     ...(request.leadIn ? { leadIn: request.leadIn } : {}),
+    ...(request.captions ? { captions: { file: CAPTIONS_FILE, fontsDir: FONTS_DIR } } : {}),
     ...(request.crf !== undefined ? { crf: request.crf } : {}),
   })
 

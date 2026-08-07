@@ -45,8 +45,10 @@ import {
   totalDuration,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
+import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
+import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
@@ -460,9 +462,11 @@ export function Timeline({
 
   const playheadX = currentTime * zoom
   const audioEndTime = audioEnd(project.audioClips)
-  // The lanes must span the audio too — a music bed longer than the picture
-  // still has to be reachable and scrubbable.
-  const contentWidth = Math.max(pictureEndTime, audioEndTime) * zoom
+  // The lanes must span the audio and the captions too — a music bed longer
+  // than the picture still has to be reachable and scrubbable, and a caption
+  // dragged past the end has to stay visible enough to drag back.
+  const contentWidth =
+    Math.max(pictureEndTime, audioEndTime, captionsEnd(captionCuesOf(project))) * zoom
 
   return (
     <section className="flex flex-col gap-2" aria-label="Timeline">
@@ -559,6 +563,8 @@ export function Timeline({
           ) : null}
 
           <AudioTrackHeaders />
+
+          <CaptionTrackHeaders />
         </div>
 
         <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto p-3 pl-2">
@@ -647,6 +653,9 @@ export function Timeline({
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
 
             <AudioTrackLanes zoom={zoom} />
+
+            {/* Captions last, under the audio they were transcribed from. */}
+            <CaptionLanes zoom={zoom} onSeek={onSeek} />
 
             {contentWidth > 0 ? (
               <div

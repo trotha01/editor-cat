@@ -11,6 +11,9 @@ import { getBlob } from '../lib/db'
 import { downloadBlob } from '../lib/media'
 import { clipDuration, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { audioEnd, gainFor } from '../lib/audioTracks'
+import { captionCuesOf, captionTracksOf } from '../lib/captions'
+import { buildAssFile } from '../lib/export/assCaptions'
+import { captionFonts } from '../lib/export/captionFonts'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { exportPresetsFor, orientationOf, type ExportPreset } from '../lib/orientation'
@@ -92,6 +95,13 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   }
   if (sound.length === 0) sound.push('no audio')
 
+  // Only visible tracks are burnt in, matching the preview: hiding a caption
+  // track is how you export a version without them without deleting the words.
+  const visibleCaptionTracks = captionTracksOf(project).filter((track) => !track.hidden)
+  const burntInCues = captionCuesOf(project).filter((cue) =>
+    visibleCaptionTracks.some((track) => track.id === cue.trackId),
+  )
+
   const run = async () => {
     setError(null)
     setResult(null)
@@ -142,6 +152,23 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         }
       })
 
+      // Captions are authored against the export size, so this is built here
+      // rather than kept on the project: changing the resolution above changes
+      // the file, and the fonts are only fetched when there is something to
+      // draw with them.
+      const captions =
+        burntInCues.length > 0
+          ? {
+              ass: buildAssFile({
+                tracks: visibleCaptionTracks,
+                cues: burntInCues,
+                width: project.width,
+                height: project.height,
+              }),
+              fonts: await captionFonts(visibleCaptionTracks.map((track) => track.style)),
+            }
+          : undefined
+
       const { blob } = await renderProject(
         {
           clips,
@@ -151,6 +178,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           height: project.height,
           fps: project.fps,
           leadIn,
+          ...(captions ? { captions } : {}),
           crf,
         },
         { onProgress: setProgress, signal: controller.signal },
@@ -226,6 +254,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               the clips add up to, and confirms the count-in has room. */}
           {leadIn > 0 ? ` · ${formatTime(leadIn)} of black before the picture` : ''} ·{' '}
           {sound.join(' · ')}
+          {/* Burnt in, not a sidecar track — so it is worth saying so before a
+              render that cannot be undone without doing it again. */}
+          {burntInCues.length > 0
+            ? ` · ${burntInCues.length} caption${burntInCues.length === 1 ? '' : 's'} burnt in`
+            : ''}
         </p>
 
         {progress ? (
