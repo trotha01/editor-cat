@@ -8,8 +8,12 @@
  */
 import { useRef, useState } from 'react'
 import { Button } from './ui'
+import { ClipMenu } from './ClipMenu'
+import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import { formatTime } from '../lib/timeline'
+import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
+import type { CaptionTarget } from '../lib/captionSources'
 import type { AudioClip, AudioTrack, AudioTrackKind } from '../lib/types'
 
 export const LANE_HEIGHT = 44
@@ -42,13 +46,23 @@ interface DragState {
 /** Vertical travel needed before a drag changes lanes, in pixels. */
 const LANE_SWITCH_THRESHOLD = LANE_HEIGHT * 0.6
 
-export function AudioTrackLanes({ zoom }: { zoom: number }) {
+export function AudioTrackLanes({
+  zoom,
+  targets,
+}: {
+  zoom: number
+  /** Which clips can be captioned, by clip id. Voice clips only — see `speechSources`. */
+  targets: ReadonlyMap<string, CaptionTarget>
+}) {
   const tracks = useProjectStore((state) => state.project.audioTracks)
   const clips = useProjectStore((state) => state.project.audioClips)
   const moveAudioClipTo = useProjectStore((state) => state.moveAudioClipTo)
   const selectedId = useProjectStore((state) => state.selectedAudioClipId)
   const selectAudioClip = useProjectStore((state) => state.selectAudioClip)
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
+
+  const captionClip = useCaptionJobStore((state) => state.captionClip)
+  const captioningClipId = useCaptionJobStore((state) => state.clipId)
 
   const dragRef = useRef<DragState | null>(null)
   // The id of the clip whose drag is currently refused, kept in state rather
@@ -127,10 +141,13 @@ export function AudioTrackLanes({ zoom }: { zoom: number }) {
               zoom={zoom}
               selected={clip.id === selectedId}
               blocked={blockedClipId === clip.id}
+              target={targets.get(clip.id)}
+              captioning={captioningClipId === clip.id}
               onPointerDown={(event) => beginDrag(event, clip)}
               onPointerMove={onDragMove}
               onPointerUp={endDrag}
               onRemove={() => removeAudioClip(clip.id)}
+              onCaption={(target) => void captionClip(target.source)}
             />
           ))}
         </div>
@@ -149,23 +166,35 @@ function ClipChip({
   zoom,
   selected,
   blocked,
+  target,
+  captioning,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onRemove,
+  onCaption,
 }: {
   clip: AudioClip
   track: AudioTrack
   zoom: number
   selected: boolean
   blocked: boolean
+  /** Set on a voice clip, which is the only kind with words to transcribe. */
+  target: CaptionTarget | undefined
+  captioning: boolean
   onPointerDown: (event: React.PointerEvent) => void
   onPointerMove: (event: React.PointerEvent) => void
   onPointerUp: (event: React.PointerEvent) => void
   onRemove: () => void
+  onCaption: (target: CaptionTarget) => void
 }) {
   const tone = CLIP_TONE[track.kind]
   const label = clip.label ?? (clip.useConverted ? (clip.voiceName ?? 'Converted') : 'Your voice')
+
+  const items: ClipMenuItem[] = [
+    ...(target ? [captionClipItem(target, () => onCaption(target))] : []),
+    { icon: '🗑', label: `Delete ${label}`, onSelect: onRemove, danger: true },
+  ]
 
   return (
     <div
@@ -187,18 +216,15 @@ function ClipChip({
     >
       <span aria-hidden>{KIND_ICON[track.kind]}</span>
       <span className="truncate">{label}</span>
-      <Button
-        variant="ghost"
-        // Hidden until hover: a short clip is only a few dozen pixels wide, and
-        // a permanent button would leave no room for its name.
-        className="ml-auto hidden shrink-0 !px-1 !py-0 group-hover/chip:inline-flex"
-        onClick={onRemove}
-        // The chip is a drag handle, so keep the delete button out of it.
-        onPointerDown={(event) => event.stopPropagation()}
-        aria-label={`Delete ${label}`}
-      >
-        ✕
-      </Button>
+      {/* Always drawn rather than revealed on hover. It costs a narrow chip a
+          few pixels of its name, and buys the only way in to what this clip can
+          be told to do — which, unlike a ✕, is not a thing you would guess at. */}
+      <ClipMenu
+        label={label}
+        items={items}
+        busy={captioning}
+        className="ml-auto size-4 shrink-0 opacity-70 transition hover:opacity-100"
+      />
     </div>
   )
 }

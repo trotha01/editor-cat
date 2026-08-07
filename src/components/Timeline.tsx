@@ -29,6 +29,9 @@ import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dn
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
+import { CaptionJobStatus } from './CaptionJobStatus'
+import { ClipMenu } from './ClipMenu'
+import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import {
   MAX_LEAD_IN,
   MIN_CLIP_DURATION,
@@ -46,11 +49,13 @@ import {
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
+import { captionTargets, type CaptionTarget } from '../lib/captionSources'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
+import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
@@ -99,10 +104,14 @@ function ClipCard({
   zoom,
   selected,
   cutAtStart,
+  target,
+  captioning,
   onSelect,
   onTrim,
   onRemove,
   onJoin,
+  onCaption,
+  onToggleMute,
 }: {
   entry: PositionedClip
   asset: Asset | undefined
@@ -110,10 +119,15 @@ function ClipCard({
   selected: boolean
   /** True when this clip carries on from the one before it — i.e. a cut. */
   cutAtStart: boolean
+  /** Set when this clip has speech worth transcribing. Absent for a still. */
+  target: CaptionTarget | undefined
+  captioning: boolean
   onSelect: () => void
   onTrim: (edge: 'start' | 'end', seconds: number) => void
   onRemove: () => void
   onJoin: () => void
+  onCaption: (target: CaptionTarget) => void
+  onToggleMute: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: entry.clip.id,
@@ -151,6 +165,47 @@ function ClipCard({
 
   const width = Math.max(36, entry.duration * zoom)
   const isImage = asset?.kind === 'image'
+  const name = asset?.name ?? 'this clip'
+  const silent = asset?.kind === 'video' && clipGain(entry.clip) <= 0
+
+  const items: ClipMenuItem[] = [
+    ...(target ? [captionClipItem(target, () => onCaption(target))] : []),
+    // Offered greyed out rather than left out, because "why can I not caption
+    // this one" has an answer here and nowhere else on the timeline.
+    ...(silent
+      ? [
+          {
+            icon: '💬',
+            label: 'Generate captions for this clip',
+            note: 'muted',
+            onSelect: () => {},
+            disabled: true,
+          },
+        ]
+      : []),
+    ...(isImage
+      ? []
+      : [
+          {
+            icon: entry.clip.muted ? '🔊' : '🔇',
+            label: entry.clip.muted ? 'Unmute this clip’s sound' : 'Mute this clip’s sound',
+            onSelect: onToggleMute,
+          },
+        ]),
+    // Also a mark on the clip itself, which is where you would reach for it
+    // having seen the cut. Here as well because the mark is a pair of scissors
+    // and nothing else, and this is the version that says what it does.
+    ...(cutAtStart
+      ? [
+          {
+            icon: '✂',
+            label: 'Undo the cut before this clip',
+            onSelect: onJoin,
+          },
+        ]
+      : []),
+    { icon: '🗑', label: 'Remove clip from the timeline', onSelect: onRemove, danger: true },
+  ]
 
   return (
     <div
@@ -235,14 +290,14 @@ function ClipCard({
         className="absolute inset-y-0 right-0 w-2.5 cursor-ew-resize bg-accent/0 transition group-hover:bg-accent/70 focus-visible:bg-accent"
       />
 
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Remove clip from the timeline"
-        className="absolute top-1 right-1 hidden size-5 items-center justify-center rounded bg-black/70 text-xs text-white group-hover:flex"
-      >
-        ✕
-      </button>
+      {/* Always drawn, not revealed on hover: it is the way in to everything a
+          clip can be told to do, and one you have to know is there is not. */}
+      <ClipMenu
+        label={name}
+        items={items}
+        busy={captioning}
+        className="absolute top-1 right-1 size-5 bg-black/70 text-xs text-white opacity-80 transition hover:opacity-100"
+      />
 
       {/* A cut you made, still here because the two halves are still two clips.
           The line marks it; the button takes it back out again, which is the
@@ -370,8 +425,13 @@ export function Timeline({
   const removeCut = useProjectStore((state) => state.removeCut)
   const assets = useAssetStore((state) => state.assets)
 
+  const setClipAudio = useProjectStore((state) => state.setClipAudio)
+
   const addTrack = useProjectStore((state) => state.addTrack)
   const setLeadIn = useProjectStore((state) => state.setLeadIn)
+
+  const captionClip = useCaptionJobStore((state) => state.captionClip)
+  const captioningClipId = useCaptionJobStore((state) => state.clipId)
 
   const [zoom, setZoom] = useState(40)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -394,6 +454,12 @@ export function Timeline({
       }),
     [positioned, assetById],
   )
+
+  // Which clips can be captioned, and what each already has. Worked out once
+  // for the whole timeline rather than per clip: it is a join across the audio
+  // tracks, the picture track and every cue, and both lanes ask the same
+  // question of it.
+  const targets = useMemo(() => captionTargets(project, assets), [project, assets])
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
@@ -622,12 +688,18 @@ export function Timeline({
                           zoom={zoom}
                           selected={entry.clip.id === selectedClipId}
                           cutAtStart={cutBefore(positioned, entry.index)}
+                          target={targets.get(entry.clip.id)}
+                          captioning={captioningClipId === entry.clip.id}
                           onSelect={() => selectClip(entry.clip.id)}
                           onTrim={(edge, seconds) =>
                             trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
                           }
                           onRemove={() => removeClip(entry.clip.id)}
                           onJoin={() => removeCut(entry.clip.id)}
+                          onCaption={(target) => void captionClip(target.source)}
+                          onToggleMute={() =>
+                            setClipAudio(entry.clip.id, { muted: !entry.clip.muted })
+                          }
                         />
                       ))
                     )}
@@ -652,7 +724,7 @@ export function Timeline({
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
 
-            <AudioTrackLanes zoom={zoom} />
+            <AudioTrackLanes zoom={zoom} targets={targets} />
 
             {/* Captions last, under the audio they were transcribed from. */}
             <CaptionLanes zoom={zoom} onSeek={onSeek} />
@@ -667,6 +739,10 @@ export function Timeline({
           </div>
         </div>
       </div>
+
+      {/* Captioning one clip is started from that clip's own menu, so it reports
+          here rather than four panels away in the Captions step. */}
+      <CaptionJobStatus />
 
       <SelectedClipControls />
     </section>

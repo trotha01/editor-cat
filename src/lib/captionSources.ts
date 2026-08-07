@@ -15,6 +15,7 @@
  * Pure, so the choice can be asserted on directly instead of by watching which
  * requests go out.
  */
+import { captionCuesOf } from './captions'
 import { clipGain, layoutClips, leadInOf } from './timeline'
 import type { Asset, Project } from './types'
 
@@ -86,4 +87,38 @@ export function speechSources(project: Project, assets: readonly Asset[]): Speec
   }
 
   return sources.sort((a, b) => a.startTime - b.startTime)
+}
+
+/** A clip that can be captioned on its own, and what it has already got. */
+export interface CaptionTarget {
+  source: SpeechSource
+  /** Captions currently transcribed from this clip, which is what makes it a redo. */
+  captions: number
+}
+
+/**
+ * What each clip's menu needs to offer captioning, keyed by clip id.
+ *
+ * The menu on a clip has to answer three things before it is pressed — can this
+ * clip be captioned at all, is this a first pass or a redo, and what will it
+ * cost — and all three come from the same join: the speech sources, and the cues
+ * that name each one as where they were heard. Keyed by clip id because that is
+ * what a clip on the timeline knows about itself; a clip that is not in the map
+ * has nothing to transcribe, which is the menu's answer too.
+ */
+export function captionTargets(
+  project: Project,
+  assets: readonly Asset[],
+): Map<string, CaptionTarget> {
+  const counts = new Map<string, number>()
+  for (const cue of captionCuesOf(project)) {
+    if (cue.source) counts.set(cue.source.id, (counts.get(cue.source.id) ?? 0) + 1)
+  }
+
+  return new Map(
+    speechSources(project, assets).map((source) => [
+      source.id,
+      { source, captions: counts.get(source.id) ?? 0 },
+    ]),
+  )
 }

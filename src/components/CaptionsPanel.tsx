@@ -14,11 +14,11 @@
  * retime to the hundredth of a second, and the chip that is lit is the word that
  * is lit in the preview.
  *
- * The one button has a second, smaller form: any single clip can be redone on
- * its own. The whole-timeline press is the blunt instrument — it re-transcribes
- * everything and discards every correction — and it is the wrong tool for the
- * common failure, which is one take that came out badly among several that came
- * out fine.
+ * The button here is the blunt instrument: it transcribes everything on the
+ * timeline and replaces the lot. The aimed version of it is not in this panel at
+ * all — it is the ⋯ menu on each clip, which is where you are looking at the
+ * moment you notice that one take came out wrong. This panel keeps the language
+ * they both transcribe with, so the two cannot disagree about it.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Callout, EmptyState, Field, Select, Spinner, TextArea } from './ui'
@@ -30,22 +30,16 @@ import {
   cuesOnTrack,
   splitBoundary,
 } from '../lib/captions'
-import { speechSources, type SpeechSource } from '../lib/captionSources'
+import { speechSources } from '../lib/captionSources'
 import { SPEECH_LANGUAGES } from '../lib/scribe'
 import { formatCost, speechCost } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from '../state/useAssetStore'
+import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { CaptionCue, CaptionStyle, CaptionTrack } from '../lib/types'
-
-/**
- * Stands for "the whole timeline" while a run is in flight, where a single
- * clip's run is held by the clip's own id. Clip ids are all `prefix-n`, so this
- * cannot be mistaken for one.
- */
-const WHOLE_TIMELINE = 'timeline'
 
 export function CaptionsPanel({
   currentTime,
@@ -57,10 +51,14 @@ export function CaptionsPanel({
   const project = useProjectStore((state) => state.project)
   const ensureCaptionTrack = useProjectStore((state) => state.ensureCaptionTrack)
   const setCaptionsFromWords = useProjectStore((state) => state.setCaptionsFromWords)
-  const setCaptionsFromSource = useProjectStore((state) => state.setCaptionsFromSource)
   const assets = useAssetStore((state) => state.assets)
 
-  const [language, setLanguage] = useState('')
+  // Shared with the clip menus rather than held here: which language is spoken
+  // is a fact about the audio, and a clip redone from the timeline has to be
+  // transcribed as the same one.
+  const language = useCaptionJobStore((state) => state.language)
+  const setLanguage = useCaptionJobStore((state) => state.setLanguage)
+
   // Setup folds away once there is a transcript, so the words are near the top
   // of the panel rather than below two cards of controls nobody is using any
   // more. Initial only, and set again when a run finishes — deriving it every
@@ -68,16 +66,13 @@ export function CaptionsPanel({
   const [setupOpen, setSetupOpen] = useState(() => captionCuesOf(project).length === 0)
   const [lookOpen, setLookOpen] = useState(false)
   const [progress, setProgress] = useState<TranscribeProgress | null>(null)
-  // Which run is in flight, if any. Set before the first await rather than
-  // derived from `progress`, which does not arrive until the audio is being
-  // decoded — long enough for a second press to start a second run.
-  const [running, setRunning] = useState<string | null>(null)
+  // Set before the first await rather than derived from `progress`, which does
+  // not arrive until the audio is being decoded — long enough for a second press
+  // to start a second run.
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  // Warnings come from two different places now — audio that could not be
-  // transcribed, and captions that came back with nowhere to sit — so the
-  // heading travels with the lines rather than being assumed at the callout.
-  const [warning, setWarning] = useState<{ title: string; lines: string[] } | null>(null)
+  const [warnings, setWarnings] = useState<string[]>([])
   const abortRef = useRef<AbortController | null>(null)
 
   const tracks = captionTracksOf(project)
@@ -87,94 +82,27 @@ export function CaptionsPanel({
   const sources = useMemo(() => speechSources(project, assets), [project, assets])
   const speechSeconds = sources.reduce((sum, source) => sum + source.duration, 0)
 
-  // How many captions each clip is currently answerable for, which is what makes
-  // a per-clip redo something you can aim: it says which clip the bad line you
-  // are looking at came from, and which ones a press will not touch.
-  const captionsPerSource = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const cue of cues) {
-      if (cue.source) counts.set(cue.source.id, (counts.get(cue.source.id) ?? 0) + 1)
-    }
-    return counts
-  }, [cues])
-
-  /**
-   * Transcribes `chosen` and puts the words on the caption track.
-   *
-   * `only` is the clip a redo is confined to, or null for the whole timeline.
-   * That is the entire difference between the two: what gets replaced when the
-   * words come back.
-   */
-  const run = async (chosen: readonly SpeechSource[], only: SpeechSource | null) => {
+  /** Transcribes the whole timeline, replacing whatever is on the track. */
+  const run = async () => {
     setError(null)
     setNotice(null)
-    setWarning(null)
-    setRunning(only ? only.id : WHOLE_TIMELINE)
+    setWarnings([])
+    setBusy(true)
     const controller = new AbortController()
     abortRef.current = controller
 
     try {
       const trackId = ensureCaptionTrack()
       const transcript = await transcribeTimeline({
-        sources: chosen,
+        sources,
         assets,
         ...(language ? { languageCode: language } : {}),
         onProgress: setProgress,
         signal: controller.signal,
       })
 
-      const heard =
-        transcript.languages.length > 0 ? ` · heard as ${transcript.languages.join(', ')}` : ''
-
-      if (only) {
-        // A clip that could not be transcribed keeps the captions it has. The
-        // failure is a network fault or a file this browser cannot decode —
-        // a reason to try again, never a reason to lose words that were already
-        // right. The whole-timeline run has no such choice: it is replacing the
-        // track, and a partial transcript is what it replaces it with.
-        if (transcript.failures.length > 0) {
-          setWarning({ title: 'That clip could not be transcribed', lines: transcript.failures })
-          setNotice(`${only.label} was left exactly as it was.`)
-          return
-        }
-
-        const { added, replaced, dropped } = setCaptionsFromSource(
-          trackId,
-          only.id,
-          transcript.words,
-        )
-        setWarning(
-          dropped === 0
-            ? null
-            : {
-                title: 'Some captions had nowhere to sit',
-                lines: [
-                  `${dropped} caption${dropped === 1 ? '' : 's'} from ${only.label} would have ` +
-                    `covered captions from another clip, so ${dropped === 1 ? 'it was' : 'they were'} ` +
-                    `left out. Move or delete those captions and redo this clip.`,
-                ],
-              },
-        )
-        setNotice(
-          (added === 0
-            ? `No speech was recognised in ${only.label}`
-            : `${added} caption${added === 1 ? '' : 's'} from ${transcript.words.length} words ` +
-              `in ${only.label}${heard}`) +
-            (replaced === 0
-              ? ''
-              : ` · replaced ${replaced} caption${replaced === 1 ? '' : 's'} from it`),
-        )
-        // The setup card stays open: the per-clip buttons are in it, and a bad
-        // take is rarely the only one.
-        return
-      }
-
       const count = setCaptionsFromWords(trackId, transcript.words)
-      setWarning(
-        transcript.failures.length === 0
-          ? null
-          : { title: 'Some audio could not be transcribed', lines: transcript.failures },
-      )
+      setWarnings(transcript.failures)
       // Out of the way, now that there is something to read underneath it. Only
       // when it worked: an empty result is exactly when you want the language
       // picker still in front of you.
@@ -183,7 +111,9 @@ export function CaptionsPanel({
         count === 0
           ? 'No speech was recognised in the audio on the timeline.'
           : `${count} caption${count === 1 ? '' : 's'} from ${transcript.words.length} words` +
-              heard,
+              (transcript.languages.length > 0
+                ? ` · heard as ${transcript.languages.join(', ')}`
+                : ''),
       )
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
@@ -191,12 +121,10 @@ export function CaptionsPanel({
       }
     } finally {
       setProgress(null)
-      setRunning(null)
+      setBusy(false)
       abortRef.current = null
     }
   }
-
-  const busy = running !== null
 
   return (
     <div className="flex flex-col gap-4">
@@ -238,7 +166,7 @@ export function CaptionsPanel({
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="primary"
-            onClick={() => void run(sources, null)}
+            onClick={() => void run()}
             disabled={busy || sources.length === 0}
             title={
               sources.length === 0
@@ -248,7 +176,7 @@ export function CaptionsPanel({
                   }`
             }
           >
-            {running === WHOLE_TIMELINE ? <Spinner /> : <span aria-hidden>💬</span>}
+            {busy ? <Spinner /> : <span aria-hidden>💬</span>}
             {cues.length > 0 ? 'Redo captions' : 'Add captions'}
           </Button>
 
@@ -299,29 +227,18 @@ export function CaptionsPanel({
 
         {cues.length > 0 && !busy ? (
           <p className="text-xs text-ink-dim">
-            Redoing replaces every caption below. Anything you have edited by hand will be lost — to
-            keep it, redo the one clip that needs it instead.
+            Redoing replaces every caption below, so anything edited by hand is lost. To keep those,
+            redo the one clip that needs it from its ⋯ menu on the timeline instead — only that clip
+            is transcribed, and only its captions change.
           </p>
-        ) : null}
-
-        {/* One clip is enough to caption, but not enough to choose between: with
-            a single source, redoing it and redoing the timeline are the same
-            press, and offering both would only ask a question with one answer. */}
-        {sources.length > 1 ? (
-          <SourceList
-            sources={sources}
-            captionsPerSource={captionsPerSource}
-            running={running}
-            onRedo={(source) => void run([source], source)}
-          />
         ) : null}
       </Section>
 
       {notice ? <Callout tone="success">{notice}</Callout> : null}
-      {warning ? (
-        <Callout tone="warn" title={warning.title}>
+      {warnings.length > 0 ? (
+        <Callout tone="warn" title="Some audio could not be transcribed">
           <ul className="list-inside list-disc">
-            {warning.lines.map((line) => (
+            {warnings.map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
@@ -352,83 +269,6 @@ export function CaptionsPanel({
           one highlighted at a time over the picture.
         </EmptyState>
       )}
-    </div>
-  )
-}
-
-/**
- * Every clip with speech in it, each redoable on its own.
- *
- * The blunt button above re-transcribes the timeline and throws away every
- * correction on it, which is far more than anyone wants when one take of several
- * came back badly. This is the aimed version of it, and what it shows is what
- * makes it aimable: where each clip sits, and how many captions it is currently
- * answerable for — the bad line in the transcript names its clip, and this says
- * which button to press for it, what that will cost, and what it will not touch.
- *
- * A clip with no captions yet gets the same row, because captioning one clip
- * that was added later is the same act as redoing one that came out wrong, and
- * both beat paying to transcribe the whole timeline over again.
- */
-function SourceList({
-  sources,
-  captionsPerSource,
-  running,
-  onRedo,
-}: {
-  sources: readonly SpeechSource[]
-  captionsPerSource: ReadonlyMap<string, number>
-  running: string | null
-  onRedo: (source: SpeechSource) => void
-}) {
-  return (
-    <div className="flex flex-col gap-2 rounded-lg bg-surface-2/50 p-2.5">
-      {/* Worded to fit a first press as well as a redo: before there is a
-          transcript every row here says "Add", and captioning one clip is as
-          reasonable a place to start as captioning all of them. */}
-      <p className="text-xs leading-relaxed text-ink-dim">
-        Or take one clip at a time. Only that clip is transcribed, so it is the only thing you pay
-        for, and only its captions change — every other line, and every correction made to one,
-        stays exactly where it is.
-      </p>
-      <ul className="flex flex-col gap-1">
-        {sources.map((source) => {
-          const owned = captionsPerSource.get(source.id) ?? 0
-          return (
-            <li key={source.id} className="flex items-center gap-2 text-xs">
-              {/* Two clips can carry the same name, so the time is part of
-                  saying which one this is rather than decoration. */}
-              <span className="truncate text-ink" title={source.label}>
-                {source.label}
-              </span>
-              <span className="shrink-0 text-ink-dim">
-                at {formatTime(source.startTime)} ·{' '}
-                {owned > 0 ? `${owned} caption${owned === 1 ? '' : 's'}` : 'no captions'} ·{' '}
-                {formatCost(speechCost(source.duration))}
-              </span>
-              <Button
-                variant="ghost"
-                className="ml-auto shrink-0 !px-1.5 !py-0.5 text-xs"
-                disabled={running !== null}
-                onClick={() => onRedo(source)}
-                aria-label={`${owned > 0 ? 'Redo' : 'Add'} captions for ${source.label} at ${formatTime(
-                  source.startTime,
-                )}`}
-                title={
-                  owned > 0
-                    ? `Transcribe this clip again and replace only its ${owned} caption${
-                        owned === 1 ? '' : 's'
-                      }`
-                    : 'Transcribe this clip and caption it, leaving every other caption alone'
-                }
-              >
-                {running === source.id ? <Spinner /> : null}
-                {owned > 0 ? 'Redo' : 'Add'}
-              </Button>
-            </li>
-          )
-        })}
-      </ul>
     </div>
   )
 }

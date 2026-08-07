@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { speechSources } from './captionSources'
+import { captionTargets, speechSources } from './captionSources'
 import type { Asset, AudioClip, AudioTrack, AudioTrackKind, Clip, Project } from './types'
 
 const asset = (id: string, kind: Asset['kind'], duration = 10): Asset => ({
@@ -135,5 +135,61 @@ describe('speechSources', () => {
       [asset('asset-late', 'audio'), asset('v1', 'video')],
     )
     expect(sources.map((source) => source.id)).toEqual(['early', 'late'])
+  })
+})
+
+describe('captionTargets', () => {
+  const captioned = (clipId: string, label: string) => ({
+    id: `cue-${clipId}`,
+    trackId: 'ctrack',
+    start: 0,
+    end: 1,
+    words: [{ id: 'w1', text: 'hi', start: 0, end: 0.4 }],
+    source: { id: clipId, label },
+  })
+
+  it('offers every clip with speech in it, keyed by the clip on the timeline', () => {
+    const targets = captionTargets(
+      project({
+        audioTracks: [track('t-voice', 'voice')],
+        audioClips: [audioClip('take', 't-voice')],
+        clips: [clip('shot', 'v1')],
+      }),
+      [asset('asset-take', 'audio'), asset('v1', 'video')],
+    )
+    expect([...targets.keys()].sort()).toEqual(['shot', 'take'])
+  })
+
+  it('counts the captions each clip already answers for, which is what makes it a redo', () => {
+    const targets = captionTargets(
+      project({
+        clips: [clip('shot', 'v1'), clip('other', 'v2')],
+        captionCues: [
+          captioned('shot', 'v1.file'),
+          { ...captioned('shot', 'v1.file'), id: 'cue-2' },
+          captioned('other', 'v2.file'),
+        ],
+      }),
+      [asset('v1', 'video'), asset('v2', 'video')],
+    )
+    expect(targets.get('shot')?.captions).toBe(2)
+    expect(targets.get('other')?.captions).toBe(1)
+  })
+
+  it('leaves out what cannot be transcribed, which is the menu\u2019s answer too', () => {
+    const targets = captionTargets(
+      project({
+        audioTracks: [track('t-music', 'music')],
+        audioClips: [audioClip('bed', 't-music')],
+        clips: [clip('still', 'i1'), clip('silenced', 'v1', { muted: true })],
+      }),
+      [asset('asset-bed', 'audio'), asset('i1', 'image'), asset('v1', 'video')],
+    )
+    expect([...targets.keys()]).toEqual([])
+  })
+
+  it('reports a clip that has never been captioned as having none', () => {
+    const targets = captionTargets(project({ clips: [clip('shot', 'v1')] }), [asset('v1', 'video')])
+    expect(targets.get('shot')).toMatchObject({ captions: 0, source: { id: 'shot' } })
   })
 })
