@@ -13,14 +13,14 @@ ElevenLabs key**, held in your browser.
 
 ## What it does
 
-| Step          | What happens                                                                                                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                            |
-| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
-| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below.                  |
-| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back. |
-| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.      |
-| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                             |
+| Step          | What happens                                                                                                                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                            |
+| **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                 |
+| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below. |
+| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                 |
+| **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                      |
+| **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                                                                                                                             |
 
 ## What you need
 
@@ -418,6 +418,17 @@ and both survive — without ever having to think about which track you are on.
 The rule is first-fit, and it lives in `src/lib/audioTracks.ts` as a pure
 function so it can be tested directly.
 
+**A cut is nothing but two clips.** Cutting splits the clip under the playhead
+into two that carry on from each other, and that is the whole of it — no cut
+list, no markers, no schema change. It saves and reloads because the timeline
+does, and a project opened tomorrow shows its cuts because two clips meeting
+mid-source _is_ a cut. The timeline recognises that and marks each one, with a
+button to join the halves back together, which is as close as this editor gets
+to an undo. Cuts snap to a frame, and the frame lines drawn once you are zoomed
+in far enough are the same grid — so the line you park the playhead on is the
+line the cut lands on. The arithmetic is in `src/lib/timeline.ts` with the rest
+of the pure timeline maths.
+
 **Overlaps are refused, not allowed.** Dragging a clip on top of another is a
 no-op with a red outline rather than a silent collision, because two clips
 stacked on one lane cannot both be heard and you would only find out on export.
@@ -465,8 +476,10 @@ npm run test:e2e
 ```
 
 The unit tests concentrate on the pure logic where the real bugs live:
-`src/lib/timeline.ts` (clip layout, trim clamping), `src/lib/audioTracks.ts`
-(track assignment, overlap rules, migration of pre-multitrack projects) and
+`src/lib/timeline.ts` (clip layout, trim clamping, frame snapping and the rule
+that the two halves of a cut still add up to the clip they came from),
+`src/lib/audioTracks.ts` (track assignment, overlap rules, migration of
+pre-multitrack projects) and
 `src/lib/export/buildGraph.ts` (the exact ffmpeg arguments, asserted without
 running ffmpeg). `netlify/lib/proxy.test.ts` covers the media proxy's
 allowlist, including the cloud-metadata address and lookalike hostnames.
@@ -482,10 +495,12 @@ holds the two gate rules that decide whether anyone can use the app — no entry
 without Drive, and no ejection once inside.
 
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
-takes and checking that the second one lands on a new track — then parses the
-exported MP4 to confirm it has the tracks and duration it should. It earns its
-keep: it is what caught the ffmpeg core being loaded as UMD when Vite's module
-worker needs ESM.
+takes and checking that the second one lands on a new track, and cutting a clip
+and reloading the page to see the cut come back — then parses the exported MP4
+to confirm it has the tracks and duration it should. It earns its keep: it is
+what caught the ffmpeg core being loaded as UMD when Vite's module worker needs
+ESM. The reload is there because the round trip through IndexedDB is the one
+part of persistence a unit test cannot stand in for.
 
 If your CI image ships its own browser, point the test at it with
 `CHROMIUM_PATH=/path/to/chrome`.
@@ -498,6 +513,9 @@ If your CI image ships its own browser, point the test at it with
   audio track as its own layer.
 - **Audio clips cannot be trimmed from the timeline.** They can be retimed and
   moved between tracks, but shortening a take means re-recording it.
+- **A cut cannot leave a sliver.** Both halves have to clear 0.2s, the same floor
+  trimming works to, so the last few frames of a clip cannot be split off as a
+  clip of their own — drag its edge instead.
 - **Export uses the single-threaded ffmpeg build**, so a short project takes
   roughly 30–90 seconds. The multithreaded build needs cross-origin isolation
   (COOP/COEP), which would block loading provider media in the page.

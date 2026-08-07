@@ -6,7 +6,15 @@
  */
 import { create } from 'zustand'
 import { loadProject, saveProject } from '../lib/db'
-import { clipForAsset, layoutClips, reorder, totalDuration, trimClip } from '../lib/timeline'
+import {
+  clipForAsset,
+  joinCutAt,
+  layoutClips,
+  reorder,
+  splitClipAt,
+  totalDuration,
+  trimClip,
+} from '../lib/timeline'
 import {
   audioEnd,
   createTrack,
@@ -79,6 +87,13 @@ interface ProjectState {
   selectClip: (clipId: string | null) => void
   moveClip: (from: number, to: number) => void
   trim: (clipId: string, asset: Asset | undefined, edge: 'start' | 'end', value: number) => void
+  /**
+   * Cuts the clip under the playhead in two at the nearest frame. False when
+   * there was nothing to cut there, so the caller can leave it at that.
+   */
+  cutAt: (time: number) => boolean
+  /** Undoes the cut in front of a clip, merging it back onto its other half. */
+  removeCut: (clipId: string) => boolean
   setImageDuration: (clipId: string, seconds: number) => void
   /** Mutes or levels the sound a clip carries in its own file. */
   setClipAudio: (clipId: string, patch: { muted?: boolean; volume?: number }) => void
@@ -175,6 +190,31 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           clip.id === clipId ? trimClip(clip, asset, edge, value) : clip,
         ),
       })),
+
+    // Nothing about a cut is stored beyond the clips themselves: two clips
+    // meeting mid-source *is* the cut, so it persists with the timeline and
+    // comes back with the project.
+    cutAt: (time) => {
+      const { project } = get()
+      const result = splitClipAt(project.clips, time, project.fps, () => newId('clip'))
+      if (!result) return false
+      mutate((current) => ({ ...current, clips: result.clips }))
+      set({ selectedClipId: result.clipId })
+      return true
+    },
+
+    removeCut: (clipId) => {
+      const { project } = get()
+      const result = joinCutAt(project.clips, clipId)
+      if (!result) return false
+      mutate((current) => ({ ...current, clips: result.clips }))
+      // The clip that was selected has just been absorbed, so follow the merge
+      // rather than leaving the selection pointing at an id that is gone.
+      set((state) => ({
+        selectedClipId: state.selectedClipId === clipId ? result.clipId : state.selectedClipId,
+      }))
+      return true
+    },
 
     setImageDuration: (clipId, seconds) =>
       mutate((project) => ({

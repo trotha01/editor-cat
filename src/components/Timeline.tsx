@@ -9,7 +9,7 @@
  * Widths are proportional to duration, with a pixels-per-second zoom, so what
  * you see matches what you get.
  */
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   PointerSensor,
@@ -23,32 +23,85 @@ import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dn
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
-import { MIN_CLIP_DURATION, clipDuration, clipGain, formatTime, layoutClips } from '../lib/timeline'
+import {
+  MIN_CLIP_DURATION,
+  clipAtTime,
+  clipDuration,
+  clipGain,
+  cutTargetAt,
+  formatTime,
+  frameDuration,
+  isThroughCut,
+  layoutClips,
+  snapToFrame,
+} from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
+import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
 const MIN_ZOOM = 8
-const MAX_ZOOM = 200
+// High enough that individual frames get room of their own: cutting is only
+// really frame-accurate if you can see the frame you are aiming at.
+const MAX_ZOOM = 480
+
+/** Below this, frame lines are noise rather than a guide, so they are hidden. */
+const MIN_FRAME_LINE_PX = 6
+/** What "Show frames" zooms to: comfortably clear of the threshold above. */
+const FRAME_LINE_TARGET_PX = 12
+
+/** How wide one frame is on screen at a given zoom. */
+function framePixels(zoom: number, fps: number): number {
+  return zoom * frameDuration(fps)
+}
+
+/** The zoom that gives frames their target width, capped at what the slider allows. */
+function zoomForFrameLines(fps: number): number {
+  return Math.min(MAX_ZOOM, FRAME_LINE_TARGET_PX / frameDuration(fps))
+}
+
+/**
+ * The frame grid, as a repeating gradient rather than one element per frame:
+ * a minute of 30fps timeline is 1800 lines, and that many nodes makes scrolling
+ * the timeline stutter for something that is only a backdrop.
+ *
+ * Over the clips it is drawn as a dark hairline with a light one beside it, so
+ * it stays visible against whatever the picture happens to be.
+ */
+function frameGrid(pixels: number, overMedia: boolean): string {
+  const period = `${pixels}px`
+  if (!overMedia) {
+    return `repeating-linear-gradient(to right, var(--color-line) 0 1px, transparent 1px ${period})`
+  }
+  return (
+    `repeating-linear-gradient(to right, rgb(0 0 0 / 0.45) 0 1px, transparent 1px ${period}),` +
+    `repeating-linear-gradient(to right, transparent 0 1px, rgb(255 255 255 / 0.45) 1px 2px, transparent 2px ${period})`
+  )
+}
 
 function ClipCard({
   entry,
   asset,
   zoom,
   selected,
+  cutAtStart,
   onSelect,
   onTrim,
   onRemove,
+  onJoin,
 }: {
   entry: PositionedClip
   asset: Asset | undefined
   zoom: number
   selected: boolean
+  /** True when this clip carries on from the one before it — i.e. a cut. */
+  cutAtStart: boolean
   onSelect: () => void
   onTrim: (edge: 'start' | 'end', seconds: number) => void
   onRemove: () => void
+  onJoin: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: entry.clip.id,
@@ -178,8 +231,36 @@ function ClipCard({
       >
         ✕
       </button>
+
+      {/* A cut you made, still here because the two halves are still two clips.
+          The line marks it; the button takes it back out again, which is the
+          only undo this editor has. */}
+      {cutAtStart ? (
+        <>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-0 border-l-2 border-dashed border-accent"
+          />
+          <button
+            type="button"
+            onClick={onJoin}
+            aria-label={`Undo the cut at ${formatTime(entry.start)}`}
+            title="Undo this cut — joins this clip back onto the one before it"
+            className="absolute top-1 left-3 hidden size-5 items-center justify-center rounded bg-black/70 text-[10px] text-white group-hover:flex"
+          >
+            ✂
+          </button>
+        </>
+      ) : null}
     </div>
   )
+}
+
+/** Whether the clip at `index` begins at a cut rather than at its own start. */
+function cutBefore(positioned: readonly PositionedClip[], index: number): boolean {
+  const previous = positioned[index - 1]?.clip
+  const clip = positioned[index]?.clip
+  return Boolean(previous && clip && isThroughCut(previous, clip))
 }
 
 export function Timeline({
@@ -195,6 +276,8 @@ export function Timeline({
   const moveClip = useProjectStore((state) => state.moveClip)
   const removeClip = useProjectStore((state) => state.removeClip)
   const trim = useProjectStore((state) => state.trim)
+  const cutAt = useProjectStore((state) => state.cutAt)
+  const removeCut = useProjectStore((state) => state.removeCut)
   const assets = useAssetStore((state) => state.assets)
 
   const addTrack = useProjectStore((state) => state.addTrack)
@@ -208,6 +291,46 @@ export function Timeline({
   const visualDuration = positioned.at(-1)?.end ?? 0
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+
+  // Where a cut would land, and whether one can land there at all. Recomputed
+  // as the playhead moves, so the button says what pressing it would do.
+  const cutTarget = useMemo(
+    () => cutTargetAt(project.clips, currentTime, project.fps),
+    [project.clips, currentTime, project.fps],
+  )
+
+  // The shortcut reads the playhead from a ref so it can be registered once.
+  // Depending on `currentTime` directly would tear the listener down and put it
+  // back on every animation frame of playback, for one key.
+  const playheadRef = useRef(currentTime)
+  useEffect(() => {
+    playheadRef.current = currentTime
+  }, [currentTime])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 's' && event.key !== 'S') return
+      // Leave the browser's own Ctrl/Cmd-S and friends alone.
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (isTypingTarget(event.target)) return
+      event.preventDefault()
+      // Already a no-op where nothing can be cut, so it needs no guard here.
+      cutAt(playheadRef.current)
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cutAt])
+
+  const framePx = framePixels(zoom, project.fps)
+  const frameLines = framePx >= MIN_FRAME_LINE_PX
+  const canReachFrames = framePixels(MAX_ZOOM, project.fps) >= MIN_FRAME_LINE_PX
+
+  const cutTitle = cutTarget
+    ? `Cut at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
+    : clipAtTime(project.clips, currentTime)
+      ? `Too close to the edge of this clip — a cut has to leave ${MIN_CLIP_DURATION}s on both sides.`
+      : 'Park the playhead over a clip to cut it.'
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -226,7 +349,10 @@ export function Timeline({
     // The ruler moves with the scroll container, so its own bounding box
     // already accounts for the scroll offset.
     const rect = ruler.getBoundingClientRect()
-    onSeek(Math.max(0, (event.clientX - rect.left) / zoom))
+    // Snapped, so the playhead parks on a frame line rather than a pixel — the
+    // cut is going to land on one of those anyway, and it should land on the
+    // one you clicked.
+    onSeek(snapToFrame((event.clientX - rect.left) / zoom, project.fps))
   }
 
   const playheadX = currentTime * zoom
@@ -249,12 +375,26 @@ export function Timeline({
             : ''}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <Button onClick={() => cutAt(currentTime)} disabled={!cutTarget} title={cutTitle}>
+            <span aria-hidden>✂</span> Cut
+          </Button>
           <Button onClick={() => addTrack('voice')} title="Add an empty voice track">
             + Voice track
           </Button>
           <Button onClick={() => addTrack('music')} title="Add an empty music track">
             + Music track
           </Button>
+          {/* Only offered while the lines are hidden — once they are showing,
+              the button would do nothing you could see. */}
+          {!frameLines && canReachFrames ? (
+            <Button
+              variant="ghost"
+              onClick={() => setZoom(zoomForFrameLines(project.fps))}
+              title="Zoom in far enough to draw a line for every frame — cuts land on those lines"
+            >
+              Show frames
+            </Button>
+          ) : null}
           <label htmlFor="zoom" className="text-xs text-ink-dim">
             Zoom
           </label>
@@ -286,11 +426,14 @@ export function Timeline({
 
         <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto p-3 pl-2">
           <div className="relative min-w-full" style={{ width: Math.max(contentWidth, 320) }}>
-            {/* Ruler doubles as the scrub bar. */}
+            {/* Ruler doubles as the scrub bar, and carries the frame grid: the
+                lines run straight down into the picture track below, so the
+                playhead can be parked on the frame you mean to cut. */}
             <div
               ref={trackRef}
               onClick={scrub}
               className="relative mb-2 h-6 cursor-pointer rounded bg-surface-2"
+              style={frameLines ? { backgroundImage: frameGrid(framePx, false) } : undefined}
               role="presentation"
             >
               {Array.from({ length: Math.ceil(contentWidth / zoom) + 1 }, (_, second) => (
@@ -304,40 +447,59 @@ export function Timeline({
               ))}
             </div>
 
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              modifiers={[restrictToHorizontalAxis]}
-              onDragEnd={onDragEnd}
-            >
-              <SortableContext
-                items={project.clips.map((clip) => clip.id)}
-                strategy={horizontalListSortingStrategy}
+            <div className="relative">
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                modifiers={[restrictToHorizontalAxis]}
+                onDragEnd={onDragEnd}
               >
-                <div className="flex h-20 gap-0.5">
-                  {positioned.length === 0 ? (
-                    <p className="px-2 py-6 text-sm text-ink-dim">
-                      Nothing on the timeline yet. Add a clip from the Library.
-                    </p>
-                  ) : (
-                    positioned.map((entry) => (
-                      <ClipCard
-                        key={entry.clip.id}
-                        entry={entry}
-                        asset={assetById.get(entry.clip.assetId)}
-                        zoom={zoom}
-                        selected={entry.clip.id === selectedClipId}
-                        onSelect={() => selectClip(entry.clip.id)}
-                        onTrim={(edge, seconds) =>
-                          trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
-                        }
-                        onRemove={() => removeClip(entry.clip.id)}
-                      />
-                    ))
-                  )}
-                </div>
-              </SortableContext>
-            </DndContext>
+                <SortableContext
+                  items={project.clips.map((clip) => clip.id)}
+                  strategy={horizontalListSortingStrategy}
+                >
+                  {/* No gap between the cards: with clips laid end to end, a gap
+                      would push every later clip past where its own time is on
+                      the ruler, and a frame line is no use if the picture under
+                      it has drifted. */}
+                  <div className="flex h-20">
+                    {positioned.length === 0 ? (
+                      <p className="px-2 py-6 text-sm text-ink-dim">
+                        Nothing on the timeline yet. Add a clip from the Library.
+                      </p>
+                    ) : (
+                      positioned.map((entry) => (
+                        <ClipCard
+                          key={entry.clip.id}
+                          entry={entry}
+                          asset={assetById.get(entry.clip.assetId)}
+                          zoom={zoom}
+                          selected={entry.clip.id === selectedClipId}
+                          cutAtStart={cutBefore(positioned, entry.index)}
+                          onSelect={() => selectClip(entry.clip.id)}
+                          onTrim={(edge, seconds) =>
+                            trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
+                          }
+                          onRemove={() => removeClip(entry.clip.id)}
+                          onJoin={() => removeCut(entry.clip.id)}
+                        />
+                      ))
+                    )}
+                  </div>
+                </SortableContext>
+              </DndContext>
+
+              {frameLines && visualDuration > 0 ? (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute top-0 bottom-0 left-0"
+                  style={{
+                    width: visualDuration * zoom,
+                    backgroundImage: frameGrid(framePx, true),
+                  }}
+                />
+              ) : null}
+            </div>
 
             <AudioTrackLanes zoom={zoom} />
 
