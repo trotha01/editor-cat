@@ -112,6 +112,48 @@ try {
   }
   step('preview plays the clip’s own sound instead of muting it')
 
+  // --- Fullscreen ----------------------------------------------------------
+  // Worth doing in a real browser: jsdom has no Fullscreen API at all, so a
+  // unit test can only check that we asked. What matters is which element the
+  // browser hands the screen to — the whole player, transport included, rather
+  // than the one <video> that happens to be on screen.
+  await page.getByRole('button', { name: 'Fullscreen' }).click()
+  await page.waitForTimeout(300)
+  const filling = await page.evaluate(() => {
+    const element = document.fullscreenElement
+    if (!element) return null
+    return {
+      label: element.getAttribute('aria-label'),
+      transport: element.contains(document.querySelector('input[aria-label*="Scrub"]')),
+      video: element.contains(document.querySelector('video')),
+      wide: element.getBoundingClientRect().width >= window.innerWidth,
+    }
+  })
+  if (!filling) fail('pressing Fullscreen did not put anything on the screen')
+  if (filling.label !== 'Preview') fail(`fullscreen took ${filling.label}, not the preview`)
+  if (!filling.transport) fail('fullscreen left the transport behind, so it cannot be paused')
+  if (!filling.video || !filling.wide) fail('the fullscreen preview is not showing the clip')
+  step('fullscreen puts the whole player on screen, transport included')
+
+  const stillFullscreen = () => page.evaluate(() => document.fullscreenElement !== null)
+
+  await page.getByRole('button', { name: 'Exit fullscreen' }).click()
+  await page.waitForTimeout(300)
+  if (await stillFullscreen()) fail('the Exit button did not leave fullscreen')
+  step('the Exit button comes back out')
+
+  // An exit the app did not perform. Escape is the everyday one, but that is
+  // browser chrome and headless has none, so this stands in for it: the button
+  // has to notice, or it stays on "Exit" and the next press asks for fullscreen
+  // while claiming to leave it.
+  await page.getByRole('button', { name: 'Fullscreen' }).click()
+  await page.waitForTimeout(300)
+  await page.evaluate(() => document.exitFullscreen())
+  await page.waitForTimeout(300)
+  if (await stillFullscreen()) fail('exitFullscreen() left the page in fullscreen')
+  await page.getByRole('button', { name: 'Fullscreen' }).waitFor({ timeout: 5000 })
+  step('an exit made from outside the app is noticed by the button')
+
   // --- Trimming ------------------------------------------------------------
   await page.locator('section[aria-label="Timeline"] .group').first().click()
   await page.fill('input[type="number"]', '2')

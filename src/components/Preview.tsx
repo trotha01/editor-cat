@@ -11,13 +11,19 @@
  * that is what the exporter mixes. Preview and output have to agree: hearing
  * something here that vanishes from the export — or the reverse — is worse
  * than either being silent.
+ *
+ * Fullscreen takes this whole section, transport and all. The alternative —
+ * handing one `<video>` to the browser's own fullscreen — would show a single
+ * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { clipAtTime, clipGain, formatTime, layoutClips } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetUrl } from '../hooks/useAssetUrl'
+import { useFullscreen } from '../hooks/useFullscreen'
 import { gainFor } from '../lib/audioTracks'
+import { isTypingTarget } from '../lib/shortcuts'
 import type { Asset, AudioClip, Clip } from '../lib/types'
 
 /** How far a media element may drift before we correct it, in seconds. */
@@ -147,7 +153,16 @@ function AudioLayer({
   return <audio ref={audioRef} src={url} preload="auto" className="hidden" />
 }
 
-export function Preview({ currentTime, playing }: { currentTime: number; playing: boolean }) {
+export function Preview({
+  currentTime,
+  playing,
+  children,
+}: {
+  currentTime: number
+  playing: boolean
+  /** The transport, so it comes along into fullscreen instead of being left behind. */
+  children?: ReactNode
+}) {
   const project = useProjectStore((state) => state.project)
   const assets = useAssetStore((state) => state.assets)
 
@@ -155,21 +170,54 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
   const positioned = useMemo(() => layoutClips(project.clips), [project.clips])
   const active = useMemo(() => clipAtTime(project.clips, currentTime), [project.clips, currentTime])
 
+  const { ref, active: fullscreen, supported, toggle } = useFullscreen<HTMLElement>()
+
+  const empty = project.clips.length === 0
+  const offerFullscreen = supported && !empty
+
+  useEffect(() => {
+    if (!offerFullscreen) return
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'f' && event.key !== 'F') return
+      // Leave the browser's own Ctrl/Cmd-F and friends alone.
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (isTypingTarget(event.target)) return
+      event.preventDefault()
+      toggle()
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [offerFullscreen, toggle])
+
   const aspect = `${project.width} / ${project.height}`
+  // Fullscreen puts everything on black, where the page's ink colours vanish.
+  const panel = fullscreen ? 'bg-black text-white/70' : 'bg-surface-2 text-ink-dim'
 
   return (
-    <section className="flex flex-col gap-2" aria-label="Preview">
+    <section
+      ref={ref}
+      className={`flex flex-col gap-3 ${fullscreen ? 'justify-center bg-black p-4' : ''}`}
+      aria-label="Preview"
+    >
       <div
-        className="relative w-full overflow-hidden rounded-xl border border-line bg-surface-2"
-        style={{ aspectRatio: aspect }}
+        className={`relative w-full overflow-hidden ${
+          // Out of fullscreen the box is the project's shape. In it, the box is
+          // whatever is left over and the media letterboxes itself inside.
+          fullscreen ? 'min-h-0 flex-1' : 'rounded-xl border border-line bg-surface-2'
+        }`}
+        style={fullscreen ? undefined : { aspectRatio: aspect }}
       >
-        {project.clips.length === 0 ? (
-          <div className="flex size-full flex-col items-center justify-center gap-1 text-center">
+        {empty ? (
+          <div
+            className={`flex size-full flex-col items-center justify-center gap-1 text-center ${panel}`}
+          >
             <span aria-hidden className="text-3xl">
               🎞️
             </span>
-            <p className="text-sm text-ink-dim">Your timeline is empty</p>
-            <p className="max-w-xs text-xs text-ink-dim">
+            <p className="text-sm">Your timeline is empty</p>
+            <p className="max-w-xs text-xs">
               Generate an image, animate it into a clip, then add it below.
             </p>
           </div>
@@ -189,10 +237,26 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
           ))
         )}
 
-        {active === null && project.clips.length > 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-surface-2">
-            <p className="text-sm text-ink-dim">End of timeline</p>
+        {active === null && !empty ? (
+          <div className={`absolute inset-0 flex items-center justify-center ${panel}`}>
+            <p className="text-sm">End of timeline</p>
           </div>
+        ) : null}
+
+        {offerFullscreen ? (
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            aria-pressed={fullscreen}
+            title={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+            // Its own colours rather than the shared Button: this sits over
+            // arbitrary picture, so it has to stay legible against anything.
+            className="absolute top-2 right-2 inline-flex items-center gap-1.5 rounded-lg bg-black/55 px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          >
+            <span aria-hidden>⛶</span>
+            {fullscreen ? 'Exit' : 'Fullscreen'}
+          </button>
         ) : null}
       </div>
 
@@ -211,10 +275,21 @@ export function Preview({ currentTime, playing }: { currentTime: number; playing
         )
       })}
 
-      <p className="text-xs text-ink-dim">
-        Clips play their own sound, mixed with your audio tracks — the export is exactly what you
-        hear here. Select a clip to mute it or set its level. Playhead at {formatTime(currentTime)}.
-      </p>
+      {children ? (
+        // On black, the transport keeps its own surface rather than being
+        // recoloured: every control in it stays exactly as legible as it was.
+        <div className={fullscreen ? 'rounded-xl bg-surface px-3 py-2 shadow-lg' : ''}>
+          {children}
+        </div>
+      ) : null}
+
+      {fullscreen ? null : (
+        <p className="text-xs text-ink-dim">
+          Clips play their own sound, mixed with your audio tracks — the export is exactly what you
+          hear here. Select a clip to mute it or set its level. Playhead at{' '}
+          {formatTime(currentTime)}.
+        </p>
+      )}
     </section>
   )
 }

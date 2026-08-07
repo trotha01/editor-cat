@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Button } from './ui'
 import { formatTime } from '../lib/timeline'
+import { isTypingTarget } from '../lib/shortcuts'
 
 /** Play/pause, scrub, and the keyboard shortcuts people expect. */
 export function Transport({
@@ -18,9 +19,8 @@ export function Transport({
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
       // Never steal keys from a field the user is typing in.
-      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (isTypingTarget(event.target)) return
 
       if (event.code === 'Space') {
         event.preventDefault()

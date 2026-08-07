@@ -18,6 +18,7 @@ ElevenLabs key**, held in your browser.
 | **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                            |
 | **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
 | **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below.                  |
+| **Preview**   | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back. |
 | **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.      |
 | **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                             |
 
@@ -429,6 +430,18 @@ stream that is not there fails the whole render, so the exporter asks ffmpeg
 what each file actually contains before it builds the graph
 (`src/lib/export/probe.ts`). Preview and export always agree; hearing something
 in one that vanishes from the other would be worse than silence.
+
+**Fullscreen takes the player, not the video.** The preview is a stack of media
+elements chased to a clock above them, so handing one `<video>` to the browser's
+own fullscreen would show a single clip, drop the audio layered over it, and
+leave nothing to press. The button — or the `F` key — takes the whole player
+instead: picture, audio elements and transport together, with nothing remounted
+on the way in, so playback carries straight on across the transition. Leaving is
+usually not our doing, since Escape and the browser's own chrome both exit
+without asking, so the button reads its state back off the document rather than
+tracking it. Where fullscreen is refused outright — an iframe without
+`allow="fullscreen"`, or an iPhone, where only a bare `<video>` can do it — the
+button is absent rather than present and broken.
 
 **Model IDs live in one file.** Provider catalogues change every few weeks, so
 `src/lib/models.ts` holds every ID the app depends on and each picker has a
