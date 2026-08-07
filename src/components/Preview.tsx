@@ -16,12 +16,14 @@
  * handing one `<video>` to the browser's own fullscreen — would show a single
  * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
-import { useAssetUrl } from '../hooks/useAssetUrl'
+import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
 import { useFullscreen } from '../hooks/useFullscreen'
+import { useReportReadiness } from '../hooks/useReportReadiness'
+import { ReadinessBanner } from './ReadinessBanner'
 import { gainFor } from '../lib/audioTracks'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
 import { CaptionOverlay } from './CaptionOverlay'
@@ -31,11 +33,21 @@ import type { Asset, AudioClip, Clip } from '../lib/types'
 /** How far a media element may drift before we correct it, in seconds. */
 const SEEK_TOLERANCE = 0.3
 
+/**
+ * How many clips either side of the playhead are fetched in full.
+ *
+ * There is a real cost to every element told to load: memory, and on some
+ * platforms a hard cap on how many videos can be decoding at once. So it is a
+ * window rather than the whole timeline. Wide enough that the next few cuts are
+ * in hand before the playhead reaches them, which is where the stutter was.
+ */
+const WARM_CLIPS = 3
+
 function ClipLayer({
   clip,
   asset,
   active,
-  nearby,
+  warm,
   currentTime,
   playing,
   start,
@@ -44,19 +56,65 @@ function ClipLayer({
   clip: Clip
   asset: Asset | undefined
   active: boolean
-  nearby: boolean
+  /** Near enough the playhead to be worth fetching in full ahead of time. */
+  warm: boolean
   currentTime: number
   playing: boolean
   start: number
   /** Resolved clip gain. 0 means muted, and the element stays silent. */
   gain: number
 }) {
-  const url = useAssetUrl(asset)
+  const { url, failed } = useAssetSource(asset)
   const videoRef = useRef<HTMLVideoElement>(null)
   // Set once the browser has refused to start audible playback, so the next
   // frame does not ask again and get refused again. Pressing play is a user
   // gesture, so this stays false outside of automated browsers.
   const refusedSound = useRef(false)
+  // How a still reports readiness: it has no buffering, so it is decoded or it
+  // is not. Stamped with the URL it is about, which is what makes a new source
+  // start from unknown again without an effect having to reset anything.
+  const [decoded, setDecoded] = useState<{ url: string; broken: boolean } | null>(null)
+  const imageLoaded = decoded?.url === url && !decoded.broken
+  const imageBroken = decoded?.url === url && decoded.broken
+
+  useReportReadiness({
+    clipId: clip.id,
+    videoRef,
+    kind: asset?.kind,
+    url,
+    failed,
+    from: clip.inPoint,
+    to: clip.outPoint,
+    // Only the clip under a running playhead can be *stalling* playback. The
+    // rest are merely not loaded yet, which is expected and not worth an alarm.
+    wanted: active && playing,
+    warm: active || warm,
+    imageLoaded,
+    imageBroken,
+  })
+
+  // Park a warmed-up clip on its own in-point.
+  //
+  // Buffering follows the playhead of the element, which starts at zero — so a
+  // clip trimmed to five seconds an hour into its source would sit there
+  // fetching an hour of material it will never show, and still be empty at the
+  // moment it is cut to. One seek, once metadata has landed, points the fetch
+  // at the part the clip is actually made of.
+  useEffect(() => {
+    const element = videoRef.current
+    if (!element || asset?.kind !== 'video' || active || !warm) return
+
+    const park = () => {
+      if (element.readyState < HTMLMediaElement.HAVE_METADATA) return
+      if (Math.abs(element.currentTime - clip.inPoint) > SEEK_TOLERANCE) {
+        element.currentTime = clip.inPoint
+      }
+    }
+
+    park()
+    element.addEventListener('loadedmetadata', park)
+    return () => element.removeEventListener('loadedmetadata', park)
+  }, [active, asset?.kind, clip.inPoint, warm])
 
   useEffect(() => {
     const element = videoRef.current
@@ -98,11 +156,17 @@ function ClipLayer({
           ref={videoRef}
           src={url}
           playsInline
-          preload={active || nearby ? 'auto' : 'metadata'}
+          preload={active || warm ? 'auto' : 'metadata'}
           className="size-full object-contain"
         />
       ) : (
-        <img src={url} alt={asset.name} className="size-full object-contain" />
+        <img
+          src={url}
+          alt={asset.name}
+          onLoad={() => setDecoded({ url, broken: false })}
+          onError={() => setDecoded({ url, broken: true })}
+          className="size-full object-contain"
+        />
       )}
     </div>
   )
@@ -237,7 +301,7 @@ export function Preview({
               clip={entry.clip}
               asset={assetById.get(entry.clip.assetId)}
               active={active?.clip.id === entry.clip.id}
-              nearby={Math.abs(entry.index - (active?.index ?? 0)) <= 1}
+              warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
               currentTime={currentTime}
               playing={playing}
               start={entry.start}
@@ -270,6 +334,10 @@ export function Preview({
           height={project.height}
           currentTime={currentTime}
         />
+
+        {/* Opposite the fullscreen button, on the same layer of chrome: both
+            sit over the picture and neither should cover the other. */}
+        <ReadinessBanner />
 
         {offerFullscreen ? (
           <button

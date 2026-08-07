@@ -31,6 +31,7 @@ import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
 import { CaptionJobStatus } from './CaptionJobStatus'
 import { ClipMenu } from './ClipMenu'
+import { ClipReadinessBar } from './ClipReadinessBar'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import {
   MAX_LEAD_IN,
@@ -236,6 +237,10 @@ function ClipCard({
           </span>
         )}
       </button>
+
+      {/* How much of this clip is loaded, drawn along its own top edge so the
+          whole track reads as one bar: where it is green, playback will hold. */}
+      <ClipReadinessBar clipId={entry.clip.id} />
 
       {/* Sits on top of the thumbnail, so this pair stays white-on-scrim
           rather than following the theme — the media below can be any colour. */}

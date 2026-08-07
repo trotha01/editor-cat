@@ -44,7 +44,10 @@ vi.mock('../state/useAssetStore', () => ({
   useAssetStore: (selector: (state: typeof assetState) => unknown) => selector(assetState),
 }))
 
-vi.mock('../hooks/useAssetUrl', () => ({ useAssetUrl: () => 'blob:fake' }))
+vi.mock('../hooks/useAssetUrl', () => ({
+  useAssetUrl: () => 'blob:fake',
+  useAssetSource: () => ({ url: 'blob:fake', failed: false }),
+}))
 
 const { Preview } = await import('./Preview')
 
