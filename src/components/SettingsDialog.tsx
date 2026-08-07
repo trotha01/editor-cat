@@ -152,12 +152,13 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           label="Caption model (in-browser)"
           hint={
             <>
-              The speech model captioning downloads when you transcribe without an ElevenLabs key. A
-              Hugging Face repo id; it must be an ONNX export whose config carries alignment heads,
-              or there are no word timings to highlight on. Swap{' '}
-              <span className="text-ink">whisper-base</span> for{' '}
-              <span className="text-ink">whisper-tiny.en</span> to trade accuracy for a much smaller
-              download, or <span className="text-ink">whisper-small</span> the other way.
+              The speech model captioning downloads when you transcribe in this browser. A Hugging
+              Face repo id; it must be an ONNX export whose config carries alignment heads, or there
+              are no word timings to highlight on. The formats it publishes are tried smallest
+              first, so this only needs changing if none of them will run here — or to trade
+              accuracy for size: <span className="text-ink">whisper-tiny.en</span> is a much smaller
+              download than <span className="text-ink">whisper-base</span>, and{' '}
+              <span className="text-ink">whisper-small</span> a much larger one.
             </>
           }
           htmlFor="speech-model"

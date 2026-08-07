@@ -216,11 +216,28 @@ export const LLM_ENDPOINT = 'fal-ai/any-llm'
 export const DEFAULT_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
 
 /**
- * Weights format. `q8` is the quantised export: roughly a quarter the download
- * of fp32 and several times faster on a CPU, at a small cost in accuracy that
- * an editable transcript absorbs easily.
+ * Weights to try, in order, until one will actually run.
+ *
+ * A ladder rather than a single choice, because "downloaded" and "runnable" are
+ * different things and only the browser can tell them apart. A quantised export
+ * can fail at session creation with an ONNX Runtime error about `MatMulNBits` —
+ * the operator four-bit block quantisation compiles to — and nothing about the
+ * download says so in advance. Which exports a repo publishes is also up to
+ * whoever published it, so a missing file has to mean "try the next" rather than
+ * "captions are unavailable".
+ *
+ * Ordered smallest first, ending somewhere that cannot fail for this reason:
+ *
+ *  - `q8` is the usual quantised export, about a quarter the download.
+ *  - `int8` quantises per tensor instead of per block, so it compiles to
+ *    different operators and survives where `q8` does not.
+ *  - `fp32` is the model as trained. Several times the download and slower, but
+ *    it contains no quantisation operators at all, so there is nothing left to
+ *    be incompatible with.
+ *
+ * A repo id that publishes none of these is a setting away — see Settings.
  */
-export const SPEECH_MODEL_DTYPE = 'q8'
+export const SPEECH_MODEL_DTYPES = ['q8', 'int8', 'fp32'] as const
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id
 export const DEFAULT_VIDEO_MODEL = VIDEO_MODELS[0]!.id

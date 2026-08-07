@@ -17,6 +17,7 @@
  * can be tested without any of this.
  */
 import { whisperWords, type WhisperChunk } from '../lib/whisperWords'
+import { describeWeights, loadFailureMessage, verdictFor } from '../lib/speechModel'
 import type { TimedWord } from '../lib/captions'
 
 /** What the main thread sends. */
@@ -27,7 +28,12 @@ export interface WhisperRequest {
   sampleRate: number
   /** Hugging Face repo id. Passed in so Settings can override it. */
   model: string
-  dtype: string
+  /**
+   * Weights to try, in order, until one will actually run. Downloading a model
+   * and being able to run it are different things, and only this side knows
+   * which — see SPEECH_MODEL_DTYPES.
+   */
+  dtypes: readonly string[]
   /** Whisper's own language name, e.g. "english". Absent means detect. */
   language?: string
 }
@@ -104,69 +110,89 @@ function post(message: WhisperResponse): void {
  * together wait on one load instead of starting two downloads.
  */
 let loading: Promise<Transcriber> | null = null
-let loadedKey = ''
+let loadedModel = ''
+
+/**
+ * Weights already known not to run here: `model|dtype` to why not.
+ *
+ * Remembered for the life of the worker so the ladder is walked once rather than
+ * once per source — a project with six voice takes would otherwise fail the same
+ * way six times over, and each failure costs a download and a session creation.
+ * The reason is kept alongside, not just the fact, so the second source can be
+ * told exactly what the first one found instead of "nothing was tried".
+ */
+const unusable = new Map<string, string>()
 
 async function loadModel(request: WhisperRequest): Promise<Transcriber> {
-  const key = `${request.model}|${request.dtype}`
   // A model changed in Settings has to replace the one already loaded, or the
   // override would appear to do nothing until the tab was reloaded.
-  if (loading && key !== loadedKey) loading = null
+  if (loading && loadedModel !== request.model) loading = null
   if (loading) return loading
 
-  loadedKey = key
-  loading = loadRuntime()
-    .then((module) =>
-      module.pipeline('automatic-speech-recognition', request.model, {
-        dtype: request.dtype,
+  loadedModel = request.model
+  loading = openPipeline(request).catch((cause: unknown) => {
+    // A failed load must not be left cached as a pending promise, or every
+    // later attempt in this tab rejects with the same stale error.
+    loading = null
+    throw cause
+  })
+
+  return loading
+}
+
+/**
+ * Opens the first set of weights that both downloads and runs.
+ *
+ * The failure this exists for is a model that arrives intact and is then refused
+ * by the runtime — a quantised export whose operators this ONNX build will not
+ * build a session for. Nothing before that point predicts it, so the answer is
+ * to try the next set rather than to tell someone captions are unavailable.
+ */
+async function openPipeline(request: WhisperRequest): Promise<Transcriber> {
+  const module = await loadRuntime()
+  const attempts: string[] = []
+
+  for (const dtype of request.dtypes) {
+    const key = `${request.model}|${dtype}`
+    const known = unusable.get(key)
+    if (known !== undefined) {
+      attempts.push(`${dtype} — ${known}`)
+      continue
+    }
+
+    try {
+      const transcriber = await module.pipeline('automatic-speech-recognition', request.model, {
+        dtype,
         device: 'wasm',
         progress_callback: (event: { status?: string; file?: string; progress?: number }) => {
           if (event.status !== 'progress') return
           post({
             type: 'progress',
             id: request.id,
-            message: `downloading ${event.file ?? 'the speech model'}`,
+            message: `downloading ${describeWeights(dtype)}`,
             ratio: typeof event.progress === 'number' ? event.progress / 100 : undefined,
           })
         },
-      }),
-    )
-    .catch((cause: unknown) => {
-      // A failed load must not be left cached as a pending promise, or every
-      // later attempt in this tab rejects with the same stale error.
-      loading = null
-      throw new Error(loadFailureMessage(request.model, cause))
-    })
+      })
 
-  return loading
-}
-
-/**
- * Says what was being attempted, because the underlying errors do not.
- *
- * "Failed to fetch" is what a browser reports for being offline, for a network
- * that blocks Hugging Face, and for a repo id that does not exist — three very
- * different problems, none of them mentioning the model. The other one worth
- * naming is a model without alignment heads, which is the difference between a
- * transcript and a karaoke caption and is otherwise a puzzle.
- */
-function loadFailureMessage(model: string, cause: unknown): string {
-  const detail = cause instanceof Error ? cause.message : String(cause)
-
-  if (/alignment_heads/i.test(detail)) {
-    return (
-      `"${model}" has no word-level timing in it, so there is nothing for the highlight to ` +
-      `follow. Pick a model published with alignment heads — the "_timestamped" repos are ` +
-      `built for this — in Settings.`
-    )
+      if (attempts.length > 0) {
+        // Worth saying out loud: a fallback is a bigger download and a slower
+        // run, and silence would leave that looking like the model simply being
+        // slow for no reason.
+        post({ type: 'progress', id: request.id, message: `using ${describeWeights(dtype)}` })
+      }
+      return transcriber
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause)
+      attempts.push(`${dtype} — ${detail}`)
+      // A network failure is about today, not about these weights, so it must
+      // not blacklist them for the rest of the session.
+      if (verdictFor(detail) === 'give-up') break
+      unusable.set(key, detail)
+    }
   }
-  if (/failed to fetch|networkerror|load failed/i.test(detail)) {
-    return (
-      `The speech model "${model}" could not be downloaded. It comes from huggingface.co the ` +
-      `first time you caption in the browser, so this needs a connection that can reach it. ` +
-      `(${detail})`
-    )
-  }
-  return `The speech model "${model}" could not be loaded. ${detail}`
+
+  throw new Error(loadFailureMessage(request.model, attempts))
 }
 
 self.addEventListener('message', (event: MessageEvent<WhisperRequest>) => {

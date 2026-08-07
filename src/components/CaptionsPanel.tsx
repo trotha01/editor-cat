@@ -31,7 +31,7 @@ import {
   elevenLabsEngine,
   type EngineId,
 } from '../lib/transcribeEngines'
-import { DEFAULT_SPEECH_MODEL, SPEECH_MODEL_DTYPE } from '../lib/models'
+import { DEFAULT_SPEECH_MODEL, SPEECH_MODEL_DTYPES } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
@@ -119,7 +119,7 @@ export function CaptionsPanel({
             : browserEngine({
                 // An emptied box in Settings means "the default", not "no model".
                 model: speechModel.trim() || DEFAULT_SPEECH_MODEL,
-                dtype: SPEECH_MODEL_DTYPE,
+                dtypes: SPEECH_MODEL_DTYPES,
               }),
         sources,
         assets,
@@ -194,8 +194,8 @@ export function CaptionsPanel({
           {engineId === 'browser' ? (
             <>
               A speech model runs in this tab — no key, no cost, and your voice never leaves the
-              machine. It downloads about 80MB the first time and is slower than the paid option,
-              roughly the length of the audio again.
+              machine. The first run downloads it, which is 80MB or more depending on which format
+              this browser will run, and transcribing takes roughly the length of the audio again.
             </>
           ) : (
             <>

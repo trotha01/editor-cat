@@ -24,7 +24,8 @@ export interface BrowserTranscribeRequest {
   audio: Float32Array
   sampleRate: number
   model: string
-  dtype: string
+  /** Weights to try, in order, until one will actually run. */
+  dtypes: readonly string[]
   /** Whisper's own language name, e.g. "english". Absent means detect. */
   language?: string
   onProgress?: (progress: BrowserTranscribeProgress) => void
@@ -53,7 +54,7 @@ export function transcribeInBrowser({
   audio,
   sampleRate,
   model,
-  dtype,
+  dtypes,
   language,
   onProgress,
   signal,
@@ -97,7 +98,7 @@ export function transcribeInBrowser({
       audio,
       sampleRate,
       model,
-      dtype,
+      dtypes,
       ...(language ? { language } : {}),
     }
     // Transferred rather than copied: a minute of 16kHz audio is a megabyte, and

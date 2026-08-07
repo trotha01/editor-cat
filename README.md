@@ -549,6 +549,23 @@ WebAssembly file inlined into the output that nothing would ever load. Handing
 over the whole directory leaves the choice where it belongs. The model weights
 themselves come from Hugging Face on first use and are cached by the browser.
 
+**Downloaded is not the same as runnable.** A model can arrive intact and then
+be refused by ONNX Runtime at session creation — a quantised export whose
+operators this particular build will not compile, which reports itself as
+something like `TransposeDQWeightsForMatMulNBits Missing required scale` and
+says nothing about captions at all. Nothing before that point predicts it, and
+which formats a repo publishes is up to whoever published it. So the model is
+opened against a ladder of weights (`SPEECH_MODEL_DTYPES`), smallest first,
+ending at full precision — which contains no quantisation operators and so has
+nothing left to be incompatible with. A rung that fails is remembered with its
+reason, so a project with six voice takes walks the ladder once rather than six
+times, and the reasons are all reported together if every rung fails. Reading
+those failures apart — "no connection" from "this repo does not publish that
+format" from "the runtime refused it" — is the whole of `src/lib/speechModel.ts`,
+because the errors themselves say none of it: "Failed to fetch" is what a browser
+reports for being offline, for a blocked network and for a repo that does not
+exist.
+
 **Whisper needs cleaning up after.** It was trained on subtitled video, so given
 silence or music it reaches for what subtitles say when nobody is speaking —
 "Thanks for watching", "Subtitles by…" — with confident timings, and it falls
@@ -708,8 +725,10 @@ If your CI image ships its own browser, point the test at it with
   not, and a muted track is skipped, because its words are not in the finished
   video either.
 - **The free transcriber is slower and less accurate**, which is the trade. It
-  downloads about 80MB the first time, runs on your CPU at roughly the length of
-  the audio again, and mishears more — particularly accents, crosstalk and noise.
+  downloads the model the first time — 80MB or several times that, depending on
+  which format your browser will actually run — then runs on your CPU at roughly
+  the length of the audio again, and mishears more than the paid one,
+  particularly accents, crosstalk and noise.
   The transcript is editable precisely because no transcriber is right every
   time. It also needs to reach huggingface.co once to fetch the model; after that
   it works offline, and it never sends your audio anywhere at all.

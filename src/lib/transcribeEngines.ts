@@ -145,7 +145,8 @@ export function elevenLabsEngine(key: string): TranscriptionEngine {
 export interface BrowserEngineOptions {
   /** Hugging Face repo id. From Settings, so a stale default is not a blocker. */
   model: string
-  dtype: string
+  /** Weights to try, in order, until one will actually run. */
+  dtypes: readonly string[]
 }
 
 /**
@@ -155,7 +156,7 @@ export interface BrowserEngineOptions {
  * chunks internally, which is better than anything this layer could do, and
  * there is no payload to stay under.
  */
-export function browserEngine({ model, dtype }: BrowserEngineOptions): TranscriptionEngine {
+export function browserEngine({ model, dtypes }: BrowserEngineOptions): TranscriptionEngine {
   return {
     id: 'browser',
     async transcribeSource(request) {
@@ -166,7 +167,7 @@ export function browserEngine({ model, dtype }: BrowserEngineOptions): Transcrip
         audio,
         sampleRate: SPEECH_SAMPLE_RATE,
         model,
-        dtype,
+        dtypes,
         ...(whisperLanguageFor(request.languageCode)
           ? { language: whisperLanguageFor(request.languageCode) as string }
           : {}),
