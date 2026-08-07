@@ -425,7 +425,9 @@ try {
   // Transcription needs no key from the user — it runs on the site's fal
   // account — so the button has to work on a first visit with nothing entered.
   // Recognition is faked in mock mode; the wiring either side of it is not.
-  await page.getByRole('button', { name: /Add captions/ }).click()
+  // Exactly, because every clip below it offers to be captioned on its own and
+  // says so in the same words — this is the one that does the whole timeline.
+  await page.getByRole('button', { name: 'Add captions', exact: true }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
   // The setup card folds away once there is a transcript. Left open it pushes
@@ -475,6 +477,86 @@ try {
     fail(`editing the transcript did not reach the timeline: "${splicedLabel}"`)
   }
   step('a word typed into the transcript appears on the timeline caption')
+
+  // --- Redoing one clip from its own menu ----------------------------------
+  // The blunt press re-transcribes the whole timeline and discards every
+  // correction on it, which is the wrong tool for the common failure: one take
+  // that came back badly among several that came back fine. Every clip carries a
+  // menu that redoes just that clip, and what has to be true of it is a negative
+  // — every caption from every other clip is still there, still saying the same
+  // thing, still at the same time, including the word typed in by hand above.
+  const captionLabels = () =>
+    page.$$eval('[role="group"][aria-label^="Caption "]', (nodes) =>
+      nodes.map((node) => node.getAttribute('aria-label')),
+    )
+  const clipOf = (label) => /, from (.+)$/.exec(label ?? '')?.[1] ?? ''
+
+  const menus = page.locator('section[aria-label="Timeline"] button[aria-label^="Actions for "]')
+  const menuNames = await menus.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('aria-label')),
+  )
+  if (menuNames.length === 0) fail('no clip on the timeline carries a menu')
+
+  const beforeRedo = await captionLabels()
+
+  // The first clip that can be redone and is not the one the edit above landed
+  // on — replacing that clip's captions is what was asked for, so it would prove
+  // nothing. Menus are opened to find out: a still has no sound to transcribe
+  // and says nothing about captions at all, which is itself worth walking past
+  // rather than assuming which clip is which.
+  let redoneClip = ''
+  let itemText = ''
+  const redoItem = page.getByRole('menuitem', { name: /Redo captions for this clip/ })
+  for (const [index, name] of menuNames.entries()) {
+    if (name.includes(clipOf(splicedLabel))) continue
+    await menus.nth(index).click()
+    if ((await redoItem.count()) > 0) {
+      itemText = (await redoItem.innerText()).replace(/\s+/g, ' ')
+      redoneClip = /^Actions for (.+)$/.exec(name)?.[1] ?? ''
+      break
+    }
+    await page.keyboard.press('Escape')
+  }
+  if (!redoneClip) fail(`no other clip offered to redo its captions, out of ${menuNames.length}`)
+
+  const elsewhereBefore = beforeRedo.filter((label) => clipOf(label) !== redoneClip)
+  if (elsewhereBefore.length === 0) fail('nothing from another clip to be left alone')
+
+  // The bill lands on the deployment, so the price is on the row itself rather
+  // than behind a hover — this is the one item in the menu that spends money.
+  if (!/(~\$\d|<\$0\.01)/.test(itemText)) {
+    fail(`the caption item should be priced before it is pressed, reads "${itemText}"`)
+  }
+  step(`each clip offers captioning from its own menu, priced ("${itemText}")`)
+
+  await redoItem.click()
+  // A clip is named after its file, so the name reaches this as text rather
+  // than as a pattern — "take-1.webm" has a wildcard in it either way.
+  const named = redoneClip.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  await page.waitForSelector(`text=/(words|recognised) in ${named}/`, { timeout: 120000 })
+
+  const afterRedo = await captionLabels()
+  const elsewhereAfter = afterRedo.filter((label) => clipOf(label) !== redoneClip)
+  if (JSON.stringify(elsewhereAfter) !== JSON.stringify(elsewhereBefore)) {
+    fail(
+      `redoing ${redoneClip} disturbed another clip's captions: ` +
+        `${elsewhereBefore.length} before, ${elsewhereAfter.length} after`,
+    )
+  }
+  if (!afterRedo.some((label) => label?.includes('SPLICED'))) {
+    fail('redoing one clip lost the word typed into another clip\u2019s caption')
+  }
+  if (!afterRedo.some((label) => clipOf(label) === redoneClip)) {
+    fail(`redoing ${redoneClip} left it with no captions at all`)
+  }
+  step(
+    `one clip redone from its menu (${redoneClip}), leaving ${elsewhereAfter.length} captions ` +
+      `from other clips untouched`,
+  )
+
+  // The result stays until it is dismissed: transcribing takes long enough to
+  // look away from, and the count is the only confirmation the words changed.
+  await page.getByRole('button', { name: /^Dismiss the captioning result/ }).click()
 
   // Retiming one word is the other half of the job, and the part that makes this
   // karaoke rather than subtitles. Asking for an absurd time is deliberate: a

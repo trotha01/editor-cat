@@ -13,6 +13,12 @@
  * first-class here: every word is a chip you can click to hear, select, and
  * retime to the hundredth of a second, and the chip that is lit is the word that
  * is lit in the preview.
+ *
+ * The button here is the blunt instrument: it transcribes everything on the
+ * timeline and replaces the lot. The aimed version of it is not in this panel at
+ * all — it is the ⋯ menu on each clip, which is where you are looking at the
+ * moment you notice that one take came out wrong. This panel keeps the language
+ * they both transcribe with, so the two cannot disagree about it.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Callout, EmptyState, Field, Select, Spinner, TextArea } from './ui'
@@ -31,6 +37,7 @@ import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTi
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from '../state/useAssetStore'
+import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { CaptionCue, CaptionStyle, CaptionTrack } from '../lib/types'
 
@@ -46,7 +53,12 @@ export function CaptionsPanel({
   const setCaptionsFromWords = useProjectStore((state) => state.setCaptionsFromWords)
   const assets = useAssetStore((state) => state.assets)
 
-  const [language, setLanguage] = useState('')
+  // Shared with the clip menus rather than held here: which language is spoken
+  // is a fact about the audio, and a clip redone from the timeline has to be
+  // transcribed as the same one.
+  const language = useCaptionJobStore((state) => state.language)
+  const setLanguage = useCaptionJobStore((state) => state.setLanguage)
+
   // Setup folds away once there is a transcript, so the words are near the top
   // of the panel rather than below two cards of controls nobody is using any
   // more. Initial only, and set again when a run finishes — deriving it every
@@ -54,6 +66,10 @@ export function CaptionsPanel({
   const [setupOpen, setSetupOpen] = useState(() => captionCuesOf(project).length === 0)
   const [lookOpen, setLookOpen] = useState(false)
   const [progress, setProgress] = useState<TranscribeProgress | null>(null)
+  // Set before the first await rather than derived from `progress`, which does
+  // not arrive until the audio is being decoded — long enough for a second press
+  // to start a second run.
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [warnings, setWarnings] = useState<string[]>([])
@@ -66,10 +82,12 @@ export function CaptionsPanel({
   const sources = useMemo(() => speechSources(project, assets), [project, assets])
   const speechSeconds = sources.reduce((sum, source) => sum + source.duration, 0)
 
+  /** Transcribes the whole timeline, replacing whatever is on the track. */
   const run = async () => {
     setError(null)
     setNotice(null)
     setWarnings([])
+    setBusy(true)
     const controller = new AbortController()
     abortRef.current = controller
 
@@ -103,11 +121,10 @@ export function CaptionsPanel({
       }
     } finally {
       setProgress(null)
+      setBusy(false)
       abortRef.current = null
     }
   }
-
-  const busy = progress !== null
 
   return (
     <div className="flex flex-col gap-4">
@@ -182,10 +199,14 @@ export function CaptionsPanel({
         {busy ? (
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-2 text-xs text-ink-dim">
+              {/* Progress does not arrive until there is audio to decode, and
+                  Cancel has to be reachable in the wait before it does. */}
               <span>
-                Transcribing {Math.min(progress.done + 1, progress.total)} of {progress.total}
-                {progress.label ? ` · ${progress.label}` : ''}
-                {progress.detail ? ` · ${progress.detail}` : ''}
+                {progress
+                  ? `Transcribing ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` +
+                    (progress.label ? ` · ${progress.label}` : '') +
+                    (progress.detail ? ` · ${progress.detail}` : '')
+                  : 'Getting the audio ready'}
               </span>
               <Button variant="ghost" onClick={() => abortRef.current?.abort()}>
                 Cancel
@@ -193,7 +214,7 @@ export function CaptionsPanel({
             </div>
             {/* The model download is the one part with a real total, and it is
                 also the long silent wait, so it gets a bar of its own. */}
-            {progress.ratio === undefined ? null : (
+            {progress?.ratio === undefined ? null : (
               <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
                 <div
                   className="h-full bg-accent transition-[width]"
@@ -206,7 +227,9 @@ export function CaptionsPanel({
 
         {cues.length > 0 && !busy ? (
           <p className="text-xs text-ink-dim">
-            Redoing replaces the captions below. Anything you have edited by hand will be lost.
+            Redoing replaces every caption below, so anything edited by hand is lost. To keep those,
+            redo the one clip that needs it from its ⋯ menu on the timeline instead — only that clip
+            is transcribed, and only its captions change.
           </p>
         ) : null}
       </Section>

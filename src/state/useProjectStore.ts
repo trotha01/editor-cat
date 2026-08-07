@@ -34,6 +34,7 @@ import {
   fitBetweenNeighbours,
   mergeCues,
   moveCue,
+  recaptionSource,
   setCueText,
   setWordTiming,
   splitCue,
@@ -156,6 +157,17 @@ interface ProjectState {
    * ending up with two overlapping copies of the same words is nobody's intent.
    */
   setCaptionsFromWords: (trackId: string, words: readonly TimedWord[]) => number
+  /**
+   * Replaces the captions from one clip with a fresh transcript of that clip,
+   * leaving every other caption on the track — and every correction made to one
+   * — alone. The counts go back to the caller because each of them is something
+   * the panel has to report: what landed, what it cost, and what would not fit.
+   */
+  setCaptionsFromSource: (
+    trackId: string,
+    sourceId: string,
+    words: readonly TimedWord[],
+  ) => { added: number; replaced: number; dropped: number }
   selectCaption: (selection: CaptionSelection | null) => void
   updateCue: (cueId: string, update: (cue: CaptionCue) => CaptionCue | null) => void
   /** Retimes a caption, refusing a move that would land on another one. */
@@ -443,6 +455,23 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
       set({ selectedCaption: cues[0] ? { cueId: cues[0].id, wordId: null } : null })
       return cues.length
+    },
+
+    setCaptionsFromSource: (trackId, sourceId, words) => {
+      const result = recaptionSource(captionCuesOf(get().project), trackId, sourceId, words, newId)
+      mutate((project) => ({ ...project, captionCues: result.cues }))
+      // Land on the first of the new captions, which is the one a redo is
+      // asking to be shown. With none to land on, hold the selection where it
+      // is — unless it was pointing at a caption this run has just replaced,
+      // which would leave the word controls editing something that is gone.
+      set((state) => ({
+        selectedCaption: result.fresh[0]
+          ? { cueId: result.fresh[0].id, wordId: null }
+          : result.cues.some((cue) => cue.id === state.selectedCaption?.cueId)
+            ? state.selectedCaption
+            : null,
+      }))
+      return { added: result.fresh.length, replaced: result.replaced, dropped: result.dropped }
     },
 
     selectCaption: (selection) => set({ selectedCaption: selection }),

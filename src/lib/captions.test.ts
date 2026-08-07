@@ -12,6 +12,7 @@ import {
   defaultCaptionStyle,
   mergeCues,
   moveCue,
+  recaptionSource,
   setCueText,
   setWordTiming,
   splitBoundary,
@@ -173,6 +174,146 @@ describe('wordsOntoTimeline', () => {
       duration: 3,
     })
     expect(held).toEqual({ text: 'long', start: 0, end: 1 })
+  })
+})
+
+describe('recaptionSource', () => {
+  /** A word heard in a particular clip, which is what makes it swappable. */
+  const heard = (clipId: string, text: string, start: number, end: number): TimedWord => ({
+    text,
+    start,
+    end,
+    source: { id: clipId, label: `${clipId}.webm` },
+  })
+
+  /** Two clips, a second apart so their words never group into one caption. */
+  const twoClips = () =>
+    cuesFromWords(
+      [
+        heard('clip-a', 'first', 0, 0.4),
+        heard('clip-a', 'take.', 0.5, 0.9),
+        heard('clip-b', 'second', 3, 3.4),
+        heard('clip-b', 'take.', 3.5, 3.9),
+      ],
+      'track-1',
+      makeId,
+    )
+
+  it('replaces one clip’s captions and leaves the others untouched', () => {
+    const before = twoClips()
+    const kept = before.filter((entry) => entry.source?.id === 'clip-b')
+
+    const result = recaptionSource(
+      before,
+      'track-1',
+      'clip-a',
+      [heard('clip-a', 'better', 0, 0.4), heard('clip-a', 'take.', 0.5, 0.9)],
+      makeId,
+    )
+
+    expect(result.cues.filter((entry) => entry.source?.id === 'clip-a').map(cueText)).toEqual([
+      'better take.',
+    ])
+    // By identity, not by contents: the whole point is that a correction made to
+    // another clip's line — a retyped word, a dragged edge — cannot be disturbed
+    // by a redo aimed somewhere else.
+    expect(result.cues.filter((entry) => entry.source?.id === 'clip-b')).toEqual(kept)
+    expect(result.replaced).toBe(1)
+    expect(result.fresh).toHaveLength(1)
+    expect(result.dropped).toBe(0)
+  })
+
+  it('leaves a caption that claims no clip alone, since nothing says it is stale', () => {
+    const typed: CaptionCue = { ...cue([word('typed', 5, 5.4)]), id: 'typed-by-hand' }
+    const result = recaptionSource(
+      [...twoClips(), typed],
+      'track-1',
+      'clip-a',
+      [heard('clip-a', 'again.', 0, 0.4)],
+      makeId,
+    )
+
+    expect(result.cues).toContain(typed)
+  })
+
+  it('leaves another track’s captions alone, whichever clip they came from', () => {
+    const elsewhere: CaptionCue = {
+      ...cue([word('translated', 0, 0.4)]),
+      id: 'other-track',
+      trackId: 'track-2',
+      source: { id: 'clip-a', label: 'clip-a.webm' },
+    }
+    const result = recaptionSource(
+      [...twoClips(), elsewhere],
+      'track-1',
+      'clip-a',
+      [heard('clip-a', 'again.', 0, 0.4)],
+      makeId,
+    )
+
+    expect(result.cues).toContain(elsewhere)
+    expect(result.replaced).toBe(1)
+  })
+
+  it('removes a clip’s captions when it comes back with nothing to say', () => {
+    const result = recaptionSource(twoClips(), 'track-1', 'clip-a', [], makeId)
+
+    expect(result.cues.map(cueText)).toEqual(['second take.'])
+    expect(result.replaced).toBe(1)
+    expect(result.fresh).toEqual([])
+  })
+
+  it('pulls a new caption back to where the ones that stayed leave room', () => {
+    // The clip has been retimed since it was last transcribed, so its words now
+    // run into a caption from the clip after it. The one that stayed wins.
+    const result = recaptionSource(
+      twoClips(),
+      'track-1',
+      'clip-a',
+      [heard('clip-a', 'runs', 2.5, 2.9), heard('clip-a', 'long.', 3.4, 3.8)],
+      makeId,
+    )
+
+    const moved = result.fresh[0]!
+    expect(moved.end).toBeCloseTo(3)
+    expect(result.cues.filter((entry) => entry.source?.id === 'clip-b').map(cueText)).toEqual([
+      'second take.',
+    ])
+    expect(result.dropped).toBe(0)
+  })
+
+  it('drops a new caption with no room rather than covering another clip’s', () => {
+    const result = recaptionSource(
+      twoClips(),
+      'track-1',
+      'clip-a',
+      // Squarely under clip-b's caption, which is not going anywhere.
+      [heard('clip-a', 'underneath.', 3.1, 3.5)],
+      makeId,
+    )
+
+    expect(result.fresh).toEqual([])
+    expect(result.dropped).toBe(1)
+    expect(result.cues.map(cueText)).toEqual(['second take.'])
+  })
+
+  it('never leaves two captions on screen at once', () => {
+    const result = recaptionSource(
+      twoClips(),
+      'track-1',
+      'clip-a',
+      Array.from({ length: 12 }, (_, index) =>
+        heard('clip-a', `w${index}`, index * 0.35, index * 0.35 + 0.3),
+      ),
+      makeId,
+    )
+
+    const ordered = cuesOnTrack(result.cues, 'track-1')
+    for (const [index, entry] of ordered.entries()) {
+      const next = ordered[index + 1]
+      if (next) expect(entry.end).toBeLessThanOrEqual(next.start + 1e-6)
+    }
+    expect(result.fresh.length).toBeGreaterThan(0)
   })
 })
 
