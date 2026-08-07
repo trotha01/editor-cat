@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { describeAttempt, labelAttempt, loadFailureMessage, verdictFor } from './speechModel'
-import { SPEECH_MODEL_ATTEMPTS } from './models'
+import {
+  describeAttempt,
+  isMissingAlignment,
+  labelAttempt,
+  loadFailureMessage,
+  verdictFor,
+} from './speechModel'
+import { FALLBACK_SPEECH_MODEL, SPEECH_MODEL_ATTEMPTS } from './models'
 
 /**
  * The error a Whisper export really produced, reported from the field, verbatim.
  *
- * `qdq_actions.cc` is a graph *optimisation* — the model had downloaded intact,
- * and every export of it failed here identically, quantised and full-precision
- * alike, which is what says the optimiser is the problem rather than the weights.
+ * It survived every export the repo publishes *and* every graph optimisation
+ * level including none, which between them rule out both the weights and any
+ * optional rewrite — leaving the model file itself, which no session option can
+ * repair. That is why the ladder ends up somewhere else entirely.
  */
 const SESSION_REFUSED =
   "Can't create a session. ERROR_CODE: 1, ERROR_MESSAGE: qdq_actions.cc:137 " +
@@ -35,10 +42,12 @@ describe('verdictFor', () => {
     expect(verdictFor('Load failed')).toBe('give-up')
   })
 
-  it('gives up when the model has no word timings, which no export would fix', () => {
-    expect(
-      verdictFor('Model generation config has no `alignment_heads`, token-level timestamps…'),
-    ).toBe('give-up')
+  it('tries another model when this one has no word timings', () => {
+    // No other download from the same repo will have them — but another repo may,
+    // and the ladder now reaches one.
+    const detail = 'Model generation config has no `alignment_heads`, token-level timestamps…'
+    expect(isMissingAlignment(detail)).toBe(true)
+    expect(verdictFor(detail)).toBe('try-next')
   })
 
   it('treats an unrecognised failure as worth trying the next weights', () => {
@@ -58,9 +67,21 @@ describe('the ladder itself', () => {
     expect(second?.graphOptimizationLevel).toBe('basic')
   })
 
-  it('only fetches something else as a last resort', () => {
+  it('reaches a model from another publisher, since one repo can be unusable', () => {
+    const other = SPEECH_MODEL_ATTEMPTS.filter((attempt) => attempt.model)
+    expect(other.length).toBeGreaterThan(0)
+    expect(other.every((attempt) => attempt.model === FALLBACK_SPEECH_MODEL)).toBe(true)
+    // And it is not the configured model under another name.
+    expect(FALLBACK_SPEECH_MODEL.split('/')[0]).not.toBe('onnx-community')
+  })
+
+  it('leaves the biggest download until last', () => {
     const bigger = SPEECH_MODEL_ATTEMPTS.findIndex((attempt) => attempt.dtype === 'fp32')
     expect(bigger).toBe(SPEECH_MODEL_ATTEMPTS.length - 1)
+  })
+
+  it("tries the configured model before anyone else's", () => {
+    expect(SPEECH_MODEL_ATTEMPTS[0]?.model).toBeUndefined()
   })
 
   it('never repeats a way of opening the model', () => {
@@ -72,6 +93,18 @@ describe('the ladder itself', () => {
 describe('describeAttempt', () => {
   it('warns that the last resort is a bigger download', () => {
     expect(describeAttempt({ dtype: 'fp32' })).toMatch(/larger download/)
+  })
+
+  it('names the model when it is not the one that was configured', () => {
+    // The part that changes what the transcript says, rather than how long it
+    // took to produce.
+    expect(describeAttempt({ dtype: 'q8' })).not.toContain('/')
+    expect(describeAttempt({ model: 'Xenova/whisper-base', dtype: 'q8' })).toContain(
+      'Xenova/whisper-base',
+    )
+    expect(labelAttempt({ model: 'Xenova/whisper-base', dtype: 'q8' })).toContain(
+      'Xenova/whisper-base',
+    )
   })
 
   it('mentions the optimiser only when it is not the default', () => {
@@ -97,13 +130,13 @@ describe('loadFailureMessage', () => {
     const message = loadFailureMessage('onnx-community/whisper-base_timestamped', [
       `q8 — ${SESSION_REFUSED}`,
       `q8/basic — ${SESSION_REFUSED}`,
-      `fp32/disabled — ${SESSION_REFUSED}`,
+      `Xenova/whisper-base q8 — ${SESSION_REFUSED}`,
     ])
     expect(message).toContain('onnx-community/whisper-base_timestamped')
-    expect(message).toContain('would not run in this browser')
     expect(message).toContain('3 ways')
-    // Where to point the blame, and a way out that needs no code change.
-    expect(message).toContain('points at the model')
+    // By this point a second publisher has been tried, so the honest thing to
+    // say is that something unusual is going on rather than to blame the repo.
+    expect(message).toContain('different publisher')
     expect(message).toMatch(/Settings/)
   })
 
@@ -113,11 +146,22 @@ describe('loadFailureMessage', () => {
     expect(message).not.toContain('would not run')
   })
 
-  it('says what is actually wrong with a model that has no word timings', () => {
+  it('says what is wrong when nothing tried had word timings', () => {
     const message = loadFailureMessage('some/model', [
       'q8 — Model generation config has no `alignment_heads`',
+      'Xenova/whisper-base q8 — Model generation config has no `alignment_heads`',
     ])
-    expect(message).toContain('no word-level timing')
+    expect(message).toContain('No word-level timing')
     expect(message).toContain('_timestamped')
+  })
+
+  it('does not blame word timings when only one model lacked them', () => {
+    // The ladder moved on and something else went wrong; saying "no timings"
+    // would send the reader after the wrong thing.
+    const message = loadFailureMessage('some/model', [
+      'q8 — Model generation config has no `alignment_heads`',
+      `Xenova/whisper-base q8 — ${SESSION_REFUSED}`,
+    ])
+    expect(message).not.toContain('No word-level timing')
   })
 })

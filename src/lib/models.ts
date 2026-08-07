@@ -215,8 +215,21 @@ export const LLM_ENDPOINT = 'fal-ai/any-llm'
  */
 export const DEFAULT_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
 
+/**
+ * A second model to fall back to, from a different conversion lineage.
+ *
+ * `Xenova/*` are the original transformers.js conversions, exported years apart
+ * from the `onnx-community/*` ones and by different tooling — which is the
+ * point. A repo whose weights this runtime cannot load is not fixed by another
+ * export of the same repo, only by a differently produced one. Still
+ * multilingual, so falling back does not quietly turn a French project English.
+ */
+export const FALLBACK_SPEECH_MODEL = 'Xenova/whisper-base'
+
 /** One way of trying to open a speech model. */
 export interface SpeechModelAttempt {
+  /** Repo to load. Omitted means the one configured in Settings. */
+  model?: string
   /** Which export to download. `q8` is quantised, `fp32` the model as trained. */
   dtype: string
   /**
@@ -230,29 +243,32 @@ export interface SpeechModelAttempt {
  * Ways to open a speech model, tried in order until one works.
  *
  * A ladder rather than a single choice, because "downloaded" and "runnable" are
- * different things and only the browser can tell them apart. What fails is
- * usually not the download: a model arrives intact and then ONNX Runtime refuses
- * to build a session for it, reporting something like
+ * different things and only the browser can tell them apart. A model can arrive
+ * intact and then have ONNX Runtime refuse to build a session for it:
  *
  *   qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale
  *
- * which is a *graph optimisation* choking on quantised weights — and it happens
- * whichever export you fetch, because the optimiser is the same either way. So
- * the ladder turns the optimiser down before it reaches for a different file:
- * that transform runs at ONNX Runtime's extended level, so asking for basic
- * skips it, and the first three rungs all reuse one download.
+ * That one is worth knowing about in detail, because it taught us the shape of
+ * this ladder the hard way. It survives every export the repo publishes,
+ * quantised and full-precision alike, *and* every graph optimisation level
+ * including none — which together mean it is neither the weights nor an optional
+ * rewrite, but how the runtime has to execute those weights at all. Nothing
+ * about one repo can be worked around; the answer is a different repo.
  *
- * Only the last rung fetches anything more. `fp32` is the model as trained,
- * several times the size and slower, with no quantisation operators in it at all
- * — nothing left to be incompatible with.
+ * So the ladder widens as it goes, cheapest first:
  *
- * A model that fails every rung is a repo problem, and the repo id is a setting.
+ *  1. the configured model, as published;
+ *  2. the same download, with the graph optimiser turned down — free to try, and
+ *     it does rescue some other load failures;
+ *  3. a model from an entirely different conversion lineage;
+ *  4. that model unquantised, which is the largest download and the fewest
+ *     assumptions.
  */
 export const SPEECH_MODEL_ATTEMPTS: readonly SpeechModelAttempt[] = [
   { dtype: 'q8' },
   { dtype: 'q8', graphOptimizationLevel: 'basic' },
-  { dtype: 'q8', graphOptimizationLevel: 'disabled' },
-  { dtype: 'fp32', graphOptimizationLevel: 'disabled' },
+  { model: FALLBACK_SPEECH_MODEL, dtype: 'q8' },
+  { model: FALLBACK_SPEECH_MODEL, dtype: 'fp32' },
 ]
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id

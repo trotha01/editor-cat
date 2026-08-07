@@ -51,6 +51,12 @@ function ensureWorker(): Worker {
  * that took a minute to download. The reply for an abandoned request is dropped
  * when it arrives.
  */
+/** Words, plus the model that produced them if it was not the one asked for. */
+export interface BrowserTranscribeResult {
+  words: TimedWord[]
+  usedModel?: string
+}
+
 export function transcribeInBrowser({
   audio,
   sampleRate,
@@ -59,11 +65,11 @@ export function transcribeInBrowser({
   language,
   onProgress,
   signal,
-}: BrowserTranscribeRequest): Promise<TimedWord[]> {
+}: BrowserTranscribeRequest): Promise<BrowserTranscribeResult> {
   const id = nextId++
   const instance = ensureWorker()
 
-  return new Promise<TimedWord[]>((resolve, reject) => {
+  return new Promise<BrowserTranscribeResult>((resolve, reject) => {
     const finish = (fn: () => void) => {
       instance.removeEventListener('message', onMessage)
       signal?.removeEventListener('abort', onAbort)
@@ -80,8 +86,14 @@ export function transcribeInBrowser({
         })
         return
       }
-      if (message.type === 'done') finish(() => resolve(message.words))
-      else finish(() => reject(new Error(message.message)))
+      if (message.type === 'done') {
+        finish(() =>
+          resolve({
+            words: message.words,
+            ...(message.usedModel ? { usedModel: message.usedModel } : {}),
+          }),
+        )
+      } else finish(() => reject(new Error(message.message)))
     }
 
     const onAbort = () => finish(() => reject(new DOMException('Aborted', 'AbortError')))

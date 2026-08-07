@@ -17,7 +17,13 @@
  * can be tested without any of this.
  */
 import { whisperWords, type WhisperChunk } from '../lib/whisperWords'
-import { describeAttempt, labelAttempt, loadFailureMessage, verdictFor } from '../lib/speechModel'
+import {
+  describeAttempt,
+  isMissingAlignment,
+  labelAttempt,
+  loadFailureMessage,
+  verdictFor,
+} from '../lib/speechModel'
 import type { SpeechModelAttempt } from '../lib/models'
 import type { TimedWord } from '../lib/captions'
 
@@ -42,7 +48,7 @@ export interface WhisperRequest {
 /** What comes back. A `progress` stream, then exactly one end state. */
 export type WhisperResponse =
   | { type: 'progress'; id: number; message: string; ratio?: number }
-  | { type: 'done'; id: number; words: TimedWord[] }
+  | { type: 'done'; id: number; words: TimedWord[]; usedModel?: string }
   | { type: 'error'; id: number; message: string }
 
 /** Where the runtime and its WebAssembly are served from. */
@@ -110,7 +116,7 @@ function post(message: WhisperResponse): void {
  * Held as the promise rather than the result so that two sources arriving close
  * together wait on one load instead of starting two downloads.
  */
-let loading: Promise<Transcriber> | null = null
+let loading: Promise<{ transcriber: Transcriber; usedModel: string }> | null = null
 let loadedModel = ''
 
 /**
@@ -124,7 +130,19 @@ let loadedModel = ''
  */
 const unusable = new Map<string, string>()
 
-async function loadModel(request: WhisperRequest): Promise<Transcriber> {
+/**
+ * Models with no word-level timing in them, to why we know.
+ *
+ * Kept apart from the above because it condemns the repo rather than one
+ * download from it: no other export of a model without alignment heads will have
+ * them either, so the rest of that model's rungs are skipped rather than
+ * fetched.
+ */
+const untimed = new Map<string, string>()
+
+async function loadModel(
+  request: WhisperRequest,
+): Promise<{ transcriber: Transcriber; usedModel: string }> {
   // A model changed in Settings has to replace the one already loaded, or the
   // override would appear to do nothing until the tab was reloaded.
   if (loading && loadedModel !== request.model) loading = null
@@ -149,25 +167,30 @@ async function loadModel(request: WhisperRequest): Promise<Transcriber> {
  * build a session for. Nothing before that point predicts it, so the answer is
  * to try the next set rather than to tell someone captions are unavailable.
  */
-async function openPipeline(request: WhisperRequest): Promise<Transcriber> {
+async function openPipeline(
+  request: WhisperRequest,
+): Promise<{ transcriber: Transcriber; usedModel: string }> {
   const module = await loadRuntime()
   const failures: string[] = []
 
   for (const attempt of request.attempts) {
-    const key = `${request.model}|${labelAttempt(attempt)}`
-    const known = unusable.get(key)
-    if (known !== undefined) {
-      failures.push(`${labelAttempt(attempt)} — ${known}`)
+    const model = attempt.model ?? request.model
+    const label = labelAttempt(attempt)
+    const key = `${model}|${label}`
+
+    const condemned = untimed.get(model) ?? unusable.get(key)
+    if (condemned !== undefined) {
+      failures.push(`${label} — ${condemned}`)
       continue
     }
 
     try {
-      const transcriber = await module.pipeline('automatic-speech-recognition', request.model, {
+      const transcriber = await module.pipeline('automatic-speech-recognition', model, {
         dtype: attempt.dtype,
         device: 'wasm',
-        // Turning the graph optimiser down is what rescues a model whose
-        // quantised weights it refuses to rewrite. Left out entirely at the
-        // default, so a working model is not slowed down for nothing.
+        // Turning the graph optimiser down rescues some load failures and costs
+        // no download, since it re-reads the file already fetched. Left out
+        // entirely at the default, so a working model is not slowed for nothing.
         ...(attempt.graphOptimizationLevel
           ? { session_options: { graphOptimizationLevel: attempt.graphOptimizationLevel } }
           : {}),
@@ -183,19 +206,20 @@ async function openPipeline(request: WhisperRequest): Promise<Transcriber> {
       })
 
       if (failures.length > 0) {
-        // Worth saying out loud: a fallback is slower, and sometimes a bigger
-        // download, and silence would leave that looking like the model simply
-        // being slow for no reason.
+        // Worth saying out loud: a fallback can be slower, a bigger download,
+        // and — when it is a different model — a different transcript.
         post({ type: 'progress', id: request.id, message: `using ${describeAttempt(attempt)}` })
       }
-      return transcriber
+      return { transcriber, usedModel: model }
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause)
-      failures.push(`${labelAttempt(attempt)} — ${detail}`)
+      failures.push(`${label} — ${detail}`)
+
       // A network failure is about today, not about this way of opening the
       // model, so it must not be blacklisted for the rest of the session.
       if (verdictFor(detail) === 'give-up') break
-      unusable.set(key, detail)
+      if (isMissingAlignment(detail)) untimed.set(model, detail)
+      else unusable.set(key, detail)
     }
   }
 
@@ -220,7 +244,7 @@ async function run(request: WhisperRequest): Promise<void> {
     )
   }
 
-  const transcriber = await loadModel(request)
+  const { transcriber, usedModel } = await loadModel(request)
   post({ type: 'progress', id: request.id, message: 'listening' })
 
   const output = await transcriber(request.audio, {
@@ -237,5 +261,8 @@ async function run(request: WhisperRequest): Promise<void> {
     words: whisperWords(result?.chunks ?? [], {
       duration: request.audio.length / request.sampleRate,
     }),
+    // Named only when it is not the model that was asked for, since that is a
+    // different transcript rather than merely a slower one.
+    ...(usedModel === request.model ? {} : { usedModel }),
   })
 }

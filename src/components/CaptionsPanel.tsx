@@ -129,7 +129,9 @@ export function CaptionsPanel({
       })
 
       const count = setCaptionsFromWords(trackId, transcript.words)
-      setWarnings(transcript.failures)
+      // Notes sit with the failures rather than in the success line: a transcript
+      // made by a model you did not choose is a caveat, not a footnote.
+      setWarnings([...transcript.notes, ...transcript.failures])
       setNotice(
         count === 0
           ? 'No speech was recognised in the audio on the timeline.'

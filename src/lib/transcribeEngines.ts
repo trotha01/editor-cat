@@ -47,6 +47,12 @@ export interface TranscriptionEngine {
     words: TimedWord[]
     /** What the engine reckoned the language was, where it says. */
     languageCode?: string
+    /**
+     * Something the user should know about how this transcript was made, where
+     * there is anything — a fallback model changes what the words say, not just
+     * how long they took.
+     */
+    note?: string
   }>
 }
 
@@ -164,7 +170,7 @@ export function browserEngine({ model, attempts }: BrowserEngineOptions): Transc
       if (isMockEnabled()) return { words: await mockWords(request), languageCode: 'eng' }
 
       const audio = await speechSamples(request.buffer, { from: request.from, to: request.to })
-      const words = await transcribeInBrowser({
+      const { words, usedModel } = await transcribeInBrowser({
         audio,
         sampleRate: SPEECH_SAMPLE_RATE,
         model,
@@ -184,6 +190,9 @@ export function browserEngine({ model, attempts }: BrowserEngineOptions): Transc
           start: word.start + request.from,
           end: word.end + request.from,
         })),
+        ...(usedModel
+          ? { note: `"${model}" would not run here, so "${usedModel}" transcribed this instead` }
+          : {}),
       }
     },
   }

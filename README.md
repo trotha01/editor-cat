@@ -550,25 +550,33 @@ over the whole directory leaves the choice where it belongs. The model weights
 themselves come from Hugging Face on first use and are cached by the browser.
 
 **Downloaded is not the same as runnable.** A model can arrive intact and then
-be refused by ONNX Runtime at session creation, reporting something like
-`qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale` — which
-says nothing about captions and, read carefully, is not about the weights either.
-`qdq_actions.cc` is a _graph optimisation_, so it fails the same way whichever
-export you fetch, quantised or full-precision. That is what the ladder in
-`SPEECH_MODEL_ATTEMPTS` is shaped around: turn the optimiser down before reaching
-for a different file, because the transform runs at ONNX Runtime's extended level
-and asking for basic skips it — and because the first three rungs reuse one
-download, where a different format costs another. Only the last rung fetches
-anything more.
+have ONNX Runtime refuse to build a session for it. One such failure taught this
+ladder its shape, and the diagnosis is worth keeping:
 
-A rung that fails is remembered with its reason, so a project with six voice
-takes walks the ladder once rather than six times, and every reason is reported
-together if it runs out — which is the useful case, since all of them failing
-identically is what points at the model rather than at the browser. Reading those
-failures apart — "no connection" from "this repo does not publish that format"
-from "the runtime refused it" — is the whole of `src/lib/speechModel.ts`, because
-the errors themselves say none of it: "Failed to fetch" is what a browser reports
-for being offline, for a blocked network and for a repo that does not exist.
+    qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale
+
+It survived every export the repo publishes, quantised and full-precision alike —
+so not the weights. It survived every graph optimisation level including none —
+so not an optional rewrite either, but how the runtime has to execute those
+weights at all. Between them those two facts leave the model file itself, which
+nothing on this side can repair. The lesson generalises: when a model will not
+load, the thing to vary is not only _how_ it is opened but _which_ it is.
+
+So `SPEECH_MODEL_ATTEMPTS` widens as it goes, cheapest first — the configured
+model as published; the same download with the optimiser turned down, which is
+free and does rescue other load failures; then a model from an entirely different
+conversion lineage; then that one unquantised. A rung that fails is remembered
+with its reason, so a project with six voice takes walks the ladder once rather
+than six times. A model with no word timings condemns the whole repo rather than
+one download from it, since no other export of it will have them.
+
+Falling back to a different model is reported rather than hidden, because unlike
+the other rungs it changes what the transcript _says_, not just how long it took.
+Reading those failures apart — "no connection" from "this repo does not publish
+that format" from "the runtime refused it" from "this model has no word timings"
+— is the whole of `src/lib/speechModel.ts`, because the errors themselves say
+none of it: "Failed to fetch" is what a browser reports for being offline, for a
+blocked network and for a repo that does not exist.
 
 **Whisper needs cleaning up after.** It was trained on subtitled video, so given
 silence or music it reaches for what subtitles say when nobody is speaking —

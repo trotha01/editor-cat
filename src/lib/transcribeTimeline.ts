@@ -38,6 +38,11 @@ export interface TimelineTranscript {
   failures: string[]
   /** Languages the engine detected, so a mis-detection is visible in the UI. */
   languages: string[]
+  /**
+   * Anything the user should know about how these words were produced — a
+   * fallback model, say. Deduplicated, because every source hits the same one.
+   */
+  notes: string[]
 }
 
 export interface TranscribeTimelineOptions {
@@ -62,6 +67,7 @@ export async function transcribeTimeline({
   const words: TimedWord[] = []
   const failures: string[] = []
   const languages = new Set<string>()
+  const notes = new Set<string>()
 
   let done = 0
   for (const source of sources) {
@@ -91,6 +97,7 @@ export async function transcribeTimeline({
       })
 
       if (result.languageCode) languages.add(result.languageCode)
+      if (result.note) notes.add(result.note)
       words.push(...wordsOntoTimeline(result.words, source))
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
@@ -108,5 +115,6 @@ export async function transcribeTimeline({
     words: dedupeOverlappingWords(words.sort((a, b) => a.start - b.start)),
     failures,
     languages: [...languages],
+    notes: [...notes],
   }
 }

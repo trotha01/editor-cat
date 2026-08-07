@@ -22,15 +22,25 @@ export type LoadVerdict =
   | 'give-up'
 
 /**
- * Errors that no other export can fix.
+ * Whether a model lacks the word-level timing captions are built on.
+ *
+ * Worth its own question because it is a property of the *repo*, not of the
+ * export: no other download from the same place will have them, so there is no
+ * point trying one — but a different repo may well.
+ */
+export function isMissingAlignment(detail: string): boolean {
+  return /alignment_heads/i.test(detail)
+}
+
+/**
+ * The one error nothing else on the ladder can survive.
  *
  * A network that cannot reach the hub will not reach it for the next file
- * either, and walking a ladder against it just makes the same failure three
- * times over. Alignment heads are a property of the repo rather than of the
- * weights, so the answer there is a different model, not a different dtype.
+ * either, and walking a ladder against it just repeats the same failure. Every
+ * other failure is about one particular way of opening one particular model, and
+ * the ladder exists to try another.
  */
 export function verdictFor(detail: string): LoadVerdict {
-  if (/alignment_heads/i.test(detail)) return 'give-up'
   // A missing file is a 404 from the hub, and it means this repo simply does not
   // publish these weights — which is the ladder working, not the network
   // failing, however much the two look alike.
@@ -41,6 +51,10 @@ export function verdictFor(detail: string): LoadVerdict {
 
 /** How to describe one way of opening a model to someone who did not choose it. */
 export function describeAttempt(attempt: SpeechModelAttempt): string {
+  // The model comes first when it is not the one they configured, because that
+  // is the part that changes what the transcript says rather than how long it
+  // takes to produce.
+  const prefix = attempt.model ? `${attempt.model}, ` : ''
   const weights =
     attempt.dtype === 'fp32'
       ? 'full-precision weights — a larger download'
@@ -48,18 +62,23 @@ export function describeAttempt(attempt: SpeechModelAttempt): string {
         ? 'compressed weights'
         : `${attempt.dtype} weights`
 
-  // Only worth mentioning when it is not the runtime's own default, since that
-  // is the only time it explains anything the reader can act on.
-  if (attempt.graphOptimizationLevel === 'basic') return `${weights}, fewer graph optimisations`
-  if (attempt.graphOptimizationLevel === 'disabled') return `${weights}, no graph optimisations`
-  return weights
+  // The optimiser is only worth mentioning when it is not the runtime's own
+  // default, since that is the only time it explains anything to act on.
+  if (attempt.graphOptimizationLevel === 'basic') {
+    return `${prefix}${weights}, fewer graph optimisations`
+  }
+  if (attempt.graphOptimizationLevel === 'disabled') {
+    return `${prefix}${weights}, no graph optimisations`
+  }
+  return `${prefix}${weights}`
 }
 
 /** The same, short enough to sit in a list of failures. */
 export function labelAttempt(attempt: SpeechModelAttempt): string {
-  return attempt.graphOptimizationLevel
+  const weights = attempt.graphOptimizationLevel
     ? `${attempt.dtype}/${attempt.graphOptimizationLevel}`
     : attempt.dtype
+  return attempt.model ? `${attempt.model} ${weights}` : weights
 }
 
 /**
@@ -71,28 +90,31 @@ export function labelAttempt(attempt: SpeechModelAttempt): string {
  * browser.
  */
 export function loadFailureMessage(model: string, attempts: readonly string[]): string {
-  const first = attempts[0] ?? ''
+  const last = attempts[attempts.length - 1] ?? ''
 
-  if (/alignment_heads/i.test(first)) {
+  // Judged across all of them, because the ladder tries more than one repo: a
+  // single model without alignment heads is not the same story as every one of
+  // them lacking them.
+  if (attempts.length > 0 && attempts.every(isMissingAlignment)) {
     return (
-      `"${model}" has no word-level timing in it, so there is nothing for the highlight to ` +
-      `follow. Pick a model published with alignment heads — the "_timestamped" repos are built ` +
-      `for this — in Settings.`
+      `No word-level timing was available from any model tried, so there is nothing for the ` +
+      `highlight to follow. Pick a model published with alignment heads — the "_timestamped" ` +
+      `repos are built for this — in Settings.`
     )
   }
-  if (verdictFor(first) === 'give-up') {
+  if (verdictFor(last) === 'give-up') {
     return (
       `The speech model "${model}" could not be downloaded. It comes from huggingface.co the ` +
       `first time you caption in the browser, so this needs a connection that can reach it. ` +
-      `(${first})`
+      `(${last})`
     )
   }
 
   return (
-    `The speech model "${model}" downloaded but would not run in this browser, in any of the ` +
-    `${attempts.length} ways it was tried. That points at the model rather than at this ` +
-    `machine, so the thing to change is the repo id in Settings — ` +
-    `"onnx-community/whisper-tiny.en_timestamped" is a smaller one to try. ` +
+    `No speech model would run in this browser: "${model}" was tried ${attempts.length} ways, ` +
+    `including a fallback from a different publisher. That is unusual enough to be worth ` +
+    `reporting — and in the meantime another repo id in Settings may work, ` +
+    `"onnx-community/whisper-tiny.en_timestamped" being a small one. ` +
     `Attempts: ${attempts.join(' · ')}`
   )
 }
