@@ -4,6 +4,7 @@
  * kept side-effect free and unit tested directly.
  */
 import { audioEnd } from './audioTracks'
+import { videoLayersEnd } from './videoTracks'
 import type { Asset, Clip, PositionedClip, Project } from './types'
 
 /** Shortest clip we allow. Below this, trimming produces unplayable slivers. */
@@ -78,7 +79,11 @@ export function pictureEnd(project: Pick<Project, 'clips' | 'leadIn'>): number {
  * first clip or past the last one.
  */
 export function projectDuration(project: Project): number {
-  return Math.max(pictureEnd(project), audioEnd(project.audioClips ?? []))
+  return Math.max(
+    pictureEnd(project),
+    audioEnd(project.audioClips ?? []),
+    videoLayersEnd(project.videoClips ?? []),
+  )
 }
 
 /**

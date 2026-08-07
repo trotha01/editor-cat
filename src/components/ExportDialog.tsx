@@ -11,6 +11,7 @@ import { getBlob } from '../lib/db'
 import { downloadBlob } from '../lib/media'
 import { clipDuration, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { audioEnd, gainFor } from '../lib/audioTracks'
+import { layerGain, opacityFor, videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
 import { buildAssFile } from '../lib/export/assCaptions'
 import { captionFonts } from '../lib/export/captionFonts'
@@ -141,6 +142,28 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         })
       }
 
+      // Layers, in track order, which is the order they stack in. A hidden lane
+      // is left out entirely rather than encoded at zero opacity: it would cost
+      // an input and a filter chain to change not one pixel of the output.
+      const overlays: NonNullable<RenderRequest['overlays']> = []
+      for (const track of videoTracksOf(project)) {
+        if (track.hidden) continue
+        for (const clip of videoClipsOf(project)) {
+          if (clip.trackId !== track.id || clip.duration <= 0) continue
+          await collect(clip.assetId)
+          const asset = assets.find((entry) => entry.id === clip.assetId)
+          overlays.push({
+            assetId: clip.assetId,
+            kind: asset?.kind === 'video' ? 'video' : 'image',
+            startTime: clip.startTime,
+            inPoint: clip.inPoint,
+            duration: clip.duration,
+            opacity: opacityFor(videoTracksOf(project), clip),
+            volume: layerGain(videoTracksOf(project), clip),
+          })
+        }
+      }
+
       const clips = project.clips.map((clip) => {
         const asset = assets.find((entry) => entry.id === clip.assetId)
         return {
@@ -172,6 +195,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
       const { blob } = await renderProject(
         {
           clips,
+          overlays,
           audio,
           assets: needed,
           width: project.width,

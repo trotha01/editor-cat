@@ -10,6 +10,7 @@ import {
   migrateProject,
   moveAudioClip,
   nextTrackName,
+  retypeTrack,
   placeAudioClip,
   rangesOverlap,
   trackHasRoom,
@@ -337,6 +338,62 @@ describe('insertTrack', () => {
   it('appends when there is nothing of that kind yet', () => {
     const next = insertTrack([track('v1')], track('m1', 'music'))
     expect(next.map((entry) => entry.id)).toEqual(['v1', 'm1'])
+  })
+})
+
+describe('retypeTrack', () => {
+  it('changes what a lane carries', () => {
+    const next = retypeTrack([track('t1')], 't1', 'music')
+    expect(next[0]?.kind).toBe('music')
+  })
+
+  it('moves the lane in among its new kind', () => {
+    // Where a lane sits is what says what it is, so a lane that changes kind
+    // and stays put would leave the grouping lying.
+    const tracks = [track('v1'), track('v2'), track('m1', 'music')]
+    const next = retypeTrack(tracks, 'v1', 'music')
+    expect(next.map((entry) => entry.id)).toEqual(['v2', 'm1', 'v1'])
+  })
+
+  it('renames a lane that still has the name it was given', () => {
+    const tracks = [
+      track('a', 'voice', { name: 'Voice 1' }),
+      track('b', 'music', { name: 'Music 1' }),
+    ]
+    expect(retypeTrack(tracks, 'a', 'music').find((entry) => entry.id === 'a')?.name).toBe(
+      'Music 2',
+    )
+  })
+
+  it('keeps a name someone chose themselves', () => {
+    const tracks = [track('a', 'voice', { name: 'Narrator' })]
+    expect(retypeTrack(tracks, 'a', 'music')[0]?.name).toBe('Narrator')
+  })
+
+  it('leaves the level alone, because it may have been set by hand', () => {
+    // Pulling a balanced bed down to the music default would undo work rather
+    // than finish a rename.
+    const tracks = [track('a', 'voice', { volume: 0.35 })]
+    expect(retypeTrack(tracks, 'a', 'music')[0]?.volume).toBe(0.35)
+  })
+
+  it('keeps the clips where they are, since they belong to the lane', () => {
+    const tracks = [track('a'), track('b', 'music')]
+    const next = retypeTrack(tracks, 'a', 'music')
+    expect(next.map((entry) => entry.id).sort()).toEqual(['a', 'b'])
+    expect(next).toHaveLength(2)
+  })
+
+  it('does nothing for a kind it already is, or a lane that is not there', () => {
+    const tracks = [track('a')]
+    expect(retypeTrack(tracks, 'a', 'voice')).toEqual(tracks)
+    expect(retypeTrack(tracks, 'nope', 'music')).toEqual(tracks)
+  })
+
+  it('never mutates what it was given', () => {
+    const tracks = [track('a')]
+    retypeTrack(tracks, 'a', 'music')
+    expect(tracks[0]?.kind).toBe('voice')
   })
 })
 

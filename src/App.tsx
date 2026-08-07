@@ -127,7 +127,7 @@ export default function App() {
           <div className="rounded-xl border border-line bg-surface p-4">
             {tab === 'image' ? <ImagePanel /> : null}
             {tab === 'video' ? <VideoPanel /> : null}
-            {tab === 'library' ? <LibraryPanel /> : null}
+            {tab === 'library' ? <LibraryPanel currentTime={playback.currentTime} /> : null}
             {tab === 'audio' ? (
               <AudioPanel
                 currentTime={playback.currentTime}

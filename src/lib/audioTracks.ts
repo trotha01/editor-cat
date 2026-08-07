@@ -12,7 +12,20 @@
  * layer onto what exists where there is room, stack a new lane when there is
  * not — without ever asking the user to think about tracks.
  */
+import {
+  clipEnd,
+  clipsOnTrack as clipsOnLane,
+  laneWithRoom,
+  lanesEnd,
+  moveClipInLane,
+  trackHasRoom as laneHasRoom,
+  type TimeRange,
+} from './lanes'
 import type { AudioClip, AudioTrack, AudioTrackKind, LegacyVoiceoverTake, Project } from './types'
+
+// The lane arithmetic is shared with the video tracks, which work the same way.
+// Re-exported here so the audio side still reads as one module.
+export { clipEnd, rangesOverlap, type TimeRange } from './lanes'
 
 /**
  * Unity gain for narration; score sits under it by default. Cues are left at
@@ -31,28 +44,8 @@ const TRACK_LABEL: Record<AudioTrackKind, string> = {
   countdown: 'Countdown',
 }
 
-/** Clips closer than this are treated as touching, not overlapping. */
-const OVERLAP_EPSILON = 0.001
-
-export interface TimeRange {
-  startTime: number
-  duration: number
-}
-
-export function clipEnd(clip: TimeRange): number {
-  return clip.startTime + Math.max(0, clip.duration)
-}
-
-/** True if two ranges share any time. Touching end-to-start does not count. */
-export function rangesOverlap(a: TimeRange, b: TimeRange): boolean {
-  // A range with no length occupies no time, so it can never collide. Without
-  // this a degenerate clip would block the whole lane from its start onwards.
-  if (a.duration <= 0 || b.duration <= 0) return false
-  return a.startTime < clipEnd(b) - OVERLAP_EPSILON && b.startTime < clipEnd(a) - OVERLAP_EPSILON
-}
-
 export function clipsOnTrack(clips: readonly AudioClip[], trackId: string): AudioClip[] {
-  return clips.filter((clip) => clip.trackId === trackId)
+  return clipsOnLane(clips, trackId)
 }
 
 /**
@@ -65,9 +58,7 @@ export function trackHasRoom(
   range: TimeRange,
   ignoreClipId?: string,
 ): boolean {
-  return !clipsOnTrack(clips, trackId).some(
-    (clip) => clip.id !== ignoreClipId && rangesOverlap(clip, range),
-  )
+  return laneHasRoom(clips, trackId, range, ignoreClipId)
 }
 
 /**
@@ -80,7 +71,7 @@ export function findTrackWithRoom(
   kind: AudioTrackKind,
   range: TimeRange,
 ): AudioTrack | null {
-  return tracks.find((track) => track.kind === kind && trackHasRoom(clips, track.id, range)) ?? null
+  return laneWithRoom(tracks, clips, range, (track) => track.kind === kind)
 }
 
 /** Names new tracks "Voice 1", "Voice 2", … counting only that kind. */
@@ -120,6 +111,43 @@ export function insertTrack(tracks: readonly AudioTrack[], track: AudioTrack): A
   if (lastOfKind === -1) next.push(track)
   else next.splice(lastOfKind + 1, 0, track)
   return next
+}
+
+/**
+ * Changes what a lane is for, and moves it in among its new kind.
+ *
+ * A lane is added without being asked what it is going to carry, so this is how
+ * it gets told afterwards. Three things follow from the kind and all three have
+ * to follow the change: what the lane is called, where it sits among the others,
+ * and which lanes its clips can be dragged to — that last one being the reason a
+ * mislabelled lane is worth more than a cosmetic annoyance.
+ *
+ * The level is deliberately not reset. It is the one property the user may have
+ * set by hand, and silently pulling a bed down to half after they balanced it
+ * would undo work rather than complete a rename.
+ */
+export function retypeTrack(
+  tracks: readonly AudioTrack[],
+  trackId: string,
+  kind: AudioTrackKind,
+): AudioTrack[] {
+  const track = tracks.find((entry) => entry.id === trackId)
+  if (!track || track.kind === kind) return [...tracks]
+
+  const others = tracks.filter((entry) => entry.id !== trackId)
+  const renamed = {
+    ...track,
+    kind,
+    // Only auto-generated names are replaced. Someone who has named a lane
+    // meant that name, and it does not stop being theirs on a change of kind.
+    name: isDefaultName(track.name) ? nextTrackName(others, kind) : track.name,
+  }
+  return insertTrack(others, renamed)
+}
+
+/** True for the "Voice 1"/"Music 3" names `nextTrackName` hands out. */
+function isDefaultName(name: string): boolean {
+  return Object.values(TRACK_LABEL).some((label) => new RegExp(`^${label} \\d+$`).test(name))
 }
 
 export interface PlacementRequest {
@@ -177,26 +205,12 @@ export function moveAudioClip(
   clipId: string,
   next: { startTime: number; trackId?: string },
 ): { clips: AudioClip[]; moved: boolean } {
-  const clip = clips.find((entry) => entry.id === clipId)
-  if (!clip) return { clips: [...clips], moved: false }
-
-  const trackId = next.trackId ?? clip.trackId
-  const startTime = Math.max(0, next.startTime)
-  const range = { startTime, duration: clip.duration }
-
-  if (!trackHasRoom(clips, trackId, range, clipId)) {
-    return { clips: [...clips], moved: false }
-  }
-
-  return {
-    clips: clips.map((entry) => (entry.id === clipId ? { ...entry, trackId, startTime } : entry)),
-    moved: true,
-  }
+  return moveClipInLane(clips, clipId, next)
 }
 
 /** When the last audio finishes, in seconds. */
 export function audioEnd(clips: readonly AudioClip[]): number {
-  return clips.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0)
+  return lanesEnd(clips)
 }
 
 /** Clips audible at time `t`, ignoring muted tracks. */

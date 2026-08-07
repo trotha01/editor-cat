@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildExportPlan, type ExportAudioClip, type ExportClip } from './buildGraph'
+import {
+  buildExportPlan,
+  type ExportAudioClip,
+  type ExportClip,
+  type ExportOverlayClip,
+} from './buildGraph'
 
 const base = { width: 1280, height: 720, fps: 30, outputFile: 'out.mp4' }
 
@@ -385,12 +390,11 @@ describe('buildExportPlan', () => {
       const graph = graphOf(
         buildExportPlan({ ...base, clips: [img('a.png', 2)], audio: [], leadIn: 3, captions }).args,
       )
-      // One chain, in this order: the black goes on first and the captions are
-      // laid over the padded stream, whose clock is the timeline's.
-      expect(graph).toContain(
-        '[vcat]tpad=start_mode=add:start_duration=3:color=black,' +
-          'ass=filename=captions.ass:fontsdir=/fonts[vout]',
-      )
+      // In this order: the black goes on first, and the captions are laid over
+      // the padded stream, whose clock is the timeline's. Burning them in first
+      // would date every cue from the first frame of picture instead.
+      expect(graph).toContain('[vcat]tpad=start_mode=add:start_duration=3:color=black[vpad]')
+      expect(graph).toContain('[vpad]ass=filename=captions.ass:fontsdir=/fonts[vout]')
     })
 
     it('still holds the last frame for audio that outruns the picture', () => {
@@ -402,7 +406,208 @@ describe('buildExportPlan', () => {
           captions,
         }).args,
       )
-      expect(graph).toContain('tpad=stop_mode=clone:stop_duration=6,ass=filename=captions.ass')
+      expect(graph).toContain('[vcat]tpad=stop_mode=clone:stop_duration=6[vpad]')
+      expect(graph).toContain('[vpad]ass=filename=captions.ass')
+    })
+  })
+
+  /**
+   * Layers over the picture.
+   *
+   * The two things worth pinning down are when a layer is on screen and what is
+   * under it, because both are invisible in the argv until they are wrong: an
+   * ungated overlay sticks for the rest of the film, and one applied before the
+   * lead-in padding lands early by exactly the length of the black.
+   */
+  describe('video layers', () => {
+    const over = (
+      file: string,
+      startTime: number,
+      duration: number,
+      extra: Partial<ExportOverlayClip> = {},
+    ): ExportOverlayClip => ({ file, kind: 'video', inPoint: 0, startTime, duration, ...extra })
+
+    it('lays one over the picture for its own stretch of timeline only', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [over('b.mp4', 2, 3)],
+        }).args,
+      )
+
+      expect(graph).toContain('setpts=PTS-STARTPTS+2/TB[ov0]')
+      expect(graph).toContain(
+        "[vcat][ov0]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:enable='between(t,2,5)'[vout]",
+      )
+    })
+
+    it('fits the layer inside the frame instead of padding it', () => {
+      // A padded layer is a full frame of black with the picture inside it, and
+      // a full frame of black over the picture is a replacement, not an overlay.
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [over('b.mp4', 0, 2)],
+        }).args,
+      )
+
+      expect(graph).toContain('[1:v]scale=1280:720:force_original_aspect_ratio=decrease')
+      expect(graph.split('[ov0]')[0]).not.toContain(
+        'pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p[ov0',
+      )
+    })
+
+    it('lays them on in track order, each over the last', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [over('b.mp4', 0, 2), over('c.mp4', 0, 2)],
+        }).args,
+      )
+
+      expect(graph).toContain('[vcat][ov0]overlay=')
+      expect(graph).toContain('[vov0][ov1]overlay=')
+    })
+
+    it('goes on after the lead-in, so a layer lands when it was placed', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          leadIn: 3,
+          overlays: [over('b.mp4', 1, 2)],
+        }).args,
+      )
+
+      // Over the padded stream: the layer sits at one second, which is inside
+      // the black, and not at four.
+      expect(graph).toContain('[vpad][ov0]overlay=')
+      expect(graph).toContain("enable='between(t,1,3)'")
+    })
+
+    it('goes on under the captions, which belong on top of everything', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [over('b.mp4', 0, 2)],
+          captions: { file: 'captions.ass', fontsDir: '/fonts' },
+        }).args,
+      )
+
+      expect(graph).toContain('[vcat][ov0]overlay=')
+      expect(graph).toContain('[vov0]ass=filename=captions.ass:fontsdir=/fonts[vout]')
+    })
+
+    it('blends a lane that is not fully opaque', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [over('b.mp4', 0, 2, { opacity: 0.4 })],
+        }).args,
+      )
+
+      expect(graph).toContain('format=yuva420p,colorchannelmixer=aa=0.4')
+    })
+
+    it('leaves out a layer that would be invisible anyway', () => {
+      // A hidden lane arrives as opacity 0. Encoding it would cost an input and
+      // a filter chain to change not one pixel.
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 10)],
+        audio: [],
+        overlays: [over('b.mp4', 0, 2, { opacity: 0 }), over('c.mp4', 0, 0)],
+      })
+
+      expect(graphOf(plan.args)).not.toContain('overlay=')
+      expect(plan.args).not.toContain('b.mp4')
+    })
+
+    it('loops a still for as long as it is held', () => {
+      const args = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 10)],
+        audio: [],
+        overlays: [{ file: 'logo.png', kind: 'image', inPoint: 0, startTime: 1, duration: 4 }],
+      }).args
+
+      expect(args.join(' ')).toContain('-loop 1 -t 4 -i logo.png')
+    })
+
+    it('holds the last frame of picture under a layer that outruns it', () => {
+      // Otherwise the picture ends and the layer plays on over black, which is
+      // not what a layer laid over the end of a shot is meant to look like.
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 4)],
+        audio: [],
+        overlays: [over('b.mp4', 3, 5)],
+      })
+
+      expect(graphOf(plan.args)).toContain('tpad=stop_mode=clone:stop_duration=4')
+      expect(plan.durationSeconds).toBe(8)
+    })
+
+    it('mixes a layer’s own sound, at its absolute start time', () => {
+      // The preview plays it, so the export has to. And unlike a picture clip's
+      // sound it is already absolute, so no lead-in is added to it.
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          leadIn: 2,
+          overlays: [over('b.mp4', 3, 2, { hasAudio: true, volume: 0.5 })],
+        }).args,
+      )
+
+      expect(graph).toContain('[1:a]adelay=3000:all=1,volume=0.5,aresample=48000[o0]')
+    })
+
+    it('leaves a silent or muted layer out of the mix', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [
+            over('b.mp4', 0, 2, { hasAudio: true, volume: 0 }),
+            over('c.mp4', 0, 2, { hasAudio: false }),
+            { file: 'd.png', kind: 'image', inPoint: 0, startTime: 0, duration: 2 },
+          ],
+        }).args,
+      )
+
+      expect(graph).not.toContain('[o0]')
+      expect(graph).not.toContain('[o1]')
+      expect(graph).not.toContain('[o2]')
+    })
+
+    it('numbers the audio inputs after the layers, not through them', () => {
+      // The one thing that silently ruins an export: an off-by-one here maps a
+      // filter onto the wrong file, and ffmpeg is happy to render it.
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10), img('b.png', 2)],
+          audio: [aud('music.mp3', 0, 5)],
+          overlays: [over('c.mp4', 0, 2)],
+        }).args,
+      )
+
+      expect(graph).toContain('[2:v]scale=')
+      expect(graph).toContain('[3:a]adelay=0:all=1')
     })
   })
 })

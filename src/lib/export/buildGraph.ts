@@ -45,9 +45,35 @@ export interface ExportAudioClip {
   volume: number
 }
 
+/**
+ * A clip layered over the picture rather than laid end to end with it.
+ *
+ * `startTime` is absolute timeline seconds and is *not* shifted by the lead-in,
+ * exactly like an audio clip's. A layer placed at four seconds belongs at four
+ * seconds whatever black precedes the picture, which is what lets one land on
+ * the lead-in at all.
+ */
+export interface ExportOverlayClip {
+  file: string
+  kind: 'image' | 'video'
+  /** Seconds into the source. Ignored for images. */
+  inPoint: number
+  duration: number
+  /** Where it starts on the timeline, in absolute seconds. */
+  startTime: number
+  /** 0 to 1. Absent is opaque. */
+  opacity?: number
+  /** Whether this file really carries an audio stream. Probed, never guessed. */
+  hasAudio?: boolean
+  /** Gain for that audio. Absent is unity; 0 keeps it out of the mix. */
+  volume?: number
+}
+
 export interface ExportSpec {
   clips: readonly ExportClip[]
   audio: readonly ExportAudioClip[]
+  /** Layers over the picture, bottom of the stack first. */
+  overlays?: readonly ExportOverlayClip[]
   width: number
   height: number
   fps: number
@@ -132,6 +158,41 @@ export function totalAudioEnd(audio: readonly ExportAudioClip[]): number {
   return audio.reduce((max, clip) => Math.max(max, clip.startTime + clip.duration), 0)
 }
 
+export function totalOverlayEnd(overlays: readonly ExportOverlayClip[]): number {
+  return overlays.reduce((max, clip) => Math.max(max, clip.startTime + clip.duration), 0)
+}
+
+/**
+ * The chain that turns one source into something that can be laid over the
+ * picture: fitted inside the frame, at the output rate, and shifted to the
+ * moment it belongs at.
+ *
+ * Fitted rather than padded. Padding would make the layer a full frame of black
+ * with the picture letterboxed inside it, and a full frame of black laid over
+ * the picture is not an overlay — it is a replacement. Scaling to fit and
+ * centring at the overlay step keeps the bars out of it entirely.
+ *
+ * `setpts` is written with `-STARTPTS` rather than trusting the input seek to
+ * have normalised the timestamps, so a layer lands where it was placed rather
+ * than wherever its source happened to be cut from.
+ */
+function placeOverlay(clip: ExportOverlayClip, width: number, height: number, fps: number): string {
+  const opacity = clip.opacity ?? 1
+  const stages = [
+    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+    'setsar=1',
+    `fps=${fps}`,
+  ]
+  if (opacity < 1) {
+    // yuva, because blending needs somewhere to put the alpha this writes.
+    stages.push('format=yuva420p', `colorchannelmixer=aa=${roundGain(opacity)}`)
+  } else {
+    stages.push('format=yuv420p')
+  }
+  stages.push(`setpts=PTS-STARTPTS+${sec(clip.startTime)}/TB`)
+  return stages.join(',')
+}
+
 export function buildExportPlan(spec: ExportSpec): ExportPlan {
   const { clips, width, height, fps, outputFile } = spec
 
@@ -143,10 +204,22 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // zero-length one would produce an empty stream that amix chokes on.
   const audio = spec.audio.filter((clip) => clip.volume > 0 && clip.duration > 0)
 
+  // A layer on a hidden lane, or one with no length, contributes nothing but an
+  // input and a filter chain — and a zero-length one would make an empty stream
+  // that overlay has nothing to do with.
+  const overlays = (spec.overlays ?? []).filter(
+    (clip) => clip.duration > 0 && (clip.opacity ?? 1) > 0,
+  )
+
   const leadIn = Math.max(0, spec.leadIn ?? 0)
   const visualEnd = leadIn + totalVisualDuration(clips)
   const audioEnd = totalAudioEnd(audio)
-  const outputDuration = Math.max(visualEnd, audioEnd)
+  const overlayEnd = totalOverlayEnd(overlays)
+  // What has to still be on screen after the picture track runs out. Layers
+  // count here as well as sound: a layer held past the last clip needs
+  // something under it, and black would be the picture ending early.
+  const contentEnd = Math.max(audioEnd, overlayEnd)
+  const outputDuration = Math.max(visualEnd, contentEnd)
 
   const args: string[] = []
 
@@ -161,7 +234,16 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     }
   }
 
-  const audioInputOffset = clips.length
+  const overlayInputOffset = clips.length
+  for (const clip of overlays) {
+    if (clip.kind === 'image') {
+      args.push('-loop', '1', '-t', sec(clip.duration), '-i', clip.file)
+    } else {
+      args.push('-ss', sec(clip.inPoint), '-t', sec(clip.duration), '-i', clip.file)
+    }
+  }
+
+  const audioInputOffset = clips.length + overlays.length
   for (const clip of audio) {
     // Trim at the input like the video clips, so the filtergraph only has to
     // place and mix rather than also cut.
@@ -182,31 +264,71 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     normalized.push(`[${label}]`)
   })
 
+  // The picture is built up in stages, each taking the last one's label:
+  // concatenated, padded to the timeline's own clock, layered on, then
+  // captioned. The order is the whole point — see each step below.
+  //
+  // Counting the stages up front lets whichever turns out to be last write
+  // [vout] itself, rather than every export ending with a relabelling filter
+  // that exists only because the graph was built without looking ahead.
+  let pending = leadIn > 0 || contentEnd > visualEnd + 0.01 ? 1 : 0
+  pending += overlays.length + (spec.captions ? 1 : 0)
+  const nextStage = (label: string): string => {
+    pending -= 1
+    return pending === 0 ? '[vout]' : label
+  }
+
+  let stage = pending === 0 ? '[vout]' : '[vcat]'
+  chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
+
   // Padding at either end, both done with tpad on the concatenated picture:
   // black in front for the lead-in, and the last frame held at the back when
-  // the sound outlasts the picture.
-  const afterConcat: string[] = []
+  // sound or a layer outlasts the picture.
+  const padding: string[] = []
   if (leadIn > 0) {
-    afterConcat.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
+    padding.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
   }
-  if (audioEnd > visualEnd + 0.01) {
-    // The audio runs past the last clip, so hold its final frame rather than
-    // cutting to black mid-sentence.
-    afterConcat.push(`tpad=stop_mode=clone:stop_duration=${sec(audioEnd - visualEnd)}`)
+  if (contentEnd > visualEnd + 0.01) {
+    // Something runs past the last clip, so hold its final frame rather than
+    // cutting to black mid-sentence — or out from under a layer still on screen.
+    padding.push(`tpad=stop_mode=clone:stop_duration=${sec(contentEnd - visualEnd)}`)
+  }
+  if (padding.length > 0) {
+    const out = nextStage('[vpad]')
+    chains.push(`${stage}${padding.join(',')}${out}`)
+    stage = out
   }
 
-  // Captions go on last, and specifically after the lead-in padding: cue times
-  // are absolute timeline seconds, and it is the padding that makes the stream's
-  // own clock agree with the timeline. Burning them in first would date them
-  // from the first frame of picture instead, putting every caption late by the
-  // length of the lead-in — and losing outright any caption written over it.
+  // Layers, after the padding for the same reason the captions are: a layer's
+  // start time is absolute timeline seconds, and it is the padding that makes
+  // the stream's clock agree with the timeline. Applied bottom of the stack
+  // first, each over the result of the last, which is what makes the track
+  // order the stacking order.
+  overlays.forEach((clip, index) => {
+    const input = overlayInputOffset + index
+    chains.push(`[${input}:v]${placeOverlay(clip, width, height, fps)}[ov${index}]`)
+    const out = nextStage(`[vov${index}]`)
+    // `enable` gates it to its own stretch of timeline; `eof_action=pass` keeps
+    // the picture flowing once the layer has run out rather than ending the
+    // output with it.
+    const until = sec(clip.startTime + clip.duration)
+    chains.push(
+      `${stage}[ov${index}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:` +
+        `enable='between(t,${sec(clip.startTime)},${until})'${out}`,
+    )
+    stage = out
+  })
+
+  // Captions go on last of all: they belong on top of everything, including a
+  // layer, and like the layers they are dated from the timeline rather than
+  // from the first frame of picture. Burning them in before the lead-in padding
+  // would put every caption late by the length of it — and lose outright any
+  // caption written over it.
   if (spec.captions) {
-    afterConcat.push(`ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}`)
+    chains.push(
+      `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${nextStage('[vass]')}`,
+    )
   }
-
-  const concatOut = afterConcat.length > 0 ? '[vcat]' : '[vout]'
-  chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${concatOut}`)
-  if (afterConcat.length > 0) chains.push(`[vcat]${afterConcat.join(',')}[vout]`)
 
   // --- Audio graph -------------------------------------------------------
   const placed: string[] = []
@@ -220,6 +342,19 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     chains.push(`[${input}:a]${placeAudio(start, volume)}[c${input}]`)
     placed.push(`[c${input}]`)
   }
+
+  // A layer's own sound, placed the same way. It is in the mix because the
+  // preview plays it: a layer whose dialogue you can hear while editing and
+  // cannot hear in the export is the worst of the three possible outcomes.
+  // Its start time is already absolute, so unlike a picture clip's it needs no
+  // lead-in added to it.
+  overlays.forEach((clip, index) => {
+    const volume = clip.volume ?? 1
+    if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0) return
+    const label = `o${index}`
+    chains.push(`[${overlayInputOffset + index}:a]${placeAudio(clip.startTime, volume)}[${label}]`)
+    placed.push(`[${label}]`)
+  })
 
   audio.forEach((clip, index) => {
     const label = `a${index}`

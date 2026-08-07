@@ -32,10 +32,11 @@ import { useFullscreen } from '../hooks/useFullscreen'
 import { useReportReadiness } from '../hooks/useReportReadiness'
 import { ReadinessBanner } from './ReadinessBanner'
 import { gainFor } from '../lib/audioTracks'
+import { layerGain, layersAt, videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
 import { CaptionOverlay } from './CaptionOverlay'
 import { isTypingTarget } from '../lib/shortcuts'
-import type { Asset, AudioClip, Clip } from '../lib/types'
+import type { Asset, AudioClip, Clip, VideoClip } from '../lib/types'
 
 /** How far a media element may drift before we correct it, in seconds. */
 const SEEK_TOLERANCE = 0.3
@@ -180,6 +181,81 @@ function ClipLayer({
 }
 
 /**
+ * One clip on a video lane, drawn over the picture.
+ *
+ * Fitted inside the frame rather than filling it, and centred, which is exactly
+ * what the exporter does with it — see `placeOverlay` in buildGraph. The two
+ * have to agree about where a layer sits or the preview is a guess.
+ *
+ * Mounted only while it is on screen, unlike the picture track's layers, which
+ * are all mounted and hidden. A lane can hold any number of clips and only one
+ * of them is ever showing, so keeping the rest alive would be a decoder each
+ * for nothing.
+ */
+function VideoLayer({
+  clip,
+  asset,
+  opacity,
+  gain,
+  currentTime,
+  playing,
+}: {
+  clip: VideoClip
+  asset: Asset | undefined
+  /** Resolved lane opacity. 0 means hidden, and nothing is drawn. */
+  opacity: number
+  /** Resolved gain for the layer's own sound. 0 means silent. */
+  gain: number
+  currentTime: number
+  playing: boolean
+}) {
+  const url = useAssetUrl(asset)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const refusedSound = useRef(false)
+
+  useEffect(() => {
+    const element = videoRef.current
+    if (!element || asset?.kind !== 'video') return
+
+    element.volume = Math.max(0, Math.min(1, gain))
+    element.muted = gain <= 0 || refusedSound.current
+
+    const target = clip.inPoint + Math.max(0, currentTime - clip.startTime)
+    if (Math.abs(element.currentTime - target) > SEEK_TOLERANCE) {
+      element.currentTime = target
+    }
+
+    if (playing && element.paused) {
+      void element.play().catch(() => {
+        refusedSound.current = true
+        element.muted = true
+        return element.play().catch(() => undefined)
+      })
+    } else if (!playing && !element.paused) {
+      element.pause()
+    }
+  }, [asset?.kind, clip.inPoint, clip.startTime, currentTime, gain, playing])
+
+  if (!asset || !url || opacity <= 0) return null
+
+  return (
+    <div className="pointer-events-none absolute inset-0" style={{ opacity }} aria-hidden>
+      {asset.kind === 'video' ? (
+        <video
+          ref={videoRef}
+          src={url}
+          playsInline
+          preload="auto"
+          className="size-full object-contain"
+        />
+      ) : (
+        <img src={url} alt="" className="size-full object-contain" />
+      )}
+    </div>
+  )
+}
+
+/**
  * One audio clip on one track. Every layered clip gets its own element, so
  * overlapping takes really do play together rather than cutting each other
  * off — which is the whole point of having more than one track.
@@ -249,6 +325,13 @@ export function Preview({
   // Before the picture starts there is nothing to show, which is the point —
   // but it is not the end of the timeline, and must not say so.
   const beforePicture = currentTime < leadIn
+
+  const videoTracks = videoTracksOf(project)
+  const videoClips = videoClipsOf(project)
+  const layers = useMemo(
+    () => layersAt(videoTracks, videoClips, currentTime),
+    [videoTracks, videoClips, currentTime],
+  )
 
   const { ref, active: fullscreen, supported, toggle } = useFullscreen<HTMLElement>()
 
@@ -347,6 +430,23 @@ export function Preview({
               ) : null}
             </div>
           ) : null}
+
+          {/* Layers, over the picture and over the lead-in card alike — a layer
+              placed on the black is placed there on purpose, and the export
+              draws it there too. Under the captions, which stay on top of
+              everything. Bottom of the stack first, so the lane order is the
+              order up the screen. */}
+          {layers.map(({ clip, track }) => (
+            <VideoLayer
+              key={clip.id}
+              clip={clip}
+              asset={assetById.get(clip.assetId)}
+              opacity={track.hidden ? 0 : track.opacity}
+              gain={layerGain(videoTracks, clip)}
+              currentTime={currentTime}
+              playing={playing}
+            />
+          ))}
 
           {/* Above the picture and above the lead-in card, because captions are
             part of the frame: narration over black is exactly when you want to

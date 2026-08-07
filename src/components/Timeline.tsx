@@ -53,6 +53,7 @@ import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
+import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
 import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
@@ -433,6 +434,7 @@ export function Timeline({
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
 
   const addTrack = useProjectStore((state) => state.addTrack)
+  const addVideoTrack = useProjectStore((state) => state.addVideoTrack)
   const setLeadIn = useProjectStore((state) => state.setLeadIn)
 
   const captionClip = useCaptionJobStore((state) => state.captionClip)
@@ -560,11 +562,20 @@ export function Timeline({
           <Button onClick={() => cutAt(currentTime)} disabled={!cutTarget} title={cutTitle}>
             <span aria-hidden>✂</span> Cut
           </Button>
-          <Button onClick={() => addTrack('voice')} title="Add an empty voice track">
-            + Voice track
+          {/* One button, because a voice lane and a music lane are both audio
+              lanes — what a lane carries is set on the lane itself, where you
+              can also change your mind about it later. */}
+          <Button
+            onClick={() => addTrack('voice')}
+            title="Add an empty audio track. Switch it between voice and music from the lane itself."
+          >
+            + Audio track
           </Button>
-          <Button onClick={() => addTrack('music')} title="Add an empty music track">
-            + Music track
+          <Button
+            onClick={addVideoTrack}
+            title="Add an empty video track. Clips on it are laid over the picture rather than into it."
+          >
+            + Video track
           </Button>
           {/* Only offered while the lines are hidden — once they are showing,
               the button would do nothing you could see. */}
@@ -635,6 +646,8 @@ export function Timeline({
               <span className="truncate font-medium">Clip sound</span>
             </div>
           ) : null}
+
+          <VideoTrackHeaders />
 
           <AudioTrackHeaders />
 
@@ -731,6 +744,10 @@ export function Timeline({
             </div>
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
+
+            {/* Directly under the picture it is laid over, and above the sound:
+                the lanes read up the screen in the order they stack in. */}
+            <VideoTrackLanes zoom={zoom} />
 
             <AudioTrackLanes zoom={zoom} targets={targets} />
 

@@ -17,7 +17,7 @@ import type { CaptionTarget } from '../lib/captionSources'
 import type { AudioClip, AudioTrack, AudioTrackKind } from '../lib/types'
 
 export const LANE_HEIGHT = 44
-export const TRACK_GUTTER_WIDTH = 150
+export const TRACK_GUTTER_WIDTH = 168
 
 /** One colour per kind, so a lane says what it carries before you read it. */
 const CLIP_TONE: Record<AudioTrackKind, string> = {
@@ -229,6 +229,55 @@ function ClipChip({
   )
 }
 
+/**
+ * What a lane is for, and the control that changes it.
+ *
+ * A lane is added without being asked what it will carry, so this is where it
+ * gets told. Only voice and music are offered: a countdown lane is made by
+ * adding a count-in and turning one into a music bed would leave the beeps with
+ * nowhere of their own to live.
+ */
+const SWITCHABLE: { kind: AudioTrackKind; label: string; hint: string }[] = [
+  { kind: 'voice', label: '🎙️', hint: 'Voice — narration, at full level' },
+  { kind: 'music', label: '🎵', hint: 'Music — a bed, mixed under the voices' },
+]
+
+function KindToggle({ track }: { track: AudioTrack }) {
+  const setTrackKind = useProjectStore((state) => state.setTrackKind)
+
+  // Nothing to switch between for a count-in lane, and offering the choice
+  // would only raise a question with a bad answer.
+  if (track.kind === 'countdown') return null
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label={`What ${track.name} carries`}
+      className="flex shrink-0 overflow-hidden rounded border border-line"
+    >
+      {SWITCHABLE.map((option) => {
+        const selected = track.kind === option.kind
+        return (
+          <button
+            key={option.kind}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            aria-label={option.hint}
+            title={option.hint}
+            onClick={() => setTrackKind(track.id, option.kind)}
+            className={`px-1 py-0.5 text-[10px] transition-colors ${
+              selected ? 'bg-accent text-accent-ink' : 'bg-surface text-ink-dim hover:text-ink'
+            }`}
+          >
+            <span aria-hidden>{option.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 /** The fixed left column: one header per lane, aligned with the lanes. */
 export function AudioTrackHeaders() {
   const tracks = useProjectStore((state) => state.project.audioTracks)
@@ -259,21 +308,29 @@ export function AudioTrackHeaders() {
               {track.muted ? '🔇' : KIND_ICON[track.kind]}
             </button>
 
+            {/* The name gets a line to itself. Sharing one with the kind
+                toggle left every lane called "V…", which is a worse answer to
+                "which lane is this" than the toggle was to "what is it for". */}
             <div className="min-w-0 flex-1">
               <p className="truncate text-[11px] font-medium" title={track.name}>
                 {track.name}
               </p>
-              <input
-                type="range"
-                min={0}
-                max={1.5}
-                step={0.05}
-                value={track.volume}
-                onChange={(event) => updateTrack(track.id, { volume: Number(event.target.value) })}
-                aria-label={`${track.name} volume`}
-                title={`Volume ${Math.round(track.volume * 100)}%`}
-                className="h-1 w-full"
-              />
+              <div className="flex items-center gap-1.5">
+                <KindToggle track={track} />
+                <input
+                  type="range"
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  value={track.volume}
+                  onChange={(event) =>
+                    updateTrack(track.id, { volume: Number(event.target.value) })
+                  }
+                  aria-label={`${track.name} volume`}
+                  title={`Volume ${Math.round(track.volume * 100)}%`}
+                  className="h-1 min-w-0 flex-1"
+                />
+              </div>
             </div>
 
             <Button

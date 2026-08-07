@@ -12,7 +12,12 @@
  */
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
-import { buildExportPlan, type ExportAudioClip, type ExportClip } from './buildGraph'
+import {
+  buildExportPlan,
+  type ExportAudioClip,
+  type ExportClip,
+  type ExportOverlayClip,
+} from './buildGraph'
 import { hasAudioStream } from './probe'
 
 export interface ExportAsset {
@@ -29,6 +34,20 @@ export interface RenderRequest {
     inPoint: number
     duration: number
     /** Gain for the clip's own sound. Absent is unity; 0 leaves it out. */
+    volume?: number
+  }[]
+  /**
+   * Picture layered over the clips, bottom of the stack first. Already resolved
+   * to a lane opacity; hidden lanes are dropped by the caller.
+   */
+  overlays?: {
+    assetId: string
+    kind: 'image' | 'video'
+    startTime: number
+    inPoint: number
+    duration: number
+    opacity: number
+    /** Gain for the layer's own sound. Absent is unity; 0 leaves it out. */
     volume?: number
   }[]
   /** Already resolved to a track volume; muted tracks are dropped by the caller. */
@@ -150,6 +169,7 @@ export async function renderProject(
   }
 
   for (const clip of request.clips) await stage(clip.assetId, clip.kind)
+  for (const clip of request.overlays ?? []) await stage(clip.assetId, clip.kind)
   for (const clip of request.audio) await stage(clip.assetId, 'audio')
 
   // --- Captions ----------------------------------------------------------
@@ -173,7 +193,9 @@ export async function renderProject(
   // Only the files whose sound would actually be used are probed: a muted clip
   // or a still cannot contribute one either way.
   const soundIn = new Map<string, boolean>()
-  const candidates = request.clips.filter((clip) => clip.kind === 'video' && (clip.volume ?? 1) > 0)
+  const candidates = [...request.clips, ...(request.overlays ?? [])].filter(
+    (clip) => clip.kind === 'video' && (clip.volume ?? 1) > 0,
+  )
   if (candidates.length > 0) {
     onProgress?.({ phase: 'writing', message: 'Checking your clips for sound…' })
     for (const clip of candidates) {
@@ -197,6 +219,20 @@ export async function renderProject(
     }
   })
 
+  const exportOverlays: ExportOverlayClip[] = (request.overlays ?? []).map((clip) => {
+    const file = fileNameFor.get(clip.assetId) as string
+    return {
+      file,
+      kind: clip.kind,
+      startTime: clip.startTime,
+      inPoint: clip.inPoint,
+      duration: clip.duration,
+      opacity: clip.opacity,
+      hasAudio: soundIn.get(file) ?? false,
+      volume: clip.volume ?? 1,
+    }
+  })
+
   const exportAudio: ExportAudioClip[] = request.audio.map((clip) => ({
     file: fileNameFor.get(clip.assetId) as string,
     startTime: clip.startTime,
@@ -207,6 +243,7 @@ export async function renderProject(
 
   const plan = buildExportPlan({
     clips: exportClips,
+    overlays: exportOverlays,
     audio: exportAudio,
     width: request.width,
     height: request.height,
