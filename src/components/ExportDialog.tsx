@@ -9,7 +9,7 @@ import {
 } from '../lib/export/render'
 import { getBlob } from '../lib/db'
 import { downloadBlob } from '../lib/media'
-import { clipDuration, formatTime, layoutClips } from '../lib/timeline'
+import { clipDuration, clipGain, formatTime, layoutClips } from '../lib/timeline'
 import { audioEnd, gainFor } from '../lib/audioTracks'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
@@ -60,6 +60,35 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const audibleClips = project.audioClips.filter((clip) => gainFor(project.audioTracks, clip) > 0)
   const mutedCount = project.audioClips.length - audibleClips.length
 
+  // Whether each clip's own sound is kept is decided here; whether it has any
+  // is decided by the renderer, which probes the files.
+  const videoClips = project.clips.filter(
+    (clip) => assets.find((entry) => entry.id === clip.assetId)?.kind === 'video',
+  )
+  const silencedClips = videoClips.filter((clip) => clipGain(clip) <= 0).length
+
+  // Built as parts rather than one sentence, so a project with only clip sound
+  // does not read "no audio · video clips keep their own sound".
+  const sound: string[] = []
+  if (audibleClips.length > 0) {
+    const trackTotal = new Set(audibleClips.map((clip) => clip.trackId)).size
+    sound.push(
+      `${audibleClips.length} audio clip${audibleClips.length === 1 ? '' : 's'} across ` +
+        `${trackTotal} track${trackTotal === 1 ? '' : 's'}` +
+        (mutedCount > 0 ? ` · ${mutedCount} muted, not exported` : ''),
+    )
+  }
+  if (videoClips.length > silencedClips) {
+    sound.push(
+      silencedClips > 0
+        ? `video clips keep their own sound, except ${silencedClips} you silenced`
+        : 'video clips keep their own sound',
+    )
+  } else if (silencedClips > 0) {
+    sound.push(`video clip sound silenced`)
+  }
+  if (sound.length === 0) sound.push('no audio')
+
   const run = async () => {
     setError(null)
     setResult(null)
@@ -106,6 +135,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           kind: (asset?.kind === 'video' ? 'video' : 'image') as 'video' | 'image',
           inPoint: clip.inPoint,
           duration: clipDuration(clip),
+          volume: clipGain(clip),
         }
       })
 
@@ -187,13 +217,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
         <p className="text-sm text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
-          {formatTime(outputDuration)} ·{' '}
-          {audibleClips.length > 0
-            ? `${audibleClips.length} audio clip${audibleClips.length === 1 ? '' : 's'} across ` +
-              `${new Set(audibleClips.map((clip) => clip.trackId)).size} track` +
-              `${new Set(audibleClips.map((clip) => clip.trackId)).size === 1 ? '' : 's'}` +
-              (mutedCount > 0 ? ` · ${mutedCount} muted, not exported` : '')
-            : 'no audio'}
+          {formatTime(outputDuration)} · {sound.join(' · ')}
         </p>
 
         {progress ? (

@@ -17,7 +17,7 @@ ElevenLabs key**, held in your browser.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **1 · Image** | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                            |
 | **2 · Video** | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame. |
-| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Audio sits on its own stacked tracks below.                                                                                   |
+| **Timeline**  | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Clips that came with sound keep it, at a level you set per clip. Audio sits on its own stacked tracks below.                  |
 | **3 · Audio** | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Convert any take into another voice with ElevenLabs; the original is always kept.      |
 | **Export**    | Render an MP4 in the browser with ffmpeg compiled to WebAssembly. Nothing is uploaded.                                                                                                                             |
 
@@ -421,9 +421,14 @@ function so it can be tested directly.
 no-op with a red outline rather than a silent collision, because two clips
 stacked on one lane cannot both be heard and you would only find out on export.
 
-**Clip audio is muted.** The exporter mixes only your audio tracks, so the
-preview mutes video clips to match. Hearing something in preview that vanished
-from the export would be worse than silence.
+**Clips keep their own sound.** A video that arrives with audio — filmed
+footage from Drive, or a model that returns sound — plays it in the preview and
+mixes it into the export, locked to its picture, with a mute and a level on the
+clip itself. What makes that safe is that nothing is assumed: naming an audio
+stream that is not there fails the whole render, so the exporter asks ffmpeg
+what each file actually contains before it builds the graph
+(`src/lib/export/probe.ts`). Preview and export always agree; hearing something
+in one that vanishes from the other would be worse than silence.
 
 **Model IDs live in one file.** Provider catalogues change every few weeks, so
 `src/lib/models.ts` holds every ID the app depends on and each picker has a
@@ -474,9 +479,10 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
-- **Audio from video clips is not exported.** Most image-to-video models return
-  silent footage, and mixing per-clip audio requires knowing which files have an
-  audio stream at all. Your audio tracks are the soundtrack.
+- **A clip's sound cannot be moved off its clip.** It is mixed where the clip
+  sits and trimmed with it, which is what you want for filmed footage; but there
+  is no way to slide it, keep it running under the next clip, or drop it onto an
+  audio track as its own layer.
 - **Audio clips cannot be trimmed from the timeline.** They can be retimed and
   moved between tracks, but shortening a take means re-recording it.
 - **Export uses the single-threaded ffmpeg build**, so a short project takes

@@ -23,7 +23,7 @@ import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dn
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
-import { MIN_CLIP_DURATION, clipDuration, formatTime, layoutClips } from '../lib/timeline'
+import { MIN_CLIP_DURATION, clipDuration, clipGain, formatTime, layoutClips } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { useAssetStore } from '../state/useAssetStore'
@@ -119,8 +119,15 @@ function ClipCard({
 
       {/* Sits on top of the thumbnail, so this pair stays white-on-scrim
           rather than following the theme — the media below can be any colour. */}
-      <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 flex gap-1 truncate bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
         {formatTime(entry.duration)}
+        {/* Only silence is marked. A speaker on every clip would say nothing:
+            most of them have sound and it plays by default. */}
+        {asset?.kind === 'video' && clipGain(entry.clip) <= 0 ? (
+          <span role="img" aria-label="sound muted">
+            🔇
+          </span>
+        ) : null}
       </span>
 
       {/* Trim handles. The left one is hidden for stills: an image has no
@@ -355,6 +362,7 @@ function SelectedClipControls() {
   const selectedClipId = useProjectStore((state) => state.selectedClipId)
   const clips = useProjectStore((state) => state.project.clips)
   const setImageDuration = useProjectStore((state) => state.setImageDuration)
+  const setClipAudio = useProjectStore((state) => state.setClipAudio)
   const trim = useProjectStore((state) => state.trim)
   const removeClip = useProjectStore((state) => state.removeClip)
   const assets = useAssetStore((state) => state.assets)
@@ -365,6 +373,7 @@ function SelectedClipControls() {
   const asset = assets.find((entry) => entry.id === clip.assetId)
   const isImage = asset?.kind === 'image'
   const duration = clipDuration(clip)
+  const volume = clip.volume ?? 1
 
   return (
     <div className="flex flex-wrap items-end gap-4 rounded-xl border border-line bg-surface p-3">
@@ -394,6 +403,39 @@ function SelectedClipControls() {
         />
         s
       </label>
+
+      {/* Sound, for clips that can have any. A filmed clip arrives with its own
+          audio and plays it; this is where it gets pushed under a voiceover, or
+          silenced when it is only there for the picture. */}
+      {!isImage ? (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setClipAudio(clip.id, { muted: !clip.muted })}
+            aria-pressed={clip.muted === true}
+            aria-label={clip.muted ? 'Unmute this clip' : 'Mute this clip'}
+            title={clip.muted ? 'Muted — click to unmute' : 'Mute this clip'}
+            className={`shrink-0 text-sm ${clip.muted ? 'opacity-40' : ''}`}
+          >
+            {clip.muted ? '🔇' : '🔊'}
+          </button>
+          <label className="flex items-center gap-2 text-xs text-ink-dim">
+            Clip volume
+            <input
+              type="range"
+              min={0}
+              max={1.5}
+              step={0.05}
+              value={volume}
+              disabled={clip.muted === true}
+              onChange={(event) => setClipAudio(clip.id, { volume: Number(event.target.value) })}
+              aria-label="Clip volume"
+              title={`Volume ${Math.round(volume * 100)}%`}
+              className="h-1 w-24"
+            />
+          </label>
+        </div>
+      ) : null}
 
       <Button variant="danger" className="ml-auto" onClick={() => removeClip(clip.id)}>
         Remove clip

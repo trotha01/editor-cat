@@ -98,6 +98,18 @@ export function trimClip(
   return { ...clip, outPoint: clamp(nextValue, minOut, Math.max(minOut, sourceLimit)) }
 }
 
+/**
+ * Effective gain for a clip's own sound.
+ *
+ * Both fields are optional, and absent has to mean "as recorded" rather than
+ * silent — otherwise every clip added before clips had sound would export mute.
+ * Images have no sound to gain, but the arithmetic is harmless.
+ */
+export function clipGain(clip: Clip): number {
+  if (clip.muted) return 0
+  return Math.max(0, clip.volume ?? 1)
+}
+
 /** Builds the clip for a newly added asset, with sensible default bounds. */
 export function clipForAsset(asset: Asset, id: string): Clip {
   if (asset.kind === 'image') {

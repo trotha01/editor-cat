@@ -95,6 +95,23 @@ try {
   if (!twoClips.includes('2 clips')) fail(`expected two clips, got "${twoClips}"`)
   step('video generated from the image and appended to the timeline')
 
+  // --- Clip sound ----------------------------------------------------------
+  // Mock clips are recorded with a real audio track, so this is the whole
+  // clip-sound path: the preview must play it rather than mute it, and the
+  // export below has to find it by probing and wire it into the mix.
+  await page.getByRole('button', { name: /^Play$/ }).click()
+  await page.waitForTimeout(600)
+  const preview = await page.evaluate(() => {
+    const video = document.querySelector('section[aria-label="Preview"] video')
+    return video ? { muted: video.muted, volume: video.volume } : null
+  })
+  await page.getByRole('button', { name: /^Pause$/ }).click()
+  if (!preview) fail('no preview video element to check for sound')
+  if (preview.muted || preview.volume < 1) {
+    fail(`preview should play the clip's own sound, got ${JSON.stringify(preview)}`)
+  }
+  step('preview plays the clip’s own sound instead of muting it')
+
   // --- Trimming ------------------------------------------------------------
   await page.locator('section[aria-label="Timeline"] .group').first().click()
   await page.fill('input[type="number"]', '2')
@@ -176,7 +193,10 @@ try {
   const trackTotal = Number(/across (\d+) track/.exec(summary)?.[1] ?? 0)
   if (clipCount !== 3) fail(`expected 3 audio clips in the export, summary said: "${summary}"`)
   if (trackTotal !== 3) fail(`expected 3 audio tracks in the export, summary said: "${summary}"`)
-  step(`export receives ${clipCount} audio clips across ${trackTotal} tracks`)
+  if (!/keep their own sound/.test(summary)) {
+    fail(`export should keep the video clips' sound, summary said: "${summary}"`)
+  }
+  step(`export receives ${clipCount} audio clips across ${trackTotal} tracks, plus clip sound`)
 
   const download = page.waitForEvent('download', { timeout: 420000 })
   await page.getByRole('button', { name: /Render and download MP4/ }).click()
