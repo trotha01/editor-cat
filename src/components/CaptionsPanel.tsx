@@ -426,6 +426,16 @@ function CueEditor({
           {cue.words.length} word{cue.words.length === 1 ? '' : 's'} ·{' '}
           {(cue.end - cue.start).toFixed(1)}s
         </span>
+        {/* Which clip this was heard in. Worth showing when several takes are
+            layered over the same seconds and the words alone do not say. */}
+        {cue.source ? (
+          <span
+            className="max-w-[9rem] truncate text-[11px] text-ink-dim/80"
+            title={`Transcribed from ${cue.source.label}`}
+          >
+            ◦ {cue.source.label}
+          </span>
+        ) : null}
 
         <div className="ml-auto flex items-center gap-1">
           {index > 0 ? (

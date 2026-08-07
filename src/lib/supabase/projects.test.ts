@@ -49,6 +49,14 @@ function roundTrip(source: Project): Project {
 }
 
 describe('toDoc', () => {
+  it('carries where each caption was transcribed from', () => {
+    // Provenance is only worth recording if it outlives the session that
+    // recorded it — and it rides inside the cue, so nothing in toDoc names it.
+    const sourced = { ...cue, source: { id: 'clip-7', label: 'lion.mp4' } }
+    const back = roundTrip(project({ captionTracks: [track], captionCues: [sourced] }))
+    expect(back.captionCues?.[0]?.source).toEqual({ id: 'clip-7', label: 'lion.mp4' })
+  })
+
   it('carries captions, word timings and all, so they survive a save', () => {
     const doc = toDoc(project({ captionTracks: [track], captionCues: [cue] }))
     expect(doc.captionTracks).toEqual([track])

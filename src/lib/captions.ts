@@ -16,7 +16,7 @@
  *    against its neighbours rather than reordering them, so the word being
  *    highlighted always advances left to right the way it is read.
  */
-import type { CaptionCue, CaptionStyle, CaptionTrack, CaptionWord } from './types'
+import type { CaptionCue, CaptionSource, CaptionStyle, CaptionTrack, CaptionWord } from './types'
 
 /** Shortest a word may be held, in seconds. Below this the highlight flickers. */
 export const MIN_WORD_DURATION = 0.04
@@ -184,6 +184,11 @@ export interface TimedWord {
   text: string
   start: number
   end: number
+  /**
+   * Which clip this was heard in. Carried from `wordsOntoTimeline` through
+   * grouping so the caption that comes out can say where it came from.
+   */
+  source?: CaptionSource
 }
 
 export interface GroupOptions {
@@ -235,11 +240,16 @@ export function cuesFromWords(
 ): CaptionCue[] {
   const cues: CaptionCue[] = []
   let current: CaptionWord[] = []
+  // The clip the group started in. A caption that runs across a cut is credited
+  // to where it begins, which is the honest answer to "where is this from" and
+  // the one that stays stable when the words either side are re-edited.
+  let source: CaptionSource | undefined
 
   const flush = () => {
     if (current.length === 0) return
-    cues.push(cueFromWords(current, trackId, makeId('cue')))
+    cues.push(cueFromWords(current, trackId, makeId('cue'), source))
     current = []
+    source = undefined
   }
 
   for (const word of words) {
@@ -259,6 +269,7 @@ export function cuesFromWords(
       flush()
     }
 
+    source ??= word.source
     current.push({
       id: makeId('word'),
       text,
@@ -303,7 +314,12 @@ function endsSentence(text: string): boolean {
 }
 
 /** Wraps a run of words into a cue spanning exactly them. */
-function cueFromWords(words: CaptionWord[], trackId: string, id: string): CaptionCue {
+function cueFromWords(
+  words: CaptionWord[],
+  trackId: string,
+  id: string,
+  source?: CaptionSource,
+): CaptionCue {
   const start = words[0]?.start ?? 0
   const last = words[words.length - 1]
   return {
@@ -312,6 +328,7 @@ function cueFromWords(words: CaptionWord[], trackId: string, id: string): Captio
     start,
     end: Math.max(start + MIN_CUE_DURATION, last?.end ?? start),
     words,
+    ...(source ? { source } : {}),
   }
 }
 
@@ -360,11 +377,17 @@ export function dedupeOverlappingWords(words: readonly TimedWord[]): TimedWord[]
  */
 export function wordsOntoTimeline(
   words: readonly TimedWord[],
-  clip: { startTime: number; inPoint: number; duration: number },
+  clip: { startTime: number; inPoint: number; duration: number; id?: string; label?: string },
 ): TimedWord[] {
   const from = clip.inPoint
   const to = clip.inPoint + clip.duration
   const offset = clip.startTime - clip.inPoint
+
+  // Stamped here rather than anywhere later because this is the only point that
+  // knows both the words and the clip they were heard in — afterwards they are
+  // sorted in among everybody else's and the connection is gone.
+  const source: CaptionSource | undefined =
+    clip.id === undefined ? undefined : { id: clip.id, label: clip.label ?? clip.id }
 
   return words
     .filter((word) => word.end > from + EPSILON && word.start < to - EPSILON)
@@ -374,6 +397,7 @@ export function wordsOntoTimeline(
       // actually audible rather than for its full length.
       start: Math.max(from, word.start) + offset,
       end: Math.min(to, word.end) + offset,
+      ...(source ? { source } : {}),
     }))
 }
 
@@ -579,6 +603,9 @@ export function splitCue(
       start: boundary,
       end: cue.end,
       words: cue.words.slice(index),
+      // Both halves were heard in the same clip, so splitting a line does not
+      // lose track of where it came from.
+      ...(cue.source ? { source: cue.source } : {}),
     },
   ]
 }

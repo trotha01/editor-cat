@@ -55,7 +55,9 @@ export function speechSources(project: Project, assets: readonly Asset[]): Speec
 
   for (const clip of project.audioClips ?? []) {
     const track = voiceTracks.get(clip.trackId)
-    if (!track || clip.duration <= 0) continue
+    // `> 0` rather than `<= 0`: a NaN duration passes the second test and would
+    // become a source that transcribes nothing, silently.
+    if (!track || !(clip.duration > 0)) continue
     const assetId =
       clip.useConverted && clip.convertedAssetId ? clip.convertedAssetId : clip.assetId
     sources.push({
@@ -72,7 +74,7 @@ export function speechSources(project: Project, assets: readonly Asset[]): Speec
     const asset = assetById.get(positioned.clip.assetId)
     // Stills have no sound, and a clip you silenced is not in the mix.
     if (asset?.kind !== 'video' || clipGain(positioned.clip) <= 0) continue
-    if (positioned.duration <= 0) continue
+    if (!(positioned.duration > 0)) continue
     sources.push({
       id: positioned.clip.id,
       label: asset.name,

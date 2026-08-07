@@ -147,6 +147,23 @@ export interface CaptionWord {
  * first word and held after the last, which is what stops fast speech reading
  * as a flicker.
  */
+/**
+ * Which clip a caption was transcribed from.
+ *
+ * Provenance, kept because a caption on the timeline otherwise says nothing
+ * about where its words came from — and with several takes layered over the same
+ * seconds, "which one is this" is the first question worth being able to answer.
+ * The label is a snapshot taken when the transcript was made, so a caption whose
+ * clip has since been deleted still says where it came from rather than holding
+ * a dangling id.
+ */
+export interface CaptionSource {
+  /** The clip's id: an audio clip on a voice track, or a video clip. */
+  id: string
+  /** What that clip's media was called at the time. */
+  label: string
+}
+
 export interface CaptionCue {
   id: string
   trackId: string
@@ -154,6 +171,11 @@ export interface CaptionCue {
   start: number
   end: number
   words: CaptionWord[]
+  /**
+   * Where these words were heard. Absent on a caption typed by hand, and on
+   * every project captioned before this was recorded.
+   */
+  source?: CaptionSource
 }
 
 /** How captions are drawn, on screen and in the export alike. */

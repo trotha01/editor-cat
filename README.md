@@ -586,6 +586,20 @@ towards a word list for a 30% premium — is absent rather than sent empty, so i
 stays a thing to add knowingly. `scribeInput` is pure and tested for exactly
 this: the defaults are the kind of thing that silently comes back.
 
+**Every caption remembers where it was heard.** A cue carries a `source` — the
+id of the clip it was transcribed from, plus that clip's name as it was at the
+time. It is stamped in `wordsOntoTimeline`, which is the only point that knows
+both the words and the clip they came from; a moment later they are sorted in
+among every other source's and the connection is gone for good.
+
+Worth keeping because the timeline deliberately allows takes to be layered over
+the same seconds, and once their words are on one caption lane nothing else
+distinguishes them. A caption that runs across a cut is credited to the clip it
+_begins_ in, which stays stable when the words either side are re-edited, and
+splitting a line gives both halves the same source. The label is a snapshot
+rather than a lookup, so a caption whose clip has since been deleted still says
+where it came from instead of holding a dangling id.
+
 **One highlight, one definition.** `wordSpans` in `src/lib/captions.ts` says
 which stretch of time each word owns; a word stays lit until the next one
 starts, so the highlight never blinks out in the pause after a word. The preview

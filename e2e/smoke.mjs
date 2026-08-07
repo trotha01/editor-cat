@@ -428,6 +428,17 @@ try {
   await page.getByRole('button', { name: /Add captions/ }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
+  // Provenance: each caption says which clip it was heard in, which is the only
+  // way to tell layered takes apart once their words are on one lane.
+  const firstLabel = await page
+    .locator('[role="group"][aria-label^="Caption "]')
+    .first()
+    .getAttribute('aria-label')
+  if (!/, from .+$/.test(firstLabel ?? '')) {
+    fail(`expected the caption to name the clip it came from, got "${firstLabel}"`)
+  }
+  step(`captions record their source clip (${/, from (.+)$/.exec(firstLabel)?.[1]})`)
+
   const captionCues = await page.locator('[role="group"][aria-label^="Caption "]').count()
   if (captionCues < 2) fail(`expected several captions on the timeline, got ${captionCues}`)
   step(`transcript became ${captionCues} captions on a lane of their own, with no key entered`)
@@ -563,7 +574,9 @@ try {
       (element) => element.getAttribute('aria-label') ?? '',
     )
     for (const label of labels) {
-      const found = /^Caption "(.+)", (\d+):(\d+\.\d) to (\d+):(\d+\.\d)$/.exec(label)
+      // The label carries the source clip after the times, so this cannot
+      // anchor straight onto the end of the string.
+      const found = /^Caption "(.+)", (\d+):(\d+\.\d) to (\d+):(\d+\.\d)(?:, from .*)?$/.exec(label)
       if (!found) continue
       if (found[1].split(/\s+/).length < 3) continue
       const start = Number(found[2]) * 60 + Number(found[3])

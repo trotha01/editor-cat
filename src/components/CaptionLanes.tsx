@@ -163,12 +163,21 @@ function CueBlock({
   return (
     <div
       role="group"
-      aria-label={`Caption "${text}", ${formatTime(cue.start)} to ${formatTime(cue.end)}`}
+      aria-label={
+        `Caption "${text}", ${formatTime(cue.start)} to ${formatTime(cue.end)}` +
+        (cue.source ? `, from ${cue.source.label}` : '')
+      }
       style={{ left: cue.start * zoom, width }}
       className={`group/cue absolute top-1 bottom-1 overflow-hidden rounded border border-sky-600/40 bg-sky-500/15 text-sky-900 ${
         selected ? 'ring-2 ring-accent' : ''
       } ${blocked ? 'ring-2 ring-red-500' : ''} ${track.hidden ? 'opacity-40' : ''}`}
-      title={blocked ? 'There is already a caption here — drop it somewhere with room.' : text}
+      title={
+        blocked
+          ? 'There is already a caption here — drop it somewhere with room.'
+          : cue.source
+            ? `${text}\n\nTranscribed from ${cue.source.label}`
+            : text
+      }
     >
       {/* The body of the block moves the whole caption. */}
       <div
