@@ -26,6 +26,7 @@ import {
 } from '../lib/captions'
 import { speechSources } from '../lib/captionSources'
 import { SPEECH_LANGUAGES } from '../lib/scribe'
+import { formatCost, speechCost } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
@@ -153,7 +154,15 @@ export function CaptionsPanel({
               Nothing to transcribe yet — record a voiceover on the Audio step, or put a video clip
               with its own sound on the timeline.
             </span>
-          ) : null}
+          ) : (
+            // Priced per minute of audio in, so this is exact rather than a
+            // guess — and worth showing before the press rather than after,
+            // since redoing captions transcribes the whole timeline again.
+            <span className="text-xs text-ink-dim">
+              Costs about {formatCost(speechCost(speechSeconds))} · {formatTime(speechSeconds)} of
+              audio
+            </span>
+          )}
         </div>
 
         {busy ? (

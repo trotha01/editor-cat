@@ -412,6 +412,16 @@ try {
   // WebAudio decode, which no unit test can reach.
   await page.getByRole('button', { name: /4 · Captions/ }).click()
 
+  // The bill lands on the deployment, so what it will cost has to be visible
+  // before the press rather than after — and pressing again re-transcribes the
+  // whole timeline. Read from the real timeline's own audio length, so a wrong
+  // sum shows up here rather than in an invoice.
+  const estimate = await page.locator('text=/Costs about .* of audio/').first().innerText()
+  if (!/Costs about (~\$\d|<\$0\.01)/.test(estimate)) {
+    fail(`expected a caption cost estimate next to the button, got "${estimate}"`)
+  }
+  step(`cost shown before transcribing (${estimate.replace(/\s+/g, ' ')})`)
+
   // Transcription needs no key from the user — it runs on the site's fal
   // account — so the button has to work on a first visit with nothing entered.
   // Recognition is faked in mock mode; the wiring either side of it is not.

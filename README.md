@@ -36,9 +36,11 @@ all run on the site's own fal.ai account. A key buys you voice conversion.
 
 **Costs are real, and they land on the deployment.** Images are roughly
 $0.003–$0.04 each; video is roughly $0.04 per second at 480p on the default
-model, rising to $0.40 on the most expensive one in the picker. The app shows an
-estimate before every generate button, because a mis-click on a video model is
-expensive.
+model, rising to $0.40 on the most expensive one in the picker. Captions are
+$0.008 per minute of audio transcribed. The app shows an estimate before every
+button that spends money, because a mis-click on a video model is expensive —
+and because pressing **Add captions** again transcribes the whole timeline
+afresh rather than just the part you changed.
 
 ## Shape
 
