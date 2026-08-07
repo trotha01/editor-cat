@@ -201,6 +201,99 @@ describe('what fills the screen', () => {
   })
 })
 
+/**
+ * Picture laid over picture.
+ *
+ * Whether a layer is on screen at a given moment, and in what order, is worked
+ * out in lib/videoTracks and tested there. What is only testable here is that
+ * the preview draws what that says — a layer rendered without its lane's
+ * opacity, or one lane drawn over the wrong other one, is invisible to every
+ * test in that file and is exactly the sort of thing an edit here undoes.
+ */
+describe('video layers', () => {
+  const layered = {
+    ...project,
+    videoTracks: [
+      { id: 'vt1', name: 'Video 1', hidden: false, opacity: 0.4 },
+      { id: 'vt2', name: 'Video 2', hidden: false, opacity: 1 },
+    ],
+    videoClips: [
+      { id: 'vc1', trackId: 'vt1', assetId: 'asset_1', startTime: 0, inPoint: 0, duration: 4 },
+      { id: 'vc2', trackId: 'vt2', assetId: 'asset_1', startTime: 0, inPoint: 0, duration: 4 },
+    ],
+  }
+
+  /** The layer wrappers, in the order they are painted. */
+  function drawnLayers() {
+    return [
+      ...screen.getByRole('region', { name: 'Preview' }).querySelectorAll('div[style*="opacity"]'),
+    ] as HTMLElement[]
+  }
+
+  it('draws a layer at the moment it covers', () => {
+    projectState.project = layered
+
+    mount()
+
+    expect(drawnLayers()).toHaveLength(2)
+  })
+
+  it('draws nothing from a layer whose time has passed', () => {
+    projectState.project = {
+      ...layered,
+      videoClips: [
+        { id: 'vc1', trackId: 'vt1', assetId: 'asset_1', startTime: 6, inPoint: 0, duration: 2 },
+      ],
+    }
+
+    mount()
+
+    expect(drawnLayers()).toHaveLength(0)
+  })
+
+  it('gives each layer its own lane’s opacity', () => {
+    // Drawn at full strength regardless, and a lane's opacity slider would do
+    // nothing you could see while still changing the export.
+    projectState.project = layered
+
+    mount()
+
+    expect(drawnLayers().map((element) => element.style.opacity)).toEqual(['0.4', '1'])
+  })
+
+  it('paints the lanes bottom of the stack first', () => {
+    // The array order is the stacking order, and later in the DOM is higher on
+    // screen. Reversing this would silently put the wrong shot on top.
+    projectState.project = layered
+
+    mount()
+    const opacities = drawnLayers().map((element) => element.style.opacity)
+
+    expect(opacities.indexOf('0.4')).toBeLessThan(opacities.indexOf('1'))
+  })
+
+  it('leaves out a hidden lane entirely', () => {
+    projectState.project = {
+      ...layered,
+      videoTracks: [{ id: 'vt1', name: 'Video 1', hidden: true, opacity: 1 }],
+      videoClips: [
+        { id: 'vc1', trackId: 'vt1', assetId: 'asset_1', startTime: 0, inPoint: 0, duration: 4 },
+      ],
+    }
+
+    mount()
+
+    expect(drawnLayers()).toHaveLength(0)
+  })
+
+  it('draws none at all for a project that has no lanes', () => {
+    // Which is every project saved before layering existed.
+    mount()
+
+    expect(drawnLayers()).toHaveLength(0)
+  })
+})
+
 describe('the F key', () => {
   it('toggles fullscreen', () => {
     mount()

@@ -350,9 +350,13 @@ describe('retypeTrack', () => {
   it('moves the lane in among its new kind', () => {
     // Where a lane sits is what says what it is, so a lane that changes kind
     // and stays put would leave the grouping lying.
-    const tracks = [track('v1'), track('v2'), track('m1', 'music')]
-    const next = retypeTrack(tracks, 'v1', 'music')
-    expect(next.map((entry) => entry.id)).toEqual(['v2', 'm1', 'v1'])
+    //
+    // The retyped lane has to land in the *middle* for this to test anything:
+    // pick a case where it ends up last and simply appending it passes too.
+    const tracks = [track('v1'), track('m1', 'music'), track('m2', 'music')]
+    const next = retypeTrack(tracks, 'm2', 'voice')
+
+    expect(next.map((entry) => entry.id)).toEqual(['v1', 'm2', 'm1'])
   })
 
   it('renames a lane that still has the name it was given', () => {
