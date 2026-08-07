@@ -18,6 +18,7 @@ import { transcribeInBrowser } from './browserTranscriber'
 import { chunkRanges, speechChunkWav, speechSamples, SPEECH_SAMPLE_RATE } from './speechAudio'
 import { isMockEnabled, mockTranscribe } from './mock'
 import type { TimedWord } from './captions'
+import type { SpeechModelAttempt } from './models'
 
 export type EngineId = 'elevenlabs' | 'browser'
 
@@ -145,8 +146,8 @@ export function elevenLabsEngine(key: string): TranscriptionEngine {
 export interface BrowserEngineOptions {
   /** Hugging Face repo id. From Settings, so a stale default is not a blocker. */
   model: string
-  /** Weights to try, in order, until one will actually run. */
-  dtypes: readonly string[]
+  /** Ways to open the model, tried in order until one works. */
+  attempts: readonly SpeechModelAttempt[]
 }
 
 /**
@@ -156,7 +157,7 @@ export interface BrowserEngineOptions {
  * chunks internally, which is better than anything this layer could do, and
  * there is no payload to stay under.
  */
-export function browserEngine({ model, dtypes }: BrowserEngineOptions): TranscriptionEngine {
+export function browserEngine({ model, attempts }: BrowserEngineOptions): TranscriptionEngine {
   return {
     id: 'browser',
     async transcribeSource(request) {
@@ -167,7 +168,7 @@ export function browserEngine({ model, dtypes }: BrowserEngineOptions): Transcri
         audio,
         sampleRate: SPEECH_SAMPLE_RATE,
         model,
-        dtypes,
+        attempts,
         ...(whisperLanguageFor(request.languageCode)
           ? { language: whisperLanguageFor(request.languageCode) as string }
           : {}),

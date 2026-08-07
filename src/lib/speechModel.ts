@@ -12,6 +12,7 @@
  * reading can be tested against the errors really seen rather than against a
  * guess about them.
  */
+import type { SpeechModelAttempt } from './models'
 
 /** What to do about a failed attempt to load one set of weights. */
 export type LoadVerdict =
@@ -38,11 +39,27 @@ export function verdictFor(detail: string): LoadVerdict {
   return 'try-next'
 }
 
-/** How to describe a set of weights to someone who did not choose them. */
-export function describeWeights(dtype: string): string {
-  if (dtype === 'fp32') return 'full-precision weights — a larger download'
-  if (dtype === 'q8') return 'compressed weights'
-  return `${dtype} weights`
+/** How to describe one way of opening a model to someone who did not choose it. */
+export function describeAttempt(attempt: SpeechModelAttempt): string {
+  const weights =
+    attempt.dtype === 'fp32'
+      ? 'full-precision weights — a larger download'
+      : attempt.dtype === 'q8'
+        ? 'compressed weights'
+        : `${attempt.dtype} weights`
+
+  // Only worth mentioning when it is not the runtime's own default, since that
+  // is the only time it explains anything the reader can act on.
+  if (attempt.graphOptimizationLevel === 'basic') return `${weights}, fewer graph optimisations`
+  if (attempt.graphOptimizationLevel === 'disabled') return `${weights}, no graph optimisations`
+  return weights
+}
+
+/** The same, short enough to sit in a list of failures. */
+export function labelAttempt(attempt: SpeechModelAttempt): string {
+  return attempt.graphOptimizationLevel
+    ? `${attempt.dtype}/${attempt.graphOptimizationLevel}`
+    : attempt.dtype
 }
 
 /**
@@ -73,8 +90,9 @@ export function loadFailureMessage(model: string, attempts: readonly string[]): 
 
   return (
     `The speech model "${model}" downloaded but would not run in this browser, in any of the ` +
-    `${attempts.length} formats it is published in. Try another model in Settings — ` +
-    `"onnx-community/whisper-tiny.en_timestamped" is a smaller one. ` +
+    `${attempts.length} ways it was tried. That points at the model rather than at this ` +
+    `machine, so the thing to change is the repo id in Settings — ` +
+    `"onnx-community/whisper-tiny.en_timestamped" is a smaller one to try. ` +
     `Attempts: ${attempts.join(' · ')}`
   )
 }

@@ -31,7 +31,7 @@ import {
   elevenLabsEngine,
   type EngineId,
 } from '../lib/transcribeEngines'
-import { DEFAULT_SPEECH_MODEL, SPEECH_MODEL_DTYPES } from '../lib/models'
+import { DEFAULT_SPEECH_MODEL, SPEECH_MODEL_ATTEMPTS } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
@@ -119,7 +119,7 @@ export function CaptionsPanel({
             : browserEngine({
                 // An emptied box in Settings means "the default", not "no model".
                 model: speechModel.trim() || DEFAULT_SPEECH_MODEL,
-                dtypes: SPEECH_MODEL_DTYPES,
+                attempts: SPEECH_MODEL_ATTEMPTS,
               }),
         sources,
         assets,

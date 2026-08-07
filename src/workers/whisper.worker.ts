@@ -17,7 +17,8 @@
  * can be tested without any of this.
  */
 import { whisperWords, type WhisperChunk } from '../lib/whisperWords'
-import { describeWeights, loadFailureMessage, verdictFor } from '../lib/speechModel'
+import { describeAttempt, labelAttempt, loadFailureMessage, verdictFor } from '../lib/speechModel'
+import type { SpeechModelAttempt } from '../lib/models'
 import type { TimedWord } from '../lib/captions'
 
 /** What the main thread sends. */
@@ -29,11 +30,11 @@ export interface WhisperRequest {
   /** Hugging Face repo id. Passed in so Settings can override it. */
   model: string
   /**
-   * Weights to try, in order, until one will actually run. Downloading a model
-   * and being able to run it are different things, and only this side knows
-   * which — see SPEECH_MODEL_DTYPES.
+   * Ways to open the model, tried in order until one works. Downloading a model
+   * and being able to run it are different things, and only this side finds out
+   * which — see SPEECH_MODEL_ATTEMPTS.
    */
-  dtypes: readonly string[]
+  attempts: readonly SpeechModelAttempt[]
   /** Whisper's own language name, e.g. "english". Absent means detect. */
   language?: string
 }
@@ -113,7 +114,7 @@ let loading: Promise<Transcriber> | null = null
 let loadedModel = ''
 
 /**
- * Weights already known not to run here: `model|dtype` to why not.
+ * Ways of opening a model already known not to work here, to why not.
  *
  * Remembered for the life of the worker so the ladder is walked once rather than
  * once per source — a project with six voice takes would otherwise fail the same
@@ -150,49 +151,55 @@ async function loadModel(request: WhisperRequest): Promise<Transcriber> {
  */
 async function openPipeline(request: WhisperRequest): Promise<Transcriber> {
   const module = await loadRuntime()
-  const attempts: string[] = []
+  const failures: string[] = []
 
-  for (const dtype of request.dtypes) {
-    const key = `${request.model}|${dtype}`
+  for (const attempt of request.attempts) {
+    const key = `${request.model}|${labelAttempt(attempt)}`
     const known = unusable.get(key)
     if (known !== undefined) {
-      attempts.push(`${dtype} — ${known}`)
+      failures.push(`${labelAttempt(attempt)} — ${known}`)
       continue
     }
 
     try {
       const transcriber = await module.pipeline('automatic-speech-recognition', request.model, {
-        dtype,
+        dtype: attempt.dtype,
         device: 'wasm',
+        // Turning the graph optimiser down is what rescues a model whose
+        // quantised weights it refuses to rewrite. Left out entirely at the
+        // default, so a working model is not slowed down for nothing.
+        ...(attempt.graphOptimizationLevel
+          ? { session_options: { graphOptimizationLevel: attempt.graphOptimizationLevel } }
+          : {}),
         progress_callback: (event: { status?: string; file?: string; progress?: number }) => {
           if (event.status !== 'progress') return
           post({
             type: 'progress',
             id: request.id,
-            message: `downloading ${describeWeights(dtype)}`,
+            message: `downloading ${describeAttempt(attempt)}`,
             ratio: typeof event.progress === 'number' ? event.progress / 100 : undefined,
           })
         },
       })
 
-      if (attempts.length > 0) {
-        // Worth saying out loud: a fallback is a bigger download and a slower
-        // run, and silence would leave that looking like the model simply being
-        // slow for no reason.
-        post({ type: 'progress', id: request.id, message: `using ${describeWeights(dtype)}` })
+      if (failures.length > 0) {
+        // Worth saying out loud: a fallback is slower, and sometimes a bigger
+        // download, and silence would leave that looking like the model simply
+        // being slow for no reason.
+        post({ type: 'progress', id: request.id, message: `using ${describeAttempt(attempt)}` })
       }
       return transcriber
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause)
-      attempts.push(`${dtype} — ${detail}`)
-      // A network failure is about today, not about these weights, so it must
-      // not blacklist them for the rest of the session.
+      failures.push(`${labelAttempt(attempt)} — ${detail}`)
+      // A network failure is about today, not about this way of opening the
+      // model, so it must not be blacklisted for the rest of the session.
       if (verdictFor(detail) === 'give-up') break
       unusable.set(key, detail)
     }
   }
 
-  throw new Error(loadFailureMessage(request.model, attempts))
+  throw new Error(loadFailureMessage(request.model, failures))
 }
 
 self.addEventListener('message', (event: MessageEvent<WhisperRequest>) => {

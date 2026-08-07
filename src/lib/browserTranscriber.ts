@@ -12,6 +12,7 @@
  */
 import type { TimedWord } from './captions'
 import type { WhisperRequest, WhisperResponse } from '../workers/whisper.worker'
+import type { SpeechModelAttempt } from './models'
 
 export interface BrowserTranscribeProgress {
   message: string
@@ -24,8 +25,8 @@ export interface BrowserTranscribeRequest {
   audio: Float32Array
   sampleRate: number
   model: string
-  /** Weights to try, in order, until one will actually run. */
-  dtypes: readonly string[]
+  /** Ways to open the model, tried in order until one works. */
+  attempts: readonly SpeechModelAttempt[]
   /** Whisper's own language name, e.g. "english". Absent means detect. */
   language?: string
   onProgress?: (progress: BrowserTranscribeProgress) => void
@@ -54,7 +55,7 @@ export function transcribeInBrowser({
   audio,
   sampleRate,
   model,
-  dtypes,
+  attempts,
   language,
   onProgress,
   signal,
@@ -98,7 +99,7 @@ export function transcribeInBrowser({
       audio,
       sampleRate,
       model,
-      dtypes,
+      attempts,
       ...(language ? { language } : {}),
     }
     // Transferred rather than copied: a minute of 16kHz audio is a megabyte, and

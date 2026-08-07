@@ -215,29 +215,45 @@ export const LLM_ENDPOINT = 'fal-ai/any-llm'
  */
 export const DEFAULT_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
 
+/** One way of trying to open a speech model. */
+export interface SpeechModelAttempt {
+  /** Which export to download. `q8` is quantised, `fp32` the model as trained. */
+  dtype: string
+  /**
+   * How hard ONNX Runtime should try to rewrite the graph before running it.
+   * Omitted is its own default, which is everything.
+   */
+  graphOptimizationLevel?: 'disabled' | 'basic' | 'extended' | 'all'
+}
+
 /**
- * Weights to try, in order, until one will actually run.
+ * Ways to open a speech model, tried in order until one works.
  *
  * A ladder rather than a single choice, because "downloaded" and "runnable" are
- * different things and only the browser can tell them apart. A quantised export
- * can fail at session creation with an ONNX Runtime error about `MatMulNBits` —
- * the operator four-bit block quantisation compiles to — and nothing about the
- * download says so in advance. Which exports a repo publishes is also up to
- * whoever published it, so a missing file has to mean "try the next" rather than
- * "captions are unavailable".
+ * different things and only the browser can tell them apart. What fails is
+ * usually not the download: a model arrives intact and then ONNX Runtime refuses
+ * to build a session for it, reporting something like
  *
- * Ordered smallest first, ending somewhere that cannot fail for this reason:
+ *   qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale
  *
- *  - `q8` is the usual quantised export, about a quarter the download.
- *  - `int8` quantises per tensor instead of per block, so it compiles to
- *    different operators and survives where `q8` does not.
- *  - `fp32` is the model as trained. Several times the download and slower, but
- *    it contains no quantisation operators at all, so there is nothing left to
- *    be incompatible with.
+ * which is a *graph optimisation* choking on quantised weights — and it happens
+ * whichever export you fetch, because the optimiser is the same either way. So
+ * the ladder turns the optimiser down before it reaches for a different file:
+ * that transform runs at ONNX Runtime's extended level, so asking for basic
+ * skips it, and the first three rungs all reuse one download.
  *
- * A repo id that publishes none of these is a setting away — see Settings.
+ * Only the last rung fetches anything more. `fp32` is the model as trained,
+ * several times the size and slower, with no quantisation operators in it at all
+ * — nothing left to be incompatible with.
+ *
+ * A model that fails every rung is a repo problem, and the repo id is a setting.
  */
-export const SPEECH_MODEL_DTYPES = ['q8', 'int8', 'fp32'] as const
+export const SPEECH_MODEL_ATTEMPTS: readonly SpeechModelAttempt[] = [
+  { dtype: 'q8' },
+  { dtype: 'q8', graphOptimizationLevel: 'basic' },
+  { dtype: 'q8', graphOptimizationLevel: 'disabled' },
+  { dtype: 'fp32', graphOptimizationLevel: 'disabled' },
+]
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id
 export const DEFAULT_VIDEO_MODEL = VIDEO_MODELS[0]!.id
