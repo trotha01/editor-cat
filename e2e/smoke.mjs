@@ -162,6 +162,67 @@ try {
   if (trimmed === twoClips) fail('trimming a clip did not change the timeline duration')
   step(`trimming shortens the timeline (${twoClips.trim()} -> ${trimmed.trim()})`)
 
+  // --- Cutting -------------------------------------------------------------
+  // A cut is not stored as anything of its own: it *is* the two clips it leaves
+  // behind. So the thing worth checking in a real browser is that it comes back
+  // after a reload, which is the only place the round trip through IndexedDB
+  // actually happens.
+  const summarise = async () => {
+    const text = await page.textContent('section[aria-label="Timeline"] header span')
+    return { text: text.trim(), clips: Number(/(\d+) clips?/.exec(text)?.[1] ?? 0) }
+  }
+  const cutMarks = () =>
+    page.locator('section[aria-label="Timeline"] button[aria-label^="Undo the cut"]').count()
+
+  const beforeCut = await summarise()
+
+  // Clicking the ruler rather than dragging the transport: it parks the
+  // playhead on a frame, and leaves the focus off the slider so `S` is ours.
+  const ruler = page.locator('section[aria-label="Timeline"] [role="presentation"]').first()
+  await ruler.click({ position: { x: 160, y: 3 } })
+  await page.waitForTimeout(150)
+
+  const cutButton = page.getByRole('button', { name: 'Cut', exact: true })
+  if (await cutButton.isDisabled()) fail('the playhead is over a clip but Cut is disabled')
+  await page.keyboard.press('s')
+  await page.waitForTimeout(300)
+
+  const afterCut = await summarise()
+  if (afterCut.clips !== beforeCut.clips + 1) {
+    fail(
+      `cutting should have split one clip in two, went "${beforeCut.text}" -> "${afterCut.text}"`,
+    )
+  }
+  // The halves have to add up to what the one clip covered: a cut moves an
+  // edge, it does not throw a frame away.
+  if (afterCut.text.split('·')[1] !== beforeCut.text.split('·')[1]) {
+    fail(`cutting changed the length of the timeline: "${beforeCut.text}" -> "${afterCut.text}"`)
+  }
+  if ((await cutMarks()) !== 1) fail('the cut is not marked on the timeline')
+  step(`cutting splits a clip at the playhead (${beforeCut.text} -> ${afterCut.text})`)
+
+  // Frame lines are what tell you where a cut can land, so they have to be
+  // reachable — and drawn, rather than merely switched on.
+  await page.getByRole('button', { name: 'Show frames' }).click()
+  await page.waitForTimeout(200)
+  const grid = await page.evaluate(() => {
+    const bar = document.querySelector('section[aria-label="Timeline"] [role="presentation"]')
+    return getComputedStyle(bar).backgroundImage
+  })
+  if (!/repeating-linear-gradient/.test(grid)) fail(`no frame grid on the ruler, got "${grid}"`)
+  step('zooming in draws a line for every frame')
+
+  await page.waitForTimeout(500) // let the write to IndexedDB land
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('section[aria-label="Timeline"] .group', { timeout: 30000 })
+
+  const reopened = await summarise()
+  if (reopened.clips !== afterCut.clips) {
+    fail(`the cut did not survive a reload: "${afterCut.text}" -> "${reopened.text}"`)
+  }
+  if ((await cutMarks()) !== 1) fail('the reopened project no longer shows where the cut is')
+  step(`the cut is still there when the project is opened again (${reopened.text})`)
+
   // --- Voiceover, layered across tracks -------------------------------------
   const trackCount = () =>
     page.locator('section[aria-label="Timeline"] [aria-label$="volume"]').count()

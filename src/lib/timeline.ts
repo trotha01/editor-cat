@@ -98,6 +98,133 @@ export function trimClip(
   return { ...clip, outPoint: clamp(nextValue, minOut, Math.max(minOut, sourceLimit)) }
 }
 
+/** Frames per second to fall back on when a stored project names none. */
+const DEFAULT_FPS = 30
+
+/** Slack for comparing times. Far below one frame at any usable rate. */
+const TIME_EPSILON = 1e-6
+
+/** The project's frame rate, guarded — everything below divides by it. */
+function frameRate(fps: number): number {
+  return Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_FPS
+}
+
+/** How long one frame lasts, in seconds. */
+export function frameDuration(fps: number): number {
+  return 1 / frameRate(fps)
+}
+
+/**
+ * The frame boundary nearest `seconds`.
+ *
+ * Cuts go through this so they land on the lines the timeline draws. A cut
+ * halfway into a frame would be rounded by the exporter anyway, and then the
+ * two halves no longer add up to the lengths you were shown.
+ *
+ * Counted in whole frames rather than by multiplying a frame's length, which
+ * accumulates enough float error to miss the boundary it is aiming at.
+ */
+export function snapToFrame(seconds: number, fps: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0
+  const rate = frameRate(fps)
+  return Math.round(seconds * rate) / rate
+}
+
+/**
+ * The clip a cut at `time` would fall in, or null when nothing can be cut
+ * there.
+ *
+ * Both halves have to clear MIN_CLIP_DURATION, the same floor trimming works
+ * to — a cut is only another way of setting an edge, and a two-frame sliver
+ * left behind by a mis-aimed cut is not something anyone wanted.
+ */
+export function cutTargetAt(
+  clips: readonly Clip[],
+  time: number,
+  fps: number,
+): PositionedClip | null {
+  const at = snapToFrame(time, fps)
+  // Strictly inside: a cut exactly on a clip boundary is one that already
+  // exists, and would otherwise produce an empty clip.
+  const target = layoutClips(clips).find((entry) => at > entry.start && at < entry.end)
+  if (!target) return null
+
+  const offset = at - target.start
+  const floor = MIN_CLIP_DURATION - TIME_EPSILON
+  if (offset < floor || target.duration - offset < floor) return null
+  return target
+}
+
+export interface CutResult {
+  clips: Clip[]
+  /**
+   * The clip starting at the cut, or the survivor of a join. Selected
+   * afterwards, so the next edit lands on what the playhead is sitting over.
+   */
+  clipId: string
+}
+
+/**
+ * Cuts the clip under `time` in two at the nearest frame.
+ *
+ * Both halves keep pointing at the same source, and together they cover exactly
+ * what the one clip covered — so a cut changes nothing about what plays until
+ * you move, trim or delete one of the halves. Returns null when there is
+ * nothing cuttable there, leaving the caller's clips alone.
+ *
+ * `makeId` is injected so this stays pure and testable.
+ */
+export function splitClipAt(
+  clips: readonly Clip[],
+  time: number,
+  fps: number,
+  makeId: () => string,
+): CutResult | null {
+  const target = cutTargetAt(clips, time, fps)
+  if (!target) return null
+
+  const { clip } = target
+  const boundary = clip.inPoint + (snapToFrame(time, fps) - target.start)
+
+  const left: Clip = { ...clip, outPoint: boundary }
+  const right: Clip = { ...clip, id: makeId(), inPoint: boundary }
+
+  const next = [...clips]
+  next.splice(target.index, 1, left, right)
+  return { clips: next, clipId: right.id }
+}
+
+/**
+ * Whether two neighbours are the two halves of one cut: the same source,
+ * carrying on across the boundary. This is what makes a cut visible when a
+ * project is opened again — nothing extra is stored, because two clips meeting
+ * mid-source is exactly what a cut *is*.
+ */
+export function isThroughCut(left: Clip, right: Clip): boolean {
+  return left.assetId === right.assetId && Math.abs(right.inPoint - left.outPoint) <= TIME_EPSILON
+}
+
+/**
+ * Puts back the cut in front of `clipId`, merging the two halves into one.
+ *
+ * Refused unless the neighbours really are the halves of a cut, because merging
+ * two unrelated clips would silently throw one of them away. Returns null when
+ * refused, so a click on nothing is a no-op rather than an edit.
+ */
+export function joinCutAt(clips: readonly Clip[], clipId: string): CutResult | null {
+  const index = clips.findIndex((clip) => clip.id === clipId)
+  if (index <= 0) return null // unknown clip, or the first one, which has no cut in front of it
+
+  const left = clips[index - 1]
+  const right = clips[index]
+  if (!left || !right || !isThroughCut(left, right)) return null
+
+  const merged: Clip = { ...left, outPoint: right.outPoint }
+  const next = [...clips]
+  next.splice(index - 1, 2, merged)
+  return { clips: next, clipId: merged.id }
+}
+
 /**
  * Effective gain for a clip's own sound.
  *

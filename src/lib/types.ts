@@ -41,9 +41,14 @@ export interface Asset {
 export interface Clip {
   id: string
   assetId: string
-  /** Seconds into the source asset. Always 0 for images. */
+  /**
+   * Seconds into the source asset. Normally 0 for images, which have no source
+   * time to seek into — but a cut carries it forward there too, so the second
+   * half of a cut still can be told apart from a separate copy of the same
+   * picture, and the cut can be undone.
+   */
   inPoint: number
-  /** Seconds into the source asset. For images this is the authored duration. */
+  /** Seconds into the source asset. For images this is where it stops showing. */
   outPoint: number
   /**
    * Silences whatever sound the source carries. Absent means audible: a clip

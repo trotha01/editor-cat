@@ -5,11 +5,17 @@ import {
   clipDuration,
   clipForAsset,
   clipGain,
+  cutTargetAt,
   formatTime,
+  frameDuration,
+  isThroughCut,
+  joinCutAt,
   layoutClips,
   projectDuration,
   reorder,
+  snapToFrame,
   sourceTimeFor,
+  splitClipAt,
   totalDuration,
   trimClip,
 } from './timeline'
@@ -170,6 +176,163 @@ describe('clipForAsset', () => {
   it('falls back to a default when a video reports no duration', () => {
     const unknown = { ...video, duration: undefined }
     expect(clipDuration(clipForAsset(unknown, 'c'))).toBeGreaterThan(0)
+  })
+})
+
+describe('snapToFrame', () => {
+  it('rounds to the nearest frame', () => {
+    expect(snapToFrame(1.02, 30)).toBeCloseTo(1 + frameDuration(30), 10)
+    expect(snapToFrame(1.01, 30)).toBe(1)
+  })
+
+  it('lands exactly on whole seconds rather than a float near them', () => {
+    // Counting frames and dividing keeps this exact; multiplying a frame's
+    // length by 30 does not, and the cut would then miss the line drawn for it.
+    expect(snapToFrame(1, 30)).toBe(1)
+    expect(snapToFrame(7, 24)).toBe(7)
+  })
+
+  it('is idempotent, so snapping an already-snapped time changes nothing', () => {
+    const once = snapToFrame(3.317, 30)
+    expect(snapToFrame(once, 30)).toBe(once)
+  })
+
+  it('falls back to a sane rate rather than dividing by nonsense', () => {
+    expect(snapToFrame(1.02, 0)).toBe(snapToFrame(1.02, 30))
+    expect(snapToFrame(Number.NaN, 30)).toBe(0)
+    expect(snapToFrame(-3, 30)).toBe(0)
+  })
+})
+
+describe('cutTargetAt', () => {
+  const clips = [clip('1', 0, 3), clip('2', 2, 5)]
+
+  it('finds the clip the playhead is over', () => {
+    expect(cutTargetAt(clips, 1.5, 30)?.clip.id).toBe('1')
+    expect(cutTargetAt(clips, 4, 30)?.clip.id).toBe('2')
+  })
+
+  it('refuses a cut on a boundary that already exists', () => {
+    // Cutting exactly where two clips meet would produce an empty clip.
+    expect(cutTargetAt(clips, 0, 30)).toBeNull()
+    expect(cutTargetAt(clips, 3, 30)).toBeNull()
+  })
+
+  it('refuses a cut that would leave an unusably short sliver', () => {
+    // The same floor trimming works to: a cut is another way of setting an edge.
+    expect(cutTargetAt(clips, MIN_CLIP_DURATION / 2, 30)).toBeNull()
+    expect(cutTargetAt(clips, 3 - MIN_CLIP_DURATION / 2, 30)).toBeNull()
+  })
+
+  it('allows a cut exactly at the floor', () => {
+    expect(cutTargetAt(clips, MIN_CLIP_DURATION, 30)?.clip.id).toBe('1')
+  })
+
+  it('refuses past the end and on an empty timeline', () => {
+    expect(cutTargetAt(clips, 99, 30)).toBeNull()
+    expect(cutTargetAt([], 1, 30)).toBeNull()
+  })
+})
+
+describe('splitClipAt', () => {
+  const clips = [clip('1', 2, 8)]
+  const ids = () => {
+    let count = 0
+    return () => `new_${(count += 1)}`
+  }
+
+  it('leaves the two halves covering exactly what the one clip covered', () => {
+    // The whole point: a cut changes where the edges are, never what plays.
+    const result = splitClipAt(clips, 2, 30, ids())
+
+    expect(result).not.toBeNull()
+    expect(totalDuration(result!.clips)).toBeCloseTo(totalDuration(clips), 10)
+    expect(result!.clips.map((entry) => [entry.inPoint, entry.outPoint])).toEqual([
+      [2, 4],
+      [4, 8],
+    ])
+  })
+
+  it('snaps the cut to a frame rather than landing between two', () => {
+    // 2.02s is most of the way through frame 60, so the cut belongs on 61 —
+    // and the half in front of it has to be a whole number of frames long.
+    const result = splitClipAt(clips, 2.02, 30, ids())
+
+    expect(clipDuration(result!.clips[0]!) * 30).toBeCloseTo(61, 10)
+    expect(result!.clips[0]?.outPoint).toBe(2 + snapToFrame(2.02, 30))
+  })
+
+  it('hands back the half that starts at the cut, which is what the playhead is over', () => {
+    const result = splitClipAt(clips, 2, 30, ids())
+
+    expect(result!.clipId).toBe('new_1')
+    expect(result!.clips[1]?.id).toBe('new_1')
+  })
+
+  it('carries the clip’s sound settings onto both halves', () => {
+    const muted = [{ ...clip('1', 0, 6), muted: true, volume: 0.4 }]
+
+    const result = splitClipAt(muted, 3, 30, ids())
+
+    expect(result!.clips.map(clipGain)).toEqual([0, 0])
+    expect(result!.clips.every((entry) => entry.volume === 0.4)).toBe(true)
+  })
+
+  it('cuts the clip under the playhead, not the first one', () => {
+    const result = splitClipAt([clip('1', 0, 3), clip('2', 0, 3)], 4, 30, ids())
+
+    expect(result!.clips.map((entry) => entry.id)).toEqual(['1', '2', 'new_1'])
+  })
+
+  it('returns null where nothing can be cut, leaving the caller alone', () => {
+    expect(splitClipAt(clips, 0, 30, ids())).toBeNull()
+    expect(splitClipAt(clips, 99, 30, ids())).toBeNull()
+  })
+
+  it('does not mutate the clips it was given', () => {
+    const original = [clip('1', 2, 8)]
+    splitClipAt(original, 2, 30, ids())
+    expect(original).toEqual([clip('1', 2, 8)])
+  })
+})
+
+describe('isThroughCut', () => {
+  it('recognises two halves of the same source meeting mid-clip', () => {
+    expect(isThroughCut(clip('1', 0, 4), clip('2', 4, 9))).toBe(true)
+  })
+
+  it('does not mistake two separate clips for a cut', () => {
+    expect(isThroughCut(clip('1', 0, 4), clip('2', 5, 9))).toBe(false)
+    expect(isThroughCut(clip('1', 0, 4), clip('2', 4, 9, 'other'))).toBe(false)
+  })
+})
+
+describe('joinCutAt', () => {
+  it('puts a cut clip back exactly as it was', () => {
+    const original = [clip('1', 1, 7)]
+    const cut = splitClipAt(original, 2, 30, () => 'new_1')!
+
+    const joined = joinCutAt(cut.clips, cut.clipId)
+
+    expect(joined?.clips).toEqual(original)
+    expect(joined?.clipId).toBe('1')
+  })
+
+  it('refuses to merge clips that are not the halves of a cut', () => {
+    // Merging unrelated neighbours would silently throw one of them away.
+    expect(joinCutAt([clip('1', 0, 4), clip('2', 6, 9)], '2')).toBeNull()
+    expect(joinCutAt([clip('1', 0, 4), clip('2', 4, 9, 'other')], '2')).toBeNull()
+  })
+
+  it('refuses where there is no clip in front to join onto', () => {
+    expect(joinCutAt([clip('1', 0, 4)], '1')).toBeNull()
+    expect(joinCutAt([clip('1', 0, 4)], 'missing')).toBeNull()
+  })
+
+  it('does not mutate the clips it was given', () => {
+    const clips = [clip('1', 0, 4), clip('2', 4, 9)]
+    joinCutAt(clips, '2')
+    expect(clips).toHaveLength(2)
   })
 })
 
