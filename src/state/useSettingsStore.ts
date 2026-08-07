@@ -15,7 +15,7 @@ const PREFS_KEY = 'editor-cat.prefs.v1'
  * record rather than in the storage key so a migration can rewrite one field
  * without discarding the others.
  */
-const PREFS_VERSION = 2
+const PREFS_VERSION = 3
 
 interface Prefs {
   imageModel: string
@@ -72,11 +72,27 @@ function snapshotPrefs(source: Partial<Prefs>): Prefs {
   return prefs
 }
 
+/**
+ * The speech model this app defaulted to before a field report showed ONNX
+ * Runtime refusing to build a session for any export of it.
+ *
+ * Same reasoning as the video models above, and the same reason it needs a
+ * migration at all: `setPref` writes every field, so anyone who ever changed
+ * their image model has this default captured in storage and would otherwise be
+ * stuck on it forever. Moved across; a repo id typed into the custom box is
+ * unmistakably deliberate and is left alone.
+ */
+const PRE_XENOVA_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
+
 /** Pure, and exported for tests: stored preferences in, current-shape prefs out. */
 export function migratePrefs(stored: StoredPrefs): Prefs {
   const prefs = snapshotPrefs(stored)
-  if (stored.v === undefined && PRE_SEEDANCE_VIDEO_MODELS.includes(prefs.videoModel)) {
+  const version = stored.v ?? 0
+  if (version < 1 && PRE_SEEDANCE_VIDEO_MODELS.includes(prefs.videoModel)) {
     prefs.videoModel = DEFAULT_VIDEO_MODEL
+  }
+  if (version < 3 && prefs.speechModel === PRE_XENOVA_SPEECH_MODEL) {
+    prefs.speechModel = DEFAULT_SPEECH_MODEL
   }
   return prefs
 }

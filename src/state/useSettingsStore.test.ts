@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_VIDEO_MODEL } from '../lib/models'
+import { DEFAULT_SPEECH_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
 import { migratePrefs, useSettingsStore } from './useSettingsStore'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
@@ -46,6 +46,26 @@ describe('migratePrefs', () => {
     expect(prefs.imageModel).toBe('fal-ai/flux/schnell')
     expect(prefs.videoModel).toBe(DEFAULT_VIDEO_MODEL)
   })
+
+  it('moves a captured speech default off the model that will not run', () => {
+    // Reported from the field: ONNX Runtime refuses to build a session for any
+    // export of it. Anyone who ever changed another preference has this value
+    // written into storage and would otherwise never see the new default.
+    const prefs = migratePrefs({ speechModel: 'onnx-community/whisper-base_timestamped', v: 2 })
+    expect(prefs.speechModel).toBe(DEFAULT_SPEECH_MODEL)
+  })
+
+  it('leaves a speech model someone typed in alone', () => {
+    const prefs = migratePrefs({ speechModel: 'onnx-community/whisper-large-v3-turbo', v: 2 })
+    expect(prefs.speechModel).toBe('onnx-community/whisper-large-v3-turbo')
+  })
+
+  it('does not move the speech model back after someone chooses it deliberately', () => {
+    // Still reachable from the Settings box, and a browser where it does work
+    // should keep it.
+    const prefs = migratePrefs({ speechModel: 'onnx-community/whisper-base_timestamped', v: 3 })
+    expect(prefs.speechModel).toBe('onnx-community/whisper-base_timestamped')
+  })
 })
 
 describe('setPref', () => {
@@ -71,7 +91,7 @@ describe('setPref', () => {
 
   it('stamps the version so the migration does not re-run over a fresh choice', () => {
     useSettingsStore.getState().setPref('videoModel', 'fal-ai/veo3/image-to-video')
-    expect(stored().v).toBe(2)
+    expect(stored().v).toBe(3)
     expect(migratePrefs(stored()).videoModel).toBe('fal-ai/veo3/image-to-video')
   })
 })

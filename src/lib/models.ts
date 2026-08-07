@@ -199,32 +199,40 @@ export const LLM_ENDPOINT = 'fal-ai/any-llm'
 /**
  * The speech model captioning downloads and runs in the browser.
  *
- * A Hugging Face repo id, resolved by transformers.js. Two things about it are
- * load-bearing and neither is obvious from the name:
+ * A Hugging Face repo id, resolved by transformers.js. Three things about it are
+ * load-bearing and none is obvious from the name:
  *
- *  - it must be an ONNX export, which is what the `onnx-community` and `Xenova`
- *    namespaces publish;
+ *  - it must be an ONNX export, and specifically one with the weights in a
+ *    subfolder called `onnx`. transformers.js hardcodes that name; the
+ *    `Xenova/*` and `onnx-community/*` repos are laid out for it, and their
+ *    model cards say as much — "structuring your repo like this one (with ONNX
+ *    weights located in a subfolder named onnx)".
+ *  - it must publish `encoder_model` and `decoder_model_merged` under that
+ *    folder, since those are the two sessions a Whisper pipeline opens;
  *  - its generation config must carry `alignment_heads`, or word-level
- *    timestamps are unavailable and captions have nothing to highlight on. The
- *    `_timestamped` repos exist for exactly that, and transformers.js says so
- *    plainly when they are missing.
+ *    timestamps are unavailable and captions have nothing to highlight on.
+ *
+ * `Xenova/*` are the original transformers.js conversions of OpenAI's own
+ * releases, and are what the library's own word-timestamp examples use — which
+ * is the reason to lead with one. Multilingual, so it does not quietly turn a
+ * French project English.
  *
  * Like every other model id here, this is one line to change — and Settings has
  * a box to override it without one, since a browser that has already downloaded
  * a model is a bad place to be told to wait for a release.
  */
-export const DEFAULT_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
+export const DEFAULT_SPEECH_MODEL = 'Xenova/whisper-base'
 
 /**
  * A second model to fall back to, from a different conversion lineage.
  *
- * `Xenova/*` are the original transformers.js conversions, exported years apart
- * from the `onnx-community/*` ones and by different tooling — which is the
- * point. A repo whose weights this runtime cannot load is not fixed by another
- * export of the same repo, only by a differently produced one. Still
- * multilingual, so falling back does not quietly turn a French project English.
+ * Exported years apart from the `Xenova/*` ones and by different tooling, which
+ * is the point: a repo whose weights this runtime cannot load is not fixed by
+ * another export of the same repo, only by a differently produced one. This one
+ * is built for word timings specifically, so it is also the answer if the
+ * configured model turns out not to publish alignment heads.
  */
-export const FALLBACK_SPEECH_MODEL = 'Xenova/whisper-base'
+export const FALLBACK_SPEECH_MODEL = 'onnx-community/whisper-base_timestamped'
 
 /** One way of trying to open a speech model. */
 export interface SpeechModelAttempt {
@@ -232,11 +240,6 @@ export interface SpeechModelAttempt {
   model?: string
   /** Which export to download. `q8` is quantised, `fp32` the model as trained. */
   dtype: string
-  /**
-   * How hard ONNX Runtime should try to rewrite the graph before running it.
-   * Omitted is its own default, which is everything.
-   */
-  graphOptimizationLevel?: 'disabled' | 'basic' | 'extended' | 'all'
 }
 
 /**
@@ -249,26 +252,23 @@ export interface SpeechModelAttempt {
  *   qdq_actions.cc TransposeDQWeightsForMatMulNBits Missing required scale
  *
  * That one is worth knowing about in detail, because it taught us the shape of
- * this ladder the hard way. It survives every export the repo publishes,
+ * this ladder the hard way. It survives every export its repo publishes,
  * quantised and full-precision alike, *and* every graph optimisation level
  * including none — which together mean it is neither the weights nor an optional
  * rewrite, but how the runtime has to execute those weights at all. Nothing
- * about one repo can be worked around; the answer is a different repo.
+ * passed to the session can work around it; only a different repo can.
  *
- * So the ladder widens as it goes, cheapest first:
+ * So every rung is a different *file*, cheapest first:
  *
- *  1. the configured model, as published;
- *  2. the same download, with the graph optimiser turned down — free to try, and
- *     it does rescue some other load failures;
- *  3. a model from an entirely different conversion lineage;
- *  4. that model unquantised, which is the largest download and the fewest
- *     assumptions.
+ *  1. the configured model, compressed — the small download and the common case;
+ *  2. a model from an entirely different conversion lineage;
+ *  3. the configured model unquantised, which is the largest download here and
+ *     the one making the fewest assumptions about what this runtime supports.
  */
 export const SPEECH_MODEL_ATTEMPTS: readonly SpeechModelAttempt[] = [
   { dtype: 'q8' },
-  { dtype: 'q8', graphOptimizationLevel: 'basic' },
   { model: FALLBACK_SPEECH_MODEL, dtype: 'q8' },
-  { model: FALLBACK_SPEECH_MODEL, dtype: 'fp32' },
+  { dtype: 'fp32' },
 ]
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id

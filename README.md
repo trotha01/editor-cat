@@ -557,18 +557,38 @@ ladder its shape, and the diagnosis is worth keeping:
 
 It survived every export the repo publishes, quantised and full-precision alike —
 so not the weights. It survived every graph optimisation level including none —
-so not an optional rewrite either, but how the runtime has to execute those
-weights at all. Between them those two facts leave the model file itself, which
-nothing on this side can repair. The lesson generalises: when a model will not
-load, the thing to vary is not only _how_ it is opened but _which_ it is.
+so not an optional rewrite either. That second one was worth checking rather than
+assuming: transformers.js forwards `session_options` to ONNX Runtime untouched,
+and the runtime does read `graphOptimizationLevel`, so the option really did
+arrive and the transform really did run regardless. Between them those two facts
+leave the model file itself, which nothing on this side can repair. The lesson
+generalises: when a model will not load, the thing to vary is not _how_ it is
+opened but _which_ it is.
 
-So `SPEECH_MODEL_ATTEMPTS` widens as it goes, cheapest first — the configured
-model as published; the same download with the optimiser turned down, which is
-free and does rescue other load failures; then a model from an entirely different
-conversion lineage; then that one unquantised. A rung that fails is remembered
-with its reason, so a project with six voice takes walks the ladder once rather
-than six times. A model with no word timings condemns the whole repo rather than
-one download from it, since no other export of it will have them.
+So every rung of `SPEECH_MODEL_ATTEMPTS` is a different file, cheapest first —
+the configured model compressed; a model from an entirely different conversion
+lineage; then the configured one unquantised, the largest download and the fewest
+assumptions. Nothing on the ladder re-reads a download it has already been
+refused. A rung that fails is remembered with its reason, so a project with six
+voice takes walks the ladder once rather than six times.
+
+Which repo goes first follows from the same constraint. transformers.js hardcodes
+the subfolder it reads weights from — `onnx` — and opens two sessions per Whisper
+model, `encoder_model` and `decoder_model_merged`. The `Xenova/*` repos are the
+original transformers.js conversions of OpenAI's releases, laid out for exactly
+that and used by the library's own word-timestamp examples, so that is where the
+default sits; the repo that would not load is still on the ladder behind it, and
+still typeable into Settings for a browser where it works. A stored preference
+pointing at it is migrated across, because `setPref` writes every field and
+someone who once changed their image model has the old default captured in
+storage whether they chose it or not.
+
+A model with no word timings condemns the whole repo rather than one download from
+it, since no other export of it will have them — and that failure arrives late.
+Alignment heads live in the generation config, which is not read until the model
+is first asked to transcribe, so such a repo loads perfectly and only then cannot
+do the one thing captions need. The worker walks the ladder on from there too,
+rather than reporting a load that worked.
 
 Falling back to a different model is reported rather than hidden, because unlike
 the other rungs it changes what the transcript _says_, not just how long it took.

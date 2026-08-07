@@ -137,6 +137,10 @@ const unusable = new Map<string, string>()
  * download from it: no other export of a model without alignment heads will have
  * them either, so the rest of that model's rungs are skipped rather than
  * fetched.
+ *
+ * Filled in mostly by `run` rather than by the loader, since that is where this
+ * particular failure shows up — but by the loader too, in case a future runtime
+ * notices earlier.
  */
 const untimed = new Map<string, string>()
 
@@ -188,12 +192,6 @@ async function openPipeline(
       const transcriber = await module.pipeline('automatic-speech-recognition', model, {
         dtype: attempt.dtype,
         device: 'wasm',
-        // Turning the graph optimiser down rescues some load failures and costs
-        // no download, since it re-reads the file already fetched. Left out
-        // entirely at the default, so a working model is not slowed for nothing.
-        ...(attempt.graphOptimizationLevel
-          ? { session_options: { graphOptimizationLevel: attempt.graphOptimizationLevel } }
-          : {}),
         progress_callback: (event: { status?: string; file?: string; progress?: number }) => {
           if (event.status !== 'progress') return
           post({
@@ -244,25 +242,45 @@ async function run(request: WhisperRequest): Promise<void> {
     )
   }
 
-  const { transcriber, usedModel } = await loadModel(request)
-  post({ type: 'progress', id: request.id, message: 'listening' })
+  // Loops only for the one failure that arrives too late to be a load failure:
+  // alignment heads live in the generation config, which is read when the model
+  // is first asked to transcribe rather than when its session is built. So a
+  // repo with none loads perfectly and then cannot do the single thing captions
+  // need. It is still the repo that is wrong, so condemn it and walk the ladder
+  // on — the alternative is telling someone their model is fine and captions are
+  // not available. Terminates because each turn condemns a different model and
+  // the ladder holds finitely many.
+  for (;;) {
+    const { transcriber, usedModel } = await loadModel(request)
+    post({ type: 'progress', id: request.id, message: 'listening' })
 
-  const output = await transcriber(request.audio, {
-    return_timestamps: 'word',
-    chunk_length_s: CHUNK_SECONDS,
-    stride_length_s: STRIDE_SECONDS,
-    ...(request.language ? { language: request.language, task: 'transcribe' } : {}),
-  })
+    let output: AsrOutput | AsrOutput[]
+    try {
+      output = await transcriber(request.audio, {
+        return_timestamps: 'word',
+        chunk_length_s: CHUNK_SECONDS,
+        stride_length_s: STRIDE_SECONDS,
+        ...(request.language ? { language: request.language, task: 'transcribe' } : {}),
+      })
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause)
+      if (!isMissingAlignment(detail) || untimed.has(usedModel)) throw cause
+      untimed.set(usedModel, detail)
+      loading = null
+      continue
+    }
 
-  const result = Array.isArray(output) ? output[0] : output
-  post({
-    type: 'done',
-    id: request.id,
-    words: whisperWords(result?.chunks ?? [], {
-      duration: request.audio.length / request.sampleRate,
-    }),
-    // Named only when it is not the model that was asked for, since that is a
-    // different transcript rather than merely a slower one.
-    ...(usedModel === request.model ? {} : { usedModel }),
-  })
+    const result = Array.isArray(output) ? output[0] : output
+    post({
+      type: 'done',
+      id: request.id,
+      words: whisperWords(result?.chunks ?? [], {
+        duration: request.audio.length / request.sampleRate,
+      }),
+      // Named only when it is not the model that was asked for, since that is a
+      // different transcript rather than merely a slower one.
+      ...(usedModel === request.model ? {} : { usedModel }),
+    })
+    return
+  }
 }

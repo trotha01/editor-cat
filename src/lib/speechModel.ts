@@ -27,6 +27,11 @@ export type LoadVerdict =
  * Worth its own question because it is a property of the *repo*, not of the
  * export: no other download from the same place will have them, so there is no
  * point trying one — but a different repo may well.
+ *
+ * It is also the one failure that does not surface while loading. Alignment
+ * heads live in the generation config, which is only consulted once the model is
+ * asked to transcribe, so this arrives from the first inference rather than from
+ * the session — see the worker, which walks the ladder on for it anyway.
  */
 export function isMissingAlignment(detail: string): boolean {
   return /alignment_heads/i.test(detail)
@@ -62,23 +67,12 @@ export function describeAttempt(attempt: SpeechModelAttempt): string {
         ? 'compressed weights'
         : `${attempt.dtype} weights`
 
-  // The optimiser is only worth mentioning when it is not the runtime's own
-  // default, since that is the only time it explains anything to act on.
-  if (attempt.graphOptimizationLevel === 'basic') {
-    return `${prefix}${weights}, fewer graph optimisations`
-  }
-  if (attempt.graphOptimizationLevel === 'disabled') {
-    return `${prefix}${weights}, no graph optimisations`
-  }
   return `${prefix}${weights}`
 }
 
 /** The same, short enough to sit in a list of failures. */
 export function labelAttempt(attempt: SpeechModelAttempt): string {
-  const weights = attempt.graphOptimizationLevel
-    ? `${attempt.dtype}/${attempt.graphOptimizationLevel}`
-    : attempt.dtype
-  return attempt.model ? `${attempt.model} ${weights}` : weights
+  return attempt.model ? `${attempt.model} ${attempt.dtype}` : attempt.dtype
 }
 
 /**
@@ -114,7 +108,7 @@ export function loadFailureMessage(model: string, attempts: readonly string[]): 
     `No speech model would run in this browser: "${model}" was tried ${attempts.length} ways, ` +
     `including a fallback from a different publisher. That is unusual enough to be worth ` +
     `reporting — and in the meantime another repo id in Settings may work, ` +
-    `"onnx-community/whisper-tiny.en_timestamped" being a small one. ` +
+    `"Xenova/whisper-tiny.en" being a small one. ` +
     `Attempts: ${attempts.join(' · ')}`
   )
 }
