@@ -47,6 +47,12 @@ export function CaptionsPanel({
   const assets = useAssetStore((state) => state.assets)
 
   const [language, setLanguage] = useState('')
+  // Setup folds away once there is a transcript, so the words are near the top
+  // of the panel rather than below two cards of controls nobody is using any
+  // more. Initial only, and set again when a run finishes — deriving it every
+  // render would slam the card shut on anyone who had just opened it.
+  const [setupOpen, setSetupOpen] = useState(() => captionCuesOf(project).length === 0)
+  const [lookOpen, setLookOpen] = useState(false)
   const [progress, setProgress] = useState<TranscribeProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -79,6 +85,10 @@ export function CaptionsPanel({
 
       const count = setCaptionsFromWords(trackId, transcript.words)
       setWarnings(transcript.failures)
+      // Out of the way, now that there is something to read underneath it. Only
+      // when it worked: an empty result is exactly when you want the language
+      // picker still in front of you.
+      if (count > 0) setSetupOpen(false)
       setNotice(
         count === 0
           ? 'No speech was recognised in the audio on the timeline.'
@@ -101,8 +111,12 @@ export function CaptionsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
-        <p className="text-sm font-medium">Karaoke captions</p>
+      <Section
+        title="Karaoke captions"
+        summary={cues.length > 0 ? `${cues.length} caption${cues.length === 1 ? '' : 's'}` : ''}
+        open={setupOpen}
+        onToggle={() => setSetupOpen((open) => !open)}
+      >
         <p className="text-xs leading-relaxed text-ink-dim">
           Transcribes the voice tracks and the sound your video clips carry, then puts one caption
           at a time on screen with the word being spoken picked out. Edit the words below; drag the
@@ -195,7 +209,7 @@ export function CaptionsPanel({
             Redoing replaces the captions below. Anything you have edited by hand will be lost.
           </p>
         ) : null}
-      </div>
+      </Section>
 
       {notice ? <Callout tone="success">{notice}</Callout> : null}
       {warnings.length > 0 ? (
@@ -209,7 +223,16 @@ export function CaptionsPanel({
       ) : null}
       {error ? <Callout tone="error">{error}</Callout> : null}
 
-      {track ? <CaptionStyleControls track={track} /> : null}
+      {track ? (
+        <Section
+          title="Look"
+          summary={`${Math.round(track.style.fontScale * 100)}% · ${track.style.bold ? 'bold' : 'regular'}`}
+          open={lookOpen}
+          onToggle={() => setLookOpen((open) => !open)}
+        >
+          <CaptionStyleControls track={track} />
+        </Section>
+      ) : null}
 
       {track && cues.length > 0 ? (
         <TranscriptEditor
@@ -227,6 +250,52 @@ export function CaptionsPanel({
   )
 }
 
+/**
+ * A card that folds away.
+ *
+ * Both of these are setup: you use them once and then spend the rest of the
+ * session in the transcript underneath. Left open they push the transcript far
+ * enough down the page that following the playhead means scrolling — so they
+ * close themselves the moment there is a transcript to make room for, and the
+ * summary in the header says what is inside without opening it.
+ */
+function Section({
+  title,
+  summary,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string
+  summary?: string
+  open: boolean
+  onToggle: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex items-center gap-2 text-left"
+      >
+        <span
+          aria-hidden
+          className={`text-ink-dim transition-transform ${open ? 'rotate-90' : ''}`}
+        >
+          ›
+        </span>
+        <span className="text-sm font-medium">{title}</span>
+        {!open && summary ? (
+          <span className="ml-auto truncate text-xs text-ink-dim">{summary}</span>
+        ) : null}
+      </button>
+      {open ? children : null}
+    </div>
+  )
+}
+
 /** How captions look. Every value is a fraction of the frame, so it survives a resolution change. */
 function CaptionStyleControls({ track }: { track: CaptionTrack }) {
   const setCaptionStyle = useProjectStore((state) => state.setCaptionStyle)
@@ -234,9 +303,7 @@ function CaptionStyleControls({ track }: { track: CaptionTrack }) {
   const { style } = track
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-line bg-surface p-3">
-      <p className="text-sm font-medium">Look</p>
-
+    <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2 text-xs text-ink-dim">
           Size
@@ -349,9 +416,23 @@ function TranscriptEditor({
     const container = containerRef.current
     if (!container || !playingCue) return
     if (container.contains(document.activeElement)) return
-    container
-      .querySelector(`[data-cue="${playingCue.id}"]`)
-      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+
+    const row = container.querySelector(`[data-cue="${playingCue.id}"]`)
+    if (!row) return
+
+    // Scrolls this list and nothing else. `scrollIntoView` cannot be used here,
+    // even with `block: 'nearest'` — it walks every scrollable ancestor, and the
+    // step panel is inside one, so following the playhead dragged the whole page
+    // down once per caption.
+    const box = container.getBoundingClientRect()
+    const line = row.getBoundingClientRect()
+    const delta =
+      line.top < box.top
+        ? line.top - box.top
+        : line.bottom > box.bottom
+          ? line.bottom - box.bottom
+          : 0
+    if (delta !== 0) container.scrollBy({ top: delta, behavior: 'smooth' })
   }, [playingCue])
 
   return (

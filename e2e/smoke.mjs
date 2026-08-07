@@ -428,6 +428,23 @@ try {
   await page.getByRole('button', { name: /Add captions/ }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
+  // The setup card folds away once there is a transcript. Left open it pushes
+  // the words far enough down that following the playhead scrolls the page.
+  const setupToggle = page.getByRole('button', { name: 'Karaoke captions' })
+  if ((await setupToggle.getAttribute('aria-expanded')) !== 'false') {
+    fail('the setup section stayed open after captions were generated')
+  }
+  const lookToggle = page.getByRole('button', { name: 'Look' })
+  if ((await lookToggle.getAttribute('aria-expanded')) !== 'false') {
+    fail('the styling section was open before it was asked for')
+  }
+  await setupToggle.click()
+  if ((await setupToggle.getAttribute('aria-expanded')) !== 'true') {
+    fail('the setup section would not open again')
+  }
+  await setupToggle.click()
+  step('setup and styling fold away once there is a transcript, and open on request')
+
   // Provenance: each caption says which clip it was heard in, which is the only
   // way to tell layered takes apart once their words are on one lane.
   const firstLabel = await page
@@ -476,6 +493,41 @@ try {
   if (nowAt === wasAt) fail(`retiming a word did nothing: still at ${nowAt}s`)
   if (nowAt >= 999) fail(`a word overtook the one after it, landing at ${nowAt}s`)
   step(`a single word retimed and clamped short of its neighbour (${wasAt}s -> ${nowAt}s)`)
+
+  // Retiming a word from the timeline itself, with the keyboard. Dragging gets a
+  // word roughly right; this is the only way to place one exactly, and it is the
+  // half of word timing a mouse-only lane does not offer at all.
+  const wordMark = page.locator(
+    '[role="group"][aria-label^="Caption "] button[aria-label^="Word "]',
+  )
+  const firstMark = wordMark.first()
+  await firstMark.scrollIntoViewIfNeeded()
+  const markBox = await firstMark.boundingBox()
+  if (!markBox) fail('no word handle on the timeline caption')
+  // Big enough to hit without hunting: a handle a few pixels wide is a feature
+  // nobody finds.
+  if (markBox.width < 8 || markBox.height < 12) {
+    fail(`word handle is too small to grab: ${markBox.width}x${markBox.height}`)
+  }
+  const markName = /^Word "(.+)" at /.exec(await firstMark.getAttribute('aria-label'))?.[1]
+  // Clicking selects the word, which is what puts its exact timing on screen in
+  // the transcript. Read the number there rather than the handle's own label:
+  // that is rounded to a tenth, and a nudge is a hundredth.
+  await firstMark.click()
+  const nudged = page.locator(`input[aria-label^="When \\"${markName}\\" is highlighted"]`)
+  const beforeNudge = Number(await nudged.inputValue())
+  await firstMark.focus()
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(200)
+  const afterNudge = Number(await nudged.inputValue())
+  if (!(afterNudge > beforeNudge)) {
+    fail(`arrow keys did not retime the word on the timeline: ${beforeNudge}s -> ${afterNudge}s`)
+  }
+  step(
+    `word retimed from the timeline with the keyboard (${beforeNudge}s -> ${afterNudge}s, ` +
+      `${markBox.width}x${markBox.height} handle)`,
+  )
 
   // Dragging the head of a caption is how you bring it up earlier or later
   // without touching a word in it, and only a real browser exercises it.
@@ -546,6 +598,9 @@ try {
   // The style lives on the caption track, not on any cue, so it is saved by a
   // different path and worth checking separately.
   await page.getByRole('button', { name: /4 · Captions/ }).click()
+  // Folded away by default now that there is a transcript to make room for, so
+  // this is also the check that what is inside still works once unfolded.
+  await page.getByRole('button', { name: 'Look' }).click()
   await page.waitForSelector('input[aria-label="Caption size, as a fraction of the frame height"]')
   const sizeSlider = page.locator(
     'input[aria-label="Caption size, as a fraction of the frame height"]',
@@ -554,6 +609,9 @@ try {
   await page.waitForTimeout(600)
   await page.reload({ waitUntil: 'networkidle' })
   await page.getByRole('button', { name: /4 · Captions/ }).click()
+  // Folded again: which card is open is a view preference, not part of the
+  // document, and a fresh load should start compact however it was left.
+  await page.getByRole('button', { name: 'Look' }).click()
   await page.waitForSelector('input[aria-label="Caption size, as a fraction of the frame height"]')
   const savedSize = Number(await sizeSlider.inputValue())
   if (Math.abs(savedSize - 0.12) > 0.001) {

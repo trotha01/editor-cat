@@ -586,6 +586,31 @@ towards a word list for a 30% premium — is absent rather than sent empty, so i
 stays a thing to add knowingly. `scribeInput` is pure and tested for exactly
 this: the defaults are the kind of thing that silently comes back.
 
+**The panel folds up around the transcript.** Setup and styling are cards you
+use once; the transcript is where the rest of the session happens. Both close
+themselves as soon as there is a transcript to make room for, and each keeps a
+summary in its header so the state is legible without opening it. Which card is
+open is a view preference and deliberately not saved — a fresh load starts
+compact however it was left.
+
+The related bug is worth naming, because it is a trap: the transcript follows
+playback by scrolling the caption being spoken into view, and `scrollIntoView`
+walks _every_ scrollable ancestor. The step panel sits inside one, so following
+the playhead dragged the whole page down once per caption. It now adjusts the
+list's own `scrollTop` and touches nothing else.
+
+**Word timing is editable from the timeline, not only the transcript.** Each
+word has a handle where its highlight begins: a 16px target around a 4px tick,
+because the tick has to be thin to say precisely _when_ and a 4px-wide button is
+a thing you hunt for rather than grab. Arrow keys nudge the selected word by a
+hundredth of a second — finer than a pixel of drag at any usable zoom, and the
+only way to place a word exactly rather than approximately.
+
+The block divides top to bottom: the line and its trim edges above, the word
+handles along the bottom. That split is load-bearing. The edges used to span the
+full height, and since the first word of a caption starts at the cue start by
+definition, its handle sat underneath one and could never be grabbed at all.
+
 **Every caption remembers where it was heard.** A cue carries a `source` — the
 id of the clip it was transcribed from, plus that clip's name as it was at the
 time. It is stamped in `wordsOntoTimeline`, which is the only point that knows

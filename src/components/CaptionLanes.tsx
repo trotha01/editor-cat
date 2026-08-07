@@ -25,6 +25,17 @@ export const CAPTION_LANE_HEIGHT = 52
 /** Pointer travel before a press counts as a drag rather than a click. */
 const DRAG_THRESHOLD = 3
 
+/**
+ * How far an arrow key moves a word, in seconds.
+ *
+ * A hundredth is below what anyone can hear as early or late and finer than one
+ * pixel of drag at any usable zoom, which is the point: dragging gets a word
+ * roughly right, and this is how it is put exactly right. Shift is the coarse
+ * pass, about one frame and a bit.
+ */
+const FINE_NUDGE = 0.01
+const COARSE_NUDGE = 0.05
+
 type Grab = 'move' | 'start' | 'end' | { wordId: string }
 
 interface DragState {
@@ -94,6 +105,15 @@ export function CaptionLanes({ zoom, onSeek }: { zoom: number; onSeek: (time: nu
     setBlockedCueId(trimCueEdge(drag.cueId, drag.grab, next) ? null : drag.cueId)
   }
 
+  const nudgeWord = (cue: CaptionCue, wordId: string, delta: number) => {
+    const word = cue.words.find((entry) => entry.id === wordId)
+    if (!word) return
+    // Selected as well as moved, so the word being nudged is the one lit in the
+    // preview and in the transcript — otherwise you are tuning blind.
+    selectCaption({ cueId: cue.id, wordId })
+    setCueWordTiming(cue.id, wordId, { start: word.start + delta })
+  }
+
   const endDrag = (event: React.PointerEvent) => {
     if (!dragRef.current) return
     dragRef.current = null
@@ -122,6 +142,7 @@ export function CaptionLanes({ zoom, onSeek }: { zoom: number; onSeek: (time: nu
               selectedWordId={selected?.cueId === cue.id ? selected.wordId : null}
               blocked={blockedCueId === cue.id}
               onGrab={(event, grab) => beginDrag(event, cue, grab)}
+              onNudgeWord={(wordId, delta) => nudgeWord(cue, wordId, delta)}
               onDragMove={onDragMove}
               onDragEnd={endDrag}
               onSeek={onSeek}
@@ -141,6 +162,7 @@ function CueBlock({
   selectedWordId,
   blocked,
   onGrab,
+  onNudgeWord,
   onDragMove,
   onDragEnd,
   onSeek,
@@ -152,6 +174,7 @@ function CueBlock({
   selectedWordId: string | null
   blocked: boolean
   onGrab: (event: React.PointerEvent, grab: Grab) => void
+  onNudgeWord: (wordId: string, delta: number) => void
   onDragMove: (event: React.PointerEvent) => void
   onDragEnd: (event: React.PointerEvent) => void
   onSeek: (time: number) => void
@@ -192,25 +215,50 @@ function CueBlock({
         {text}
       </span>
 
-      {/* One tick per word, at the moment its highlight begins. Dragging a tick
+      {/* One handle per word, at the moment its highlight begins. Dragging one
           retimes that word alone, which is the repair for a highlight that lands
-          a beat off the voice. */}
+          a beat off the voice.
+
+          The handle is a 16px-wide target around a 4px tick: the tick has to be
+          thin to say precisely *when*, and a 4px-wide button is a thing you hunt
+          for rather than a thing you grab. Arrow keys nudge it by a hundredth of
+          a second, which is finer than a pixel of drag at any usable zoom and is
+          the only way to place a word exactly. */}
       {wordSpans(cue).map((span) => (
         <button
           key={span.word.id}
           type="button"
-          aria-label={`Word "${span.word.text}" at ${formatTime(span.word.start)} — drag to retime`}
-          title={`${span.word.text} · ${formatTime(span.word.start)}`}
+          aria-label={
+            `Word "${span.word.text}" at ${formatTime(span.word.start)}` +
+            ' — drag or use the arrow keys to retime'
+          }
+          title={`${span.word.text} · ${formatTime(span.word.start)}\nDrag, or select and press ← →`}
           onPointerDown={(event) => onGrab(event, { wordId: span.word.id })}
           onPointerMove={onDragMove}
           onPointerUp={onDragEnd}
           onPointerCancel={onDragEnd}
           onClick={() => onSeek(span.word.start)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            // Otherwise the timeline's own left/right shortcuts move the
+            // playhead instead, and the word stays where it was.
+            event.preventDefault()
+            event.stopPropagation()
+            const step =
+              (event.shiftKey ? COARSE_NUDGE : FINE_NUDGE) * (event.key === 'ArrowLeft' ? -1 : 1)
+            onNudgeWord(span.word.id, step)
+          }}
           style={{ left: (span.word.start - cue.start) * zoom }}
-          className={`absolute bottom-0 h-4 w-1.5 -translate-x-1/2 cursor-ew-resize rounded-t-sm ${
-            span.word.id === selectedWordId ? 'bg-accent' : 'bg-sky-700/60 hover:bg-sky-700'
-          }`}
-        />
+          className="group/word absolute bottom-0 flex h-4 w-4 -translate-x-1/2 cursor-ew-resize items-stretch justify-center focus:outline-none"
+        >
+          <span
+            className={`w-1 rounded-t-sm transition-colors ${
+              span.word.id === selectedWordId
+                ? 'bg-accent'
+                : 'bg-sky-700/60 group-hover/word:bg-sky-700 group-focus-visible/word:bg-accent'
+            }`}
+          />
+        </button>
       ))}
 
       {/* Edges change how long the caption is up, leaving the words alone. */}
@@ -227,7 +275,12 @@ function CueBlock({
           onPointerMove={onDragMove}
           onPointerUp={onDragEnd}
           onPointerCancel={onDragEnd}
-          className={`absolute inset-y-0 w-2 cursor-ew-resize bg-accent/0 transition group-hover/cue:bg-accent/70 focus-visible:bg-accent ${
+          // Stops above the word handles rather than spanning the block. Full
+          // height, it sat on top of the first word's handle — which begins at
+          // the cue start by definition — so the first word of every caption
+          // could not be grabbed at all. The block now divides top to bottom:
+          // the line and its edges above, the word handles along the bottom.
+          className={`absolute top-0 bottom-4 w-2 cursor-ew-resize bg-accent/0 transition group-hover/cue:bg-accent/70 focus-visible:bg-accent ${
             edge === 'start' ? 'left-0' : 'right-0'
           }`}
         />
