@@ -205,6 +205,12 @@ export interface CutResult {
    * afterwards, so the next edit lands on what the playhead is sitting over.
    */
   clipId: string
+  /**
+   * The clip that was cut in two, which keeps its id as the half in front.
+   * Anything credited to that id and sitting past the cut — captions — belongs
+   * to `clipId` now, and only the caller can move it across.
+   */
+  cutClipId: string
 }
 
 /**
@@ -235,7 +241,7 @@ export function splitClipAt(
 
   const next = [...clips]
   next.splice(target.index, 1, left, right)
-  return { clips: next, clipId: right.id }
+  return { clips: next, clipId: right.id, cutClipId: clip.id }
 }
 
 /**
@@ -266,7 +272,7 @@ export function joinCutAt(clips: readonly Clip[], clipId: string): CutResult | n
   const merged: Clip = { ...left, outPoint: right.outPoint }
   const next = [...clips]
   next.splice(index - 1, 2, merged)
-  return { clips: next, clipId: merged.id }
+  return { clips: next, clipId: merged.id, cutClipId: right.id }
 }
 
 /**

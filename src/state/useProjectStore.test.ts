@@ -289,6 +289,42 @@ describe('captions reach storage', () => {
     expect(wordAt('the')).toBeCloseTo(7.7)
   })
 
+  it('hands the captions past a cut to the half that now holds them', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 10 }],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'early', start: 1, end: 1.4, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'late', start: 8, end: 8.4, source: { id: 'clip-1', label: 'a.mp4' } },
+    ])
+
+    // Cut at 5s: the half in front keeps clip-1, the half behind is a new clip.
+    expect(useProjectStore.getState().cutAt(5)).toBe(true)
+    const halves = useProjectStore.getState().project.clips
+    expect(halves).toHaveLength(2)
+    const credited = (text: string) =>
+      captionCuesOf(useProjectStore.getState().project).find((cue) =>
+        cue.words.some((word) => word.text === text),
+      )?.source?.id
+    expect(credited('early')).toBe(halves[0]!.id)
+    expect(credited('late')).toBe(halves[1]!.id)
+
+    // Swap the halves. Each caption goes with the half it belongs to; before
+    // this, both were credited to clip-1 and "late" was carried off to 13s —
+    // past the end of a ten-second project.
+    useProjectStore.getState().moveClip(1, 0)
+    const wordAt = (text: string) =>
+      captionCuesOf(stored())
+        .flatMap((cue) => cue.words)
+        .find((word) => word.text === text)?.start ?? NaN
+    expect(wordAt('late')).toBeCloseTo(3)
+    expect(wordAt('early')).toBeCloseTo(6)
+  })
+
   it('leaves a voiceover’s captions where they are when the picture is rearranged', () => {
     // A voice clip sits at its own time and does not move when clips are
     // reordered, so its words must not move either.
