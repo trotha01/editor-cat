@@ -12,10 +12,16 @@
 # Requires, both set up outside this file:
 #   - the Claude GitHub App installed on the repository
 #     https://github.com/apps/claude
-#   - an ANTHROPIC_API_KEY repository secret. To bill a Claude subscription
-#     instead, store CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) and
-#     swap the `anthropic_api_key:` lines below for
-#     `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`.
+#   - a CLAUDE_CODE_OAUTH_TOKEN repository secret, generated locally with
+#     `claude setup-token`. This bills a Claude subscription rather than API
+#     credits. To use API credits instead, store ANTHROPIC_API_KEY and swap the
+#     `claude_code_oauth_token:` lines below for
+#     `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}`.
+#
+# Note the token is a billing choice, not a visibility one: these runs are
+# GitHub Actions jobs, so they show up in the workflow log and as issue and PR
+# comments. They are not Claude Code cloud sessions and do not appear in the
+# session list at claude.ai/code or in the desktop and mobile apps.
 #
 # GitHub reads `issues` and `issue_comment` workflows from the default branch,
 # so this does nothing until it is merged to main.
@@ -54,7 +60,7 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A prompt puts the action in automation mode: it runs on the event
           # itself rather than waiting to be mentioned.
           prompt: |
@@ -109,6 +115,6 @@ jobs:
       # that mentioned it and replies in the thread as it works.
       - uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --max-turns 60
