@@ -824,6 +824,11 @@ try {
   step('the caption typeface is served from this origin, so it can also be burnt in')
 
   // --- Export --------------------------------------------------------------
+  // Counted again here rather than reusing the count taken when the transcript
+  // first landed: redoing one clip's captions in between changes how many there
+  // are, and what the export has to burn in is whatever is on the timeline now.
+  const captionsToBurn = await page.locator('[role="group"][aria-label^="Caption "]').count()
+
   await page.getByRole('button', { name: 'Export' }).first().click()
   await page.waitForSelector('text=Render and download MP4')
 
@@ -855,8 +860,8 @@ try {
     fail(`export should keep the video clips' sound, summary said: "${summary}"`)
   }
   const burntIn = Number(/(\d+) captions? burnt in/.exec(summary)?.[1] ?? 0)
-  if (burntIn !== captionCues) {
-    fail(`all ${captionCues} captions should be burnt in, summary said: "${summary}"`)
+  if (burntIn !== captionsToBurn) {
+    fail(`all ${captionsToBurn} captions should be burnt in, summary said: "${summary}"`)
   }
   step(
     `export receives ${clipCount} audio clips across ${trackTotal} tracks, ` +
