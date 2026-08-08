@@ -57,8 +57,8 @@ const context = await browser.newContext({ permissions: ['microphone'] })
 const page = await context.newPage({ viewport: { width: 1500, height: 950 } })
 
 const pageErrors = []
-// The caption typeface is copied out of node_modules at build time and is the
-// one thing captions cannot be drawn without — in the browser or, more quietly,
+// The caption typeface is staged into public/fonts at build time and is the one
+// thing captions cannot be drawn without — in the browser or, more quietly,
 // inside ffmpeg, where a missing font draws nothing and still exits successfully.
 const fontResponses = []
 page.on('response', (response) => {
@@ -758,7 +758,7 @@ try {
   if (Math.abs(drawn.bottomFraction - (0.82 + drawn.fontFraction / 2)) > 0.03) {
     fail(`captions should sit low in the frame, bottom edge is at ${drawn.bottomFraction}`)
   }
-  if (!/Inter Captions/.test(drawn.family)) {
+  if (!/Lindy Toon Wide Captions/.test(drawn.family)) {
     fail(`captions should use the font that gets burnt in, got "${drawn.family}"`)
   }
   step(

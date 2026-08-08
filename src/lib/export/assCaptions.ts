@@ -22,8 +22,12 @@
 import { cuesOnTrack, wordSpans } from '../captions'
 import type { CaptionCue, CaptionStyle, CaptionTrack } from '../types'
 
-/** The family name inside the shipped font files. */
-const FONT_NAME = 'Inter'
+/**
+ * The family name inside the shipped font file, which is what libass matches a
+ * style against — not the CSS family the preview asks for, which is suffixed to
+ * stay clear of an installed copy. The two name the same bytes.
+ */
+const FONT_NAME = 'Lindy Toon Wide'
 
 /** One ASS style per caption track, since style is a property of the track. */
 function styleNameFor(index: number): string {

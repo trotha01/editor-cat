@@ -13,25 +13,21 @@
 
 /* The caption typeface, and the reason it is a local file rather than a stack
    of system fonts: these exact bytes are handed to libass at export time, so
-   what you position over the preview is what gets burnt into the MP4. The files
-   are copied out of node_modules at build time — see
+   what you position over the preview is what gets burnt into the MP4. The file
+   is copied out of assets/fonts at build time — see
    scripts/copy-caption-font.mjs. A browser fetches a face only when something
-   actually renders in it, so a project with no captions pays nothing for these.
+   actually renders in it, so a project with no captions pays nothing for it.
 
-   The family name is deliberately not "Inter": it must not collide with a real
-   Inter the user may have installed, which would render on screen and then be
-   replaced by ours in the export. */
+   The family name is deliberately not the bare "Lindy Toon Wide": it must not
+   collide with a copy the user may have installed, which would render on screen
+   and then be replaced by ours in the export.
+
+   One weight, because the face ships one. A caption styled bold is drawn with
+   this same file emboldened — by the browser here, by libass in the export. */
 @font-face {
-  font-family: 'Inter Captions';
-  src: url('/fonts/Inter-Regular.ttf') format('truetype');
+  font-family: 'Lindy Toon Wide Captions';
+  src: url('/fonts/LindyToonWide-Regular.ttf') format('truetype');
   font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Inter Captions';
-  src: url('/fonts/Inter-Bold.ttf') format('truetype');
-  font-weight: 700;
   font-display: swap;
 }
 
