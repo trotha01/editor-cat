@@ -9,6 +9,7 @@ import { loadProject, saveProject } from '../lib/db'
 import {
   clampLeadIn,
   clipForAsset,
+  clipStartDeltas,
   joinCutAt,
   layoutClips,
   leadInOf,
@@ -38,6 +39,7 @@ import {
   recaptionSource,
   setCueText,
   setWordTiming,
+  shiftCuesBySource,
   splitCue,
   spreadWordsEvenly,
   trimCue,
@@ -309,7 +311,17 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     selectClip: (clipId) => set({ selectedClipId: clipId }),
 
     moveClip: (from, to) =>
-      mutate((project) => ({ ...project, clips: reorder(project.clips, from, to) })),
+      mutate((project) => {
+        const clips = reorder(project.clips, from, to)
+        // The captions go with the picture. Cue times are absolute, so a clip
+        // dragged to a new slot would otherwise leave its words behind at the
+        // moment it used to occupy, speaking over whatever replaced it.
+        const cues = shiftCuesBySource(
+          captionCuesOf(project),
+          clipStartDeltas(project.clips, clips, leadInOf(project)),
+        )
+        return cues ? { ...project, clips, captionCues: cues } : { ...project, clips }
+      }),
 
     trim: (clipId, asset, edge, value) =>
       mutate((project) => ({

@@ -15,6 +15,7 @@ import {
   recaptionSource,
   setCueText,
   setWordTiming,
+  shiftCuesBySource,
   splitBoundary,
   splitCue,
   spreadWordsEvenly,
@@ -407,6 +408,79 @@ describe('setWordTiming', () => {
     expect(squashed.words[0]!.end).toBeGreaterThanOrEqual(
       squashed.words[0]!.start + MIN_WORD_DURATION,
     )
+  })
+})
+
+describe('shiftCuesBySource', () => {
+  const sourced = (id: string, sourceId: string, start: number, end: number): CaptionCue => ({
+    ...cue([word(id, start, end)], start, end),
+    id,
+    source: { id: sourceId, label: sourceId },
+  })
+
+  it('carries a cue to where its clip has moved, words and all', () => {
+    const cues = [sourced('c1', 'clip-1', 2, 3)]
+    const shifted = shiftCuesBySource(cues, new Map([['clip-1', 5]]))
+    expect(shifted).not.toBeNull()
+    expect(shifted![0]!.start).toBeCloseTo(7)
+    expect(shifted![0]!.end).toBeCloseTo(8)
+    expect(shifted![0]!.words[0]!.start).toBeCloseTo(7)
+  })
+
+  it('moves each cue by its own clip, not by one shared delta', () => {
+    const cues = [sourced('c1', 'clip-1', 0, 1), sourced('c2', 'clip-2', 4, 5)]
+    const shifted = shiftCuesBySource(
+      cues,
+      new Map([
+        ['clip-1', 4],
+        ['clip-2', -4],
+      ]),
+    )
+    // The two clips swapped, so their captions swap with them.
+    expect(shifted![0]!.start).toBeCloseTo(4)
+    expect(shifted![1]!.start).toBeCloseTo(0)
+  })
+
+  it('leaves a cue from a clip that did not move exactly where it is', () => {
+    const still = sourced('c1', 'clip-1', 2, 3)
+    const shifted = shiftCuesBySource(
+      [still, sourced('c2', 'clip-2', 4, 5)],
+      new Map([['clip-2', 1]]),
+    )
+    expect(shifted![0]).toBe(still)
+  })
+
+  it('leaves captions typed by hand alone, having no clip to follow', () => {
+    const typed = cue([word('hi', 2, 3)], 2, 3)
+    const shifted = shiftCuesBySource(
+      [typed, sourced('c1', 'clip-1', 5, 6)],
+      new Map([['clip-1', 2]]),
+    )
+    expect(shifted![0]).toBe(typed)
+  })
+
+  it('leaves a voiceover caption alone when the picture is rearranged', () => {
+    // The voice clip keeps its own place, so its words must keep theirs.
+    const voice = sourced('c1', 'aclip-1', 2, 3)
+    const shifted = shiftCuesBySource(
+      [voice, sourced('c2', 'clip-1', 6, 7)],
+      new Map([['clip-1', 3]]),
+    )
+    expect(shifted![0]).toBe(voice)
+  })
+
+  it('returns null when nothing moved, so the caller can hold on to what it has', () => {
+    const cues = [sourced('c1', 'clip-1', 2, 3)]
+    expect(shiftCuesBySource(cues, new Map())).toBeNull()
+    // A delta naming a clip no cue came from is no move either.
+    expect(shiftCuesBySource(cues, new Map([['clip-9', 4]]))).toBeNull()
+  })
+
+  it('does not mutate the cues it was given', () => {
+    const cues = [sourced('c1', 'clip-1', 2, 3)]
+    shiftCuesBySource(cues, new Map([['clip-1', 5]]))
+    expect(cues[0]!.start).toBe(2)
+    expect(cues[0]!.words[0]!.start).toBe(2)
   })
 })
 

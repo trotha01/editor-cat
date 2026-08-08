@@ -557,6 +557,41 @@ export function moveCue(cue: CaptionCue, startTime: number): CaptionCue {
 }
 
 /**
+ * Carries cues along with the clips their words were heard in.
+ *
+ * Cue times are absolute, which is what keeps every other edit here honest but
+ * is exactly wrong the moment the picture is rearranged: the captions would sit
+ * still while the clips slide out from under them, and clip three's words would
+ * play over whatever had just taken clip three's place.
+ *
+ * Keyed by `source.id` — the clip a cue was transcribed from — so only captions
+ * belonging to a clip that moved are touched. Three kinds stay exactly where
+ * they are, and each for a reason: a cue typed by hand was never heard in a
+ * clip; a cue from a project captioned before sources were recorded cannot be
+ * attributed to one; and a cue from a voiceover keeps its place because the
+ * voiceover does too, sitting at its own time rather than in the run of clips.
+ *
+ * Returns null when nothing moved, so a caller can leave the cues it holds
+ * untouched — identity and all, which matters for the shared empty value that
+ * projects without captions read through.
+ */
+export function shiftCuesBySource(
+  cues: readonly CaptionCue[],
+  deltaBySource: ReadonlyMap<string, number>,
+): CaptionCue[] | null {
+  if (deltaBySource.size === 0) return null
+  let moved = false
+  const next = cues.map((cue) => {
+    const delta = cue.source ? deltaBySource.get(cue.source.id) : undefined
+    if (delta === undefined) return cue
+    const shifted = moveCue(cue, cue.start + delta)
+    if (shifted !== cue) moved = true
+    return shifted
+  })
+  return moved ? next : null
+}
+
+/**
  * Drags one end of a cue.
  *
  * Only the bounds move. Words are left exactly where they are, which matters

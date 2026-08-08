@@ -219,6 +219,68 @@ describe('captions reach storage', () => {
     )
   })
 
+  it('carries a clip’s captions along when it is dragged somewhere else', () => {
+    // 2s, 3s and 5s end to end, so the clips start at 0, 2 and 5. Each gets one
+    // word, spoken inside its own clip and far enough from the others to be a
+    // caption of its own.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+          { id: 'clip-3', assetId: 'c', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'One.', start: 0.5, end: 0.9, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'Two.', start: 2.5, end: 2.9, source: { id: 'clip-2', label: 'b.mp4' } },
+      { text: 'Three.', start: 5.5, end: 5.9, source: { id: 'clip-3', label: 'c.mp4' } },
+    ])
+
+    const startFor = (project: Project, clipId: string) =>
+      captionCuesOf(project).find((cue) => cue.source?.id === clipId)?.start ?? NaN
+    const before = useProjectStore.getState().project
+
+    // Drag the last clip to the front: it leads now, and the other two follow.
+    useProjectStore.getState().moveClip(2, 0)
+
+    const saved = stored()
+    expect(startFor(saved, 'clip-3') - startFor(before, 'clip-3')).toBeCloseTo(-5)
+    expect(startFor(saved, 'clip-1') - startFor(before, 'clip-1')).toBeCloseTo(5)
+    expect(startFor(saved, 'clip-2') - startFor(before, 'clip-2')).toBeCloseTo(5)
+    // The words go with the line, or the highlight lands on the wrong one.
+    const moved = captionCuesOf(saved).find((cue) => cue.source?.id === 'clip-3')
+    expect(moved?.words[0]?.start).toBeCloseTo(0.5)
+  })
+
+  it('leaves a voiceover’s captions where they are when the picture is rearranged', () => {
+    // A voice clip sits at its own time and does not move when clips are
+    // reordered, so its words must not move either.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+        ],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore
+      .getState()
+      .setCaptionsFromWords(trackId, [
+        { text: 'Narration.', start: 0.5, end: 0.9, source: { id: 'aclip-1', label: 'take.webm' } },
+      ])
+    const before = captionCuesOf(useProjectStore.getState().project)[0]
+
+    useProjectStore.getState().moveClip(1, 0)
+
+    expect(captionCuesOf(stored())[0]).toBe(before)
+  })
+
   it('leaves captions alone when the timeline is cleared', () => {
     // Clearing empties the picture and the audio. The captions belong to audio
     // that has gone, so they go too — but the track stays, ready to be used
