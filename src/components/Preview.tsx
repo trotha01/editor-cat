@@ -17,26 +17,31 @@
  * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import {
-  clipAtTime,
-  clipGain,
-  formatTime,
-  formatTimecode,
-  layoutClips,
-  leadInOf,
-} from '../lib/timeline'
+import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
 import { useFullscreen } from '../hooks/useFullscreen'
+import { usePersistedState } from '../hooks/usePersistedState'
 import { useReportReadiness } from '../hooks/useReportReadiness'
 import { ReadinessBanner } from './ReadinessBanner'
+import { ResizeHandle } from './ResizeHandle'
 import { gainFor } from '../lib/audioTracks'
 import { layerGain, layersAt, videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
 import { CaptionOverlay } from './CaptionOverlay'
 import { isTypingTarget } from '../lib/shortcuts'
 import type { Asset, AudioClip, Clip, VideoClip } from '../lib/types'
+
+/**
+ * Bounds for dragging the player taller or shorter with {@link ResizeHandle}.
+ * Matched by the `.preview-column.resized` rule in index.css, which is what
+ * actually applies the height — these just keep the drag from running away.
+ */
+const MIN_PREVIEW_HEIGHT = 220
+const MAX_PREVIEW_HEIGHT = 1400
+/** Used only to give the first drag of a session somewhere sane to start from. */
+const DEFAULT_PREVIEW_HEIGHT = 400
 
 /** How far a media element may drift before we correct it, in seconds. */
 const SEEK_TOLERANCE = 0.3
@@ -335,6 +340,12 @@ export function Preview({
 
   const { ref, active: fullscreen, supported, toggle } = useFullscreen<HTMLElement>()
 
+  // Null until the player has been dragged: the default sizing is the
+  // flexible `.preview-column` rule in index.css, which fits the room rather
+  // than any one number, so there is nothing to store until the user overrides
+  // it.
+  const [height, setHeight] = usePersistedState<number | null>('editor-cat.previewHeight.v1', null)
+
   const empty = project.clips.length === 0
   const offerFullscreen = supported && !empty
 
@@ -368,9 +379,13 @@ export function Preview({
       ref={ref}
       className={`flex flex-col gap-3 ${
         // Beside the panels this is one row of a column that has to fit the
-        // window, so it gives way to the timeline below rather than the reverse.
-        fullscreen ? 'justify-center bg-black p-4' : 'preview-column'
+        // window, so it gives way to the timeline below rather than the reverse
+        // — unless the height has been dragged, which pins it instead.
+        fullscreen ? 'justify-center bg-black p-4' : `preview-column${height ? ' resized' : ''}`
       }`}
+      style={
+        !fullscreen && height ? ({ '--preview-height': `${height}px` } as CSSProperties) : undefined
+      }
       aria-label="Preview"
     >
       {/* The room the picture has, and the box it takes up inside it. Two
@@ -505,11 +520,18 @@ export function Preview({
       ) : null}
 
       {fullscreen ? null : (
-        <p className="text-xs text-ink-dim">
-          Clips play their own sound, mixed with your audio tracks — the export is exactly what you
-          hear here. Select a clip to mute it or set its level. Playhead at{' '}
-          {formatTimecode(currentTime, project.fps)}, and the arrow keys move it a frame at a time.
-        </p>
+        <ResizeHandle
+          orientation="vertical"
+          label="Resize the video player"
+          className="hidden lg:flex"
+          onResize={(delta) => {
+            setHeight((current) => {
+              const base =
+                current ?? ref.current?.getBoundingClientRect().height ?? DEFAULT_PREVIEW_HEIGHT
+              return Math.min(MAX_PREVIEW_HEIGHT, Math.max(MIN_PREVIEW_HEIGHT, base + delta))
+            })
+          }}
+        />
       )}
     </section>
   )
