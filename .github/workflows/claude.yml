@@ -46,6 +46,16 @@ concurrency:
   group: claude-${{ github.event.issue.number }}
   cancel-in-progress: false
 
+# The action allows file edits, read-only git and commenting out of the box,
+# and nothing else: "Claude does not have access to execute arbitrary Bash
+# commands by default." Everything the prompt below asks for past editing a
+# file — cut a branch, npm ci, run the tests, commit, push, open the PR — is a
+# Bash call, so without this list a run burns its turns collecting permission
+# denials and then exits 0 having done nothing. These add to the built-in
+# GitHub tools rather than replacing them.
+env:
+  CLAUDE_TOOLS: "Edit,Write,Read,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)"
+
 jobs:
   # --- A new issue: start without being asked -------------------------------
   new-issue:
@@ -65,7 +75,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Say so in the thread before the work starts. The run is already visible
+      # in the Actions tab, but nobody watches the Actions tab — the issue is
+      # where you are looking right after you file one. Automation mode posts
+      # nothing of its own until it has a result, and a run that dies early
+      # posts nothing at all, which reads exactly like never having started.
+      #
+      # The `mention` job below needs no equivalent: interactive mode opens its
+      # own tracking comment as soon as it wakes up.
+      - name: Say Claude picked it up
+        id: ack
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            const { data } = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🐱 Claude picked this up and is working on it — [watch the run](${run}).\n\nThis comment is updated when the run finishes.`,
+            })
+            core.setOutput('id', data.id)
+
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A prompt puts the action in automation mode: it runs on the event
@@ -101,6 +134,31 @@ jobs:
             out, say so plainly in the PR body rather than quietly narrowing the scope.
           claude_args: |
             --max-turns 60
+            --allowedTools "${{ env.CLAUDE_TOOLS }}"
+
+      # The step above exits 0 whether or not it built anything — a run that
+      # spends every turn being denied permission still "succeeds". So close
+      # the loop by pointing at the evidence instead of claiming a result.
+      - name: Report how the run went
+        if: always()
+        uses: actions/github-script@v9
+        env:
+          OUTCOME: ${{ steps.claude.outcome }}
+          COMMENT_ID: ${{ steps.ack.outputs.id }}
+        with:
+          script: |
+            const id = Number(process.env.COMMENT_ID)
+            if (!id) return
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            const body = process.env.OUTCOME === 'success'
+              ? `🐱 Claude's run [finished](${run}).\n\nIf no pull request is linked above, it did not manage to open one — the [log](${run}) says why.`
+              : `🐱 Claude's run [failed or was cancelled](${run}), so this issue was not picked up. The [log](${run}) has the details.`
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: id,
+              body,
+            })
 
   # --- A comment: only when asked -------------------------------------------
   mention:
@@ -125,3 +183,4 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --max-turns 60
+            --allowedTools "${{ env.CLAUDE_TOOLS }}"
