@@ -15,7 +15,8 @@
  * Widths are proportional to duration, with a pixels-per-second zoom, so what
  * you see matches what you get.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   DndContext,
   PointerSensor,
@@ -49,7 +50,6 @@ import {
   maxTransitionIn,
   snapToFrame,
   totalDuration,
-  transitionInFor,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
@@ -119,7 +119,6 @@ function ClipCard({
   zoom,
   selected,
   cutAtStart,
-  maxTransition,
   target,
   captioning,
   onSelect,
@@ -128,7 +127,6 @@ function ClipCard({
   onJoin,
   onCaption,
   onToggleMute,
-  onSetTransition,
 }: {
   entry: PositionedClip
   asset: Asset | undefined
@@ -136,9 +134,6 @@ function ClipCard({
   selected: boolean
   /** True when this clip carries on from the one before it — i.e. a cut. */
   cutAtStart: boolean
-  /** Longest a dissolve into this clip could run — 0 when there is no previous
-   *  clip, or neither clip has enough length to spare. */
-  maxTransition: number
   /** Set when this clip has speech worth transcribing. Absent for a still. */
   target: CaptionTarget | undefined
   captioning: boolean
@@ -148,7 +143,6 @@ function ClipCard({
   onJoin: () => void
   onCaption: (target: CaptionTarget) => void
   onToggleMute: () => void
-  onSetTransition: (seconds: number) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: entry.clip.id,
@@ -213,27 +207,6 @@ function ClipCard({
             onSelect: onToggleMute,
           },
         ]),
-    // Same toggle as the selected-clip panel below, offered here too because
-    // this menu is the first place anyone looks for what a clip can be told to
-    // do, and a control that only exists once a clip is selected is one most
-    // people will never find.
-    ...(entry.index > 0
-      ? [
-          {
-            icon: '◐',
-            label:
-              entry.transitionIn > 0
-                ? 'Remove the dissolve into this clip'
-                : 'Dissolve into this clip',
-            note: entry.transitionIn <= 0 && maxTransition <= 0 ? 'too short' : undefined,
-            onSelect: () =>
-              onSetTransition(
-                entry.transitionIn > 0 ? 0 : Math.min(DEFAULT_TRANSITION_DURATION, maxTransition),
-              ),
-            disabled: entry.transitionIn <= 0 && maxTransition <= 0,
-          },
-        ]
-      : []),
     // Also a mark on the clip itself, which is where you would reach for it
     // having seen the cut. Here as well because the mark is a pair of scissors
     // and nothing else, and this is the version that says what it does.
@@ -378,6 +351,195 @@ function ClipCard({
           </button>
         </>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * The seam between two clips, where a transition is chosen.
+ *
+ * A zero-width flex item rather than a corner of either clip, so it does not
+ * compete with that clip's own trim handle or menu for the same pixels, and
+ * so it keeps its place on the seam itself when a clip is trimmed or
+ * reordered. Contributes nothing to the row's width — clips still sit end to
+ * end with nothing between them, exactly as they do without a transition.
+ *
+ * Opens the same choice Descript's does: cut, or dissolve with a duration,
+ * in one place rather than split across a menu toggle and a panel field —
+ * this control already does both jobs.
+ */
+function TransitionHandle({
+  transitionIn,
+  maxTransition,
+  onChange,
+}: {
+  transitionIn: number
+  maxTransition: number
+  onChange: (seconds: number) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
+
+  const close = useCallback((focusButton = true) => {
+    setOpen(false)
+    setPosition(null)
+    if (focusButton) buttonRef.current?.focus()
+  }, [])
+
+  // Placed once it can be measured, the same way the clip's own ⋯ menu is —
+  // centered on the button rather than flush with an edge, since this button
+  // sits mid-seam with nothing to align to on either side.
+  useLayoutEffect(() => {
+    if (!open) return
+    const button = buttonRef.current
+    const menu = menuRef.current
+    if (!button || !menu) return
+
+    const anchor = button.getBoundingClientRect()
+    const { width, height } = menu.getBoundingClientRect()
+    const room = { width: window.innerWidth, height: window.innerHeight }
+
+    const below = anchor.bottom + 4
+    const top = below + height > room.height - 8 ? Math.max(8, anchor.top - height - 4) : below
+    const left = Math.max(
+      8,
+      Math.min(anchor.left + anchor.width / 2 - width / 2, room.width - width - 8),
+    )
+
+    setPosition({ top, left })
+    menu.focus()
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (menuRef.current?.contains(target) || buttonRef.current?.contains(target)) return
+      close(false)
+    }
+    const onScroll = () => close(false)
+
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onScroll)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [open, close])
+
+  const dissolving = transitionIn > 0
+  const tooShort = maxTransition <= 0
+
+  return (
+    <div className="relative h-20 w-0 shrink-0">
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={dissolving ? `Dissolves ${formatTime(transitionIn)} into this clip` : 'Cut'}
+        title={
+          tooShort
+            ? 'Too short to add a transition here — trim a clip to make room.'
+            : dissolving
+              ? `Dissolves ${formatTime(transitionIn)} into this clip — click to change`
+              : 'Cut — click to choose a transition'
+        }
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation()
+          setOpen((was) => !was)
+        }}
+        className={`absolute top-1/2 left-0 z-20 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-xs shadow transition ${
+          dissolving
+            ? 'border-accent bg-accent text-white'
+            : 'border-line bg-surface text-ink-dim hover:text-ink'
+        }`}
+      >
+        <span aria-hidden>{dissolving ? '◐' : '✂'}</span>
+      </button>
+
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label="Transition"
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.stopPropagation()
+                  close()
+                }
+              }}
+              style={{
+                top: position?.top ?? 0,
+                left: position?.left ?? 0,
+                visibility: position ? 'visible' : 'hidden',
+              }}
+              className="fixed z-50 w-56 rounded-lg border border-line bg-surface p-2 text-sm shadow-xl outline-none"
+            >
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={!dissolving}
+                onClick={() => {
+                  onChange(0)
+                  close()
+                }}
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition hover:bg-surface-2 ${
+                  !dissolving ? 'font-medium text-accent' : 'text-ink'
+                }`}
+              >
+                <span aria-hidden className="w-4 text-center">
+                  ✂
+                </span>
+                Cut
+              </button>
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={dissolving}
+                disabled={tooShort}
+                onClick={() => {
+                  if (!dissolving) onChange(Math.min(DEFAULT_TRANSITION_DURATION, maxTransition))
+                }}
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-45 ${
+                  dissolving ? 'font-medium text-accent' : 'text-ink'
+                }`}
+              >
+                <span aria-hidden className="w-4 text-center">
+                  ◐
+                </span>
+                Dissolve
+                {tooShort ? <span className="ml-auto text-xs text-ink-dim">too short</span> : null}
+              </button>
+
+              {dissolving ? (
+                <label className="mt-1 flex items-center gap-2 border-t border-line px-2 pt-2 text-xs text-ink-dim">
+                  Duration
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={maxTransition}
+                    step={0.1}
+                    value={transitionIn.toFixed(1)}
+                    onChange={(event) => onChange(Number(event.target.value))}
+                    aria-label="Dissolve duration, in seconds"
+                    className="w-16 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
+                  />
+                  s
+                </label>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }
@@ -764,31 +926,37 @@ export function Timeline({
                       </p>
                     ) : (
                       positioned.map((entry) => (
-                        <ClipCard
-                          key={entry.clip.id}
-                          entry={entry}
-                          asset={assetById.get(entry.clip.assetId)}
-                          zoom={zoom}
-                          selected={entry.clip.id === selectedClipId}
-                          cutAtStart={cutBefore(positioned, entry.index)}
-                          maxTransition={maxTransitionIn(
-                            entry.clip,
-                            positioned[entry.index - 1]?.clip,
-                          )}
-                          target={targets.get(entry.clip.id)}
-                          captioning={captioningClipId === entry.clip.id}
-                          onSelect={() => selectClip(entry.clip.id)}
-                          onTrim={(edge, seconds) =>
-                            trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
-                          }
-                          onSetTransition={(seconds) => setClipTransition(entry.clip.id, seconds)}
-                          onRemove={() => removeClip(entry.clip.id)}
-                          onJoin={() => removeCut(entry.clip.id)}
-                          onCaption={(target) => void captionClip(target.source)}
-                          onToggleMute={() =>
-                            setClipAudio(entry.clip.id, { muted: !entry.clip.muted })
-                          }
-                        />
+                        <Fragment key={entry.clip.id}>
+                          {entry.index > 0 ? (
+                            <TransitionHandle
+                              transitionIn={entry.transitionIn}
+                              maxTransition={maxTransitionIn(
+                                entry.clip,
+                                positioned[entry.index - 1]?.clip,
+                              )}
+                              onChange={(seconds) => setClipTransition(entry.clip.id, seconds)}
+                            />
+                          ) : null}
+                          <ClipCard
+                            entry={entry}
+                            asset={assetById.get(entry.clip.assetId)}
+                            zoom={zoom}
+                            selected={entry.clip.id === selectedClipId}
+                            cutAtStart={cutBefore(positioned, entry.index)}
+                            target={targets.get(entry.clip.id)}
+                            captioning={captioningClipId === entry.clip.id}
+                            onSelect={() => selectClip(entry.clip.id)}
+                            onTrim={(edge, seconds) =>
+                              trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
+                            }
+                            onRemove={() => removeClip(entry.clip.id)}
+                            onJoin={() => removeCut(entry.clip.id)}
+                            onCaption={(target) => void captionClip(target.source)}
+                            onToggleMute={() =>
+                              setClipAudio(entry.clip.id, { muted: !entry.clip.muted })
+                            }
+                          />
+                        </Fragment>
                       ))
                     )}
                   </div>
@@ -847,7 +1015,6 @@ function SelectedClipControls() {
   const clips = useProjectStore((state) => state.project.clips)
   const setImageDuration = useProjectStore((state) => state.setImageDuration)
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
-  const setClipTransition = useProjectStore((state) => state.setClipTransition)
   const trim = useProjectStore((state) => state.trim)
   const removeClip = useProjectStore((state) => state.removeClip)
   const assets = useAssetStore((state) => state.assets)
@@ -860,9 +1027,6 @@ function SelectedClipControls() {
   const isImage = asset?.kind === 'image'
   const duration = clipDuration(clip)
   const volume = clip.volume ?? 1
-  const previous = clips[index - 1]
-  const maxTransition = maxTransitionIn(clip, previous)
-  const transitionIn = transitionInFor(clip, previous)
 
   return (
     <div className="flex flex-wrap items-end gap-4 rounded-xl border border-line bg-surface p-3">
@@ -923,54 +1087,6 @@ function SelectedClipControls() {
               title={`Volume ${Math.round(volume * 100)}%`}
               className="h-1 w-24"
             />
-          </label>
-        </div>
-      ) : null}
-
-      {/* Only offered past the first clip — there is nothing before it to
-          dissolve from. Toggled here rather than cut straight to a number, the
-          same shape as mute-then-volume above: a click for whether there is a
-          dissolve at all, a field for exactly how long once there is one. */}
-      {previous ? (
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              setClipTransition(
-                clip.id,
-                transitionIn > 0 ? 0 : Math.min(DEFAULT_TRANSITION_DURATION, maxTransition),
-              )
-            }
-            disabled={transitionIn <= 0 && maxTransition <= 0}
-            aria-pressed={transitionIn > 0}
-            aria-label={
-              transitionIn > 0 ? 'Remove the dissolve into this clip' : 'Dissolve into this clip'
-            }
-            title={
-              maxTransition <= 0
-                ? 'Too short to dissolve — trim this clip or the one before it to make room.'
-                : transitionIn > 0
-                  ? 'Dissolving in from the clip before it — click to cut instead'
-                  : 'Cuts from the clip before it — click to dissolve instead'
-            }
-            className={`shrink-0 text-sm ${transitionIn > 0 ? '' : 'opacity-40'}`}
-          >
-            ◐
-          </button>
-          <label className="flex items-center gap-2 text-xs text-ink-dim">
-            Dissolve
-            <input
-              type="number"
-              min={0}
-              max={maxTransition}
-              step={0.1}
-              disabled={transitionIn <= 0}
-              value={transitionIn.toFixed(1)}
-              onChange={(event) => setClipTransition(clip.id, Number(event.target.value))}
-              aria-label="Dissolve into this clip, in seconds"
-              className="w-16 rounded-lg border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
-            />
-            s
           </label>
         </div>
       ) : null}
