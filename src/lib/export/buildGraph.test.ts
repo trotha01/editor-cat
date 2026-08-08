@@ -4,6 +4,7 @@ import {
   type ExportAudioClip,
   type ExportClip,
   type ExportOverlayClip,
+  type ExportTransition,
 } from './buildGraph'
 
 const base = { width: 1280, height: 720, fps: 30, outputFile: 'out.mp4' }
@@ -608,6 +609,178 @@ describe('buildExportPlan', () => {
 
       expect(graph).toContain('[2:v]scale=')
       expect(graph).toContain('[3:a]adelay=0:all=1')
+    })
+  })
+
+  /**
+   * Transitions, which are the one thing that changes how the picture is put
+   * together. What is worth pinning down is the offset: a blend placed by the
+   * wrong number renders happily and cuts in the wrong place, which is exactly
+   * the class of bug this file exists to catch without rendering anything.
+   */
+  describe('transitions', () => {
+    const fade = (duration: number): ExportTransition => ({ name: 'fade', duration })
+    const layer = (file: string, startTime: number, duration: number): ExportOverlayClip => ({
+      file,
+      kind: 'video',
+      inPoint: 0,
+      startTime,
+      duration,
+    })
+
+    it('concatenates in one filter when nothing blends, exactly as before', () => {
+      const graph = graphOf(
+        buildExportPlan({ ...base, clips: [img('a.png', 2), img('b.png', 2)], audio: [] }).args,
+      )
+
+      expect(graph).toContain('[v0][v1]concat=n=2:v=1:a=0[vout]')
+      expect(graph).not.toContain('xfade')
+      // The extra timestamp reset is only there to make xfade dependable, so an
+      // export with no transitions must not grow one.
+      expect(graph).not.toContain('setpts=PTS-STARTPTS[v0]')
+    })
+
+    it('blends a pair with xfade, offset to where the overlap begins', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 3), { ...img('b.png', 2), transition: fade(0.5) }],
+          audio: [],
+        }).args,
+      )
+
+      // Three seconds of picture, half a second of which the second clip is
+      // already on screen for: the blend starts at 2.5.
+      expect(graph).toContain('[v0][v1]xfade=transition=fade:duration=0.5:offset=2.5[vout]')
+    })
+
+    it('normalises timestamps so the offset means what it says', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [vid('a.mp4', 4, 3), { ...vid('b.mp4', 9, 2), transition: fade(0.5) }],
+          audio: [],
+        }).args,
+      )
+
+      expect(graph).toContain('format=yuv420p,setpts=PTS-STARTPTS[v0]')
+    })
+
+    it('chains the blends, each one over the picture built so far', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [
+            img('a.png', 3),
+            { ...img('b.png', 3), transition: fade(0.5) },
+            { ...img('c.png', 3), transition: { name: 'wipeleft', duration: 1 } },
+          ],
+          audio: [],
+        }).args,
+      )
+
+      expect(graph).toContain('[v0][v1]xfade=transition=fade:duration=0.5:offset=2.5[vj1]')
+      // 3 + 3 - 0.5 = 5.5 of picture so far, less the second overlap.
+      expect(graph).toContain('[vj1][v2]xfade=transition=wipeleft:duration=1:offset=4.5[vout]')
+    })
+
+    it('still cuts straight where a boundary has no transition', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 3), img('b.png', 3), { ...img('c.png', 3), transition: fade(0.5) }],
+          audio: [],
+        }).args,
+      )
+
+      expect(graph).toContain('[v0][v1]concat=n=2:v=1:a=0[vj1]')
+      expect(graph).toContain('[vj1][v2]xfade=transition=fade:duration=0.5:offset=5.5[vout]')
+    })
+
+    it('ignores one on the first clip, which has nothing to blend from', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [{ ...img('a.png', 3), transition: fade(0.5) }, img('b.png', 3)],
+          audio: [],
+        }).args,
+      )
+
+      expect(graph).toContain('[v0][v1]concat=n=2:v=1:a=0[vout]')
+    })
+
+    it('shortens the output by every overlap', () => {
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 3), { ...img('b.png', 3), transition: fade(0.5) }],
+        audio: [],
+      })
+
+      expect(plan.durationSeconds).toBeCloseTo(5.5)
+      expect(plan.args.at(-2)).toBe('5.5')
+    })
+
+    it('places a later clip’s own sound where the overlap put its picture', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [loud('a.mp4', 0, 3), { ...loud('b.mp4', 0, 3), transition: fade(0.5) }],
+          audio: [],
+        }).args,
+      )
+
+      // Sound and picture are locked together, so the second clip's audio has
+      // to come early by exactly the overlap: 2.5s, not 3s.
+      expect(graph).toContain('adelay=2500:all=1')
+    })
+
+    it('crosses the sound over rather than letting both takes play flat out', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [loud('a.mp4', 0, 3), { ...loud('b.mp4', 0, 3), transition: fade(0.5) }],
+          audio: [],
+        }).args,
+      )
+
+      // The first clip fades down over its last half second; the second fades
+      // up over its first.
+      expect(graph).toContain('[0:a]afade=t=out:st=2.5:d=0.5,adelay=0:all=1')
+      expect(graph).toContain('[1:a]afade=t=in:st=0:d=0.5,adelay=2500:all=1')
+    })
+
+    it('leaves the sound alone where nothing blends', () => {
+      const graph = graphOf(
+        buildExportPlan({ ...base, clips: [loud('a.mp4', 0, 3)], audio: [] }).args,
+      )
+
+      expect(graph).not.toContain('afade')
+    })
+
+    it('pushes a blended strip back by the lead-in, overlaps and all', () => {
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 3), { ...img('b.png', 3), transition: fade(0.5) }],
+        audio: [],
+        leadIn: 2,
+      })
+
+      expect(plan.durationSeconds).toBeCloseTo(7.5)
+      expect(graphOf(plan.args)).toContain('tpad=start_mode=add:start_duration=2:color=black')
+    })
+
+    it('lays a layer over a blended picture, after the blending', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 3), { ...img('b.png', 3), transition: fade(0.5) }],
+          audio: [],
+          overlays: [layer('c.mp4', 1, 2)],
+        }).args,
+      )
+
+      expect(graph).toContain('[v0][v1]xfade=transition=fade:duration=0.5:offset=2.5[vcat]')
+      expect(graph).toContain('[vcat][ov0]overlay=')
     })
   })
 })

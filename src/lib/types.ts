@@ -35,8 +35,44 @@ export interface Asset {
 }
 
 /**
+ * How one clip gives way to the next.
+ *
+ * `dissolve` is the one everybody means: the outgoing picture blends straight
+ * into the incoming one. The rest are the same idea with a different shape —
+ * through black, through white, wiped, slid, blurred, or opened out from the
+ * middle.
+ */
+export type TransitionKind =
+  | 'dissolve'
+  | 'dipToBlack'
+  | 'dipToWhite'
+  | 'blur'
+  | 'wipeLeft'
+  | 'wipeRight'
+  | 'slideLeft'
+  | 'slideRight'
+  | 'iris'
+
+/**
+ * A transition at the boundary between two clips.
+ *
+ * `duration` is how long the two clips are on screen together, and it is
+ * material both of them give up: a dissolve is the tail of one shot playing at
+ * the same time as the head of the next, so the timeline gets shorter by
+ * exactly this much. That is what a dissolve *is* — the alternative, holding a
+ * frozen frame either side to keep the length, is a different effect that looks
+ * wrong for the reason it is not what any editor does.
+ */
+export interface Transition {
+  kind: TransitionKind
+  /** Seconds the two clips overlap for. */
+  duration: number
+}
+
+/**
  * One entry on the visual track. Clips are laid end to end with no gaps, so a
- * clip's start time is just the sum of the durations before it.
+ * clip's start time is just the sum of the durations before it — less whatever
+ * transitions overlap it with its neighbours.
  */
 export interface Clip {
   id: string
@@ -57,6 +93,18 @@ export interface Clip {
   muted?: boolean
   /** Gain for that sound. Absent is unity, matching the audio tracks. */
   volume?: number
+  /**
+   * How this clip comes in from the one before it. Absent is a straight cut,
+   * which is every boundary in every project saved before transitions existed —
+   * read through `transitionOf` rather than directly.
+   *
+   * It lives on the incoming clip rather than in a list of its own because a
+   * transition belongs to a *boundary*, and the thing that survives a reorder,
+   * a trim or a cut still meaning the same boundary is the clip on the far side
+   * of it. The first clip never carries one: there is no boundary in front of
+   * it, and `fitTransitions` drops any that ends up there.
+   */
+  transition?: Transition
 }
 
 /**
@@ -324,11 +372,11 @@ export type ProjectDoc = Omit<Project, 'id' | 'name' | 'voiceovers'>
  * The shape version written alongside a stored document.
  *
  * 1 was the flat `voiceovers` list; 2 is multitrack audio; 3 adds captions;
- * 4 adds video tracks layered over the picture. Recorded explicitly so
- * `migrateProject` upgrades from a known version rather than inferring one from
- * the shape.
+ * 4 adds video tracks layered over the picture; 5 adds transitions between
+ * clips. Recorded explicitly so `migrateProject` upgrades from a known version
+ * rather than inferring one from the shape.
  */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 /** A clip with its resolved timeline position. Produced by `layoutClips`. */
 export interface PositionedClip {
@@ -339,4 +387,15 @@ export interface PositionedClip {
   /** Seconds from the start of the timeline. */
   end: number
   duration: number
+  /**
+   * The transition into this clip, already fitted to what its neighbours can
+   * afford — which is not always what the clip stores, because trimming a clip
+   * shorter than its transition must not be able to produce an impossible one.
+   * Null on the first clip and on every straight cut.
+   *
+   * It runs from `start` to `start + duration`, which is also exactly where the
+   * clip before it ends: laying the clips out is what turns a stored length into
+   * a stretch of timeline, so this is the only honest place to read it from.
+   */
+  transition: Transition | null
 }

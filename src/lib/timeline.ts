@@ -4,6 +4,7 @@
  * kept side-effect free and unit tested directly.
  */
 import { audioEnd } from './audioTracks'
+import { fitTransitions } from './transitions'
 import { videoLayersEnd } from './videoTracks'
 import type { Asset, Clip, PositionedClip, Project } from './types'
 
@@ -46,26 +47,42 @@ export function clipDuration(clip: Clip): number {
  * The lead-in is applied here rather than at each call site, so everything
  * built on these positions — what is on screen, where a cut lands, how long the
  * export runs — moves with the picture instead of some of it being left behind.
+ *
+ * Transitions are applied here for the same reason, and they are the one thing
+ * that makes these intervals overlap: a clip with a transition starts early by
+ * exactly the length of it, so for that stretch both clips are on screen. The
+ * overlap always ends precisely where the earlier clip does, which is what lets
+ * the export hand the same two numbers straight to `xfade`.
  */
 export function layoutClips(clips: readonly Clip[], leadIn = 0): PositionedClip[] {
+  const transitions = fitTransitions(clips)
   let cursor = clampLeadIn(leadIn)
   return clips.map((clip, index) => {
     const duration = clipDuration(clip)
+    const transition = transitions[index] ?? null
+    if (transition) cursor = Math.max(0, cursor - transition.duration)
     const positioned: PositionedClip = {
       clip,
       index,
       start: cursor,
       end: cursor + duration,
       duration,
+      transition,
     }
-    cursor += duration
+    cursor = positioned.end
     return positioned
   })
 }
 
-/** How long the picture itself runs, ignoring where it starts. */
+/**
+ * How long the picture itself runs, ignoring where it starts.
+ *
+ * Read off the layout rather than summed, because a transition overlaps two
+ * clips and the picture is shorter than they add up to by exactly that much.
+ */
 export function totalDuration(clips: readonly Clip[]): number {
-  return clips.reduce((sum, clip) => sum + clipDuration(clip), 0)
+  const laid = layoutClips(clips)
+  return laid[laid.length - 1]?.end ?? 0
 }
 
 /** When the picture finishes: its length plus whatever precedes it. */
@@ -90,6 +107,10 @@ export function projectDuration(project: Project): number {
  * The clip playing at time `t`, or null if `t` is past the end — or before the
  * picture starts, which is what makes a lead-in read as black rather than as a
  * frozen first frame.
+ *
+ * Inside a transition two clips are on screen and the earlier one wins here,
+ * because it is the one still playing: the incoming clip is arriving *over* it,
+ * and that half of the picture is `transitionAt`'s to describe.
  */
 export function clipAtTime(clips: readonly Clip[], t: number, leadIn = 0): PositionedClip | null {
   if (t < 0) return null
@@ -179,6 +200,12 @@ export function snapToFrame(seconds: number, fps: number): number {
  * Both halves have to clear MIN_CLIP_DURATION, the same floor trimming works
  * to — a cut is only another way of setting an edge, and a two-frame sliver
  * left behind by a mis-aimed cut is not something anyone wanted.
+ *
+ * A cut inside a transition is refused too. The frames under a transition are
+ * being blended with a neighbour's, so cutting there would ask for a boundary
+ * in the middle of one — leaving two clips that have to overlap something that
+ * is no longer there, and a picture that changes as a result of a cut, which is
+ * the one thing a cut must never do.
  */
 export function cutTargetAt(
   clips: readonly Clip[],
@@ -187,14 +214,21 @@ export function cutTargetAt(
   leadIn = 0,
 ): PositionedClip | null {
   const at = snapToFrame(time, fps)
+  const laid = layoutClips(clips, leadIn)
   // Strictly inside: a cut exactly on a clip boundary is one that already
   // exists, and would otherwise produce an empty clip.
-  const target = layoutClips(clips, leadIn).find((entry) => at > entry.start && at < entry.end)
+  const target = laid.find((entry) => at > entry.start && at < entry.end)
   if (!target) return null
 
   const offset = at - target.start
   const floor = MIN_CLIP_DURATION - TIME_EPSILON
   if (offset < floor || target.duration - offset < floor) return null
+
+  // Its own transition eats the head of it; the next clip's eats the tail.
+  const intoThis = target.transition?.duration ?? 0
+  const intoNext = laid[target.index + 1]?.transition?.duration ?? 0
+  if (offset < intoThis + TIME_EPSILON) return null
+  if (target.duration - offset < intoNext + TIME_EPSILON) return null
   return target
 }
 
@@ -237,7 +271,10 @@ export function splitClipAt(
   const boundary = clip.inPoint + (snapToFrame(time, fps) - target.start)
 
   const left: Clip = { ...clip, outPoint: boundary }
-  const right: Clip = { ...clip, id: makeId(), inPoint: boundary }
+  // The half in front keeps the transition, because it keeps the boundary the
+  // transition is about. The new half begins at a cut, which is what a cut is.
+  const { transition: _uncarried, ...carried } = clip
+  const right: Clip = { ...carried, id: makeId(), inPoint: boundary }
 
   const next = [...clips]
   next.splice(target.index, 1, left, right)
@@ -269,6 +306,8 @@ export function joinCutAt(clips: readonly Clip[], clipId: string): CutResult | n
   const right = clips[index]
   if (!left || !right || !isThroughCut(left, right)) return null
 
+  // The survivor keeps the transition in front of it and loses the one at the
+  // cut, along with the cut: there is no boundary left there to have one.
   const merged: Clip = { ...left, outPoint: right.outPoint }
   const next = [...clips]
   next.splice(index - 1, 2, merged)

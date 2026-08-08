@@ -49,6 +49,7 @@ import {
   trimCue,
   type TimedWord,
 } from '../lib/captions'
+import { withTransition } from '../lib/transitions'
 import {
   addVideoTrack,
   createVideoTrack,
@@ -72,6 +73,7 @@ import type {
   Clip,
   PositionedClip,
   Project,
+  Transition,
   VideoTrack,
 } from '../lib/types'
 
@@ -153,6 +155,17 @@ interface ProjectState {
   setImageDuration: (clipId: string, seconds: number) => void
   /** Mutes or levels the sound a clip carries in its own file. */
   setClipAudio: (clipId: string, patch: { muted?: boolean; volume?: number }) => void
+  /**
+   * Sets the transition at the boundary in front of a clip, or clears it back
+   * to a straight cut. A no-op on the first clip, which has no boundary.
+   */
+  setTransition: (clipId: string, transition: Transition | null) => void
+  /**
+   * Puts the same transition on every boundary, or clears the lot. Each one is
+   * still fitted to its own two clips on the way out, so a boundary too short
+   * to hold it stays a cut rather than becoming an impossible overlap.
+   */
+  setAllTransitions: (transition: Transition | null) => void
 
   /** Places audio, adding a track only if every existing one is busy there. */
   addAudioClip: (kind: AudioTrackKind, clip: Omit<AudioClip, 'id' | 'trackId'>) => PlacementOutcome
@@ -435,6 +448,29 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ...project,
         clips: project.clips.map((clip) => (clip.id === clipId ? { ...clip, ...patch } : clip)),
       })),
+
+    // Both of these go through `underClips`, because a transition is an overlap
+    // and an overlap moves every clip after it. Captions and the takes anchored
+    // to a shot have to come along, exactly as they do for a trim.
+    setTransition: (clipId, transition) =>
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.map((clip, index) =>
+            clip.id === clipId && index > 0 ? withTransition(clip, transition) : clip,
+          ),
+        }),
+      ),
+
+    setAllTransitions: (transition) =>
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.map((clip, index) =>
+            index === 0 ? withTransition(clip, null) : withTransition(clip, transition),
+          ),
+        }),
+      ),
 
     addAudioClip: (kind, clip) => {
       const id = newId('aclip')

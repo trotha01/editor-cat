@@ -18,7 +18,28 @@
  * `hasAudio` must be the truth about the file rather than an assumption:
  * referencing `[n:a]` on an input with no audio stream fails the whole render,
  * so the caller probes each file first (see probe.ts).
+ *
+ * Transitions are the one thing that changes how the picture is assembled:
+ * without them the clips are concatenated in a single filter, and with them they
+ * are joined a pair at a time by `xfade`, which is the only way to say where
+ * each blend begins. Nothing else in the graph moves — the padding, the layers
+ * and the captions all still go on afterwards, in that order.
  */
+
+/**
+ * How a clip comes in from the one before it.
+ *
+ * Named by ffmpeg's own `xfade` transition rather than by anything this app
+ * calls it, so this file stays what it is: plain data in, argv out, with no
+ * opinion about what a "dissolve" is. The mapping lives at the edge, in
+ * render.ts.
+ */
+export interface ExportTransition {
+  /** An `xfade` transition name, e.g. `fade`. */
+  name: string
+  /** Seconds the two clips are on screen together. */
+  duration: number
+}
 
 export interface ExportClip {
   /** Filename as written into the ffmpeg virtual filesystem. */
@@ -28,6 +49,15 @@ export interface ExportClip {
   inPoint: number
   /** Seconds of output this clip contributes. */
   duration: number
+  /**
+   * The transition into this clip. Absent is a straight cut, and absent on the
+   * first clip whatever it says — there is nothing in front of it to blend from.
+   *
+   * It must be no longer than either neighbour, and a clip between two of them
+   * must be longer than both together. The caller fits them (`fitTransitions`);
+   * an overlap the material cannot cover fails the render outright.
+   */
+  transition?: ExportTransition
   /** Whether this file really carries an audio stream. Probed, never guessed. */
   hasAudio?: boolean
   /** Gain for that audio. Absent is unity; 0 keeps it out of the mix. */
@@ -117,15 +147,41 @@ function roundGain(value: number): string {
 }
 
 /**
- * The chain that puts one source where it belongs: delayed to its start on the
- * timeline, levelled, and resampled so everything reaching the mixer agrees on
- * a rate.
+ * A crossfade over a clip's own sound, for a clip that is dissolving into or
+ * out of its neighbour.
+ *
+ * Without it both clips play flat out through the overlap and the two are
+ * simply summed, which is a doubling anyone can hear — and which the preview
+ * does not do, so the export would no longer be what was played back. Linear on
+ * both sides, matching `afade`'s default curve and the preview's own arithmetic.
  */
-function placeAudio(startTime: number, volume: number): string {
+interface AudioFades {
+  /** Seconds fading up from the clip's first frame. */
+  in: number
+  /** Seconds fading down into the clip's last frame. */
+  out: number
+  /** The clip's own length, which is where the fade out has to be measured from. */
+  length: number
+}
+
+/**
+ * The chain that puts one source where it belongs: faded at whichever ends
+ * dissolve, delayed to its start on the timeline, levelled, and resampled so
+ * everything reaching the mixer agrees on a rate.
+ *
+ * The fades come first because they are measured from the clip's own start, and
+ * `adelay` is what moves that start onto the timeline.
+ */
+function placeAudio(startTime: number, volume: number, fades?: AudioFades): string {
   const delayMs = Math.max(0, Math.round(startTime * 1000))
+  const stages: string[] = []
+  if (fades && fades.in > 0) stages.push(`afade=t=in:st=0:d=${sec(fades.in)}`)
+  if (fades && fades.out > 0) {
+    stages.push(`afade=t=out:st=${sec(Math.max(0, fades.length - fades.out))}:d=${sec(fades.out)}`)
+  }
   // all=1 applies the delay to every channel, so it works for mono and stereo
   // sources alike without knowing the layout up front.
-  const stages = [`adelay=${delayMs}:all=1`]
+  stages.push(`adelay=${delayMs}:all=1`)
   // Skip the filter at unity so an untouched mix stays byte-identical to what
   // it produced before volumes existed.
   if (volume !== 1) stages.push(`volume=${roundGain(volume)}`)
@@ -133,10 +189,17 @@ function placeAudio(startTime: number, volume: number): string {
   return stages.join(',')
 }
 
+/** The overlap into a clip, which is nothing at all for the first one. */
+function overlapInto(clips: readonly ExportClip[], index: number): number {
+  if (index <= 0) return 0
+  return Math.max(0, clips[index]?.transition?.duration ?? 0)
+}
+
 /**
  * Pairs each clip with where it starts on the timeline and which input it is.
  * Clips sit end to end with no gaps, so the start is the lead-in plus the sum
- * of what precedes.
+ * of what precedes — pulled back by any transition, which is time two clips
+ * spend on screen together rather than one after the other.
  */
 function withStarts(
   clips: readonly ExportClip[],
@@ -144,14 +207,16 @@ function withStarts(
 ): { clip: ExportClip; input: number; start: number }[] {
   let cursor = Math.max(0, leadIn)
   return clips.map((clip, input) => {
-    const start = cursor
-    cursor += Math.max(0, clip.duration)
+    const start = Math.max(0, cursor - overlapInto(clips, input))
+    cursor = start + Math.max(0, clip.duration)
     return { clip, input, start }
   })
 }
 
 export function totalVisualDuration(clips: readonly ExportClip[]): number {
-  return clips.reduce((sum, clip) => sum + Math.max(0, clip.duration), 0)
+  const laid = withStarts(clips)
+  const last = laid[laid.length - 1]
+  return last ? last.start + Math.max(0, last.clip.duration) : 0
 }
 
 export function totalAudioEnd(audio: readonly ExportAudioClip[]): number {
@@ -254,12 +319,22 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   const chains: string[] = []
   const normalized: string[] = []
 
+  // Whether anything blends, which decides how the clips are joined below.
+  const blending = clips.some((_, index) => overlapInto(clips, index) > 0)
+
   clips.forEach((_, index) => {
     const label = `v${index}`
     chains.push(
       `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
         `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},` +
-        `format=yuv420p[${label}]`,
+        `format=yuv420p` +
+        // xfade reads the offset off the input's own timestamps, so they have to
+        // start at zero. The input seek normally sees to that; saying so costs
+        // nothing and turns "the dissolve happened somewhere else entirely" into
+        // a bug that cannot occur. Left off when nothing blends, so an export
+        // without transitions is the graph it always was.
+        (blending ? ',setpts=PTS-STARTPTS' : '') +
+        `[${label}]`,
     )
     normalized.push(`[${label}]`)
   })
@@ -279,7 +354,38 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   }
 
   let stage = pending === 0 ? '[vout]' : '[vcat]'
-  chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
+  if (!blending) {
+    chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
+  } else {
+    // With a transition anywhere, the clips are joined a pair at a time instead:
+    // `xfade` takes exactly two inputs and has to know how far into the picture
+    // so far the blend begins, which is only knowable one join at a time.
+    //
+    // The offset is the accumulated length *minus* the overlap, which is the
+    // same number `layoutClips` arrives at for where the incoming clip starts —
+    // the two have to agree or the preview is showing a different edit.
+    let current = normalized[0] as string
+    let elapsed = Math.max(0, clips[0]?.duration ?? 0)
+    for (let index = 1; index < clips.length; index += 1) {
+      const overlap = overlapInto(clips, index)
+      const last = index === clips.length - 1
+      const out = last ? stage : `[vj${index}]`
+      const length = Math.max(0, clips[index]?.duration ?? 0)
+      if (overlap > 0) {
+        const name = clips[index]?.transition?.name ?? 'fade'
+        chains.push(
+          `${current}${normalized[index]}xfade=transition=${name}:` +
+            `duration=${sec(overlap)}:offset=${sec(Math.max(0, elapsed - overlap))}${out}`,
+        )
+      } else {
+        // A straight cut between two clips that are otherwise part of a blended
+        // run. Still a concat, just of two rather than of all of them.
+        chains.push(`${current}${normalized[index]}concat=n=2:v=1:a=0${out}`)
+      }
+      elapsed += length - overlap
+      current = out
+    }
+  }
 
   // Padding at either end, both done with tpad on the concatenated picture:
   // black in front for the lead-in, and the last frame held at the back when
@@ -335,11 +441,19 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
 
   // A clip's own sound needs no trimming of its own: the input-level -ss/-t
   // that cut the picture cut its audio to exactly the same stretch, so all
-  // that is left is to move it to where the clip sits on the timeline.
+  // that is left is to move it to where the clip sits on the timeline — and to
+  // fade whichever ends of it are dissolving, so the sound crosses over with
+  // the picture rather than the two takes talking over each other.
   for (const { clip, input, start } of withStarts(clips, leadIn)) {
     const volume = clip.volume ?? 1
     if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0 || clip.duration <= 0) continue
-    chains.push(`[${input}:a]${placeAudio(start, volume)}[c${input}]`)
+    const fades: AudioFades = {
+      in: overlapInto(clips, input),
+      out: overlapInto(clips, input + 1),
+      length: Math.max(0, clip.duration),
+    }
+    const shape = fades.in > 0 || fades.out > 0 ? fades : undefined
+    chains.push(`[${input}:a]${placeAudio(start, volume, shape)}[c${input}]`)
     placed.push(`[c${input}]`)
   }
 

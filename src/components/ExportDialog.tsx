@@ -9,7 +9,7 @@ import {
 } from '../lib/export/render'
 import { getBlob } from '../lib/db'
 import { downloadBlob } from '../lib/media'
-import { clipDuration, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
+import { clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { audioEnd, gainFor } from '../lib/audioTracks'
 import { layerGain, opacityFor, videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
@@ -73,6 +73,10 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     (clip) => assets.find((entry) => entry.id === clip.assetId)?.kind === 'video',
   )
   const silencedClips = videoClips.filter((clip) => clipGain(clip) <= 0).length
+
+  // Worth counting: transitions are what makes an export shorter than the clips
+  // add up to, and they are the part of the edit least visible from a clip list.
+  const transitions = positioned.filter((entry) => entry.transition).length
 
   // Built as parts rather than one sentence, so a project with only clip sound
   // does not read "no audio · video clips keep their own sound".
@@ -164,13 +168,17 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         }
       }
 
-      const clips = project.clips.map((clip) => {
+      // Built from the layout rather than from the clips, so the transitions
+      // that go to the encoder are the fitted ones the timeline has been showing
+      // all along — not a stored wish that two short clips cannot cover.
+      const clips = positioned.map(({ clip, duration, transition }) => {
         const asset = assets.find((entry) => entry.id === clip.assetId)
         return {
           assetId: clip.assetId,
           kind: (asset?.kind === 'video' ? 'video' : 'image') as 'video' | 'image',
           inPoint: clip.inPoint,
-          duration: clipDuration(clip),
+          duration,
+          transition,
           volume: clipGain(clip),
         }
       })
@@ -276,8 +284,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           {formatTime(outputDuration)}
           {/* Worth saying outright: it explains an export that is longer than
               the clips add up to, and confirms the count-in has room. */}
-          {leadIn > 0 ? ` · ${formatTime(leadIn)} of black before the picture` : ''} ·{' '}
-          {sound.join(' · ')}
+          {leadIn > 0 ? ` · ${formatTime(leadIn)} of black before the picture` : ''}
+          {transitions > 0
+            ? ` · ${transitions} transition${transitions === 1 ? '' : 's'}, which overlap the clips they join`
+            : ''}{' '}
+          · {sound.join(' · ')}
           {/* Burnt in, not a sidecar track — so it is worth saying so before a
               render that cannot be undone without doing it again. */}
           {burntInCues.length > 0

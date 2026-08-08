@@ -24,7 +24,8 @@ import {
   totalDuration,
   trimClip,
 } from './timeline'
-import type { Asset, Clip, Project } from './types'
+import { withTransition } from './transitions'
+import type { Asset, Clip, Project, Transition } from './types'
 
 const image: Asset = {
   id: 'a-img',
@@ -51,6 +52,8 @@ const clip = (id: string, inPoint: number, outPoint: number, assetId = 'a-vid'):
   inPoint,
   outPoint,
 })
+
+const dissolve = (duration: number): Transition => ({ kind: 'dissolve', duration })
 
 describe('layoutClips', () => {
   it('lays clips end to end with no gaps', () => {
@@ -91,6 +94,38 @@ describe('layoutClips', () => {
   it('caps an absurd lead-in rather than exporting an hour of black', () => {
     expect(layoutClips([clip('1', 0, 3)], 10_000)[0]?.start).toBe(MAX_LEAD_IN)
   })
+
+  it('overlaps two clips by the transition that joins them', () => {
+    // A dissolve is the tail of one shot playing over the head of the next, so
+    // the second one starts early and the pair take up less room than they add
+    // up to.
+    const laid = layoutClips([clip('1', 0, 3), withTransition(clip('2', 0, 2), dissolve(0.5))])
+
+    expect(laid.map((entry) => [entry.start, entry.end])).toEqual([
+      [0, 3],
+      [2.5, 4.5],
+    ])
+  })
+
+  it('ends the overlap exactly where the outgoing clip ends', () => {
+    // What lets the export hand the same two numbers straight to xfade.
+    const laid = layoutClips([clip('1', 0, 3), withTransition(clip('2', 0, 2), dissolve(0.5))])
+    const to = laid[1]
+    expect((to?.start ?? 0) + (to?.transition?.duration ?? 0)).toBeCloseTo(laid[0]?.end ?? 0)
+  })
+
+  it('carries the fitted transition rather than the stored one', () => {
+    // The incoming clip is only 0.4s long, so it cannot give up the 1.5s asked
+    // for — and everything downstream reads the fitted number off the layout.
+    const laid = layoutClips([clip('1', 0, 3), withTransition(clip('2', 0, 0.4), dissolve(1.5))])
+    expect(laid[1]?.transition?.duration).toBe(0.4)
+    expect(laid[1]?.start).toBeCloseTo(2.6)
+  })
+
+  it('pushes a transitioned strip back by the lead-in like any other', () => {
+    const laid = layoutClips([clip('1', 0, 3), withTransition(clip('2', 0, 2), dissolve(0.5))], 4)
+    expect(laid.map((entry) => entry.start)).toEqual([4, 6.5])
+  })
 })
 
 describe('leadInOf', () => {
@@ -110,6 +145,11 @@ describe('totalDuration', () => {
 
   it('ignores inverted clips rather than subtracting time', () => {
     expect(totalDuration([clip('1', 5, 2)])).toBe(0)
+  })
+
+  it('takes off the time the clips spend on screen together', () => {
+    const clips = [clip('1', 0, 2), withTransition(clip('2', 1, 4), dissolve(0.5))]
+    expect(totalDuration(clips)).toBeCloseTo(4.5)
   })
 })
 
@@ -283,6 +323,17 @@ describe('cutTargetAt', () => {
     expect(cutTargetAt(clips, 3.5, 30, 2)?.clip.id).toBe('1')
     expect(cutTargetAt(clips, 6, 30, 2)?.clip.id).toBe('2')
   })
+
+  it('refuses a cut inside a transition', () => {
+    // Those frames are being blended with a neighbour's. A boundary in the
+    // middle of a transition would change what plays, which a cut never does.
+    const blended = [clip('1', 0, 3), withTransition(clip('2', 2, 5), dissolve(1))]
+    // The overlap runs from 2 to 3 — the tail of the first clip and the head
+    // of the second, which now start together.
+    expect(cutTargetAt(blended, 2.5, 30)).toBeNull()
+    expect(cutTargetAt(blended, 1.5, 30)?.clip.id).toBe('1')
+    expect(cutTargetAt(blended, 4, 30)?.clip.id).toBe('2')
+  })
 })
 
 describe('splitClipAt', () => {
@@ -346,6 +397,19 @@ describe('splitClipAt', () => {
     expect(original).toEqual([clip('1', 2, 8)])
   })
 
+  it('leaves the transition on the half that keeps the boundary it is about', () => {
+    // The cut makes a new boundary, and a new boundary is a straight cut until
+    // somebody says otherwise. Carrying the transition onto both halves would
+    // dissolve the clip into itself.
+    const blended = [clip('0', 0, 4), withTransition(clip('1', 2, 8), dissolve(0.5))]
+
+    const result = splitClipAt(blended, 6, 30, ids())
+
+    expect(result!.clips[1]?.transition).toEqual({ kind: 'dissolve', duration: 0.5 })
+    expect(result!.clips[2]?.transition).toBeUndefined()
+    expect(totalDuration(result!.clips)).toBeCloseTo(totalDuration(blended), 10)
+  })
+
   it('cuts at the right point in the source once the picture starts later', () => {
     // The playhead sits 2s into a clip that begins at 3s, so the boundary is
     // 2s into the source — not 5s, which is where it would land if the lead-in
@@ -396,6 +460,20 @@ describe('joinCutAt', () => {
     const clips = [clip('1', 0, 4), clip('2', 4, 9)]
     joinCutAt(clips, '2')
     expect(clips).toHaveLength(2)
+  })
+
+  it('keeps the transition in front and loses the one at the cut', () => {
+    // The boundary the second transition was about has just stopped existing.
+    const clips = [
+      clip('0', 0, 4),
+      withTransition(clip('1', 0, 4), dissolve(0.5)),
+      withTransition(clip('2', 4, 9), dissolve(0.5)),
+    ]
+
+    const joined = joinCutAt(clips, '2')
+
+    expect(joined?.clips[1]?.transition).toEqual({ kind: 'dissolve', duration: 0.5 })
+    expect(joined?.clips).toHaveLength(2)
   })
 })
 

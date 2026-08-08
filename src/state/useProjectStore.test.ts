@@ -421,3 +421,74 @@ describe('captions reach storage', () => {
     expect(captionTracksOf(stored()).length).toBe(1)
   })
 })
+
+describe('transitions reach storage, and carry the timeline with them', () => {
+  /** Three clips of three seconds each, laid end to end. */
+  const threeClips = () => ({
+    ...emptyProject(),
+    clips: [
+      { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+      { id: 'clip-2', assetId: 'a', inPoint: 0, outPoint: 3 },
+      { id: 'clip-3', assetId: 'a', inPoint: 0, outPoint: 3 },
+    ],
+  })
+
+  it('saves a transition on the clip it comes into', () => {
+    useProjectStore.setState({ project: threeClips() })
+    useProjectStore.getState().setTransition('clip-2', { kind: 'dissolve', duration: 0.5 })
+
+    expect(stored().clips.map((clip) => clip.transition)).toEqual([
+      undefined,
+      { kind: 'dissolve', duration: 0.5 },
+      undefined,
+    ])
+  })
+
+  it('refuses one on the first clip, which has no boundary in front of it', () => {
+    useProjectStore.setState({ project: threeClips() })
+    useProjectStore.getState().setTransition('clip-1', { kind: 'dissolve', duration: 0.5 })
+
+    expect(stored().clips[0]?.transition).toBeUndefined()
+  })
+
+  it('clears one back to a straight cut, leaving no key behind', () => {
+    useProjectStore.setState({ project: threeClips() })
+    useProjectStore.getState().setTransition('clip-2', { kind: 'dissolve', duration: 0.5 })
+    useProjectStore.getState().setTransition('clip-2', null)
+
+    expect('transition' in (stored().clips[1] ?? {})).toBe(false)
+  })
+
+  it('puts one on every boundary but the first', () => {
+    useProjectStore.setState({ project: threeClips() })
+    useProjectStore.getState().setAllTransitions({ kind: 'iris', duration: 0.4 })
+
+    expect(stored().clips.map((clip) => clip.transition?.kind)).toEqual([undefined, 'iris', 'iris'])
+  })
+
+  it('takes them all off again', () => {
+    useProjectStore.setState({ project: threeClips() })
+    useProjectStore.getState().setAllTransitions({ kind: 'iris', duration: 0.4 })
+    useProjectStore.getState().setAllTransitions(null)
+
+    expect(stored().clips.every((clip) => clip.transition === undefined)).toBe(true)
+  })
+
+  it('carries a take anchored to a shot that has just moved', () => {
+    // The overlap pulls the third clip half a second earlier, and audio
+    // performed against it belongs where that shot is now.
+    useProjectStore.setState({ project: threeClips() })
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'rec',
+      useConverted: false,
+      inPoint: 0,
+      duration: 1,
+      startTime: 6,
+    })
+    expect(stored().audioClips[0]?.anchorClipId).toBe('clip-3')
+
+    useProjectStore.getState().setTransition('clip-2', { kind: 'dissolve', duration: 0.5 })
+
+    expect(stored().audioClips[0]?.startTime).toBeCloseTo(5.5)
+  })
+})

@@ -18,6 +18,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
+import { transitionAt, transitionStyles } from '../lib/transitions'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
@@ -60,15 +61,23 @@ function ClipLayer({
   clip,
   asset,
   active,
+  incoming,
   warm,
   currentTime,
   playing,
   start,
   gain,
+  blend,
 }: {
   clip: Clip
   asset: Asset | undefined
   active: boolean
+  /**
+   * Arriving over the active clip through a transition. Such a clip is playing
+   * and on screen without being the clip *at* the playhead — which is still the
+   * one going out, since that is what is underneath.
+   */
+  incoming: boolean
   /** Near enough the playhead to be worth fetching in full ahead of time. */
   warm: boolean
   currentTime: number
@@ -76,6 +85,8 @@ function ClipLayer({
   start: number
   /** Resolved clip gain. 0 means muted, and the element stays silent. */
   gain: number
+  /** How this layer draws mid-transition: opacity, a wipe, a shift, a blur. */
+  blend?: CSSProperties
 }) {
   const { url, failed } = useAssetSource(asset)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -115,7 +126,7 @@ function ClipLayer({
   // at the part the clip is actually made of.
   useEffect(() => {
     const element = videoRef.current
-    if (!element || asset?.kind !== 'video' || active || !warm) return
+    if (!element || asset?.kind !== 'video' || active || incoming || !warm) return
 
     const park = () => {
       if (element.readyState < HTMLMediaElement.HAVE_METADATA) return
@@ -127,13 +138,13 @@ function ClipLayer({
     park()
     element.addEventListener('loadedmetadata', park)
     return () => element.removeEventListener('loadedmetadata', park)
-  }, [active, asset?.kind, clip.inPoint, warm])
+  }, [active, incoming, asset?.kind, clip.inPoint, warm])
 
   useEffect(() => {
     const element = videoRef.current
     if (!element || asset?.kind !== 'video') return
 
-    if (!active) {
+    if (!active && !incoming) {
       if (!element.paused) element.pause()
       return
     }
@@ -158,12 +169,18 @@ function ClipLayer({
     } else if (!playing && !element.paused) {
       element.pause()
     }
-  }, [active, asset?.kind, clip.inPoint, currentTime, gain, playing, start])
+  }, [active, incoming, asset?.kind, clip.inPoint, currentTime, gain, playing, start])
 
   if (!asset || !url) return null
 
+  const showing = active || incoming
+
   return (
-    <div className={`absolute inset-0 ${active ? '' : 'invisible'}`} aria-hidden={!active}>
+    <div
+      className={`absolute inset-0 ${showing ? '' : 'invisible'}`}
+      aria-hidden={!showing}
+      style={blend}
+    >
       {asset.kind === 'video' ? (
         <video
           ref={videoRef}
@@ -331,6 +348,12 @@ export function Preview({
   // but it is not the end of the timeline, and must not say so.
   const beforePicture = currentTime < leadIn
 
+  // Mid-transition two clips are on screen at once. `active` is still the one
+  // going out — it is what is underneath — and this is the other half of the
+  // frame: which clip is arriving over it, and how far through it has got.
+  const transition = useMemo(() => transitionAt(positioned, currentTime), [positioned, currentTime])
+  const blend = transition ? transitionStyles(transition.kind, transition.progress) : null
+
   const videoTracks = videoTracksOf(project)
   const videoClips = videoClipsOf(project)
   const layers = useMemo(
@@ -417,19 +440,44 @@ export function Preview({
               </p>
             </div>
           ) : (
-            positioned.map((entry) => (
-              <ClipLayer
-                key={entry.clip.id}
-                clip={entry.clip}
-                asset={assetById.get(entry.clip.assetId)}
-                active={active?.clip.id === entry.clip.id}
-                warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
-                currentTime={currentTime}
-                playing={playing}
-                start={entry.start}
-                gain={clipGain(entry.clip)}
-              />
-            ))
+            <>
+              {/* What a dip passes through, laid under both clips — they fade to
+                  it rather than to each other, and to the page's own surface
+                  would be a dip to whatever colour the theme happens to be. */}
+              {blend?.backdrop ? (
+                <div
+                  aria-hidden
+                  className="absolute inset-0"
+                  style={{ backgroundColor: blend.backdrop }}
+                />
+              ) : null}
+
+              {positioned.map((entry) => {
+                const outgoing = transition?.from.clip.id === entry.clip.id
+                const incoming = transition?.to.clip.id === entry.clip.id
+                // Sound crosses over with the picture, on the same linear ramp
+                // the exporter's `afade` uses — otherwise both takes play flat
+                // out through the overlap and you hear them doubled.
+                const across = outgoing
+                  ? 1 - (transition?.progress ?? 0)
+                  : (transition?.progress ?? 0)
+                return (
+                  <ClipLayer
+                    key={entry.clip.id}
+                    clip={entry.clip}
+                    asset={assetById.get(entry.clip.assetId)}
+                    active={active?.clip.id === entry.clip.id}
+                    incoming={incoming}
+                    warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
+                    currentTime={currentTime}
+                    playing={playing}
+                    start={entry.start}
+                    gain={clipGain(entry.clip) * (outgoing || incoming ? across : 1)}
+                    blend={outgoing ? blend?.from : incoming ? blend?.to : undefined}
+                  />
+                )
+              })}
+            </>
           )}
 
           {active === null && !empty ? (
