@@ -350,6 +350,66 @@ describe('captions reach storage', () => {
     expect(captionCuesOf(stored())[0]).toBe(before)
   })
 
+  it('carries a voiceover and a count-in with the clip they were laid against', () => {
+    // clip-1 over 0-3, clip-2 over 3-8.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+    const base = { assetId: 'rec', useConverted: false, inPoint: 0, duration: 1 }
+    // A line read a second into clip-2, and a count-in leading into it.
+    useProjectStore.getState().addAudioClip('voice', { ...base, startTime: 4 })
+    useProjectStore.getState().addAudioClip('countdown', { ...base, startTime: 3.5 })
+    // A music bed laid under the whole thing.
+    useProjectStore.getState().addAudioClip('music', { ...base, startTime: 0, duration: 8 })
+
+    // Drag clip-2 to the front: it now plays 0-5, clip-1 plays 5-8.
+    useProjectStore.getState().moveClip(1, 0)
+
+    const byStart = stored()
+      .audioClips.slice()
+      .sort((a, b) => a.startTime - b.startTime)
+    const voice = byStart.find((clip) => clip.anchorClipId === 'clip-2' && clip.duration === 1)
+    // Both were laid against clip-2 and keep their offset into it: the count-in
+    // half a second in, the line a second in.
+    expect(stored().audioClips.filter((c) => c.anchorClipId === 'clip-2')).toHaveLength(2)
+    expect(voice).toBeDefined()
+    const offsets = stored()
+      .audioClips.filter((clip) => clip.anchorClipId === 'clip-2')
+      .map((clip) => clip.startTime)
+      .sort((a, b) => a - b)
+    expect(offsets[0]).toBeCloseTo(0.5)
+    expect(offsets[1]).toBeCloseTo(1)
+
+    // The music bed belongs to the piece, not to a shot, so it does not move.
+    const music = stored().audioClips.find((clip) => clip.duration === 8)
+    expect(music?.anchorClipId).toBeUndefined()
+    expect(music?.startTime).toBe(0)
+  })
+
+  it('leaves audio dropped past the end of the picture unanchored', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 }],
+      },
+    })
+    // Read over black after the picture ends: there is no shot to belong to.
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'rec',
+      useConverted: false,
+      inPoint: 0,
+      duration: 1,
+      startTime: 10,
+    })
+    expect(stored().audioClips[0]?.anchorClipId).toBeUndefined()
+  })
+
   it('leaves captions alone when the timeline is cleared', () => {
     // Clearing empties the picture and the audio. The captions belong to audio
     // that has gone, so they go too — but the track stays, ready to be used

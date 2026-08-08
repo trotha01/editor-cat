@@ -139,6 +139,19 @@ export interface AudioClip {
   useConverted: boolean
   /** Where this clip starts on the timeline, in seconds. */
   startTime: number
+  /**
+   * The picture clip this audio belongs to, so it goes where that clip goes.
+   *
+   * Set on voice and countdown clips, which are performed *against* a shot: a
+   * line read over the third clip is about the third clip, and leaving it behind
+   * when that clip moves is never what was meant. Music is the exception and
+   * carries no anchor — a bed runs under the whole piece and belongs to the
+   * timeline rather than to any one shot.
+   *
+   * Absent on everything saved before this existed, and on audio dropped past
+   * the end of the picture where there is no clip to belong to.
+   */
+  anchorClipId?: string
   /** Seconds into the source to start from. */
   inPoint: number
   /** How long the clip plays for. */

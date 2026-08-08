@@ -19,6 +19,8 @@ import {
   trimClip,
 } from '../lib/timeline'
 import {
+  anchorClipAt,
+  audioUnderClips,
   createTrack,
   defaultTracks,
   insertTrack,
@@ -258,13 +260,29 @@ export const useProjectStore = create<ProjectState>((set, get) => {
    * impossible to move one anywhere.
    */
   const underClips = (project: Project, next: Project): Project => {
-    const cues = cuesUnderClips(
-      captionCuesOf(next),
-      layoutClips(project.clips, leadInOf(project)),
-      layoutClips(next.clips, leadInOf(next)),
-    )
-    return cues ? { ...next, captionCues: cues } : next
+    const before = layoutClips(project.clips, leadInOf(project))
+    const after = layoutClips(next.clips, leadInOf(next))
+    const cues = cuesUnderClips(captionCuesOf(next), before, after)
+    const audio = audioUnderClips(next.audioClips, before, after)
+    if (!cues && !audio) return next
+    return {
+      ...next,
+      ...(cues ? { captionCues: cues } : {}),
+      ...(audio ? { audioClips: audio } : {}),
+    }
   }
+
+  /**
+   * The clip a new piece of audio belongs to.
+   *
+   * Music is deliberately never anchored: a bed runs under the whole piece
+   * rather than under one shot, so it stays where it was laid however the
+   * picture is rearranged.
+   */
+  const anchorFor = (project: Project, kind: AudioTrackKind, startTime: number) =>
+    kind === 'music'
+      ? undefined
+      : anchorClipAt(layoutClips(project.clips, leadInOf(project)), startTime)
 
   return {
     project: emptyProject(),
@@ -422,10 +440,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       const id = newId('aclip')
       const { project } = get()
 
+      const anchorClipId = anchorFor(project, kind, clip.startTime)
       const result = placeAudioClip(project.audioTracks, project.audioClips, {
         kind,
         newTrackId: newId('track'),
-        clip: { ...clip, id },
+        clip: { ...clip, id, ...(anchorClipId ? { anchorClipId } : {}) },
       })
 
       mutate((current) => ({
@@ -453,6 +472,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     moveAudioClipTo: (id, startTime, trackId) => {
       const { project } = get()
+      const moved = project.audioClips.find((entry) => entry.id === id)
       const result = moveAudioClip(project.audioClips, id, {
         startTime,
         ...(trackId ? { trackId } : {}),
@@ -460,7 +480,20 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       // A blocked move leaves state untouched, so skip the write entirely
       // rather than persisting an identical project on every rejected drag.
       if (!result.moved) return false
-      mutate((current) => ({ ...current, audioClips: result.clips }))
+      mutate((current) => {
+        // Dragging a clip somewhere else re-homes it: it now belongs to whatever
+        // shot it was dropped over, and will follow that one from here on.
+        const track = current.audioTracks.find((entry) => entry.id === (trackId ?? moved?.trackId))
+        const anchorClipId = track ? anchorFor(current, track.kind, startTime) : undefined
+        return {
+          ...current,
+          audioClips: result.clips.map((entry) =>
+            entry.id === id
+              ? { ...entry, ...(anchorClipId ? { anchorClipId } : { anchorClipId: undefined }) }
+              : entry,
+          ),
+        }
+      })
       return true
     },
 

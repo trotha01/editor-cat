@@ -21,7 +21,14 @@ import {
   trackHasRoom as laneHasRoom,
   type TimeRange,
 } from './lanes'
-import type { AudioClip, AudioTrack, AudioTrackKind, LegacyVoiceoverTake, Project } from './types'
+import type {
+  AudioClip,
+  AudioTrack,
+  AudioTrackKind,
+  LegacyVoiceoverTake,
+  PositionedClip,
+  Project,
+} from './types'
 
 // The lane arithmetic is shared with the video tracks, which work the same way.
 // Re-exported here so the audio side still reads as one module.
@@ -301,4 +308,64 @@ function fromLegacyTake(take: LegacyVoiceoverTake): Omit<AudioClip, 'trackId'> {
 function stripLegacy(project: Project): Project {
   const { voiceovers: _dropped, ...rest } = project
   return rest
+}
+
+/** Slack for comparing times. Far below one frame at any usable rate. */
+const TIME_EPSILON = 1e-6
+
+/**
+ * The picture clip a piece of audio belongs to, judged by where it starts.
+ *
+ * Audio past the end of the picture gets no anchor rather than being handed the
+ * last clip: a line read over black does not belong to the shot before it, and
+ * tying it to one would drag it around every time that shot moved.
+ */
+export function anchorClipAt(
+  positioned: readonly PositionedClip[],
+  startTime: number,
+): string | undefined {
+  return positioned.find((entry) => startTime >= entry.start && startTime < entry.end)?.clip.id
+}
+
+/**
+ * Carries anchored audio along with the picture.
+ *
+ * Keeps each clip's offset into the clip it is anchored to, so a line read two
+ * seconds into a shot is still two seconds into that shot wherever the shot has
+ * gone. Anything without an anchor is left alone, which is what keeps a music
+ * bed sitting where it was laid.
+ *
+ * Unlike a caption, an anchored clip is *not* clipped to its shot. A voiceover
+ * running on past the end of the clip it starts over is ordinary — the line
+ * carries into the next shot — and truncating it would silently cut somebody's
+ * words off. Only the start is tied.
+ *
+ * Returns null when nothing moved, so a caller can keep the array it has.
+ */
+export function audioUnderClips(
+  clips: readonly AudioClip[],
+  before: readonly PositionedClip[],
+  after: readonly PositionedClip[],
+): AudioClip[] | null {
+  if (clips.length === 0) return null
+  const was = new Map(before.map((entry) => [entry.clip.id, entry]))
+  const now = new Map(after.map((entry) => [entry.clip.id, entry]))
+
+  let changed = false
+  const next = clips.map((clip) => {
+    const anchor = clip.anchorClipId
+    if (anchor === undefined) return clip
+    const from = was.get(anchor)
+    const to = now.get(anchor)
+    // An anchor naming a clip that has been deleted leaves the audio where it
+    // is. There is nowhere better to put it, and silently dragging it to the
+    // start would be worse than leaving it to be moved by hand.
+    if (!from || !to) return clip
+
+    const startTime = Math.max(0, to.start + (clip.startTime - from.start))
+    if (Math.abs(startTime - clip.startTime) < TIME_EPSILON) return clip
+    changed = true
+    return { ...clip, startTime }
+  })
+  return changed ? next : null
 }
