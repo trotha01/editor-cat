@@ -1,0 +1,127 @@
+# Claude on issues.
+#
+# Two jobs, because the two events want different postures:
+#
+#   - A newly opened issue starts work on its own. There is nothing to opt in
+#     to yet, and waiting for someone to come back and type "@claude" defeats
+#     the point of filing the issue in the first place.
+#   - A comment only wakes Claude when it says "@claude". Threads fill up with
+#     asides, "thanks", and notes to other people, and a run on each one costs
+#     real money to tell you nothing.
+#
+# Requires, both set up outside this file:
+#   - the Claude GitHub App installed on the repository
+#     https://github.com/apps/claude
+#   - a CLAUDE_CODE_OAUTH_TOKEN repository secret, generated locally with
+#     `claude setup-token`. This bills a Claude subscription rather than API
+#     credits. To use API credits instead, store ANTHROPIC_API_KEY and swap the
+#     `claude_code_oauth_token:` lines below for
+#     `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}`.
+#
+#     That token lasts one year and nothing warns you before it lapses: both
+#     jobs simply start failing to authenticate, on an event nobody is watching,
+#     which reads as Claude having quietly stopped caring about your issues.
+#     Renew by running `claude setup-token` again and replacing the secret. The
+#     token is printed once and stored nowhere, so copy it there and then.
+#     Secret last set: 2026-08 — update this line when you rotate it.
+#
+# Note the token is a billing choice, not a visibility one: these runs are
+# GitHub Actions jobs, so they show up in the workflow log and as issue and PR
+# comments. They are not Claude Code cloud sessions and do not appear in the
+# session list at claude.ai/code or in the desktop and mobile apps.
+#
+# GitHub reads `issues` and `issue_comment` workflows from the default branch,
+# so this does nothing until it is merged to main.
+name: Claude
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+# One run per issue. A quick follow-up comment should not race the run still
+# working on the comment before it, both pushing to the same branch.
+concurrency:
+  group: claude-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  # --- A new issue: start without being asked -------------------------------
+  new-issue:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      # Required for the action's default GitHub App authentication.
+      id-token: write
+      # Lets Claude read CI results.
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A prompt puts the action in automation mode: it runs on the event
+          # itself rather than waiting to be mentioned.
+          prompt: |
+            Issue #${{ github.event.issue.number }} was just opened on this repository. Implement it.
+
+            This is a React 19 + TypeScript + Vite video editor that runs in the browser.
+            Source is under src/components, src/hooks and src/lib, with Netlify functions in
+            netlify/functions. Tests are vitest, colocated as *.test.ts(x).
+
+            Read the issue first, then read enough of the codebase to understand how the area
+            you are changing actually works. Do not start editing from the issue title alone.
+
+            If the ask is genuinely ambiguous — several readings would produce materially
+            different code — do not guess. Post one comment on the issue asking the specific
+            question, and stop there without writing code. Someone will reply and mention
+            @claude, which starts a fresh run with their answer.
+
+            Otherwise:
+              - Work on a branch named claude/issue-${{ github.event.issue.number }}-<short-slug>, cut from main.
+              - Match the surrounding code's idiom, naming and comment density. This codebase
+                explains *why* in its comments; follow that.
+              - Add or update tests where the repo already covers that area. Where practical,
+                check that a new test fails without your change — a test that passes either
+                way proves nothing.
+              - Verify with: npm ci, npm run typecheck, npm run lint, npm run format:check, npm test
+              - Commit, push the branch, and open a pull request against main whose body links
+                the issue with "Closes #${{ github.event.issue.number }}".
+              - Comment on the issue linking the PR and saying briefly what you built.
+
+            Report failures honestly. If part of the issue is blocked or you left something
+            out, say so plainly in the PR body rather than quietly narrowing the scope.
+          claude_args: |
+            --max-turns 60
+
+  # --- A comment: only when asked -------------------------------------------
+  mention:
+    if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # No prompt, so the action runs in interactive mode: it reads the comment
+      # that mentioned it and replies in the thread as it works.
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --max-turns 60
