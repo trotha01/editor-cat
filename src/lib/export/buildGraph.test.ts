@@ -610,4 +610,85 @@ describe('buildExportPlan', () => {
       expect(graph).toContain('[3:a]adelay=0:all=1')
     })
   })
+
+  describe('dissolve transitions', () => {
+    it('blends two clips with a plain fade instead of concatenating them', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [vid('a.mp4', 0, 3), { ...vid('b.mp4', 0, 4), transitionIn: 1 }],
+          audio: [],
+        }).args,
+      )
+
+      // 3s of clip one, minus the 1s shared with clip two, is where it starts.
+      expect(graph).toContain('[v0][v1]xfade=transition=fade:duration=1:offset=2[vout]')
+      expect(graph).not.toContain('concat=n=2')
+    })
+
+    it('shortens the output by exactly what the dissolve overlaps', () => {
+      const { durationSeconds } = buildExportPlan({
+        ...base,
+        clips: [vid('a.mp4', 0, 3), { ...vid('b.mp4', 0, 4), transitionIn: 1 }],
+        audio: [],
+      })
+      // 3s + 4s of clip, 1s shared between them, is 6s of screen time.
+      expect(durationSeconds).toBe(6)
+    })
+
+    it('mixes hard cuts and dissolves in the same chain', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 2), img('b.png', 2), { ...img('c.png', 2), transitionIn: 1 }],
+          audio: [],
+        }).args,
+      )
+
+      // The first join has nothing to dissolve, so it is still a hard cut —
+      // just done pairwise instead of in one big concat.
+      expect(graph).toContain('[v0][v1]concat=n=2:v=1:a=0[vx1]')
+      expect(graph).toContain('[vx1][v2]xfade=transition=fade:duration=1:offset=3[vout]')
+    })
+
+    it('crossfades a clip’s own sound across the dissolve instead of layering it', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [loud('a.mp4', 0, 3), { ...loud('b.mp4', 0, 4), transitionIn: 1 }],
+          audio: [],
+        }).args,
+      )
+
+      // Clip one fades out over its last second; clip two fades in over its
+      // first — the same second, so the two hand off rather than stack.
+      expect(graph).toContain('[0:a]adelay=0:all=1,afade=t=out:st=2:d=1,aresample=48000[c0]')
+      expect(graph).toContain('[1:a]adelay=2000:all=1,afade=t=in:st=2:d=1,aresample=48000[c1]')
+    })
+
+    it('leaves the graph exactly as before when no clip actually dissolves', () => {
+      // Transitions absent everywhere — including a clip that explicitly opts
+      // out with 0 — must not switch the picture onto the pairwise chain.
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 2), { ...img('b.png', 2), transitionIn: 0 }],
+          audio: [],
+        }).args,
+      )
+      expect(graph).toContain('[v0][v1]concat=n=2:v=1:a=0[vout]')
+    })
+
+    it('clamps a transition longer than either clip rather than handing xfade a bad offset', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [vid('a.mp4', 0, 1), { ...vid('b.mp4', 0, 4), transitionIn: 5 }],
+          audio: [],
+        }).args,
+      )
+      // Capped to the 1s the first clip actually has.
+      expect(graph).toContain('xfade=transition=fade:duration=1:offset=0[vout]')
+    })
+  })
 })

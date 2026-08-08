@@ -294,6 +294,64 @@ describe('video layers', () => {
   })
 })
 
+/**
+ * Two clips dissolving into each other.
+ *
+ * The trick under test is that the outgoing clip is never itself faded down —
+ * it is left at full strength, and only the incoming one ramps in on top of
+ * it, which alpha-compositing turns into the blend on its own. Getting that
+ * wrong (fading both, or neither) is invisible in a screenshot taken at one
+ * instant, so what is checked here is the opacity actually written down.
+ */
+describe('dissolve transitions', () => {
+  const dissolving: Project = {
+    ...project,
+    clips: [
+      { id: 'clip_1', assetId: 'asset_1', inPoint: 0, outPoint: 3 },
+      { id: 'clip_2', assetId: 'asset_1', inPoint: 0, outPoint: 4, transitionIn: 1 },
+    ],
+  }
+
+  /** The picture clips' own wrapper divs, in track order. */
+  function clipWrappers() {
+    const region = screen.getByRole('region', { name: 'Preview' })
+    return [...region.querySelectorAll('video')].map((video) => video.parentElement as HTMLElement)
+  }
+
+  const visibleOf = () =>
+    clipWrappers().filter((element) => !element.classList.contains('invisible'))
+
+  it('shows only the outgoing clip before the dissolve starts', () => {
+    projectState.project = dissolving
+    render(<Preview currentTime={1} playing={false} />)
+
+    expect(visibleOf()).toHaveLength(1)
+  })
+
+  it('shows both clips through the dissolve, the incoming one fading in on top', () => {
+    // The overlap runs from clip two's start at 2s to clip one's own end at
+    // 3s — half way through it, the incoming clip should be at half strength.
+    projectState.project = dissolving
+    render(<Preview currentTime={2.5} playing={false} />)
+
+    const visible = visibleOf()
+    expect(visible).toHaveLength(2)
+    expect(visible[1]?.style.opacity).toBe('0.5')
+    // No opacity written down at all — full strength, unbothered by the clip
+    // fading in on top of it.
+    expect(visible[0]?.style.opacity).toBe('')
+  })
+
+  it('settles back onto just the incoming clip once the dissolve finishes', () => {
+    projectState.project = dissolving
+    render(<Preview currentTime={4} playing={false} />)
+
+    const visible = visibleOf()
+    expect(visible).toHaveLength(1)
+    expect(visible[0]?.style.opacity).toBe('')
+  })
+})
+
 describe('the F key', () => {
   it('toggles fullscreen', () => {
     mount()

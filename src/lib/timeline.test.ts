@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_LEAD_IN,
   MIN_CLIP_DURATION,
+  activeClipsAt,
   clipAtTime,
   clipDuration,
   clipForAsset,
@@ -15,6 +16,7 @@ import {
   joinCutAt,
   layoutClips,
   leadInOf,
+  maxTransitionIn,
   projectDuration,
   reorder,
   snapToFrame,
@@ -22,6 +24,7 @@ import {
   sourceTimeFor,
   splitClipAt,
   totalDuration,
+  transitionInFor,
   trimClip,
 } from './timeline'
 import type { Asset, Clip, Project } from './types'
@@ -91,6 +94,59 @@ describe('layoutClips', () => {
   it('caps an absurd lead-in rather than exporting an hour of black', () => {
     expect(layoutClips([clip('1', 0, 3)], 10_000)[0]?.start).toBe(MAX_LEAD_IN)
   })
+
+  it('pulls a dissolving clip back into the tail of the one before it', () => {
+    const laid = layoutClips([clip('1', 0, 3), { ...clip('2', 0, 4), transitionIn: 1 }])
+
+    // The first clip's own end is untouched — only where the second one
+    // starts moves, which is what makes the two overlap for 1s.
+    expect(laid.map((entry) => [entry.start, entry.end])).toEqual([
+      [0, 3],
+      [2, 6],
+    ])
+    expect(laid.map((entry) => entry.transitionIn)).toEqual([0, 1])
+  })
+
+  it('clamps a transition to whatever the shorter of the two clips can supply', () => {
+    // Clip 1 is only 1s long, so a 5s transition can borrow at most that much.
+    const laid = layoutClips([clip('1', 0, 1), { ...clip('2', 0, 4), transitionIn: 5 }])
+    expect(laid[1]?.start).toBe(0)
+    expect(laid[1]?.transitionIn).toBe(1)
+  })
+
+  it('ignores a transition on the first clip, which has nothing before it to dissolve from', () => {
+    const laid = layoutClips([{ ...clip('1', 0, 3), transitionIn: 1 }])
+    expect(laid[0]?.start).toBe(0)
+    expect(laid[0]?.transitionIn).toBe(0)
+  })
+})
+
+describe('maxTransitionIn', () => {
+  it('is zero with no previous clip', () => {
+    expect(maxTransitionIn(clip('1', 0, 3), undefined)).toBe(0)
+  })
+
+  it('is capped by whichever of the two clips is shorter', () => {
+    expect(maxTransitionIn(clip('2', 0, 10), clip('1', 0, 2))).toBe(2)
+    expect(maxTransitionIn(clip('2', 0, 2), clip('1', 0, 10))).toBe(2)
+  })
+})
+
+describe('transitionInFor', () => {
+  it('reads the stored value back when it fits', () => {
+    expect(transitionInFor({ ...clip('2', 0, 4), transitionIn: 1 }, clip('1', 0, 4))).toBe(1)
+  })
+
+  it('is zero when absent, the same as a clip saved before dissolves existed', () => {
+    expect(transitionInFor(clip('2', 0, 4), clip('1', 0, 4))).toBe(0)
+  })
+
+  it('narrows automatically once a trim shrinks the room a dissolve had', () => {
+    // The stored value is left alone; only what can actually be honoured
+    // shrinks, exactly like leadInOf clamping a stored lead-in.
+    const wide = { ...clip('2', 0, 4), transitionIn: 3 }
+    expect(transitionInFor(wide, clip('1', 0, 1))).toBe(1)
+  })
 })
 
 describe('leadInOf', () => {
@@ -110,6 +166,12 @@ describe('totalDuration', () => {
 
   it('ignores inverted clips rather than subtracting time', () => {
     expect(totalDuration([clip('1', 5, 2)])).toBe(0)
+  })
+
+  it('counts a dissolve once, not twice', () => {
+    // 2s + 3s of clip with 1s shared between them is 4s of screen time, not 5.
+    const total = totalDuration([clip('1', 0, 2), { ...clip('2', 0, 3), transitionIn: 1 }])
+    expect(total).toBe(4)
   })
 })
 
@@ -145,6 +207,36 @@ describe('clipAtTime', () => {
     expect(clipAtTime(clips, 2.99, 3)).toBeNull()
     expect(clipAtTime(clips, 3, 3)?.clip.id).toBe('1')
     expect(clipAtTime(clips, 5, 3)?.clip.id).toBe('2')
+  })
+
+  it('is the outgoing clip during a dissolve', () => {
+    // clipAtTime only ever hands back one clip — activeClipsAt is what a
+    // caller rendering the blend actually wants.
+    const dissolving = [clip('1', 0, 3), { ...clip('2', 0, 3), transitionIn: 1 }]
+    expect(clipAtTime(dissolving, 2.5)?.clip.id).toBe('1')
+  })
+})
+
+describe('activeClipsAt', () => {
+  const dissolving = [clip('1', 0, 3), { ...clip('2', 0, 3), transitionIn: 1 }]
+
+  it('holds just one clip outside a dissolve', () => {
+    expect(activeClipsAt(dissolving, 1).map((entry) => entry.clip.id)).toEqual(['1'])
+    expect(activeClipsAt(dissolving, 4).map((entry) => entry.clip.id)).toEqual(['2'])
+  })
+
+  it('holds both clips through the dissolve, outgoing then incoming', () => {
+    // The overlap runs from 2s (3s clip-1 end minus the 1s transition) to 3s.
+    expect(activeClipsAt(dissolving, 2.5).map((entry) => entry.clip.id)).toEqual(['1', '2'])
+  })
+
+  it('holds just the last clip at the very end, same as clipAtTime', () => {
+    expect(activeClipsAt(dissolving, 5).map((entry) => entry.clip.id)).toEqual(['2'])
+  })
+
+  it('returns nothing past the end and before the start', () => {
+    expect(activeClipsAt(dissolving, 5.1)).toEqual([])
+    expect(activeClipsAt(dissolving, -1)).toEqual([])
   })
 })
 
@@ -344,6 +436,17 @@ describe('splitClipAt', () => {
     const original = [clip('1', 2, 8)]
     splitClipAt(original, 2, 30, ids())
     expect(original).toEqual([clip('1', 2, 8)])
+  })
+
+  it('leaves the right half a hard cut, even if the whole clip was dissolving', () => {
+    // The transition belonged to what came before the original clip, and
+    // stays with the left half — the right half meets the left at a fresh
+    // boundary, not a dissolve.
+    const dissolving = [clip('0', 0, 2), { ...clip('1', 2, 8), transitionIn: 1 }]
+    const result = splitClipAt(dissolving, 5, 30, ids())
+
+    expect(result!.clips[1]?.transitionIn).toBe(1)
+    expect(result!.clips[2]?.transitionIn).toBeUndefined()
   })
 
   it('cuts at the right point in the source once the picture starts later', () => {
