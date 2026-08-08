@@ -18,6 +18,13 @@
 #     `claude_code_oauth_token:` lines below for
 #     `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}`.
 #
+#     That token lasts one year and nothing warns you before it lapses: both
+#     jobs simply start failing to authenticate, on an event nobody is watching,
+#     which reads as Claude having quietly stopped caring about your issues.
+#     Renew by running `claude setup-token` again and replacing the secret. The
+#     token is printed once and stored nowhere, so copy it there and then.
+#     Secret last set: 2026-08 — update this line when you rotate it.
+#
 # Note the token is a billing choice, not a visibility one: these runs are
 # GitHub Actions jobs, so they show up in the workflow log and as issue and PR
 # comments. They are not Claude Code cloud sessions and do not appear in the
