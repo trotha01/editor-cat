@@ -123,6 +123,51 @@ describe('cuesFromWords', () => {
     const cues = cuesFromWords([timed('  ', 0, 0.2), timed('real', 0.3, 0.6)], 'track-1', makeId)
     expect(cues.flatMap((entry) => entry.words).map((entry) => entry.text)).toEqual(['real'])
   })
+
+  /** A word heard in a particular clip, which is what a break can key on. */
+  const heardIn = (clipId: string, text: string, start: number, end: number): TimedWord => ({
+    text,
+    start,
+    end,
+    source: { id: clipId, label: `${clipId}.mp4` },
+  })
+
+  it('breaks where the clip changes, even mid-sentence', () => {
+    // A tenth of a second apart, well inside maxGap and no sentence ending
+    // between them: the change of clip is the only thing that can separate
+    // these, and it has to, or the caption belongs to two clips at once.
+    const cues = cuesFromWords(
+      [heardIn('clip-1', 'the', 2.7, 2.95), heardIn('clip-2', 'end', 3.05, 3.3)],
+      'track-1',
+      makeId,
+    )
+    expect(cues.map((cue) => cue.source?.id)).toEqual(['clip-1', 'clip-2'])
+    expect(cues.map(cueText)).toEqual(['the', 'end'])
+  })
+
+  it('holds the first caption through the break so a split sentence does not blink', () => {
+    const cues = cuesFromWords(
+      [heardIn('clip-1', 'the', 2.7, 2.95), heardIn('clip-2', 'end', 3.05, 3.3)],
+      'track-1',
+      makeId,
+    )
+    expect(cues[0]!.end).toBe(cues[1]!.start)
+  })
+
+  it('still groups a run of words from one clip', () => {
+    // The break is on the clip changing, not on the source being present at all.
+    const cues = cuesFromWords(
+      [
+        heardIn('clip-1', 'one', 0, 0.3),
+        heardIn('clip-1', 'two', 0.35, 0.6),
+        heardIn('clip-1', 'three', 0.65, 0.9),
+      ],
+      'track-1',
+      makeId,
+    )
+    expect(cues).toHaveLength(1)
+    expect(cues[0]?.source?.id).toBe('clip-1')
+  })
 })
 
 describe('dedupeOverlappingWords', () => {

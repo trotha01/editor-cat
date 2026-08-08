@@ -230,10 +230,11 @@ export const DEFAULT_GROUPING: GroupOptions = {
 /**
  * Groups a flat run of timed words into cues.
  *
- * Breaks on three things, in the order a listener would: the end of a sentence,
- * a pause long enough to be one, and then simply having enough words on screen.
- * Punctuation is kept on the word — it is part of what was said and belongs in
- * the caption — but it is also what tells us where a line ends.
+ * Breaks on four things, in the order a listener would: the end of a sentence,
+ * a pause long enough to be one, simply having enough words on screen, and then
+ * the clip the words were heard in changing. Punctuation is kept on the word —
+ * it is part of what was said and belongs in the caption — but it is also what
+ * tells us where a line ends.
  *
  * `makeId` is injected so this stays pure and testable.
  */
@@ -245,9 +246,7 @@ export function cuesFromWords(
 ): CaptionCue[] {
   const cues: CaptionCue[] = []
   let current: CaptionWord[] = []
-  // The clip the group started in. A caption that runs across a cut is credited
-  // to where it begins, which is the honest answer to "where is this from" and
-  // the one that stays stable when the words either side are re-edited.
+  // The clip this group was heard in, and the only one it may contain.
   let source: CaptionSource | undefined
 
   const flush = () => {
@@ -269,7 +268,18 @@ export function cuesFromWords(
     if (
       current.length >= options.maxWords ||
       (previous && gap >= options.maxGap) ||
-      (first && span > options.maxSeconds)
+      (first && span > options.maxSeconds) ||
+      // A caption belongs to exactly one clip, so speech carrying on across a
+      // clip boundary starts a new one even mid-sentence. The alternative —
+      // crediting the whole line to the clip it began in — reads fine until
+      // something moves: the cue follows the clip it was credited to and drags
+      // the *next* clip's words along with it, off to wherever that clip went.
+      // `recaptionSource` assumes this too, dropping every cue credited to the
+      // clip being redone, so without the break a shared line loses its other
+      // clip's words for good. `closeSeams` runs afterwards and holds the first
+      // caption through to the second, so a sentence split this way still reads
+      // as continuous rather than blinking at the join.
+      (first && (word.source?.id ?? null) !== (source?.id ?? null))
     ) {
       flush()
     }

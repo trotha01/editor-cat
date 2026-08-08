@@ -256,6 +256,39 @@ describe('captions reach storage', () => {
     expect(moved?.words[0]?.start).toBeCloseTo(0.5)
   })
 
+  it('does not drag one clip’s captions along when a different clip is moved', () => {
+    // Speech carrying on across the boundary: clip-1 runs 0-3 and its last word
+    // lands at 2.7, clip-2 starts at 3 and its first word at 3.05. A tenth of a
+    // second apart, so nothing but the change of clip separates them.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'the', start: 2.7, end: 2.95, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'end', start: 3.05, end: 3.3, source: { id: 'clip-2', label: 'b.mp4' } },
+    ])
+
+    // Drag clip-2 to the front. It now plays 0-5, and clip-1 plays 5-8.
+    useProjectStore.getState().moveClip(1, 0)
+
+    const wordAt = (text: string) =>
+      captionCuesOf(stored())
+        .flatMap((cue) => cue.words)
+        .find((word) => word.text === text)?.start ?? NaN
+    // Each word follows the clip it was heard in. Before the clip boundary was
+    // a break, both of these shared one cue credited to clip-1, so moving
+    // clip-2 left its own word behind at 8.05 — out over clip-1.
+    expect(wordAt('end')).toBeCloseTo(0.05)
+    expect(wordAt('the')).toBeCloseTo(7.7)
+  })
+
   it('leaves a voiceover’s captions where they are when the picture is rearranged', () => {
     // A voice clip sits at its own time and does not move when clips are
     // reordered, so its words must not move either.
