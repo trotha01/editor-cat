@@ -56,12 +56,24 @@ concurrency:
 env:
   CLAUDE_TOOLS: "Edit,Write,Read,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)"
 
+  # 60 turns ran out after ten and a half minutes on the first issue that got
+  # far enough to try: 61 turns, 629s, which is a shade over 10s a turn. A
+  # front-end change with tests in it is simply longer than 60 turns. At that
+  # observed rate 200 turns is a little over half an hour, which puts the wall
+  # clock rather than the turn counter in charge of when a run ends — see the
+  # step timeouts below.
+  CLAUDE_MAX_TURNS: "200"
+
 jobs:
   # --- A new issue: start without being asked -------------------------------
   new-issue:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Deliberately longer than the 35 minutes the Claude step below is allowed.
+    # If the job hits its own timeout GitHub cancels it outright and the comment
+    # posted at the start is left saying "working on it" for ever. Letting the
+    # step time out first keeps the job alive to go and correct that comment.
+    timeout-minutes: 40
     permissions:
       contents: write
       issues: write
@@ -99,6 +111,7 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         id: claude
+        timeout-minutes: 35
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A prompt puts the action in automation mode: it runs on the event
@@ -120,6 +133,11 @@ jobs:
 
             Otherwise:
               - Work on a branch named claude/issue-${{ github.event.issue.number }}-<short-slug>, cut from main.
+                Push it as soon as there is one commit on it and keep pushing as you go, rather
+                than saving it all for the end. A run that stops early — turn limit, timeout —
+                leaves behind exactly what it has pushed and nothing else, and there is no way
+                to resume the session afterwards. A pushed branch is the only thing anyone,
+                including a later run, can pick the work up from.
               - Match the surrounding code's idiom, naming and comment density. This codebase
                 explains *why* in its comments; follow that.
               - Add or update tests where the repo already covers that area. Where practical,
@@ -133,7 +151,7 @@ jobs:
             Report failures honestly. If part of the issue is blocked or you left something
             out, say so plainly in the PR body rather than quietly narrowing the scope.
           claude_args: |
-            --max-turns 60
+            --max-turns ${{ env.CLAUDE_MAX_TURNS }}
             --allowedTools "${{ env.CLAUDE_TOOLS }}"
 
       # The step above exits 0 whether or not it built anything — a run that
@@ -164,7 +182,10 @@ jobs:
   mention:
     if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Same 40/35 split as above. Interactive mode keeps its own comment up to
+    # date, so a step that times out here reports itself; the job only needs
+    # the headroom to let that happen.
+    timeout-minutes: 40
     permissions:
       contents: write
       issues: write
@@ -179,8 +200,9 @@ jobs:
       # No prompt, so the action runs in interactive mode: it reads the comment
       # that mentioned it and replies in the thread as it works.
       - uses: anthropics/claude-code-action@v1
+        timeout-minutes: 35
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
-            --max-turns 60
+            --max-turns ${{ env.CLAUDE_MAX_TURNS }}
             --allowedTools "${{ env.CLAUDE_TOOLS }}"
