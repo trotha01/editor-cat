@@ -1,13 +1,19 @@
-# Claude on issues.
+# Claude on issues and pull requests.
 #
-# Two jobs, because the two events want different postures:
+# Two jobs, because the two kinds of event want different postures:
 #
 #   - A newly opened issue starts work on its own. There is nothing to opt in
 #     to yet, and waiting for someone to come back and type "@claude" defeats
 #     the point of filing the issue in the first place.
-#   - A comment only wakes Claude when it says "@claude". Threads fill up with
+#   - A comment only wakes Claude when it says "@claude", wherever it is left:
+#     on an issue, on a pull request, or in a review. Threads fill up with
 #     asides, "thanks", and notes to other people, and a run on each one costs
 #     real money to tell you nothing.
+#
+# A mention decides for itself what the comment actually wants — an answer, a
+# question back, a commit to the pull request it was left on, or a new pull
+# request for an issue that has none yet. That judgement lives in
+# CLAUDE_GUIDANCE below rather than in this comment.
 #
 # Requires, both set up outside this file:
 #   - the Claude GitHub App installed on the repository
@@ -37,13 +43,24 @@ name: Claude
 on:
   issues:
     types: [opened]
+  # Covers comments on issues *and* on a pull request's conversation tab —
+  # GitHub files both under issue_comment. The two below are the ones it does
+  # not cover: a comment left on a specific line during review, and the body of
+  # the review itself.
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
 
-# One run per issue. A quick follow-up comment should not race the run still
-# working on the comment before it, both pushing to the same branch.
+# One run per issue or pull request. A quick follow-up comment should not race
+# the run still working on the comment before it, both pushing to the same
+# branch. Review events carry the number under `pull_request` instead, and a
+# comment on a PR arrives as an `issue_comment` whose issue *is* the PR, so
+# both spellings land on the same group for the same PR.
 concurrency:
-  group: claude-${{ github.event.issue.number }}
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 # The action allows file edits, read-only git and commenting out of the box,
@@ -54,7 +71,7 @@ concurrency:
 # denials and then exits 0 having done nothing. These add to the built-in
 # GitHub tools rather than replacing them.
 env:
-  CLAUDE_TOOLS: "Edit,Write,Read,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)"
+  CLAUDE_TOOLS: 'Edit,Write,Read,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)'
 
   # 60 turns ran out after ten and a half minutes on the first issue that got
   # far enough to try: 61 turns, 629s, which is a shade over 10s a turn. A
@@ -62,7 +79,49 @@ env:
   # observed rate 200 turns is a little over half an hour, which puts the wall
   # clock rather than the turn counter in charge of when a run ends — see the
   # step timeouts below.
-  CLAUDE_MAX_TURNS: "200"
+  CLAUDE_MAX_TURNS: '200'
+
+  # Interactive mode takes its instructions from the comment that summoned it
+  # and nothing else, so anything that should hold on every mention has to
+  # arrive as an appended system prompt. Setting the action's `prompt:` input
+  # would carry the same text but flip the job into automation mode, losing the
+  # threaded reply and progress checklist that make a mention worth reading.
+  #
+  # Folded to a single line deliberately: claude_args is a list of arguments
+  # separated by newlines, so a value spanning lines risks being read as
+  # several. Keep double quotes out of the text for the same reason — it is
+  # passed through one.
+  CLAUDE_GUIDANCE: >-
+    You have been mentioned on an issue or a pull request in this repository, a
+    React 19 + TypeScript + Vite video editor that runs in the browser, with
+    source under src/components, src/hooks and src/lib, Netlify functions in
+    netlify/functions, and vitest tests colocated as *.test.ts(x).
+    Work out what is actually being asked before you touch any code.
+    If it is a question, answer it in the thread and stop there. Not every
+    mention wants a code change, and an answer on its own is a complete
+    response.
+    If the ask is ambiguous enough that two readings would produce materially
+    different code, ask that specific question in the thread and stop, rather
+    than guessing. Someone will reply and mention you again, which starts a
+    fresh run with their answer. You may do this at any point, including
+    part-way through a change, and it always beats guessing.
+    When a code change is wanted, where it belongs depends on where you were
+    mentioned. Mentioned on a pull request: commit to that pull request's own
+    branch and do not open a second one. Mentioned on an issue: first look for
+    an open pull request that already addresses it, with
+    gh pr list --state open --search <issue number>, and push to that branch if
+    one exists. Only when the issue has no open pull request should you cut a
+    new branch named claude/issue-<number>-<short-slug> from main and open one
+    with gh pr create, whose body links the issue with Closes #<number>.
+    Either way, push as soon as you have a commit and keep pushing as you go. A
+    run that stops early leaves behind exactly what it has pushed, and the
+    session cannot be resumed once the runner is gone.
+    Match the surrounding code idiom, naming and comment density; this codebase
+    explains why in its comments, so follow that.
+    Add or update tests where the repo already covers the area, and verify with
+    npm ci, npm run typecheck, npm run lint, npm run format:check and npm test.
+    Report failures honestly. If something is blocked or you left part of it
+    out, say so plainly rather than quietly narrowing the scope.
 
 jobs:
   # --- A new issue: start without being asked -------------------------------
@@ -112,6 +171,10 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         id: claude
         timeout-minutes: 35
+        env:
+          # The prompt below ends in `gh pr create`, which needs its own token:
+          # the action authenticates git for pushing but not the CLI.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A prompt puts the action in automation mode: it runs on the event
@@ -178,9 +241,18 @@ jobs:
               body,
             })
 
-  # --- A comment: only when asked -------------------------------------------
+  # --- A comment, on an issue or a pull request: only when asked -------------
   mention:
-    if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
+    # A review carries its text on `review`, the other two on `comment`; the
+    # missing one is null either way, and `contains` on null is false.
+    #
+    # Claude is excluded as an author on purpose. It writes in these threads,
+    # and the moment one of its own summaries quotes the trigger word it would
+    # summon itself, on a loop that bills for every lap.
+    if: |
+      github.event.sender.login != 'claude[bot]' &&
+      (contains(github.event.comment.body, '@claude') ||
+       contains(github.event.review.body, '@claude'))
     runs-on: ubuntu-latest
     # Same 40/35 split as above. Interactive mode keeps its own comment up to
     # date, so a step that times out here reports itself; the job only needs
@@ -197,12 +269,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      # No prompt, so the action runs in interactive mode: it reads the comment
-      # that mentioned it and replies in the thread as it works.
+      # Still no prompt, so the action stays in interactive mode: it reads the
+      # comment that mentioned it and replies in the thread as it works. The
+      # standing instructions ride along as an appended system prompt instead —
+      # see CLAUDE_GUIDANCE above for why it cannot be the `prompt:` input.
       - uses: anthropics/claude-code-action@v1
         timeout-minutes: 35
+        env:
+          # `gh pr create` and `gh pr list` need a token of their own; the
+          # action authenticates git for pushing but not the CLI. CI still runs
+          # on anything opened this way, despite pull requests created with
+          # GITHUB_TOKEN not raising `pull_request` events, because ci.yml also
+          # triggers on push to '**'.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --max-turns ${{ env.CLAUDE_MAX_TURNS }}
             --allowedTools "${{ env.CLAUDE_TOOLS }}"
+            --append-system-prompt "${{ env.CLAUDE_GUIDANCE }}"
