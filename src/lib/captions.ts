@@ -28,39 +28,44 @@ export const MIN_CUE_DURATION = 0.2
 const EPSILON = 1e-6
 
 /**
- * The typeface shipped for captions, by family name.
+ * The typeface shipped for captions, as the preview asks for it.
  *
- * The same string names the CSS family in the preview and the ASS style in the
- * export, which is the point: one name, one set of files, one look. See
- * scripts/copy-caption-font.mjs.
+ * Suffixed rather than the bare family name so it cannot collide with a copy
+ * the user happens to have installed: that one would render on screen and then
+ * be replaced by ours in the export, which is the one thing this whole
+ * arrangement exists to prevent. The name inside the file — which is what
+ * libass matches on — is in assCaptions.ts. See scripts/copy-caption-font.mjs.
  */
-export const CAPTION_FONT_FAMILY = 'Inter Captions'
+export const CAPTION_FONT_FAMILY = 'Lindy Toon Wide Captions'
 
 /**
- * Where the caption font files are served from.
+ * Where the caption font file is served from.
  *
- * The export reads them over the network at render time rather than bundling
- * them, so a project with no captions never pays for 700KB of glyphs.
+ * The export reads it over the network at render time rather than bundling it,
+ * so a project with no captions never pays for the glyphs.
  */
-export const CAPTION_FONT_URLS = {
-  regular: '/fonts/Inter-Regular.ttf',
-  bold: '/fonts/Inter-Bold.ttf',
-} as const
+export const CAPTION_FONT_URL = '/fonts/LindyToonWide-Regular.ttf'
 
 /**
- * Big and bold, low in the frame.
+ * Big and heavy, low in the frame.
  *
- * These defaults are the short-form caption look: heavy weight, generous size,
- * a hard outline so the text survives whatever is behind it, and a yellow
- * highlight that reads at a glance as "this word, now". Everything is a
- * fraction of the frame so it holds up at any export resolution.
+ * These defaults are the short-form caption look: generous size, a hard outline
+ * so the text survives whatever is behind it, and a yellow highlight that reads
+ * at a glance as "this word, now". Everything is a fraction of the frame so it
+ * holds up at any export resolution.
  */
 export function defaultCaptionStyle(): CaptionStyle {
   return {
     // Roughly a tenth of the frame height: large enough to read on a phone held
     // at arm's length, small enough that three or four words still fit a line.
     fontScale: 0.075,
-    bold: true,
+    // The shipped face has one weight, and being a marker face it is already
+    // heavy — the weight this default wanted is drawn into the glyphs. Asking
+    // for bold on top gets it faked, and faked twice by different arithmetic:
+    // the browser strokes the outline, libass emboldens it. That is the one way
+    // the preview and the export can disagree about a caption, so the default
+    // does not ask. The toggle still works for anyone who wants more.
+    bold: false,
     uppercase: false,
     color: '#ffffff',
     highlightColor: '#ffd60a',

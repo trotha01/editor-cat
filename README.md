@@ -689,11 +689,19 @@ noticing.
 **The caption font is shipped, not chosen.** ffmpeg.wasm has no system fonts at
 all, and libass asked to draw without one renders nothing while still exiting
 successfully — an export that quietly loses its captions. So the typeface is a
-file: Inter, copied out of node_modules at build time by
-`scripts/copy-caption-font.mjs`, served from this origin, and handed to ffmpeg in
-its own virtual directory. The preview loads the same two files through
-`@font-face`, which is the point — what you position over the picture is drawn
-with the very bytes that end up in the MP4.
+file: Lindy Toon Wide, checked in under `assets/fonts/`, staged into
+`public/fonts/` at build time by `scripts/copy-caption-font.mjs`, served from
+this origin, and handed to ffmpeg in its own virtual directory. The preview
+loads that same file through `@font-face`, which is the point — what you
+position over the picture is drawn with the very bytes that end up in the MP4.
+
+It ships one weight, and captions default to it rather than to bold. Bold is
+still a toggle, but with no bold face to reach for both sides fake it — the
+browser strokes the outline, libass emboldens the glyph — and the two are not
+the same approximation. Leaving the default at the weight that exists is the
+only setting where the preview and the export are the same drawing. It is also
+an all-caps face: lowercase codepoints map to the capital glyphs, so the
+uppercase toggle changes the transcript that is drawn, not the letterforms.
 
 **Sizes are fractions of the frame.** A caption's size, outline and height are
 stored as fractions rather than pixels, because the export resolution is chosen

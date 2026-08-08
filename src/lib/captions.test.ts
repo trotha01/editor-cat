@@ -555,9 +555,12 @@ describe('project-level helpers', () => {
     ])
   })
 
-  it('defaults to large and bold, low in the frame', () => {
+  it('defaults to large and low in the frame, at the face’s own weight', () => {
     const style = defaultCaptionStyle()
-    expect(style.bold).toBe(true)
+    // Not bold: the shipped face has one weight, and asking for a second gets it
+    // faked — by the browser in the preview and by libass in the export, which
+    // are two different approximations of the same thing.
+    expect(style.bold).toBe(false)
     expect(style.fontScale).toBeGreaterThan(0.05)
     expect(style.position).toBeGreaterThan(0.5)
   })

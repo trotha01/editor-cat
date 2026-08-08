@@ -27,20 +27,11 @@ function serveFont(bytes = 64) {
 }
 
 describe('captionFonts', () => {
-  it('fetches only the weights in use', async () => {
+  it('fetches the one shipped face', async () => {
     const fetchMock = serveFont()
-    const fonts = await captionFonts([{ bold: true }, { bold: true }])
-    expect(fonts.map((font) => font.fileName)).toEqual(['Inter-Bold.ttf'])
+    const fonts = await captionFonts()
+    expect(fonts.map((font) => font.fileName)).toEqual(['LindyToonWide-Regular.ttf'])
     expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('fetches both when a project mixes weights', async () => {
-    serveFont()
-    const fonts = await captionFonts([{ bold: true }, { bold: false }])
-    expect(fonts.map((font) => font.fileName).sort()).toEqual([
-      'Inter-Bold.ttf',
-      'Inter-Regular.ttf',
-    ])
   })
 
   it('hands out a fresh copy each time, because writing to ffmpeg detaches it', async () => {
@@ -49,11 +40,11 @@ describe('captionFonts', () => {
     // session a zero-length font — and libass with an unreadable font draws
     // nothing while still exiting successfully.
     const fetchMock = serveFont()
-    const [first] = await captionFonts([{ bold: true }])
+    const [first] = await captionFonts()
     structuredClone(first!.bytes.buffer, { transfer: [first!.bytes.buffer] })
     expect(first!.bytes.byteLength).toBe(0)
 
-    const [second] = await captionFonts([{ bold: true }])
+    const [second] = await captionFonts()
     expect(second!.bytes.byteLength).toBe(64)
     // Still cached: a second export must not fetch the font again either.
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -62,8 +53,6 @@ describe('captionFonts', () => {
   it('fails loudly when the font is not there to be served', async () => {
     globalThis.fetch = (async () =>
       new Response('nope', { status: 404 })) as unknown as typeof fetch
-    await expect(captionFonts([{ bold: false }])).rejects.toThrow(
-      /caption font could not be loaded/,
-    )
+    await expect(captionFonts()).rejects.toThrow(/caption font could not be loaded/)
   })
 })

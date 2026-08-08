@@ -143,14 +143,22 @@ describe('buildAssFile', () => {
   })
 
   it('marks the style bold or not, matching what the preview draws', () => {
-    const bold = buildAssFile({ ...base, tracks: [track()], cues: [line] })
+    // Both weights stated outright rather than leaning on the default, which is
+    // a look and free to change; what is asserted here is the mapping onto ASS.
+    const bold = buildAssFile({
+      ...base,
+      tracks: [track('track-1', { style: { ...style, bold: true } })],
+      cues: [line],
+    })
     const plain = buildAssFile({
       ...base,
       tracks: [track('track-1', { style: { ...style, bold: false } })],
       cues: [line],
     })
-    expect(bold).toMatch(/^Style: Cap0,Inter,96,[^,]+,[^,]+,[^,]+,[^,]+,-1,/m)
-    expect(plain).toMatch(/^Style: Cap0,Inter,96,[^,]+,[^,]+,[^,]+,[^,]+,0,/m)
+    // The font is named as libass will match it: the family inside the file, not
+    // the suffixed one the preview's @font-face declares.
+    expect(bold).toMatch(/^Style: Cap0,Lindy Toon Wide,96,[^,]+,[^,]+,[^,]+,[^,]+,-1,/m)
+    expect(plain).toMatch(/^Style: Cap0,Lindy Toon Wide,96,[^,]+,[^,]+,[^,]+,[^,]+,0,/m)
   })
 
   it('applies uppercase to the drawn text without touching the transcript', () => {

@@ -188,7 +188,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
                 width: project.width,
                 height: project.height,
               }),
-              fonts: await captionFonts(visibleCaptionTracks.map((track) => track.style)),
+              fonts: await captionFonts(),
             }
           : undefined
 
