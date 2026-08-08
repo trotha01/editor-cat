@@ -35,6 +35,8 @@ export interface RenderRequest {
     duration: number
     /** Gain for the clip's own sound. Absent is unity; 0 leaves it out. */
     volume?: number
+    /** Seconds this clip dissolves into from the one before it. Absent is a hard cut. */
+    transitionIn?: number
   }[]
   /**
    * Picture layered over the clips, bottom of the stack first. Already resolved
@@ -216,6 +218,7 @@ export async function renderProject(
       duration: clip.duration,
       hasAudio: soundIn.get(file) ?? false,
       volume: clip.volume ?? 1,
+      transitionIn: clip.transitionIn,
     }
   })
 

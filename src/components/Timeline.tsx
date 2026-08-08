@@ -34,6 +34,7 @@ import { ClipMenu } from './ClipMenu'
 import { ClipReadinessBar } from './ClipReadinessBar'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import {
+  DEFAULT_TRANSITION_DURATION,
   MAX_LEAD_IN,
   MIN_CLIP_DURATION,
   clipAtTime,
@@ -45,8 +46,10 @@ import {
   isThroughCut,
   layoutClips,
   leadInOf,
+  maxTransitionIn,
   snapToFrame,
   totalDuration,
+  transitionInFor,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
@@ -60,7 +63,7 @@ import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './Cl
 import { useAssetStore } from '../state/useAssetStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
-import type { Asset, Clip, PositionedClip } from '../lib/types'
+import type { Asset, PositionedClip } from '../lib/types'
 
 const MIN_ZOOM = 8
 // High enough that individual frames get room of their own: cutting is only
@@ -100,6 +103,15 @@ function frameGrid(pixels: number, overMedia: boolean): string {
     `repeating-linear-gradient(to right, transparent 0 1px, rgb(255 255 255 / 0.45) 1px 2px, transparent 2px ${period})`
   )
 }
+
+/**
+ * Fine diagonal hatching over the stretch of a clip that dissolves into the
+ * one before it — finer than the lead-in's, so the two read as different
+ * things: a gap that is empty on purpose, versus a clip that is playing over
+ * another one.
+ */
+const TRANSITION_HATCH =
+  'repeating-linear-gradient(45deg, rgb(0 0 0 / 0.35) 0 3px, transparent 3px 7px)'
 
 function ClipCard({
   entry,
@@ -239,6 +251,19 @@ function ClipCard({
           </span>
         )}
       </button>
+
+      {/* How far this clip dissolves into the tail of the one before it. Its
+          own width rather than a line, because a dissolve is not an instant
+          the way a cut is — it is a stretch of the clip that plays over the
+          other one, and the hatch is sized to exactly that stretch. */}
+      {entry.transitionIn > 0 ? (
+        <span
+          aria-hidden
+          title={`Dissolves ${formatTime(entry.transitionIn)} into the clip before it`}
+          style={{ width: entry.transitionIn * zoom, backgroundImage: TRANSITION_HATCH }}
+          className="pointer-events-none absolute inset-y-0 left-0 border-r border-dashed border-accent/70"
+        />
+      ) : null}
 
       {/* How much of this clip is loaded, drawn along its own top edge so the
           whole track reads as one bar: where it is green, playback will hold. */}
@@ -789,17 +814,22 @@ function SelectedClipControls() {
   const clips = useProjectStore((state) => state.project.clips)
   const setImageDuration = useProjectStore((state) => state.setImageDuration)
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
+  const setClipTransition = useProjectStore((state) => state.setClipTransition)
   const trim = useProjectStore((state) => state.trim)
   const removeClip = useProjectStore((state) => state.removeClip)
   const assets = useAssetStore((state) => state.assets)
 
-  const clip: Clip | undefined = clips.find((entry) => entry.id === selectedClipId)
+  const index = clips.findIndex((entry) => entry.id === selectedClipId)
+  const clip = clips[index]
   if (!clip) return null
 
   const asset = assets.find((entry) => entry.id === clip.assetId)
   const isImage = asset?.kind === 'image'
   const duration = clipDuration(clip)
   const volume = clip.volume ?? 1
+  const previous = clips[index - 1]
+  const maxTransition = maxTransitionIn(clip, previous)
+  const transitionIn = transitionInFor(clip, previous)
 
   return (
     <div className="flex flex-wrap items-end gap-4 rounded-xl border border-line bg-surface p-3">
@@ -860,6 +890,54 @@ function SelectedClipControls() {
               title={`Volume ${Math.round(volume * 100)}%`}
               className="h-1 w-24"
             />
+          </label>
+        </div>
+      ) : null}
+
+      {/* Only offered past the first clip — there is nothing before it to
+          dissolve from. Toggled here rather than cut straight to a number, the
+          same shape as mute-then-volume above: a click for whether there is a
+          dissolve at all, a field for exactly how long once there is one. */}
+      {previous ? (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              setClipTransition(
+                clip.id,
+                transitionIn > 0 ? 0 : Math.min(DEFAULT_TRANSITION_DURATION, maxTransition),
+              )
+            }
+            disabled={transitionIn <= 0 && maxTransition <= 0}
+            aria-pressed={transitionIn > 0}
+            aria-label={
+              transitionIn > 0 ? 'Remove the dissolve into this clip' : 'Dissolve into this clip'
+            }
+            title={
+              maxTransition <= 0
+                ? 'Too short to dissolve — trim this clip or the one before it to make room.'
+                : transitionIn > 0
+                  ? 'Dissolving in from the clip before it — click to cut instead'
+                  : 'Cuts from the clip before it — click to dissolve instead'
+            }
+            className={`shrink-0 text-sm ${transitionIn > 0 ? '' : 'opacity-40'}`}
+          >
+            ◐
+          </button>
+          <label className="flex items-center gap-2 text-xs text-ink-dim">
+            Dissolve
+            <input
+              type="number"
+              min={0}
+              max={maxTransition}
+              step={0.1}
+              disabled={transitionIn <= 0}
+              value={transitionIn.toFixed(1)}
+              onChange={(event) => setClipTransition(clip.id, Number(event.target.value))}
+              aria-label="Dissolve into this clip, in seconds"
+              className="w-16 rounded-lg border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
+            />
+            s
           </label>
         </div>
       ) : null}

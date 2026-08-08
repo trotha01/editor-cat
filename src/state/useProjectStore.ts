@@ -7,11 +7,13 @@
 import { create } from 'zustand'
 import { loadProject, saveProject } from '../lib/db'
 import {
+  clamp,
   clampLeadIn,
   clipForAsset,
   joinCutAt,
   layoutClips,
   leadInOf,
+  maxTransitionIn,
   projectDuration,
   reorder,
   snapToFrame,
@@ -153,6 +155,13 @@ interface ProjectState {
   setImageDuration: (clipId: string, seconds: number) => void
   /** Mutes or levels the sound a clip carries in its own file. */
   setClipAudio: (clipId: string, patch: { muted?: boolean; volume?: number }) => void
+  /**
+   * Sets how long a clip dissolves into from the one before it. Clamped to
+   * what the two clips can actually supply, same as every other read of a
+   * clip's transition — so the number that lands is always one the timeline
+   * can honour, not just one that was typed.
+   */
+  setClipTransition: (clipId: string, seconds: number) => void
 
   /** Places audio, adding a track only if every existing one is busy there. */
   addAudioClip: (kind: AudioTrackKind, clip: Omit<AudioClip, 'id' | 'trackId'>) => PlacementOutcome
@@ -435,6 +444,23 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ...project,
         clips: project.clips.map((clip) => (clip.id === clipId ? { ...clip, ...patch } : clip)),
       })),
+
+    // Changes where this clip starts, so captions and anchored audio have to
+    // be pulled back onto it exactly like a trim or a reorder does.
+    setClipTransition: (clipId, seconds) =>
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.map((clip, index) =>
+            clip.id === clipId
+              ? {
+                  ...clip,
+                  transitionIn: clamp(seconds, 0, maxTransitionIn(clip, project.clips[index - 1])),
+                }
+              : clip,
+          ),
+        }),
+      ),
 
     addAudioClip: (kind, clip) => {
       const id = newId('aclip')

@@ -32,6 +32,14 @@ export interface ExportClip {
   hasAudio?: boolean
   /** Gain for that audio. Absent is unity; 0 keeps it out of the mix. */
   volume?: number
+  /**
+   * Seconds this clip dissolves into from the one before it. Absent or 0 is a
+   * hard cut. Already clamped to what the two clips can actually supply by the
+   * time it gets here — see `transitionInFor` — but re-clamped below anyway,
+   * since this function promises valid ffmpeg args for whatever plain data it
+   * is handed.
+   */
+  transitionIn?: number
 }
 
 export interface ExportAudioClip {
@@ -134,9 +142,53 @@ function placeAudio(startTime: number, volume: number): string {
 }
 
 /**
+ * Like `placeAudio`, but for a picture clip's own sound, which can additionally
+ * ramp in and out across a dissolve. Without that, two overlapping clips would
+ * each play their own sound at full volume through the overlap — a doubled-up
+ * wall of noise where the picture is showing a smooth blend.
+ */
+function placeClipAudio(
+  startTime: number,
+  duration: number,
+  volume: number,
+  fadeInDuration: number,
+  fadeOutDuration: number,
+): string {
+  const delayMs = Math.max(0, Math.round(startTime * 1000))
+  const stages = [`adelay=${delayMs}:all=1`]
+  if (volume !== 1) stages.push(`volume=${roundGain(volume)}`)
+  if (fadeInDuration > 0) {
+    stages.push(`afade=t=in:st=${sec(startTime)}:d=${sec(fadeInDuration)}`)
+  }
+  if (fadeOutDuration > 0) {
+    stages.push(
+      `afade=t=out:st=${sec(startTime + duration - fadeOutDuration)}:d=${sec(fadeOutDuration)}`,
+    )
+  }
+  stages.push('aresample=48000')
+  return stages.join(',')
+}
+
+/**
+ * How much of `previous` this clip actually dissolves into — the export-side
+ * twin of `transitionInFor` in timeline.ts, working over `ExportClip` instead
+ * of `Clip` since this file takes plain data rather than the project shape.
+ * Re-clamped here rather than trusted from the caller, for the same reason
+ * every other bound in this file is: given bad data, this should still hand
+ * ffmpeg an offset it can use rather than one that makes the render fail.
+ */
+function clampedTransition(clip: ExportClip, previous: ExportClip | undefined): number {
+  if (!previous) return 0
+  const cap = Math.min(Math.max(0, previous.duration), Math.max(0, clip.duration))
+  return Math.max(0, Math.min(clip.transitionIn ?? 0, cap))
+}
+
+/**
  * Pairs each clip with where it starts on the timeline and which input it is.
- * Clips sit end to end with no gaps, so the start is the lead-in plus the sum
- * of what precedes.
+ *
+ * Clips sit end to end with no gaps, except where a dissolve pulls one back
+ * into the tail of the one before it — so the start is the lead-in, plus the
+ * sum of what precedes, minus whatever has been borrowed back by a dissolve.
  */
 function withStarts(
   clips: readonly ExportClip[],
@@ -144,14 +196,18 @@ function withStarts(
 ): { clip: ExportClip; input: number; start: number }[] {
   let cursor = Math.max(0, leadIn)
   return clips.map((clip, input) => {
-    const start = cursor
-    cursor += Math.max(0, clip.duration)
+    const start = cursor - clampedTransition(clip, clips[input - 1])
+    cursor = start + Math.max(0, clip.duration)
     return { clip, input, start }
   })
 }
 
 export function totalVisualDuration(clips: readonly ExportClip[]): number {
-  return clips.reduce((sum, clip) => sum + Math.max(0, clip.duration), 0)
+  return clips.reduce(
+    (sum, clip, index) =>
+      sum + Math.max(0, clip.duration) - clampedTransition(clip, clips[index - 1]),
+    0,
+  )
 }
 
 export function totalAudioEnd(audio: readonly ExportAudioClip[]): number {
@@ -278,8 +334,47 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     return pending === 0 ? '[vout]' : label
   }
 
-  let stage = pending === 0 ? '[vout]' : '[vcat]'
-  chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
+  const transitions = clips.map((clip, index) => clampedTransition(clip, clips[index - 1]))
+  const hasTransitions = transitions.some((duration) => duration > 0)
+
+  let stage: string
+  if (!hasTransitions) {
+    stage = pending === 0 ? '[vout]' : '[vcat]'
+    chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
+  } else {
+    // Built up one join at a time rather than one n-way concat, because a
+    // dissolve blends exactly two streams at a time. A join with nothing to
+    // dissolve still goes through `concat=n=2` — the same "meet with nothing
+    // between them" the n-way concat above does, just one pair at a time.
+    stage = normalized[0] ?? '[vout]'
+    // Duration of the picture built so far, in the local clock this chain
+    // runs on — which starts at the first clip, not at the lead-in; that is
+    // added afterwards, by the padding step below.
+    let cumulative = clips[0]?.duration ?? 0
+    for (let index = 1; index < clips.length; index += 1) {
+      const clip = clips[index]
+      const duration = transitions[index] ?? 0
+      const isLast = index === clips.length - 1
+      const out = isLast ? (pending === 0 ? '[vout]' : '[vcat]') : `[vx${index}]`
+      const next = normalized[index] ?? ''
+      if (duration > 0) {
+        const offset = Math.max(0, cumulative - duration)
+        chains.push(
+          // "fade" rather than xfade's own "dissolve": it is a plain linear
+          // alpha blend, which is both what a dissolve means in the editors
+          // this is modelled on, and exactly what the preview composites —
+          // xfade's "dissolve" instead dithers, which the two would then
+          // disagree about.
+          `${stage}${next}xfade=transition=fade:duration=${sec(duration)}:offset=${sec(offset)}${out}`,
+        )
+        cumulative = cumulative + (clip?.duration ?? 0) - duration
+      } else {
+        chains.push(`${stage}${next}concat=n=2:v=1:a=0${out}`)
+        cumulative += clip?.duration ?? 0
+      }
+      stage = out
+    }
+  }
 
   // Padding at either end, both done with tpad on the concatenated picture:
   // black in front for the lead-in, and the last frame held at the back when
@@ -335,11 +430,19 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
 
   // A clip's own sound needs no trimming of its own: the input-level -ss/-t
   // that cut the picture cut its audio to exactly the same stretch, so all
-  // that is left is to move it to where the clip sits on the timeline.
+  // that is left is to move it to where the clip sits on the timeline — and,
+  // across a dissolve, to ramp it rather than just switching it on and off,
+  // so the sound crossfades the same way the picture does instead of the two
+  // clips' audio briefly playing on top of each other at full volume.
   for (const { clip, input, start } of withStarts(clips, leadIn)) {
     const volume = clip.volume ?? 1
     if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0 || clip.duration <= 0) continue
-    chains.push(`[${input}:a]${placeAudio(start, volume)}[c${input}]`)
+    const fadeIn = clampedTransition(clip, clips[input - 1])
+    const next = clips[input + 1]
+    const fadeOut = next ? clampedTransition(next, clip) : 0
+    chains.push(
+      `[${input}:a]${placeClipAudio(start, clip.duration, volume, fadeIn, fadeOut)}[c${input}]`,
+    )
     placed.push(`[c${input}]`)
   }
 

@@ -57,6 +57,18 @@ export interface Clip {
   muted?: boolean
   /** Gain for that sound. Absent is unity, matching the audio tracks. */
   volume?: number
+  /**
+   * Seconds this clip dissolves into from the clip before it: the tail of one
+   * and the head of the other cross-fade instead of cutting between them.
+   *
+   * Absent or 0 is a hard cut, which is what every clip already was before
+   * transitions existed. Never actually larger than either clip's own length
+   * allows, but that ceiling narrows every time a trim shortens one of them —
+   * read it through `transitionInFor` rather than off this field directly, the
+   * same way `leadIn` is read through `leadInOf`. Meaningless on the first
+   * clip, which has nothing before it to dissolve from.
+   */
+  transitionIn?: number
 }
 
 /**
@@ -339,4 +351,10 @@ export interface PositionedClip {
   /** Seconds from the start of the timeline. */
   end: number
   duration: number
+  /**
+   * How much of `start` overlaps the previous clip's tail in a dissolve. 0 for
+   * a hard cut, and always 0 on the first clip. The clamped, actually-usable
+   * amount — see `transitionInFor`, which this is the output of.
+   */
+  transitionIn: number
 }

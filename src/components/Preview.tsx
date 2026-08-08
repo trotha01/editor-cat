@@ -17,7 +17,7 @@
  * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
+import { activeClipsAt, clamp, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
@@ -31,7 +31,7 @@ import { layerGain, layersAt, videoClipsOf, videoTracksOf } from '../lib/videoTr
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
 import { CaptionOverlay } from './CaptionOverlay'
 import { isTypingTarget } from '../lib/shortcuts'
-import type { Asset, AudioClip, Clip, VideoClip } from '../lib/types'
+import type { Asset, AudioClip, Clip, PositionedClip, VideoClip } from '../lib/types'
 
 /**
  * Bounds for dragging the player taller or shorter with {@link ResizeHandle}.
@@ -56,6 +56,34 @@ const SEEK_TOLERANCE = 0.3
  */
 const WARM_CLIPS = 3
 
+/**
+ * This clip's own opacity at `t`: 0 at the start of its dissolve, ramping to 1
+ * once it has fully faded in, and 1 the rest of the time. See `ClipLayer`'s
+ * `opacity` prop for why nothing else — in particular, no fade-out on the clip
+ * being dissolved away from — is needed to get a cross-fade out of this.
+ */
+function dissolveOpacity(entry: PositionedClip, t: number): number {
+  if (entry.transitionIn <= 0) return 1
+  return clamp((t - entry.start) / entry.transitionIn, 0, 1)
+}
+
+/**
+ * This clip's own gain at `t`, ramped down across a dissolve as well as up.
+ *
+ * Unlike the picture, sound has no "draw the new one on top" trick: two clips'
+ * audio playing at once is just both of them playing at once, so getting a
+ * cross-fade instead of a doubled-up wall of sound means actually bringing the
+ * outgoing clip's own level down while the incoming one comes up.
+ */
+function dissolveGain(laid: readonly PositionedClip[], entry: PositionedClip, t: number): number {
+  let gain = dissolveOpacity(entry, t)
+  const next = laid[entry.index + 1]
+  if (next && t >= next.start && t < next.start + next.transitionIn) {
+    gain = Math.min(gain, 1 - dissolveOpacity(next, t))
+  }
+  return gain
+}
+
 function ClipLayer({
   clip,
   asset,
@@ -65,6 +93,7 @@ function ClipLayer({
   playing,
   start,
   gain,
+  opacity,
 }: {
   clip: Clip
   asset: Asset | undefined
@@ -76,6 +105,13 @@ function ClipLayer({
   start: number
   /** Resolved clip gain. 0 means muted, and the element stays silent. */
   gain: number
+  /**
+   * 1 outside a dissolve. Ramping this from 0 to 1 across a clip's own
+   * transition is the whole trick: the clip before it is left fully opaque
+   * underneath, unbothered, so alpha-compositing the two produces exactly the
+   * cross-fade a dissolve is — no separate fade-out needed on the other side.
+   */
+  opacity: number
 }) {
   const { url, failed } = useAssetSource(asset)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -163,7 +199,13 @@ function ClipLayer({
   if (!asset || !url) return null
 
   return (
-    <div className={`absolute inset-0 ${active ? '' : 'invisible'}`} aria-hidden={!active}>
+    <div
+      className={`absolute inset-0 ${active ? '' : 'invisible'}`}
+      // Only written down mid-dissolve: at full strength this stays plain
+      // rather than carrying an `opacity: 1` that says nothing.
+      style={active && opacity < 1 ? { opacity } : undefined}
+      aria-hidden={!active}
+    >
       {asset.kind === 'video' ? (
         <video
           ref={videoRef}
@@ -323,10 +365,21 @@ export function Preview({
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const leadIn = leadInOf(project)
   const positioned = useMemo(() => layoutClips(project.clips, leadIn), [project.clips, leadIn])
-  const active = useMemo(
-    () => clipAtTime(project.clips, currentTime, leadIn),
+  // Ordinarily one clip; inside a dissolve, the outgoing and incoming clip
+  // both belong here at once, so both get drawn and the blend is real
+  // playback rather than a crossfade faked between two stills.
+  const activeEntries = useMemo(
+    () => activeClipsAt(project.clips, currentTime, leadIn),
     [project.clips, currentTime, leadIn],
   )
+  const activeIds = useMemo(
+    () => new Set(activeEntries.map((entry) => entry.clip.id)),
+    [activeEntries],
+  )
+  // The furthest-along active clip, for the warm-clips window below — during a
+  // dissolve that is the one about to be settled on, so it is what preloading
+  // should look ahead from.
+  const referenceIndex = activeEntries.at(-1)?.index ?? 0
   // Before the picture starts there is nothing to show, which is the point —
   // but it is not the end of the timeline, and must not say so.
   const beforePicture = currentTime < leadIn
@@ -422,17 +475,18 @@ export function Preview({
                 key={entry.clip.id}
                 clip={entry.clip}
                 asset={assetById.get(entry.clip.assetId)}
-                active={active?.clip.id === entry.clip.id}
-                warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
+                active={activeIds.has(entry.clip.id)}
+                warm={Math.abs(entry.index - referenceIndex) <= WARM_CLIPS}
                 currentTime={currentTime}
                 playing={playing}
                 start={entry.start}
-                gain={clipGain(entry.clip)}
+                gain={clipGain(entry.clip) * dissolveGain(positioned, entry, currentTime)}
+                opacity={dissolveOpacity(entry, currentTime)}
               />
             ))
           )}
 
-          {active === null && !empty ? (
+          {activeEntries.length === 0 && !empty ? (
             <div
               className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${
                 // The lead-in is black in the export, so it is black here too.

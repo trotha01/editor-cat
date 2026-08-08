@@ -164,7 +164,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         }
       }
 
-      const clips = project.clips.map((clip) => {
+      const clips = project.clips.map((clip, index) => {
         const asset = assets.find((entry) => entry.id === clip.assetId)
         return {
           assetId: clip.assetId,
@@ -172,6 +172,9 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           inPoint: clip.inPoint,
           duration: clipDuration(clip),
           volume: clipGain(clip),
+          // Already clamped to what the clips can actually supply, via the
+          // same layout the timeline and the preview use.
+          transitionIn: positioned[index]?.transitionIn,
         }
       })
 

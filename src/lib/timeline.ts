@@ -41,31 +41,68 @@ export function clipDuration(clip: Clip): number {
 }
 
 /**
+ * Longest a dissolve between two clips can run: it can never outlast either
+ * side, or there would be nothing of one clip left playing on its own to
+ * dissolve into or out of. 0 when there is no previous clip to dissolve from
+ * at all.
+ */
+export function maxTransitionIn(clip: Clip, previous: Clip | undefined): number {
+  if (!previous) return 0
+  return Math.max(0, Math.min(clipDuration(previous), clipDuration(clip)))
+}
+
+/**
+ * How much of the previous clip this one actually dissolves into.
+ *
+ * Read through here rather than off `clip.transitionIn` directly: a trim that
+ * shortens either clip narrows what a dissolve can still borrow, and the
+ * stored value is deliberately left alone rather than rewritten every time —
+ * the same pattern `leadInOf` follows, and for the same reason.
+ */
+export function transitionInFor(clip: Clip, previous: Clip | undefined): number {
+  return clamp(clip.transitionIn ?? 0, 0, maxTransitionIn(clip, previous))
+}
+
+/** What "add a dissolve" sets a new transition to, before it is typed to something else. */
+export const DEFAULT_TRANSITION_DURATION = 0.5
+
+/**
  * Resolves every clip to an absolute start/end on the timeline.
  *
  * The lead-in is applied here rather than at each call site, so everything
  * built on these positions — what is on screen, where a cut lands, how long the
  * export runs — moves with the picture instead of some of it being left behind.
+ *
+ * A dissolve pulls a clip's start earlier, into the tail of the one before it,
+ * which is what makes two overlapping clips take less combined screen time
+ * than the sum of their lengths — the same way a lead-in pushes the whole
+ * strip later. Each clip's own `duration` is untouched; only where it starts
+ * moves.
  */
 export function layoutClips(clips: readonly Clip[], leadIn = 0): PositionedClip[] {
   let cursor = clampLeadIn(leadIn)
   return clips.map((clip, index) => {
     const duration = clipDuration(clip)
+    const transitionIn = transitionInFor(clip, clips[index - 1])
+    const start = cursor - transitionIn
     const positioned: PositionedClip = {
       clip,
       index,
-      start: cursor,
-      end: cursor + duration,
+      start,
+      end: start + duration,
       duration,
+      transitionIn,
     }
-    cursor += duration
+    cursor = start + duration
     return positioned
   })
 }
 
 /** How long the picture itself runs, ignoring where it starts. */
 export function totalDuration(clips: readonly Clip[]): number {
-  return clips.reduce((sum, clip) => sum + clipDuration(clip), 0)
+  const laid = layoutClips(clips)
+  const last = laid[laid.length - 1]
+  return last ? last.end : 0
 }
 
 /** When the picture finishes: its length plus whatever precedes it. */
@@ -87,21 +124,36 @@ export function projectDuration(project: Project): number {
 }
 
 /**
+ * Every clip on screen at `t`, in track order.
+ *
+ * Ordinarily this holds at most one — clips sit end to end — but inside a
+ * dissolve the outgoing and incoming clip are genuinely on screen together,
+ * and the caller (the preview) needs both to render the blend. Held at the
+ * exact end of the last clip the same way a single clip's window is, so
+ * playback parks on its final frame instead of going blank one frame early.
+ */
+export function activeClipsAt(clips: readonly Clip[], t: number, leadIn = 0): PositionedClip[] {
+  if (t < 0) return []
+  const laid = layoutClips(clips, leadIn)
+  // Half-open interval so a boundary time belongs to exactly one clip, except
+  // where a dissolve deliberately overlaps two.
+  const within = laid.filter((positioned) => t >= positioned.start && t < positioned.end)
+  if (within.length > 0) return within
+  // Exactly at the end of the last clip, hold on that clip's final frame.
+  const last = laid[laid.length - 1]
+  return last && t === last.end && last.duration > 0 ? [last] : []
+}
+
+/**
  * The clip playing at time `t`, or null if `t` is past the end — or before the
  * picture starts, which is what makes a lead-in read as black rather than as a
  * frozen first frame.
+ *
+ * Inside a dissolve this is the outgoing clip, the one under it — callers that
+ * need the incoming one too, to render the blend, want `activeClipsAt`.
  */
 export function clipAtTime(clips: readonly Clip[], t: number, leadIn = 0): PositionedClip | null {
-  if (t < 0) return null
-  const laid = layoutClips(clips, leadIn)
-  for (const positioned of laid) {
-    // Half-open interval so a boundary time belongs to exactly one clip.
-    if (t >= positioned.start && t < positioned.end) return positioned
-  }
-  // Exactly at the end of the last clip, hold on that clip's final frame.
-  const last = laid[laid.length - 1]
-  if (last && t === last.end && last.duration > 0) return last
-  return null
+  return activeClipsAt(clips, t, leadIn)[0] ?? null
 }
 
 /** Converts a timeline time to a seek position within the clip's source asset. */
@@ -237,7 +289,10 @@ export function splitClipAt(
   const boundary = clip.inPoint + (snapToFrame(time, fps) - target.start)
 
   const left: Clip = { ...clip, outPoint: boundary }
-  const right: Clip = { ...clip, id: makeId(), inPoint: boundary }
+  // The right half meets the left at a fresh boundary, not a dissolve — any
+  // transition on `clip` belonged to what came before it, and stays with the
+  // left half, which is still that same clip's front.
+  const right: Clip = { ...clip, id: makeId(), inPoint: boundary, transitionIn: undefined }
 
   const next = [...clips]
   next.splice(target.index, 1, left, right)
