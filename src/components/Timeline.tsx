@@ -119,6 +119,7 @@ function ClipCard({
   zoom,
   selected,
   cutAtStart,
+  maxTransition,
   target,
   captioning,
   onSelect,
@@ -127,6 +128,7 @@ function ClipCard({
   onJoin,
   onCaption,
   onToggleMute,
+  onSetTransition,
 }: {
   entry: PositionedClip
   asset: Asset | undefined
@@ -134,6 +136,9 @@ function ClipCard({
   selected: boolean
   /** True when this clip carries on from the one before it — i.e. a cut. */
   cutAtStart: boolean
+  /** Longest a dissolve into this clip could run — 0 when there is no previous
+   *  clip, or neither clip has enough length to spare. */
+  maxTransition: number
   /** Set when this clip has speech worth transcribing. Absent for a still. */
   target: CaptionTarget | undefined
   captioning: boolean
@@ -143,6 +148,7 @@ function ClipCard({
   onJoin: () => void
   onCaption: (target: CaptionTarget) => void
   onToggleMute: () => void
+  onSetTransition: (seconds: number) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: entry.clip.id,
@@ -207,6 +213,27 @@ function ClipCard({
             onSelect: onToggleMute,
           },
         ]),
+    // Same toggle as the selected-clip panel below, offered here too because
+    // this menu is the first place anyone looks for what a clip can be told to
+    // do, and a control that only exists once a clip is selected is one most
+    // people will never find.
+    ...(entry.index > 0
+      ? [
+          {
+            icon: '◐',
+            label:
+              entry.transitionIn > 0
+                ? 'Remove the dissolve into this clip'
+                : 'Dissolve into this clip',
+            note: entry.transitionIn <= 0 && maxTransition <= 0 ? 'too short' : undefined,
+            onSelect: () =>
+              onSetTransition(
+                entry.transitionIn > 0 ? 0 : Math.min(DEFAULT_TRANSITION_DURATION, maxTransition),
+              ),
+            disabled: entry.transitionIn <= 0 && maxTransition <= 0,
+          },
+        ]
+      : []),
     // Also a mark on the clip itself, which is where you would reach for it
     // having seen the cut. Here as well because the mark is a pair of scissors
     // and nothing else, and this is the version that says what it does.
@@ -458,6 +485,7 @@ export function Timeline({
   const assets = useAssetStore((state) => state.assets)
 
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
+  const setClipTransition = useProjectStore((state) => state.setClipTransition)
 
   const addTrack = useProjectStore((state) => state.addTrack)
   const addVideoTrack = useProjectStore((state) => state.addVideoTrack)
@@ -743,12 +771,17 @@ export function Timeline({
                           zoom={zoom}
                           selected={entry.clip.id === selectedClipId}
                           cutAtStart={cutBefore(positioned, entry.index)}
+                          maxTransition={maxTransitionIn(
+                            entry.clip,
+                            positioned[entry.index - 1]?.clip,
+                          )}
                           target={targets.get(entry.clip.id)}
                           captioning={captioningClipId === entry.clip.id}
                           onSelect={() => selectClip(entry.clip.id)}
                           onTrim={(edge, seconds) =>
                             trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
                           }
+                          onSetTransition={(seconds) => setClipTransition(entry.clip.id, seconds)}
                           onRemove={() => removeClip(entry.clip.id)}
                           onJoin={() => removeCut(entry.clip.id)}
                           onCaption={(target) => void captionClip(target.source)}
