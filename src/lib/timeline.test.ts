@@ -6,6 +6,7 @@ import {
   clipDuration,
   clipForAsset,
   clipGain,
+  clipStartDeltas,
   cutTargetAt,
   formatTime,
   formatTimecode,
@@ -435,6 +436,46 @@ describe('reorder', () => {
     const input = ['a', 'b', 'c']
     reorder(input, 0, 2)
     expect(input).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('clipStartDeltas', () => {
+  // 2s, 3s, 5s laid end to end: starts at 0, 2, 5.
+  const clips = [clip('1', 0, 2), clip('2', 0, 3), clip('3', 0, 5)]
+
+  it('reports how far each clip moved when one is dragged to the front', () => {
+    const deltas = clipStartDeltas(clips, reorder(clips, 2, 0))
+    // '3' leads now, so it moves back to 0 from 5; the other two follow it.
+    expect(deltas.get('3')).toBeCloseTo(-5)
+    expect(deltas.get('1')).toBeCloseTo(5)
+    expect(deltas.get('2')).toBeCloseTo(5)
+  })
+
+  it('leaves out clips that did not move', () => {
+    // Swapping the last two cannot disturb the first.
+    const deltas = clipStartDeltas(clips, reorder(clips, 1, 2))
+    expect(deltas.has('1')).toBe(false)
+    expect(deltas.get('2')).toBeCloseTo(5)
+    expect(deltas.get('3')).toBeCloseTo(-3)
+  })
+
+  it('is empty when the arrangement is unchanged', () => {
+    expect(clipStartDeltas(clips, [...clips]).size).toBe(0)
+  })
+
+  it('measures against the lead-in, which shifts both sides alike', () => {
+    const deltas = clipStartDeltas(clips, reorder(clips, 2, 0), 4)
+    expect(deltas.get('3')).toBeCloseTo(-5)
+    expect(deltas.get('1')).toBeCloseTo(5)
+  })
+
+  it('ignores clips missing from either arrangement', () => {
+    const added = clip('4', 0, 1)
+    // '4' has no previous position, and '1' — dropped here — has no new one.
+    const deltas = clipStartDeltas(clips, [clips[1]!, clips[2]!, added])
+    expect(deltas.has('4')).toBe(false)
+    expect(deltas.has('1')).toBe(false)
+    expect(deltas.get('2')).toBeCloseTo(-2)
   })
 })
 

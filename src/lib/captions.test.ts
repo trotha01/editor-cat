@@ -15,6 +15,9 @@ import {
   recaptionSource,
   setCueText,
   setWordTiming,
+  cuesUnderClips,
+  recreditCuesAfterCut,
+  recreditCuesAfterJoin,
   splitBoundary,
   splitCue,
   spreadWordsEvenly,
@@ -23,7 +26,8 @@ import {
   wordsOntoTimeline,
   type TimedWord,
 } from './captions'
-import type { CaptionCue, CaptionWord } from './types'
+import { layoutClips, reorder } from './timeline'
+import type { CaptionCue, CaptionWord, Clip } from './types'
 
 let counter = 0
 const makeId = (prefix: string) => `${prefix}-${(counter += 1)}`
@@ -121,6 +125,51 @@ describe('cuesFromWords', () => {
   it('skips blank words rather than captioning them', () => {
     const cues = cuesFromWords([timed('  ', 0, 0.2), timed('real', 0.3, 0.6)], 'track-1', makeId)
     expect(cues.flatMap((entry) => entry.words).map((entry) => entry.text)).toEqual(['real'])
+  })
+
+  /** A word heard in a particular clip, which is what a break can key on. */
+  const heardIn = (clipId: string, text: string, start: number, end: number): TimedWord => ({
+    text,
+    start,
+    end,
+    source: { id: clipId, label: `${clipId}.mp4` },
+  })
+
+  it('breaks where the clip changes, even mid-sentence', () => {
+    // A tenth of a second apart, well inside maxGap and no sentence ending
+    // between them: the change of clip is the only thing that can separate
+    // these, and it has to, or the caption belongs to two clips at once.
+    const cues = cuesFromWords(
+      [heardIn('clip-1', 'the', 2.7, 2.95), heardIn('clip-2', 'end', 3.05, 3.3)],
+      'track-1',
+      makeId,
+    )
+    expect(cues.map((cue) => cue.source?.id)).toEqual(['clip-1', 'clip-2'])
+    expect(cues.map(cueText)).toEqual(['the', 'end'])
+  })
+
+  it('holds the first caption through the break so a split sentence does not blink', () => {
+    const cues = cuesFromWords(
+      [heardIn('clip-1', 'the', 2.7, 2.95), heardIn('clip-2', 'end', 3.05, 3.3)],
+      'track-1',
+      makeId,
+    )
+    expect(cues[0]!.end).toBe(cues[1]!.start)
+  })
+
+  it('still groups a run of words from one clip', () => {
+    // The break is on the clip changing, not on the source being present at all.
+    const cues = cuesFromWords(
+      [
+        heardIn('clip-1', 'one', 0, 0.3),
+        heardIn('clip-1', 'two', 0.35, 0.6),
+        heardIn('clip-1', 'three', 0.65, 0.9),
+      ],
+      'track-1',
+      makeId,
+    )
+    expect(cues).toHaveLength(1)
+    expect(cues[0]?.source?.id).toBe('clip-1')
   })
 })
 
@@ -407,6 +456,124 @@ describe('setWordTiming', () => {
     expect(squashed.words[0]!.end).toBeGreaterThanOrEqual(
       squashed.words[0]!.start + MIN_WORD_DURATION,
     )
+  })
+})
+
+describe('cuesUnderClips', () => {
+  // 3s then 5s, laid end to end: clip-1 over 0-3, clip-2 over 3-8.
+  const clips: Clip[] = [
+    { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+    { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+  ]
+  const laid = layoutClips(clips)
+  const swapped = layoutClips(reorder(clips, 1, 0))
+
+  const sourced = (id: string, sourceId: string, start: number, end: number): CaptionCue => ({
+    ...cue([word(id, start, end)], start, end),
+    id,
+    source: { id: sourceId, label: sourceId },
+  })
+
+  it('keeps a caption at the same offset into its clip, wherever the clip goes', () => {
+    // Half a second into clip-2, which starts at 3 and after the swap starts at 0.
+    const moved = cuesUnderClips([sourced('c1', 'clip-2', 3.5, 3.9)], laid, swapped)
+    expect(moved![0]!.start).toBeCloseTo(0.5)
+    expect(moved![0]!.words[0]!.start).toBeCloseTo(0.5)
+  })
+
+  it('moves each caption by its own clip rather than one shared delta', () => {
+    const moved = cuesUnderClips(
+      [sourced('c1', 'clip-1', 0.5, 0.9), sourced('c2', 'clip-2', 3.5, 3.9)],
+      laid,
+      swapped,
+    )
+    // clip-2 leads now, so its caption comes back to 0.5; clip-1 follows at 5.
+    expect(moved![1]!.start).toBeCloseTo(0.5)
+    expect(moved![0]!.start).toBeCloseTo(5.5)
+  })
+
+  it('pulls a caption that has slipped outside its clip back inside it', () => {
+    // Same layout either side, so nothing moved — this is the repair on its own.
+    const stray = sourced('c1', 'clip-1', 13, 13.4)
+    const fixed = cuesUnderClips([stray], laid, laid)
+    expect(fixed).not.toBeNull()
+    // clip-1 runs 0-3, so the caption has to end up inside that.
+    expect(fixed![0]!.start).toBeGreaterThanOrEqual(0)
+    expect(fixed![0]!.end).toBeLessThanOrEqual(3 + 1e-6)
+    // The words come along, or the caption would be empty where it landed.
+    expect(fixed![0]!.words[0]!.start).toBeCloseTo(fixed![0]!.start)
+  })
+
+  it('trims a caption longer than the clip holding it rather than letting it run on', () => {
+    const long = sourced('c1', 'clip-1', 0, 9)
+    const fixed = cuesUnderClips([long], laid, laid)
+    expect(fixed![0]!.start).toBeCloseTo(0)
+    expect(fixed![0]!.end).toBeCloseTo(3)
+  })
+
+  it('leaves a caption already sitting properly under its clip alone', () => {
+    const settled = sourced('c1', 'clip-1', 1, 1.4)
+    expect(cuesUnderClips([settled], laid, laid)).toBeNull()
+  })
+
+  it('leaves captions typed by hand alone, having no clip to sit under', () => {
+    const typed = cue([word('hi', 20, 21)], 20, 21)
+    expect(cuesUnderClips([typed], laid, swapped)).toBeNull()
+  })
+
+  it('leaves a voiceover caption alone when the picture is rearranged', () => {
+    // The voice clip keeps its own place, so its words must keep theirs.
+    const voice = sourced('c1', 'aclip-1', 1, 1.4)
+    expect(cuesUnderClips([voice], laid, swapped)).toBeNull()
+  })
+
+  it('leaves a caption whose clip has been deleted where it is', () => {
+    const orphan = sourced('c1', 'clip-9', 1, 1.4)
+    expect(cuesUnderClips([orphan], laid, swapped)).toBeNull()
+  })
+
+  it('does not mutate the cues it was given', () => {
+    const cues = [sourced('c1', 'clip-2', 3.5, 3.9)]
+    cuesUnderClips(cues, laid, swapped)
+    expect(cues[0]!.start).toBe(3.5)
+    expect(cues[0]!.words[0]!.start).toBe(3.5)
+  })
+})
+
+describe('recrediting captions across a cut', () => {
+  const sourced = (id: string, start: number, end: number): CaptionCue => ({
+    ...cue([word(id, start, end)], start, end),
+    id,
+    source: { id: 'clip-1', label: 'a.mp4' },
+  })
+
+  it('hands the captions past the cut to the new half', () => {
+    const next = recreditCuesAfterCut(
+      [sourced('early', 1, 1.4), sourced('late', 8, 8.4)],
+      'clip-1',
+      'clip-2',
+      5,
+    )
+    expect(next!.map((entry) => entry.source?.id)).toEqual(['clip-1', 'clip-2'])
+  })
+
+  it('sends a caption straddling the cut to whichever side holds most of it', () => {
+    // Midpoint 5.4, so it belongs to the half after a cut at 5.
+    const next = recreditCuesAfterCut([sourced('across', 4.8, 6)], 'clip-1', 'clip-2', 5)
+    expect(next![0]!.source?.id).toBe('clip-2')
+  })
+
+  it('is a no-op when nothing sits past the cut', () => {
+    expect(recreditCuesAfterCut([sourced('early', 1, 1.4)], 'clip-1', 'clip-2', 5)).toBeNull()
+  })
+
+  it('puts both halves back on one clip when the cut is undone', () => {
+    const cues = [
+      { ...sourced('a', 1, 1.4), source: { id: 'clip-1', label: 'a' } },
+      { ...sourced('b', 8, 8.4), source: { id: 'clip-2', label: 'a' } },
+    ]
+    const next = recreditCuesAfterJoin(cues, 'clip-2', 'clip-1')
+    expect(next!.map((entry) => entry.source?.id)).toEqual(['clip-1', 'clip-1'])
   })
 })
 

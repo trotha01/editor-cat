@@ -205,6 +205,12 @@ export interface CutResult {
    * afterwards, so the next edit lands on what the playhead is sitting over.
    */
   clipId: string
+  /**
+   * The clip that was cut in two, which keeps its id as the half in front.
+   * Anything credited to that id and sitting past the cut — captions — belongs
+   * to `clipId` now, and only the caller can move it across.
+   */
+  cutClipId: string
 }
 
 /**
@@ -235,7 +241,7 @@ export function splitClipAt(
 
   const next = [...clips]
   next.splice(target.index, 1, left, right)
-  return { clips: next, clipId: right.id }
+  return { clips: next, clipId: right.id, cutClipId: clip.id }
 }
 
 /**
@@ -266,7 +272,7 @@ export function joinCutAt(clips: readonly Clip[], clipId: string): CutResult | n
   const merged: Clip = { ...left, outPoint: right.outPoint }
   const next = [...clips]
   next.splice(index - 1, 2, merged)
-  return { clips: next, clipId: merged.id }
+  return { clips: next, clipId: merged.id, cutClipId: right.id }
 }
 
 /**
@@ -288,6 +294,36 @@ export function clipForAsset(asset: Asset, id: string): Clip {
   }
   const duration = asset.duration && asset.duration > 0 ? asset.duration : DEFAULT_IMAGE_DURATION
   return { id, assetId: asset.id, inPoint: 0, outPoint: duration }
+}
+
+/**
+ * How far each clip's start moved between two arrangements, keyed by clip id.
+ *
+ * Rearranging the picture leaves every clip pointing at the same source for the
+ * same length, and only somewhere else on the timeline. Anything anchored to
+ * where a clip sits rather than to the clip itself — captions, which are timed
+ * in absolute seconds — has to be carried by the same distance, and this is the
+ * only place that can say what that distance was, because it is the difference
+ * between two layouts and neither one alone holds it.
+ *
+ * Clips that did not move are left out, as are ones missing from either side:
+ * a clip that was just added has no previous position to have moved from, and
+ * one that was removed has no new position to move to.
+ */
+export function clipStartDeltas(
+  before: readonly Clip[],
+  after: readonly Clip[],
+  leadIn = 0,
+): Map<string, number> {
+  const was = new Map(layoutClips(before, leadIn).map((entry) => [entry.clip.id, entry.start]))
+  const deltas = new Map<string, number>()
+  for (const entry of layoutClips(after, leadIn)) {
+    const previous = was.get(entry.clip.id)
+    if (previous === undefined) continue
+    const delta = entry.start - previous
+    if (Math.abs(delta) > TIME_EPSILON) deltas.set(entry.clip.id, delta)
+  }
+  return deltas
 }
 
 /** Moves a clip from one index to another, returning a new array. */

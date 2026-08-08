@@ -16,7 +16,14 @@
  *    against its neighbours rather than reordering them, so the word being
  *    highlighted always advances left to right the way it is read.
  */
-import type { CaptionCue, CaptionSource, CaptionStyle, CaptionTrack, CaptionWord } from './types'
+import type {
+  CaptionCue,
+  CaptionSource,
+  CaptionStyle,
+  CaptionTrack,
+  CaptionWord,
+  PositionedClip,
+} from './types'
 
 /** Shortest a word may be held, in seconds. Below this the highlight flickers. */
 export const MIN_WORD_DURATION = 0.04
@@ -230,10 +237,11 @@ export const DEFAULT_GROUPING: GroupOptions = {
 /**
  * Groups a flat run of timed words into cues.
  *
- * Breaks on three things, in the order a listener would: the end of a sentence,
- * a pause long enough to be one, and then simply having enough words on screen.
- * Punctuation is kept on the word — it is part of what was said and belongs in
- * the caption — but it is also what tells us where a line ends.
+ * Breaks on four things, in the order a listener would: the end of a sentence,
+ * a pause long enough to be one, simply having enough words on screen, and then
+ * the clip the words were heard in changing. Punctuation is kept on the word —
+ * it is part of what was said and belongs in the caption — but it is also what
+ * tells us where a line ends.
  *
  * `makeId` is injected so this stays pure and testable.
  */
@@ -245,9 +253,7 @@ export function cuesFromWords(
 ): CaptionCue[] {
   const cues: CaptionCue[] = []
   let current: CaptionWord[] = []
-  // The clip the group started in. A caption that runs across a cut is credited
-  // to where it begins, which is the honest answer to "where is this from" and
-  // the one that stays stable when the words either side are re-edited.
+  // The clip this group was heard in, and the only one it may contain.
   let source: CaptionSource | undefined
 
   const flush = () => {
@@ -269,7 +275,18 @@ export function cuesFromWords(
     if (
       current.length >= options.maxWords ||
       (previous && gap >= options.maxGap) ||
-      (first && span > options.maxSeconds)
+      (first && span > options.maxSeconds) ||
+      // A caption belongs to exactly one clip, so speech carrying on across a
+      // clip boundary starts a new one even mid-sentence. The alternative —
+      // crediting the whole line to the clip it began in — reads fine until
+      // something moves: the cue follows the clip it was credited to and drags
+      // the *next* clip's words along with it, off to wherever that clip went.
+      // `recaptionSource` assumes this too, dropping every cue credited to the
+      // clip being redone, so without the break a shared line loses its other
+      // clip's words for good. `closeSeams` runs afterwards and holds the first
+      // caption through to the second, so a sentence split this way still reads
+      // as continuous rather than blinking at the join.
+      (first && (word.source?.id ?? null) !== (source?.id ?? null))
     ) {
       flush()
     }
@@ -554,6 +571,123 @@ export function moveCue(cue: CaptionCue, startTime: number): CaptionCue {
       end: word.end + delta,
     })),
   }
+}
+
+/**
+ * Puts every caption back under the clip it was heard in.
+ *
+ * Cue times are absolute, which is what keeps every other edit here honest but
+ * is exactly wrong the moment the picture changes shape: the captions would sit
+ * still while the clips slide out from under them, and clip three's words would
+ * play over whatever had just taken clip three's place.
+ *
+ * What is preserved is the caption's offset *into its clip* — a line a second
+ * after that clip started is still a second after it starts, wherever the clip
+ * has gone and whatever was trimmed off the end of it. That is the relationship
+ * the viewer actually sees, and holding it fixed is what makes every layout edit
+ * leave the captions looking untouched.
+ *
+ * Then it is held inside the clip's bounds, because a caption that has slipped
+ * out of its clip is speaking over somebody else's picture. It is placed by its
+ * start and cut off at the clip's end: the words keep their offset exactly,
+ * since they are what the viewer sees highlighted against the picture, and any
+ * overrun loses its turn rather than running on over the next clip. Passing the
+ * same layout for `before` and `after` asks only for that repair, which is how
+ * captions stored out of place get straightened out.
+ *
+ * Three kinds stay exactly where they are, each for a reason: a cue typed by
+ * hand was never heard in a clip; a cue from a project captioned before sources
+ * were recorded cannot be attributed to one; and a cue from a voiceover keeps
+ * its place because the voiceover does too, sitting at its own time rather than
+ * in the run of clips. A cue whose clip has been deleted is left alone as well —
+ * there is nowhere to put it that would be more right than where it is.
+ *
+ * Returns null when nothing moved, so a caller can leave the cues it holds
+ * untouched — identity and all, which matters for the shared empty value that
+ * projects without captions read through.
+ */
+export function cuesUnderClips(
+  cues: readonly CaptionCue[],
+  before: readonly PositionedClip[],
+  after: readonly PositionedClip[],
+): CaptionCue[] | null {
+  if (cues.length === 0) return null
+  const was = new Map(before.map((entry) => [entry.clip.id, entry]))
+  const now = new Map(after.map((entry) => [entry.clip.id, entry]))
+
+  let changed = false
+  const next = cues.map((cue) => {
+    const id = cue.source?.id
+    if (id === undefined) return cue
+    const from = was.get(id)
+    const to = now.get(id)
+    if (!from || !to) return cue
+
+    // Placed by its start and trimmed at the end, rather than slid back far
+    // enough for the whole line to fit. The words are what the viewer sees
+    // highlighted against the picture, so they keep their offset exactly; it is
+    // the tail — often just `closeSeams` reaching for a caption that used to
+    // come next, and meaningless once the clips have been rearranged — that
+    // gives way.
+    const offset = cue.start - from.start
+    const start = clamp(to.start + offset, to.start, Math.max(to.start, to.end - MIN_CUE_DURATION))
+
+    const moved = moveCue(cue, start)
+    const fitted = moved.end > to.end + EPSILON ? trimCue(moved, 'end', to.end) : moved
+    if (fitted !== cue) changed = true
+    return fitted
+  })
+  return changed ? next : null
+}
+
+/**
+ * Hands the captions beyond a cut to the clip that now holds them.
+ *
+ * A cut leaves the left half carrying the original clip's id and mints a new one
+ * for the right, so without this every caption transcribed before the cut stays
+ * credited to the left half — including the ones now sitting over the right.
+ * Move the left half afterwards and it drags the right half's words along with
+ * it, which is the same bug as captions not following clips at all, only harder
+ * to see coming.
+ *
+ * Split on the caption's midpoint rather than its start, so a line straddling
+ * the cut goes to whichever side is holding most of it.
+ */
+export function recreditCuesAfterCut(
+  cues: readonly CaptionCue[],
+  clipId: string,
+  newClipId: string,
+  boundary: number,
+): CaptionCue[] | null {
+  let changed = false
+  const next = cues.map((cue) => {
+    if (cue.source?.id !== clipId) return cue
+    if ((cue.start + cue.end) / 2 < boundary) return cue
+    changed = true
+    return { ...cue, source: { ...cue.source, id: newClipId } }
+  })
+  return changed ? next : null
+}
+
+/**
+ * Puts the captions of both halves back under one clip when a cut is undone.
+ *
+ * The merge keeps the left half's id, so the right half's captions would
+ * otherwise be credited to a clip that no longer exists and stop following the
+ * picture entirely.
+ */
+export function recreditCuesAfterJoin(
+  cues: readonly CaptionCue[],
+  goneClipId: string,
+  survivingClipId: string,
+): CaptionCue[] | null {
+  let changed = false
+  const next = cues.map((cue) => {
+    if (cue.source?.id !== goneClipId) return cue
+    changed = true
+    return { ...cue, source: { ...cue.source, id: survivingClipId } }
+  })
+  return changed ? next : null
 }
 
 /**

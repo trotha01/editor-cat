@@ -219,6 +219,197 @@ describe('captions reach storage', () => {
     )
   })
 
+  it('carries a clip’s captions along when it is dragged somewhere else', () => {
+    // 2s, 3s and 5s end to end, so the clips start at 0, 2 and 5. Each gets one
+    // word, spoken inside its own clip and far enough from the others to be a
+    // caption of its own.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+          { id: 'clip-3', assetId: 'c', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'One.', start: 0.5, end: 0.9, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'Two.', start: 2.5, end: 2.9, source: { id: 'clip-2', label: 'b.mp4' } },
+      { text: 'Three.', start: 5.5, end: 5.9, source: { id: 'clip-3', label: 'c.mp4' } },
+    ])
+
+    const startFor = (project: Project, clipId: string) =>
+      captionCuesOf(project).find((cue) => cue.source?.id === clipId)?.start ?? NaN
+    const before = useProjectStore.getState().project
+
+    // Drag the last clip to the front: it leads now, and the other two follow.
+    useProjectStore.getState().moveClip(2, 0)
+
+    const saved = stored()
+    expect(startFor(saved, 'clip-3') - startFor(before, 'clip-3')).toBeCloseTo(-5)
+    expect(startFor(saved, 'clip-1') - startFor(before, 'clip-1')).toBeCloseTo(5)
+    expect(startFor(saved, 'clip-2') - startFor(before, 'clip-2')).toBeCloseTo(5)
+    // The words go with the line, or the highlight lands on the wrong one.
+    const moved = captionCuesOf(saved).find((cue) => cue.source?.id === 'clip-3')
+    expect(moved?.words[0]?.start).toBeCloseTo(0.5)
+  })
+
+  it('does not drag one clip’s captions along when a different clip is moved', () => {
+    // Speech carrying on across the boundary: clip-1 runs 0-3 and its last word
+    // lands at 2.7, clip-2 starts at 3 and its first word at 3.05. A tenth of a
+    // second apart, so nothing but the change of clip separates them.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'the', start: 2.7, end: 2.95, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'end', start: 3.05, end: 3.3, source: { id: 'clip-2', label: 'b.mp4' } },
+    ])
+
+    // Drag clip-2 to the front. It now plays 0-5, and clip-1 plays 5-8.
+    useProjectStore.getState().moveClip(1, 0)
+
+    const wordAt = (text: string) =>
+      captionCuesOf(stored())
+        .flatMap((cue) => cue.words)
+        .find((word) => word.text === text)?.start ?? NaN
+    // Each word follows the clip it was heard in. Before the clip boundary was
+    // a break, both of these shared one cue credited to clip-1, so moving
+    // clip-2 left its own word behind at 8.05 — out over clip-1.
+    expect(wordAt('end')).toBeCloseTo(0.05)
+    expect(wordAt('the')).toBeCloseTo(7.7)
+  })
+
+  it('hands the captions past a cut to the half that now holds them', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 10 }],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'early', start: 1, end: 1.4, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'late', start: 8, end: 8.4, source: { id: 'clip-1', label: 'a.mp4' } },
+    ])
+
+    // Cut at 5s: the half in front keeps clip-1, the half behind is a new clip.
+    expect(useProjectStore.getState().cutAt(5)).toBe(true)
+    const halves = useProjectStore.getState().project.clips
+    expect(halves).toHaveLength(2)
+    const credited = (text: string) =>
+      captionCuesOf(useProjectStore.getState().project).find((cue) =>
+        cue.words.some((word) => word.text === text),
+      )?.source?.id
+    expect(credited('early')).toBe(halves[0]!.id)
+    expect(credited('late')).toBe(halves[1]!.id)
+
+    // Swap the halves. Each caption goes with the half it belongs to; before
+    // this, both were credited to clip-1 and "late" was carried off to 13s —
+    // past the end of a ten-second project.
+    useProjectStore.getState().moveClip(1, 0)
+    const wordAt = (text: string) =>
+      captionCuesOf(stored())
+        .flatMap((cue) => cue.words)
+        .find((word) => word.text === text)?.start ?? NaN
+    expect(wordAt('late')).toBeCloseTo(3)
+    expect(wordAt('early')).toBeCloseTo(6)
+  })
+
+  it('leaves a voiceover’s captions where they are when the picture is rearranged', () => {
+    // A voice clip sits at its own time and does not move when clips are
+    // reordered, so its words must not move either.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+        ],
+      },
+    })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore
+      .getState()
+      .setCaptionsFromWords(trackId, [
+        { text: 'Narration.', start: 0.5, end: 0.9, source: { id: 'aclip-1', label: 'take.webm' } },
+      ])
+    const before = captionCuesOf(useProjectStore.getState().project)[0]
+
+    useProjectStore.getState().moveClip(1, 0)
+
+    expect(captionCuesOf(stored())[0]).toBe(before)
+  })
+
+  it('carries a voiceover and a count-in with the clip they were laid against', () => {
+    // clip-1 over 0-3, clip-2 over 3-8.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+    const base = { assetId: 'rec', useConverted: false, inPoint: 0, duration: 1 }
+    // A line read a second into clip-2, and a count-in leading into it.
+    useProjectStore.getState().addAudioClip('voice', { ...base, startTime: 4 })
+    useProjectStore.getState().addAudioClip('countdown', { ...base, startTime: 3.5 })
+    // A music bed laid under the whole thing.
+    useProjectStore.getState().addAudioClip('music', { ...base, startTime: 0, duration: 8 })
+
+    // Drag clip-2 to the front: it now plays 0-5, clip-1 plays 5-8.
+    useProjectStore.getState().moveClip(1, 0)
+
+    const byStart = stored()
+      .audioClips.slice()
+      .sort((a, b) => a.startTime - b.startTime)
+    const voice = byStart.find((clip) => clip.anchorClipId === 'clip-2' && clip.duration === 1)
+    // Both were laid against clip-2 and keep their offset into it: the count-in
+    // half a second in, the line a second in.
+    expect(stored().audioClips.filter((c) => c.anchorClipId === 'clip-2')).toHaveLength(2)
+    expect(voice).toBeDefined()
+    const offsets = stored()
+      .audioClips.filter((clip) => clip.anchorClipId === 'clip-2')
+      .map((clip) => clip.startTime)
+      .sort((a, b) => a - b)
+    expect(offsets[0]).toBeCloseTo(0.5)
+    expect(offsets[1]).toBeCloseTo(1)
+
+    // The music bed belongs to the piece, not to a shot, so it does not move.
+    const music = stored().audioClips.find((clip) => clip.duration === 8)
+    expect(music?.anchorClipId).toBeUndefined()
+    expect(music?.startTime).toBe(0)
+  })
+
+  it('leaves audio dropped past the end of the picture unanchored', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 }],
+      },
+    })
+    // Read over black after the picture ends: there is no shot to belong to.
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'rec',
+      useConverted: false,
+      inPoint: 0,
+      duration: 1,
+      startTime: 10,
+    })
+    expect(stored().audioClips[0]?.anchorClipId).toBeUndefined()
+  })
+
   it('leaves captions alone when the timeline is cleared', () => {
     // Clearing empties the picture and the audio. The captions belong to audio
     // that has gone, so they go too — but the track stays, ready to be used

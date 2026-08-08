@@ -14,10 +14,13 @@ import {
   leadInOf,
   projectDuration,
   reorder,
+  snapToFrame,
   splitClipAt,
   trimClip,
 } from '../lib/timeline'
 import {
+  anchorClipAt,
+  audioUnderClips,
   createTrack,
   defaultTracks,
   insertTrack,
@@ -32,10 +35,13 @@ import {
   createCaptionTrack,
   cuesFromWords,
   cuesOnTrack,
+  cuesUnderClips,
   fitBetweenNeighbours,
   mergeCues,
   moveCue,
   recaptionSource,
+  recreditCuesAfterCut,
+  recreditCuesAfterJoin,
   setCueText,
   setWordTiming,
   splitCue,
@@ -240,6 +246,44 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     })
   }
 
+  /**
+   * Puts the captions back under their clips after the picture has changed.
+   *
+   * Wrapped around every edit that moves a clip, resizes one, or shifts where
+   * the picture starts, because all of them slide clips out from under captions
+   * that are timed in absolute seconds. Reading the layout on both sides of the
+   * edit is what lets a caption keep its offset into its own clip rather than
+   * its offset into the timeline.
+   *
+   * Deliberately not applied to caption edits themselves: dragging a caption in
+   * its own lane is the user placing it, and pulling it back would make it
+   * impossible to move one anywhere.
+   */
+  const underClips = (project: Project, next: Project): Project => {
+    const before = layoutClips(project.clips, leadInOf(project))
+    const after = layoutClips(next.clips, leadInOf(next))
+    const cues = cuesUnderClips(captionCuesOf(next), before, after)
+    const audio = audioUnderClips(next.audioClips, before, after)
+    if (!cues && !audio) return next
+    return {
+      ...next,
+      ...(cues ? { captionCues: cues } : {}),
+      ...(audio ? { audioClips: audio } : {}),
+    }
+  }
+
+  /**
+   * The clip a new piece of audio belongs to.
+   *
+   * Music is deliberately never anchored: a bed runs under the whole piece
+   * rather than under one shot, so it stays where it was laid however the
+   * picture is rearranged.
+   */
+  const anchorFor = (project: Project, kind: AudioTrackKind, startTime: number) =>
+    kind === 'music'
+      ? undefined
+      : anchorClipAt(layoutClips(project.clips, leadInOf(project)), startTime)
+
   return {
     project: emptyProject(),
     selectedClipId: null,
@@ -288,7 +332,8 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setResolution: (width, height) => mutate((project) => ({ ...project, width, height })),
 
-    setLeadIn: (seconds) => mutate((project) => ({ ...project, leadIn: clampLeadIn(seconds) })),
+    setLeadIn: (seconds) =>
+      mutate((project) => underClips(project, { ...project, leadIn: clampLeadIn(seconds) })),
 
     addClip: (asset) => {
       const clip = clipForAsset(asset, newId('clip'))
@@ -297,10 +342,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     removeClip: (clipId) => {
-      mutate((project) => ({
-        ...project,
-        clips: project.clips.filter((clip) => clip.id !== clipId),
-      }))
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.filter((clip) => clip.id !== clipId),
+        }),
+      )
       set((state) => ({
         selectedClipId: state.selectedClipId === clipId ? null : state.selectedClipId,
       }))
@@ -309,15 +356,19 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     selectClip: (clipId) => set({ selectedClipId: clipId }),
 
     moveClip: (from, to) =>
-      mutate((project) => ({ ...project, clips: reorder(project.clips, from, to) })),
+      mutate((project) =>
+        underClips(project, { ...project, clips: reorder(project.clips, from, to) }),
+      ),
 
     trim: (clipId, asset, edge, value) =>
-      mutate((project) => ({
-        ...project,
-        clips: project.clips.map((clip) =>
-          clip.id === clipId ? trimClip(clip, asset, edge, value) : clip,
-        ),
-      })),
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.map((clip) =>
+            clip.id === clipId ? trimClip(clip, asset, edge, value) : clip,
+          ),
+        }),
+      ),
 
     // Nothing about a cut is stored beyond the clips themselves: two clips
     // meeting mid-source *is* the cut, so it persists with the timeline and
@@ -332,7 +383,20 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         leadInOf(project),
       )
       if (!result) return false
-      mutate((current) => ({ ...current, clips: result.clips }))
+      // The half after the cut is a new clip with a new id, so the captions
+      // sitting over it have to be handed across before anything moves either
+      // half — otherwise they stay credited to the half in front and follow the
+      // wrong one around.
+      mutate((current) => {
+        const recredited = recreditCuesAfterCut(
+          captionCuesOf(current),
+          result.cutClipId,
+          result.clipId,
+          snapToFrame(time, current.fps),
+        )
+        const next = { ...current, clips: result.clips }
+        return underClips(current, recredited ? { ...next, captionCues: recredited } : next)
+      })
       set({ selectedClipId: result.clipId })
       return true
     },
@@ -341,7 +405,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       const { project } = get()
       const result = joinCutAt(project.clips, clipId)
       if (!result) return false
-      mutate((current) => ({ ...current, clips: result.clips }))
+      mutate((current) => {
+        // The absorbed half's id is gone, so its captions would stop following
+        // the picture. Move them onto the clip that survived the merge.
+        const recredited = recreditCuesAfterJoin(captionCuesOf(current), clipId, result.clipId)
+        const next = { ...current, clips: result.clips }
+        return underClips(current, recredited ? { ...next, captionCues: recredited } : next)
+      })
       // The clip that was selected has just been absorbed, so follow the merge
       // rather than leaving the selection pointing at an id that is gone.
       set((state) => ({
@@ -351,12 +421,14 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     setImageDuration: (clipId, seconds) =>
-      mutate((project) => ({
-        ...project,
-        clips: project.clips.map((clip) =>
-          clip.id === clipId ? { ...clip, inPoint: 0, outPoint: Math.max(0.2, seconds) } : clip,
-        ),
-      })),
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.map((clip) =>
+            clip.id === clipId ? { ...clip, inPoint: 0, outPoint: Math.max(0.2, seconds) } : clip,
+          ),
+        }),
+      ),
 
     setClipAudio: (clipId, patch) =>
       mutate((project) => ({
@@ -368,10 +440,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       const id = newId('aclip')
       const { project } = get()
 
+      const anchorClipId = anchorFor(project, kind, clip.startTime)
       const result = placeAudioClip(project.audioTracks, project.audioClips, {
         kind,
         newTrackId: newId('track'),
-        clip: { ...clip, id },
+        clip: { ...clip, id, ...(anchorClipId ? { anchorClipId } : {}) },
       })
 
       mutate((current) => ({
@@ -399,6 +472,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     moveAudioClipTo: (id, startTime, trackId) => {
       const { project } = get()
+      const moved = project.audioClips.find((entry) => entry.id === id)
       const result = moveAudioClip(project.audioClips, id, {
         startTime,
         ...(trackId ? { trackId } : {}),
@@ -406,7 +480,20 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       // A blocked move leaves state untouched, so skip the write entirely
       // rather than persisting an identical project on every rejected drag.
       if (!result.moved) return false
-      mutate((current) => ({ ...current, audioClips: result.clips }))
+      mutate((current) => {
+        // Dragging a clip somewhere else re-homes it: it now belongs to whatever
+        // shot it was dropped over, and will follow that one from here on.
+        const track = current.audioTracks.find((entry) => entry.id === (trackId ?? moved?.trackId))
+        const anchorClipId = track ? anchorFor(current, track.kind, startTime) : undefined
+        return {
+          ...current,
+          audioClips: result.clips.map((entry) =>
+            entry.id === id
+              ? { ...entry, ...(anchorClipId ? { anchorClipId } : { anchorClipId: undefined }) }
+              : entry,
+          ),
+        }
+      })
       return true
     },
 
