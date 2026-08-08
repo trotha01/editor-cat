@@ -49,6 +49,7 @@ import {
   totalDuration,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
+import { transitionRoomAt } from '../lib/transitions'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
@@ -56,11 +57,19 @@ import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
 import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
+import { TransitionMarker } from './TransitionMarker'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
+
+/**
+ * Narrowest a clip card may be drawn. Below this a short clip has no room for
+ * its trim handles, let alone its menu, so it is drawn wider than its time —
+ * the one place on this track where a pixel is not a fixed number of seconds.
+ */
+const MIN_CARD_WIDTH = 36
 
 const MIN_ZOOM = 8
 // High enough that individual frames get room of their own: cutting is only
@@ -105,6 +114,8 @@ function ClipCard({
   entry,
   asset,
   zoom,
+  width,
+  pull,
   selected,
   cutAtStart,
   target,
@@ -119,6 +130,10 @@ function ClipCard({
   entry: PositionedClip
   asset: Asset | undefined
   zoom: number
+  /** Drawn width, which has a floor so a very short clip stays clickable. */
+  width: number
+  /** How far this card is pulled back over the one before it, in pixels. */
+  pull: number
   selected: boolean
   /** True when this clip carries on from the one before it — i.e. a cut. */
   cutAtStart: boolean
@@ -166,7 +181,6 @@ function ClipCard({
     if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
   }
 
-  const width = Math.max(36, entry.duration * zoom)
   const isImage = asset?.kind === 'image'
   const name = asset?.name ?? 'this clip'
   const silent = asset?.kind === 'video' && clipGain(entry.clip) <= 0
@@ -215,6 +229,10 @@ function ClipCard({
       ref={setNodeRef}
       style={{
         width,
+        // A transition is an overlap, so the card really does sit on top of the
+        // one before it — a negative margin is what puts a clip's card where its
+        // start time is once that start has been pulled back.
+        marginLeft: pull > 0 ? -pull : undefined,
         transform: CSS.Translate.toString(transform),
         transition,
         opacity: isDragging ? 0.6 : 1,
@@ -223,6 +241,17 @@ function ClipCard({
         selected ? 'border-accent ring-2 ring-accent/40' : 'border-line'
       }`}
     >
+      {/* The stretch this clip shares with the one underneath, marked on the
+          card that is covering it up. Without it the overlap reads as a clip
+          drawn in the wrong place. */}
+      {pull > 0 ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 border-r border-accent/60 bg-gradient-to-r from-accent/45 to-transparent"
+          style={{ width: pull }}
+        />
+      ) : null}
+
       <button
         type="button"
         onClick={onSelect}
@@ -430,6 +459,8 @@ export function Timeline({
   const trim = useProjectStore((state) => state.trim)
   const cutAt = useProjectStore((state) => state.cutAt)
   const removeCut = useProjectStore((state) => state.removeCut)
+  const setTransition = useProjectStore((state) => state.setTransition)
+  const setAllTransitions = useProjectStore((state) => state.setAllTransitions)
   const assets = useAssetStore((state) => state.assets)
 
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
@@ -450,6 +481,38 @@ export function Timeline({
   const positioned = useMemo(() => layoutClips(project.clips, leadIn), [project.clips, leadIn])
   const visualDuration = totalDuration(project.clips)
   const pictureEndTime = leadIn + visualDuration
+
+  // Where each card really lands, which is not simply its start times a zoom:
+  // a card has a floor on its width so a very short clip stays clickable, and
+  // the row is laid out by the flexbox rather than by these numbers. Worked out
+  // once, here, because the marks between the cards are positioned absolutely
+  // and have to agree with where the cards ended up to the pixel.
+  const cards = useMemo(() => {
+    const laid: {
+      entry: PositionedClip
+      width: number
+      pull: number
+      left: number
+      /** The longest transition this clip's own boundary could hold. */
+      room: number
+    }[] = []
+    let cursor = leadIn * zoom
+    for (const entry of positioned) {
+      const width = Math.max(MIN_CARD_WIDTH, entry.duration * zoom)
+      // Never pull a card entirely behind its neighbour: an overlap you cannot
+      // see past is a clip with nothing left of it to grab.
+      const pull = Math.min(
+        (entry.transition?.duration ?? 0) * zoom,
+        Math.max(0, width - MIN_CARD_WIDTH),
+      )
+      const left = cursor - pull
+      cursor = left + width
+      // Worked out here rather than per mark, because this runs when the clips
+      // change and the marks are rendered on every frame the playhead moves.
+      laid.push({ entry, width, pull, left, room: transitionRoomAt(project.clips, entry.index) })
+    }
+    return laid
+  }, [positioned, project.clips, zoom, leadIn])
 
   // The clips that could have sound of their own. Worked out once here rather
   // than in the lane and again in the gutter, because the two have to agree
@@ -705,17 +768,19 @@ export function Timeline({
                     {leadIn > 0 ? (
                       <LeadInBlock seconds={leadIn} zoom={zoom} onChange={setLeadIn} />
                     ) : null}
-                    {positioned.length === 0 ? (
+                    {cards.length === 0 ? (
                       <p className="px-2 py-6 text-sm text-ink-dim">
                         Nothing on the timeline yet. Add a clip from the Library.
                       </p>
                     ) : (
-                      positioned.map((entry) => (
+                      cards.map(({ entry, width, pull }) => (
                         <ClipCard
                           key={entry.clip.id}
                           entry={entry}
                           asset={assetById.get(entry.clip.assetId)}
                           zoom={zoom}
+                          width={width}
+                          pull={pull}
                           selected={entry.clip.id === selectedClipId}
                           cutAtStart={cutBefore(positioned, entry.index)}
                           target={targets.get(entry.clip.id)}
@@ -750,6 +815,36 @@ export function Timeline({
                   }}
                 />
               ) : null}
+
+              {/* The seams, over everything on this row. In their own layer
+                  rather than inside the cards because a card hides what
+                  overflows it, and half a button in the corner of a clip is not
+                  a button. Nothing here takes a pointer except the marks
+                  themselves, so dragging a clip still starts on the clip. */}
+              <div className="pointer-events-none absolute inset-0">
+                {cards.map(({ entry, left, pull, room }) =>
+                  entry.index === 0 ? null : (
+                    <div
+                      key={entry.clip.id}
+                      className="pointer-events-auto absolute top-1/2 z-20 -translate-x-1/2 -translate-y-1/2"
+                      style={{ left: left + pull / 2 }}
+                    >
+                      <TransitionMarker
+                        transition={entry.transition}
+                        room={room}
+                        outgoing={assetById.get(positioned[entry.index - 1]?.clip.assetId ?? '')}
+                        incoming={assetById.get(entry.clip.assetId)}
+                        // The frames that actually meet at this boundary, so the
+                        // picker previews this cut rather than a generic one.
+                        outgoingAt={Math.max(0, positioned[entry.index - 1]?.clip.outPoint ?? 0)}
+                        incomingAt={entry.clip.inPoint}
+                        onChange={(next) => setTransition(entry.clip.id, next)}
+                        onApplyToAll={setAllTransitions}
+                      />
+                    </div>
+                  ),
+                )}
+              </div>
             </div>
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />

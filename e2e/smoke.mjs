@@ -823,6 +823,51 @@ try {
   }
   step('the caption typeface is served from this origin, so it can also be burnt in')
 
+  // --- Transitions ----------------------------------------------------------
+  // A dissolve is an overlap, so the one thing that proves it landed is the
+  // timeline getting shorter — and the only place that can be seen end to end
+  // is here, where the same number has to come back out of the encoder as an
+  // MP4 of that length. `xfade` is also the one filter in the graph that a
+  // stripped-down ffmpeg build might simply not have, and a unit test asserting
+  // on argv cannot tell us whether it does.
+  const pictureLength = async () => {
+    const text = await page.textContent('section[aria-label="Timeline"] header span')
+    const found = /(\d+):(\d+\.\d)/.exec(text)
+    return found ? Number(found[1]) * 60 + Number(found[2]) : 0
+  }
+
+  const seam = page.locator('button[aria-label="Add a transition between these clips"]').first()
+  await seam.scrollIntoViewIfNeeded()
+  const beforeBlend = await pictureLength()
+  await seam.click()
+  await page.waitForSelector('div[role="dialog"][aria-label="Transitions"]', { timeout: 5000 })
+  step('the mark between two clips opens the transition picker')
+
+  await page.getByRole('button', { name: 'Cross dissolve' }).click()
+  await page.waitForTimeout(300)
+  const afterBlend = await pictureLength()
+  if (!(afterBlend < beforeBlend)) {
+    fail(`a dissolve should have shortened the picture, ${beforeBlend}s -> ${afterBlend}s`)
+  }
+  await page.keyboard.press('Escape')
+  step(`cross dissolve applied, overlapping the clips (${beforeBlend}s -> ${afterBlend}s)`)
+
+  // Stored on the clip and nowhere else, so this is the round trip through
+  // IndexedDB that no unit test reaches.
+  await page.waitForTimeout(500)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('section[aria-label="Timeline"] .group', { timeout: 30000 })
+  const reopenedBlend = await pictureLength()
+  if (Math.abs(reopenedBlend - afterBlend) > 0.05) {
+    fail(`the dissolve did not survive a reload, ${afterBlend}s -> ${reopenedBlend}s`)
+  }
+  const badge = await page
+    .locator('button[aria-label^="Edit the cross dissolve"]')
+    .first()
+    .getAttribute('aria-label')
+  if (!/\d+ms/.test(badge ?? '')) fail(`the reopened boundary does not show its length: "${badge}"`)
+  step(`the dissolve is still there when the project is opened again (${badge})`)
+
   // --- Export --------------------------------------------------------------
   // Counted again here rather than reusing the count taken when the transcript
   // first landed: redoing one clip's captions in between changes how many there
@@ -846,6 +891,9 @@ try {
   if (trackTotal !== 4) fail(`expected 4 audio tracks in the export, summary said: "${summary}"`)
   if (!/of black before the picture/.test(summary)) {
     fail(`the export should carry the lead-in, summary said: "${summary}"`)
+  }
+  if (!/1 transition/.test(summary)) {
+    fail(`the export should carry the dissolve, summary said: "${summary}"`)
   }
 
   // The first m:ss.d in the summary is the length of the render, which is what

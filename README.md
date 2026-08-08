@@ -3,8 +3,8 @@
 A small AI video editor that runs in your browser.
 
 Write a prompt → get images → animate one into a clip → arrange clips on a
-timeline → layer voiceovers and music → swap your voice for another one →
-caption it karaoke-style → export an MP4.
+timeline → dissolve between them → layer voiceovers and music → swap your voice
+for another one → caption it karaoke-style → export an MP4.
 
 Images, video and caption transcription all run on the deployment's own fal.ai
 account, so visitors need **no key** for any of them. Voice conversion uses
@@ -14,15 +14,15 @@ account, so visitors need **no key** for any of them. Voice conversion uses
 
 ## What it does
 
-| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **Timeline**     | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below.                                                                              |
-| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable. |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Timeline**     | Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. The mark between two clips opens a **transitions** picker — cross dissolve, dips, wipes, slides, blur and an iris — with a duration you can drag and an **Apply to all**. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. |
+| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                              |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ## What you need
 
@@ -436,6 +436,35 @@ to an undo. Cuts snap to a frame, and the frame lines drawn once you are zoomed
 in far enough are the same grid — so the line you park the playhead on is the
 line the cut lands on. The arithmetic is in `src/lib/timeline.ts` with the rest
 of the pure timeline maths.
+
+**A transition is an overlap, so the timeline gets shorter.** A dissolve is the
+tail of one shot playing at the same time as the head of the next — that is what
+the word means — so both clips give up the length of it and the picture ends
+earlier by exactly that much. The alternative, holding a frozen frame either side
+to keep the running time, is a different effect that reads as two stills fading
+into each other. So `layoutClips` pulls each clip back by its transition and
+everything downstream simply follows: the preview draws both clips through the
+overlap, the export hands the same two numbers to ffmpeg's `xfade`, and the
+captions and takes anchored to a shot are carried along by the same code that
+carries them through a trim. The overlap always ends precisely where the outgoing
+clip does, which is what lets the two agree without either knowing about the
+other.
+
+**What a boundary can afford is worked out on the way out, not on the way in.**
+Trim a clip shorter than its transition and the transition has to shrink; trim it
+back and the transition should come back too — so what a clip stores is a wish,
+and `fitTransitions` reconciles it against both neighbours every time the clips
+are laid out. Nothing is written back, which is why a stray drag cannot quietly
+destroy an edit, and why no code path anywhere can leave the timeline describing
+an overlap the material cannot cover.
+
+**Nine transitions, drawn twice.** Each one has to render in CSS for the preview
+and as an `xfade` transition for the export, and `src/lib/transitions.ts` holds
+both halves side by side so neither can drift. The picker's tiles are built from
+that same CSS, frozen halfway through and using the two shots the boundary
+actually joins — so a tile cannot promise something the playback will not do. Its
+sound crosses over on the same linear ramp `afade` uses in the render, because
+two takes playing flat out through a dissolve is a doubling you can hear.
 
 **Overlaps are refused, not allowed.** Dragging a clip on top of another is a
 no-op with a red outline rather than a silent collision, because two clips
@@ -854,12 +883,21 @@ If your CI image ships its own browser, point the test at it with
 - **Export uses the single-threaded ffmpeg build**, so a short project takes
   roughly 30–90 seconds. The multithreaded build needs cross-origin isolation
   (COOP/COEP), which would block loading provider media in the page.
-- **One picture track, and no transitions.** This is deliberate — visual clips
-  sit end to end with no gaps, which removes most of what makes a timeline
-  confusing. Audio is the part that genuinely needs layers, so that is where the
-  multiple tracks are. The only text over the picture is captions, which are not
-  free-placed titles: they are the words that were spoken, laid out by one style
-  per track.
+- **A transition is capped at two seconds, and at the shorter of its clips.**
+  Both of them give up that much material, so a boundary can only hold what its
+  neighbours can spare — and a clip caught between two transitions has to cover
+  both, which is why the second one shrinks or disappears when the first grows.
+  The picker says what the boundary has room for.
+- **Transitions belong to the picture track.** Clips on a video lane are laid
+  over the picture rather than into it, so they have no boundary to put one at;
+  fade one in by dropping its lane's opacity instead. There is also no cutting
+  inside a transition — those frames are already being blended with a
+  neighbour's.
+- **One picture track.** This is deliberate — visual clips sit end to end with no
+  gaps, which removes most of what makes a timeline confusing. Audio is the part
+  that genuinely needs layers, so that is where the multiple tracks are. The only
+  text over the picture is captions, which are not free-placed titles: they are
+  the words that were spoken, laid out by one style per track.
 - **The only gap is the lead-in, and it is at the front.** You can slide the
   whole picture track later to open black in front of it, but there is no way to
   leave a hole between two clips, or to start the picture before an earlier one

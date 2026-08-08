@@ -7,21 +7,15 @@
  * long — a three-second clip has room for about one icon, and putting the third
  * one there would mean the first two could no longer be hit.
  *
- * The menu is rendered into `document.body` rather than into the clip. The
- * timeline scrolls horizontally, and a scroll container clips both axes: drawn
- * inside the lane, a menu of any height would be cut off at the edge of the
- * track it belongs to. Being in the body costs it the ability to move with the
- * clip, which is why any scroll closes it — a menu that stays behind while its
- * clip slides away is pointing at the wrong thing.
+ * The menu is rendered into `document.body` rather than into the clip, for the
+ * reasons `useAnchoredPanel` explains — it owns where the menu goes and when it
+ * stops being about anything, leaving this file the contents and the keyboard.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useAnchoredPanel } from '../hooks/useAnchoredPanel'
 import { Spinner } from './ui'
 import type { ClipMenuItem } from './clipMenuItems'
-
-/** Gap between the clip and its menu, and the margin the menu keeps from the edge. */
-const OFFSET = 4
-const MARGIN = 8
 
 export function ClipMenu({
   label,
@@ -37,61 +31,28 @@ export function ClipMenu({
   className?: string
 }) {
   const [open, setOpen] = useState(false)
-  const buttonRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
 
-  const close = useCallback((focusButton = true) => {
+  // Dismissing and closing differ only in where the focus lands: a press
+  // somewhere else has already put it there, and pulling it back would fight
+  // whatever the user just reached for.
+  const dismiss = useCallback(() => setOpen(false), [])
+  const {
+    anchorRef: buttonRef,
+    panelRef: menuRef,
+    position,
+  } = useAnchoredPanel<HTMLButtonElement, HTMLDivElement>({ open, onDismiss: dismiss })
+
+  const close = useCallback(() => {
     setOpen(false)
-    setPosition(null)
-    if (focusButton) buttonRef.current?.focus()
-  }, [])
+    buttonRef.current?.focus()
+  }, [buttonRef])
 
-  // Placed once it can be measured: which way it has to flip depends on how
-  // tall it turned out, and that is not known until it has been rendered.
-  useLayoutEffect(() => {
-    if (!open) return
-    const button = buttonRef.current
-    const menu = menuRef.current
-    if (!button || !menu) return
-
-    const anchor = button.getBoundingClientRect()
-    const { width, height } = menu.getBoundingClientRect()
-    const room = { width: window.innerWidth, height: window.innerHeight }
-
-    const below = anchor.bottom + OFFSET
-    const top =
-      below + height > room.height - MARGIN ? Math.max(MARGIN, anchor.top - height - OFFSET) : below
-    const left = Math.max(MARGIN, Math.min(anchor.left, room.width - width - MARGIN))
-
-    setPosition({ top, left })
-    // Focus lands on the menu itself rather than the first item: the first item
-    // is often the expensive one, and a menu that opens with "spend money" under
-    // the return key is a menu that spends money by accident.
-    menu.focus()
-  }, [open])
-
+  // Focus lands on the menu itself rather than the first item: the first item is
+  // often the expensive one, and a menu that opens with "spend money" under the
+  // return key is a menu that spends money by accident.
   useEffect(() => {
-    if (!open) return
-
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node
-      if (menuRef.current?.contains(target) || buttonRef.current?.contains(target)) return
-      close(false)
-    }
-    // Capture, so a scroll anywhere between here and the window counts — the
-    // lane, the page, or the panel column, all of which can move this clip.
-    const onScroll = () => close(false)
-
-    window.addEventListener('pointerdown', onPointerDown)
-    window.addEventListener('scroll', onScroll, true)
-    window.addEventListener('resize', onScroll)
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown)
-      window.removeEventListener('scroll', onScroll, true)
-      window.removeEventListener('resize', onScroll)
-    }
-  }, [open, close])
+    if (open) menuRef.current?.focus()
+  }, [open, menuRef])
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {

@@ -19,6 +19,8 @@ import {
   type ExportOverlayClip,
 } from './buildGraph'
 import { hasAudioStream } from './probe'
+import { xfadeNameOf } from '../transitions'
+import type { Transition } from '../types'
 
 export interface ExportAsset {
   /** Stable key used to name the file inside the ffmpeg filesystem. */
@@ -33,6 +35,12 @@ export interface RenderRequest {
     kind: 'image' | 'video'
     inPoint: number
     duration: number
+    /**
+     * How this clip comes in from the one before it, already fitted to what the
+     * two of them can afford — pass what `layoutClips` resolved rather than what
+     * the clip stores.
+     */
+    transition?: Transition | null
     /** Gain for the clip's own sound. Absent is unity; 0 leaves it out. */
     volume?: number
   }[]
@@ -214,6 +222,16 @@ export async function renderProject(
       kind: clip.kind,
       inPoint: clip.inPoint,
       duration: clip.duration,
+      // Translated to ffmpeg's vocabulary here, at the edge, so the graph
+      // builder never has to know what this app calls its transitions.
+      ...(clip.transition
+        ? {
+            transition: {
+              name: xfadeNameOf(clip.transition.kind),
+              duration: clip.transition.duration,
+            },
+          }
+        : {}),
       hasAudio: soundIn.get(file) ?? false,
       volume: clip.volume ?? 1,
     }
