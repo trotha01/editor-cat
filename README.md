@@ -430,12 +430,15 @@ function so it can be tested directly.
 into two that carry on from each other, and that is the whole of it — no cut
 list, no markers, no schema change. It saves and reloads because the timeline
 does, and a project opened tomorrow shows its cuts because two clips meeting
-mid-source _is_ a cut. The timeline recognises that and marks each one, with a
-button to join the halves back together, which is as close as this editor gets
-to an undo. Cuts snap to a frame, and the frame lines drawn once you are zoomed
-in far enough are the same grid — so the line you park the playhead on is the
-line the cut lands on. The arithmetic is in `src/lib/timeline.ts` with the rest
-of the pure timeline maths.
+mid-source _is_ a cut. The timeline recognises that and marks each one with a
+dashed line, and the clip's ⋯ menu offers to join the halves back together,
+which is as close as this editor gets to an undo. That lives on the menu rather
+than in the seam because the seam already has a control in it — the `+` that
+adds a transition — and two buttons a few pixels apart, one blending the shots
+and the other undoing an edit, is a mis-click waiting to happen. Cuts snap to a
+frame, and the frame lines drawn once you are zoomed in far enough are the same
+grid — so the line you park the playhead on is the line the cut lands on. The
+arithmetic is in `src/lib/timeline.ts` with the rest of the pure timeline maths.
 
 **A transition is an overlap, so the timeline gets shorter.** A dissolve is the
 tail of one shot playing at the same time as the head of the next — that is what

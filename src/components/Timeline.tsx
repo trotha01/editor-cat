@@ -209,9 +209,11 @@ function ClipCard({
             onSelect: onToggleMute,
           },
         ]),
-    // Also a mark on the clip itself, which is where you would reach for it
-    // having seen the cut. Here as well because the mark is a pair of scissors
-    // and nothing else, and this is the version that says what it does.
+    // The only way to put a cut back. The dashed line on the clip says one is
+    // there; this is the version that says what can be done about it, and it is
+    // here rather than in the seam because the seam belongs to the transition
+    // mark — two controls a few pixels apart, one adding a blend and the other
+    // undoing an edit, is a mis-click waiting to happen.
     ...(cutAtStart
       ? [
           {
@@ -336,24 +338,18 @@ function ClipCard({
       />
 
       {/* A cut you made, still here because the two halves are still two clips.
-          The line marks it; the button takes it back out again, which is the
-          only undo this editor has. */}
+          A line and nothing else: the seam already has one control in it, the
+          transition mark, and a second button in the same few pixels doing
+          something entirely different is how you undo a cut by accident.
+          Joining the halves back up is on this clip's ⋯ menu, which is where
+          everything else a clip can be told to do lives. */}
       {cutAtStart ? (
-        <>
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-y-0 left-0 border-l-2 border-dashed border-accent"
-          />
-          <button
-            type="button"
-            onClick={onJoin}
-            aria-label={`Undo the cut at ${formatTime(entry.start)}`}
-            title="Undo this cut — joins this clip back onto the one before it"
-            className="absolute top-1 left-3 hidden size-5 items-center justify-center rounded bg-black/70 text-[10px] text-white group-hover:flex"
-          >
-            ✂
-          </button>
-        </>
+        <span
+          role="img"
+          aria-label={`Cut at ${formatTime(entry.start)}`}
+          title={`Cut at ${formatTime(entry.start)} — undo it from this clip’s ⋯ menu`}
+          className="pointer-events-none absolute inset-y-0 left-0 border-l-2 border-dashed border-accent"
+        />
       ) : null}
     </div>
   )

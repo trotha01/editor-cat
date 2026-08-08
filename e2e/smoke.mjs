@@ -214,7 +214,7 @@ try {
     return { text: text.trim(), clips: Number(/(\d+) clips?/.exec(text)?.[1] ?? 0) }
   }
   const cutMarks = () =>
-    page.locator('section[aria-label="Timeline"] button[aria-label^="Undo the cut"]').count()
+    page.locator('section[aria-label="Timeline"] [role="img"][aria-label^="Cut at"]').count()
 
   const beforeCut = await summarise()
 
