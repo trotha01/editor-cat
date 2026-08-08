@@ -71,7 +71,7 @@ concurrency:
 # denials and then exits 0 having done nothing. These add to the built-in
 # GitHub tools rather than replacing them.
 env:
-  CLAUDE_TOOLS: "Edit,Write,Read,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)"
+  CLAUDE_TOOLS: 'Edit,Write,Read,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)'
 
   # 60 turns ran out after ten and a half minutes on the first issue that got
   # far enough to try: 61 turns, 629s, which is a shade over 10s a turn. A
@@ -79,7 +79,7 @@ env:
   # observed rate 200 turns is a little over half an hour, which puts the wall
   # clock rather than the turn counter in charge of when a run ends — see the
   # step timeouts below.
-  CLAUDE_MAX_TURNS: "200"
+  CLAUDE_MAX_TURNS: '200'
 
   # Interactive mode takes its instructions from the comment that summoned it
   # and nothing else, so anything that should hold on every mention has to
