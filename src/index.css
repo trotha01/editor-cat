@@ -94,6 +94,17 @@ input[type='range'] {
     min-height: 21rem;
   }
 
+  /* Set once the player has been dragged with the resize handle — see
+     `MIN_PREVIEW_HEIGHT`/`MAX_PREVIEW_HEIGHT` in Preview.tsx, which bound the
+     value `--preview-height` is given. Pins the height instead of letting it
+     flex, which is what makes the drag stick rather than snapping back. */
+  .preview-column.resized {
+    flex: none;
+    height: var(--preview-height);
+    min-height: 12rem;
+    max-height: 80vh;
+  }
+
   .preview-room {
     flex: 1;
     min-height: 0;
@@ -102,6 +113,15 @@ input[type='range'] {
 
   .preview-picture {
     width: min(100cqw, calc(100cqh * var(--frame-aspect)));
+  }
+
+  /* The sidebar's width, draggable via the handle beside it — see
+     `MIN_SIDEBAR_WIDTH`/`MAX_SIDEBAR_WIDTH` in App.tsx. Collapsed uses a plain
+     Tailwind width instead, since there is nothing left to remember at that
+     size. */
+  .sidebar-column {
+    width: var(--sidebar-width, 26rem);
+    flex: none;
   }
 }
 
