@@ -41,6 +41,7 @@ export default function App() {
 
   const loadAssets = useAssetStore((state) => state.load)
   const duration = useProjectStore((state) => state.duration())
+  const fps = useProjectStore((state) => state.project.fps)
   const clipCount = useProjectStore((state) => state.project.clips.length)
 
   const playback = usePlayback(duration)
@@ -91,8 +92,12 @@ export default function App() {
         </Button>
       </header>
 
-      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:flex-row">
-        <section className="flex w-full shrink-0 flex-col gap-3 lg:w-[26rem]">
+      {/* Stacked, this scrolls as one column. Side by side it must not: the two
+          columns are then as tall as the window, and each scrolls on its own —
+          which is what stops a tall panel on the left, or a tall preview on the
+          right, from pushing the timeline off the bottom of the screen. */}
+      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:flex-row lg:overflow-hidden">
+        <section className="flex w-full shrink-0 flex-col gap-3 lg:w-[26rem] lg:min-h-0 lg:overflow-y-auto">
           <nav
             className="flex gap-1 rounded-xl border border-line bg-surface p-1"
             aria-label="Steps"
@@ -122,7 +127,7 @@ export default function App() {
           <div className="rounded-xl border border-line bg-surface p-4">
             {tab === 'image' ? <ImagePanel /> : null}
             {tab === 'video' ? <VideoPanel /> : null}
-            {tab === 'library' ? <LibraryPanel /> : null}
+            {tab === 'library' ? <LibraryPanel currentTime={playback.currentTime} /> : null}
             {tab === 'audio' ? (
               <AudioPanel
                 currentTime={playback.currentTime}
@@ -136,7 +141,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="flex min-w-0 flex-1 flex-col gap-4">
+        <section className="flex min-w-0 flex-1 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto">
           <OrientationToggle />
 
           {/* The transport lives inside the preview rather than beside it, so
@@ -146,6 +151,7 @@ export default function App() {
             <Transport
               currentTime={playback.currentTime}
               duration={duration}
+              fps={fps}
               playing={playback.playing}
               onToggle={playback.toggle}
               onSeek={playback.seek}

@@ -60,6 +60,50 @@ export interface Clip {
 }
 
 /**
+ * One lane of picture above the main track.
+ *
+ * The track of `clips` above is still the picture: gapless, cuttable, and the
+ * thing the export is built around. These lanes are what goes *over* it —
+ * B-roll, an insert, a logo held in a corner of the frame — so they are
+ * positioned in time like audio rather than laid end to end, and they may sit
+ * over black as happily as over a clip.
+ *
+ * Later tracks draw over earlier ones, which is the only stacking rule there
+ * is: the order in this array is the order up the screen.
+ */
+export interface VideoTrack {
+  id: string
+  name: string
+  /** Kept out of the preview and the export alike, without being deleted. */
+  hidden: boolean
+  /** 0 to 1, blended over whatever is beneath. 1 covers it completely. */
+  opacity: number
+}
+
+/**
+ * A piece of picture placed at a point in time on a video track.
+ *
+ * Shaped like an `AudioClip` rather than like a `Clip`, because that is how it
+ * behaves: it has a start time of its own instead of following the clip before
+ * it, and two of them on one lane are refused rather than rippled apart.
+ */
+export interface VideoClip {
+  id: string
+  trackId: string
+  assetId: string
+  /** Where this clip starts on the timeline, in seconds. */
+  startTime: number
+  /** Seconds into the source to start from. Always 0 for a still. */
+  inPoint: number
+  /** How long it is on screen. */
+  duration: number
+  /** Silences whatever sound the source carries. Absent means audible. */
+  muted?: boolean
+  /** Gain for that sound. Absent is unity. */
+  volume?: number
+}
+
+/**
  * Voice, music and cues live on separate kinds of track because they are mixed
  * differently: narration wants to sit on top at full level, score wants to sit
  * underneath. Keeping the kind on the track means a new recording can never
@@ -223,6 +267,13 @@ export interface Project {
   id: string
   name: string
   clips: Clip[]
+  /**
+   * Picture layered over `clips`. Optional because every project saved before
+   * layering existed has none — read through `videoTracksOf`/`videoClipsOf`
+   * rather than directly.
+   */
+  videoTracks?: VideoTrack[]
+  videoClips?: VideoClip[]
   audioTracks: AudioTrack[]
   audioClips: AudioClip[]
   /**
@@ -259,11 +310,12 @@ export type ProjectDoc = Omit<Project, 'id' | 'name' | 'voiceovers'>
 /**
  * The shape version written alongside a stored document.
  *
- * 1 was the flat `voiceovers` list; 2 is multitrack audio; 3 adds captions.
- * Recorded explicitly so `migrateProject` upgrades from a known version rather
- * than inferring one from the shape.
+ * 1 was the flat `voiceovers` list; 2 is multitrack audio; 3 adds captions;
+ * 4 adds video tracks layered over the picture. Recorded explicitly so
+ * `migrateProject` upgrades from a known version rather than inferring one from
+ * the shape.
  */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /** A clip with its resolved timeline position. Produced by `layoutClips`. */
 export interface PositionedClip {

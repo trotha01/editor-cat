@@ -23,7 +23,7 @@ export function OrientationToggle() {
   const current = orientationOf(width, height)
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex shrink-0 items-center gap-3">
       <span className="text-xs font-medium text-ink-dim">Orientation</span>
       <div
         role="radiogroup"

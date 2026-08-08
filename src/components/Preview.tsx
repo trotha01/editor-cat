@@ -16,26 +16,46 @@
  * handing one `<video>` to the browser's own fullscreen — would show a single
  * clip, drop the audio tracks layered over it, and leave no way to pause.
  */
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
-import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  clipAtTime,
+  clipGain,
+  formatTime,
+  formatTimecode,
+  layoutClips,
+  leadInOf,
+} from '../lib/timeline'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
-import { useAssetUrl } from '../hooks/useAssetUrl'
+import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
 import { useFullscreen } from '../hooks/useFullscreen'
+import { useReportReadiness } from '../hooks/useReportReadiness'
+import { ReadinessBanner } from './ReadinessBanner'
 import { gainFor } from '../lib/audioTracks'
+import { layerGain, layersAt, videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
 import { CaptionOverlay } from './CaptionOverlay'
 import { isTypingTarget } from '../lib/shortcuts'
-import type { Asset, AudioClip, Clip } from '../lib/types'
+import type { Asset, AudioClip, Clip, VideoClip } from '../lib/types'
 
 /** How far a media element may drift before we correct it, in seconds. */
 const SEEK_TOLERANCE = 0.3
+
+/**
+ * How many clips either side of the playhead are fetched in full.
+ *
+ * There is a real cost to every element told to load: memory, and on some
+ * platforms a hard cap on how many videos can be decoding at once. So it is a
+ * window rather than the whole timeline. Wide enough that the next few cuts are
+ * in hand before the playhead reaches them, which is where the stutter was.
+ */
+const WARM_CLIPS = 3
 
 function ClipLayer({
   clip,
   asset,
   active,
-  nearby,
+  warm,
   currentTime,
   playing,
   start,
@@ -44,19 +64,65 @@ function ClipLayer({
   clip: Clip
   asset: Asset | undefined
   active: boolean
-  nearby: boolean
+  /** Near enough the playhead to be worth fetching in full ahead of time. */
+  warm: boolean
   currentTime: number
   playing: boolean
   start: number
   /** Resolved clip gain. 0 means muted, and the element stays silent. */
   gain: number
 }) {
-  const url = useAssetUrl(asset)
+  const { url, failed } = useAssetSource(asset)
   const videoRef = useRef<HTMLVideoElement>(null)
   // Set once the browser has refused to start audible playback, so the next
   // frame does not ask again and get refused again. Pressing play is a user
   // gesture, so this stays false outside of automated browsers.
   const refusedSound = useRef(false)
+  // How a still reports readiness: it has no buffering, so it is decoded or it
+  // is not. Stamped with the URL it is about, which is what makes a new source
+  // start from unknown again without an effect having to reset anything.
+  const [decoded, setDecoded] = useState<{ url: string; broken: boolean } | null>(null)
+  const imageLoaded = decoded?.url === url && !decoded.broken
+  const imageBroken = decoded?.url === url && decoded.broken
+
+  useReportReadiness({
+    clipId: clip.id,
+    videoRef,
+    kind: asset?.kind,
+    url,
+    failed,
+    from: clip.inPoint,
+    to: clip.outPoint,
+    // Only the clip under a running playhead can be *stalling* playback. The
+    // rest are merely not loaded yet, which is expected and not worth an alarm.
+    wanted: active && playing,
+    warm: active || warm,
+    imageLoaded,
+    imageBroken,
+  })
+
+  // Park a warmed-up clip on its own in-point.
+  //
+  // Buffering follows the playhead of the element, which starts at zero — so a
+  // clip trimmed to five seconds an hour into its source would sit there
+  // fetching an hour of material it will never show, and still be empty at the
+  // moment it is cut to. One seek, once metadata has landed, points the fetch
+  // at the part the clip is actually made of.
+  useEffect(() => {
+    const element = videoRef.current
+    if (!element || asset?.kind !== 'video' || active || !warm) return
+
+    const park = () => {
+      if (element.readyState < HTMLMediaElement.HAVE_METADATA) return
+      if (Math.abs(element.currentTime - clip.inPoint) > SEEK_TOLERANCE) {
+        element.currentTime = clip.inPoint
+      }
+    }
+
+    park()
+    element.addEventListener('loadedmetadata', park)
+    return () => element.removeEventListener('loadedmetadata', park)
+  }, [active, asset?.kind, clip.inPoint, warm])
 
   useEffect(() => {
     const element = videoRef.current
@@ -98,11 +164,92 @@ function ClipLayer({
           ref={videoRef}
           src={url}
           playsInline
-          preload={active || nearby ? 'auto' : 'metadata'}
+          preload={active || warm ? 'auto' : 'metadata'}
           className="size-full object-contain"
         />
       ) : (
-        <img src={url} alt={asset.name} className="size-full object-contain" />
+        <img
+          src={url}
+          alt={asset.name}
+          onLoad={() => setDecoded({ url, broken: false })}
+          onError={() => setDecoded({ url, broken: true })}
+          className="size-full object-contain"
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * One clip on a video lane, drawn over the picture.
+ *
+ * Fitted inside the frame rather than filling it, and centred, which is exactly
+ * what the exporter does with it — see `placeOverlay` in buildGraph. The two
+ * have to agree about where a layer sits or the preview is a guess.
+ *
+ * Mounted only while it is on screen, unlike the picture track's layers, which
+ * are all mounted and hidden. A lane can hold any number of clips and only one
+ * of them is ever showing, so keeping the rest alive would be a decoder each
+ * for nothing.
+ */
+function VideoLayer({
+  clip,
+  asset,
+  opacity,
+  gain,
+  currentTime,
+  playing,
+}: {
+  clip: VideoClip
+  asset: Asset | undefined
+  /** Resolved lane opacity. 0 means hidden, and nothing is drawn. */
+  opacity: number
+  /** Resolved gain for the layer's own sound. 0 means silent. */
+  gain: number
+  currentTime: number
+  playing: boolean
+}) {
+  const url = useAssetUrl(asset)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const refusedSound = useRef(false)
+
+  useEffect(() => {
+    const element = videoRef.current
+    if (!element || asset?.kind !== 'video') return
+
+    element.volume = Math.max(0, Math.min(1, gain))
+    element.muted = gain <= 0 || refusedSound.current
+
+    const target = clip.inPoint + Math.max(0, currentTime - clip.startTime)
+    if (Math.abs(element.currentTime - target) > SEEK_TOLERANCE) {
+      element.currentTime = target
+    }
+
+    if (playing && element.paused) {
+      void element.play().catch(() => {
+        refusedSound.current = true
+        element.muted = true
+        return element.play().catch(() => undefined)
+      })
+    } else if (!playing && !element.paused) {
+      element.pause()
+    }
+  }, [asset?.kind, clip.inPoint, clip.startTime, currentTime, gain, playing])
+
+  if (!asset || !url || opacity <= 0) return null
+
+  return (
+    <div className="pointer-events-none absolute inset-0" style={{ opacity }} aria-hidden>
+      {asset.kind === 'video' ? (
+        <video
+          ref={videoRef}
+          src={url}
+          playsInline
+          preload="auto"
+          className="size-full object-contain"
+        />
+      ) : (
+        <img src={url} alt="" className="size-full object-contain" />
       )}
     </div>
   )
@@ -179,6 +326,13 @@ export function Preview({
   // but it is not the end of the timeline, and must not say so.
   const beforePicture = currentTime < leadIn
 
+  const videoTracks = videoTracksOf(project)
+  const videoClips = videoClipsOf(project)
+  const layers = useMemo(
+    () => layersAt(videoTracks, videoClips, currentTime),
+    [videoTracks, videoClips, currentTime],
+  )
+
   const { ref, active: fullscreen, supported, toggle } = useFullscreen<HTMLElement>()
 
   const empty = project.clips.length === 0
@@ -200,92 +354,131 @@ export function Preview({
     return () => window.removeEventListener('keydown', onKey)
   }, [offerFullscreen, toggle])
 
-  const aspect = `${project.width} / ${project.height}`
+  // The project's shape, in the two forms the stylesheet needs it: one for
+  // `aspect-ratio`, and one it can multiply a height by. See `.preview-picture`.
+  const shape = {
+    aspectRatio: `${project.width} / ${project.height}`,
+    '--frame-aspect': String(project.width / project.height),
+  } as CSSProperties
   // Fullscreen puts everything on black, where the page's ink colours vanish.
   const panel = fullscreen ? 'bg-black text-white/70' : 'bg-surface-2 text-ink-dim'
 
   return (
     <section
       ref={ref}
-      className={`flex flex-col gap-3 ${fullscreen ? 'justify-center bg-black p-4' : ''}`}
+      className={`flex flex-col gap-3 ${
+        // Beside the panels this is one row of a column that has to fit the
+        // window, so it gives way to the timeline below rather than the reverse.
+        fullscreen ? 'justify-center bg-black p-4' : 'preview-column'
+      }`}
       aria-label="Preview"
     >
+      {/* The room the picture has, and the box it takes up inside it. Two
+          elements rather than one because the box is fitted to the room, and
+          nothing can be measured against a container it is itself sizing. */}
       <div
-        className={`relative w-full overflow-hidden ${
-          // Out of fullscreen the box is the project's shape. In it, the box is
-          // whatever is left over and the media letterboxes itself inside.
-          fullscreen ? 'min-h-0 flex-1' : 'rounded-xl border border-line bg-surface-2'
+        className={`flex items-center justify-center ${
+          fullscreen ? 'min-h-0 flex-1' : 'preview-room'
         }`}
-        style={fullscreen ? undefined : { aspectRatio: aspect }}
       >
-        {empty ? (
-          <div
-            className={`flex size-full flex-col items-center justify-center gap-1 text-center ${panel}`}
-          >
-            <span aria-hidden className="text-3xl">
-              🎞️
-            </span>
-            <p className="text-sm">Your timeline is empty</p>
-            <p className="max-w-xs text-xs">
-              Generate an image, animate it into a clip, then add it below.
-            </p>
-          </div>
-        ) : (
-          positioned.map((entry) => (
-            <ClipLayer
-              key={entry.clip.id}
-              clip={entry.clip}
-              asset={assetById.get(entry.clip.assetId)}
-              active={active?.clip.id === entry.clip.id}
-              nearby={Math.abs(entry.index - (active?.index ?? 0)) <= 1}
+        <div
+          className={`relative w-full overflow-hidden ${
+            // Out of fullscreen the box is the project's shape. In it, the box is
+            // whatever is left over and the media letterboxes itself inside.
+            fullscreen ? 'size-full' : 'preview-picture rounded-xl border border-line bg-surface-2'
+          }`}
+          style={fullscreen ? undefined : shape}
+        >
+          {empty ? (
+            <div
+              className={`flex size-full flex-col items-center justify-center gap-1 text-center ${panel}`}
+            >
+              <span aria-hidden className="text-3xl">
+                🎞️
+              </span>
+              <p className="text-sm">Your timeline is empty</p>
+              <p className="max-w-xs text-xs">
+                Generate an image, animate it into a clip, then add it below.
+              </p>
+            </div>
+          ) : (
+            positioned.map((entry) => (
+              <ClipLayer
+                key={entry.clip.id}
+                clip={entry.clip}
+                asset={assetById.get(entry.clip.assetId)}
+                active={active?.clip.id === entry.clip.id}
+                warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
+                currentTime={currentTime}
+                playing={playing}
+                start={entry.start}
+                gain={clipGain(entry.clip)}
+              />
+            ))
+          )}
+
+          {active === null && !empty ? (
+            <div
+              className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${
+                // The lead-in is black in the export, so it is black here too.
+                beforePicture ? 'bg-black text-white/70' : panel
+              }`}
+            >
+              <p className="text-sm">{beforePicture ? 'Lead-in' : 'End of timeline'}</p>
+              {beforePicture ? (
+                <p className="text-xs">The picture starts at {formatTime(leadIn)}</p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Layers, over the picture and over the lead-in card alike — a layer
+              placed on the black is placed there on purpose, and the export
+              draws it there too. Under the captions, which stay on top of
+              everything. Bottom of the stack first, so the lane order is the
+              order up the screen. */}
+          {layers.map(({ clip, track }) => (
+            <VideoLayer
+              key={clip.id}
+              clip={clip}
+              asset={assetById.get(clip.assetId)}
+              opacity={track.hidden ? 0 : track.opacity}
+              gain={layerGain(videoTracks, clip)}
               currentTime={currentTime}
               playing={playing}
-              start={entry.start}
-              gain={clipGain(entry.clip)}
             />
-          ))
-        )}
+          ))}
 
-        {active === null && !empty ? (
-          <div
-            className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${
-              // The lead-in is black in the export, so it is black here too.
-              beforePicture ? 'bg-black text-white/70' : panel
-            }`}
-          >
-            <p className="text-sm">{beforePicture ? 'Lead-in' : 'End of timeline'}</p>
-            {beforePicture ? (
-              <p className="text-xs">The picture starts at {formatTime(leadIn)}</p>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* Above the picture and above the lead-in card, because captions are
+          {/* Above the picture and above the lead-in card, because captions are
             part of the frame: narration over black is exactly when you want to
             see them. Below the fullscreen button, which is chrome. */}
-        <CaptionOverlay
-          tracks={captionTracksOf(project)}
-          cues={captionCuesOf(project)}
-          width={project.width}
-          height={project.height}
-          currentTime={currentTime}
-        />
+          <CaptionOverlay
+            tracks={captionTracksOf(project)}
+            cues={captionCuesOf(project)}
+            width={project.width}
+            height={project.height}
+            currentTime={currentTime}
+          />
 
-        {offerFullscreen ? (
-          <button
-            type="button"
-            onClick={toggle}
-            aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            aria-pressed={fullscreen}
-            title={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-            // Its own colours rather than the shared Button: this sits over
-            // arbitrary picture, so it has to stay legible against anything.
-            className="absolute top-2 right-2 inline-flex items-center gap-1.5 rounded-lg bg-black/55 px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-          >
-            <span aria-hidden>⛶</span>
-            {fullscreen ? 'Exit' : 'Fullscreen'}
-          </button>
-        ) : null}
+          {/* Opposite the fullscreen button, on the same layer of chrome: both
+            sit over the picture and neither should cover the other. */}
+          <ReadinessBanner />
+
+          {offerFullscreen ? (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              aria-pressed={fullscreen}
+              title={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+              // Its own colours rather than the shared Button: this sits over
+              // arbitrary picture, so it has to stay legible against anything.
+              className="absolute top-2 right-2 inline-flex items-center gap-1.5 rounded-lg bg-black/55 px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            >
+              <span aria-hidden>⛶</span>
+              {fullscreen ? 'Exit' : 'Fullscreen'}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {project.audioClips.map((clip) => {
@@ -315,7 +508,7 @@ export function Preview({
         <p className="text-xs text-ink-dim">
           Clips play their own sound, mixed with your audio tracks — the export is exactly what you
           hear here. Select a clip to mute it or set its level. Playhead at{' '}
-          {formatTime(currentTime)}.
+          {formatTimecode(currentTime, project.fps)}, and the arrow keys move it a frame at a time.
         </p>
       )}
     </section>

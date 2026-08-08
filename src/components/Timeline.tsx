@@ -31,6 +31,7 @@ import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
 import { CaptionJobStatus } from './CaptionJobStatus'
 import { ClipMenu } from './ClipMenu'
+import { ClipReadinessBar } from './ClipReadinessBar'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import {
   MAX_LEAD_IN,
@@ -48,10 +49,12 @@ import {
   totalDuration,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
+import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
+import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
 import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
@@ -236,6 +239,10 @@ function ClipCard({
           </span>
         )}
       </button>
+
+      {/* How much of this clip is loaded, drawn along its own top edge so the
+          whole track reads as one bar: where it is green, playback will hold. */}
+      <ClipReadinessBar clipId={entry.clip.id} />
 
       {/* Sits on top of the thumbnail, so this pair stays white-on-scrim
           rather than following the theme — the media below can be any colour. */}
@@ -428,6 +435,7 @@ export function Timeline({
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
 
   const addTrack = useProjectStore((state) => state.addTrack)
+  const addVideoTrack = useProjectStore((state) => state.addVideoTrack)
   const setLeadIn = useProjectStore((state) => state.setLeadIn)
 
   const captionClip = useCaptionJobStore((state) => state.captionClip)
@@ -532,10 +540,21 @@ export function Timeline({
   // than the picture still has to be reachable and scrubbable, and a caption
   // dragged past the end has to stay visible enough to drag back.
   const contentWidth =
-    Math.max(pictureEndTime, audioEndTime, captionsEnd(captionCuesOf(project))) * zoom
+    Math.max(
+      pictureEndTime,
+      audioEndTime,
+      // Layers too. A layer held past everything else would otherwise fall off
+      // the end of the scrollable area — drawn, but out where it cannot be
+      // reached to be dragged back.
+      videoLayersEnd(videoClipsOf(project)),
+      captionsEnd(captionCuesOf(project)),
+    ) * zoom
 
+  // Never shrinks. Beside the panels the preview above is what gives way to make
+  // room, because a timeline squeezed to a few pixels is not a timeline, and
+  // this is the half of the screen the work happens in.
   return (
-    <section className="flex flex-col gap-2" aria-label="Timeline">
+    <section className="flex shrink-0 flex-col gap-2" aria-label="Timeline">
       <header className="flex flex-wrap items-center gap-3">
         <h2 className="text-sm font-semibold">Timeline</h2>
         <span className="text-xs text-ink-dim">
@@ -552,11 +571,20 @@ export function Timeline({
           <Button onClick={() => cutAt(currentTime)} disabled={!cutTarget} title={cutTitle}>
             <span aria-hidden>✂</span> Cut
           </Button>
-          <Button onClick={() => addTrack('voice')} title="Add an empty voice track">
-            + Voice track
+          {/* One button, because a voice lane and a music lane are both audio
+              lanes — what a lane carries is set on the lane itself, where you
+              can also change your mind about it later. */}
+          <Button
+            onClick={() => addTrack('voice')}
+            title="Add an empty audio track. Switch it between voice and music from the lane itself."
+          >
+            + Audio track
           </Button>
-          <Button onClick={() => addTrack('music')} title="Add an empty music track">
-            + Music track
+          <Button
+            onClick={addVideoTrack}
+            title="Add an empty video track. Clips on it are laid over the picture rather than into it."
+          >
+            + Video track
           </Button>
           {/* Only offered while the lines are hidden — once they are showing,
               the button would do nothing you could see. */}
@@ -627,6 +655,8 @@ export function Timeline({
               <span className="truncate font-medium">Clip sound</span>
             </div>
           ) : null}
+
+          <VideoTrackHeaders />
 
           <AudioTrackHeaders />
 
@@ -723,6 +753,10 @@ export function Timeline({
             </div>
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
+
+            {/* Directly under the picture it is laid over, and above the sound:
+                the lanes read up the screen in the order they stack in. */}
+            <VideoTrackLanes zoom={zoom} />
 
             <AudioTrackLanes zoom={zoom} targets={targets} />
 

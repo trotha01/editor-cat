@@ -15,7 +15,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b --noEmit false --emitDeclarationOnly false",
+    "typecheck": "tsc -b",
     "test:e2e": "node e2e/smoke.mjs",
     "build:mock": "VITE_MOCK_PROVIDERS=1 npm run build"
   },

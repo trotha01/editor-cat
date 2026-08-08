@@ -18,11 +18,12 @@ function kindOf(file: File): AssetKind | null {
   return null
 }
 
-export function LibraryPanel() {
+export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   const assets = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
   const removeAsset = useAssetStore((state) => state.remove)
   const addClip = useProjectStore((state) => state.addClip)
+  const addVideoClip = useProjectStore((state) => state.addVideoClip)
 
   const driveReady = useDriveStore((state) => state.status === 'connected' && state.folder !== null)
 
@@ -112,9 +113,24 @@ export function LibraryPanel() {
               </div>
               <div className="flex shrink-0 flex-col gap-1">
                 {asset.kind !== 'audio' ? (
-                  <Button onClick={() => addClip(asset)} title="Add to the end of the timeline">
-                    Add
-                  </Button>
+                  <>
+                    <Button
+                      onClick={() => addClip(asset)}
+                      title="Add to the end of the picture track"
+                    >
+                      Add
+                    </Button>
+                    {/* The other place picture can go. Dropped at the playhead
+                        rather than at the end, because a layer is placed to hit
+                        a moment — the end of the timeline is never that moment. */}
+                    <Button
+                      variant="ghost"
+                      onClick={() => addVideoClip(asset, currentTime)}
+                      title="Lay over the picture at the playhead, on a video track"
+                    >
+                      Layer
+                    </Button>
+                  </>
                 ) : null}
                 <Button
                   variant="ghost"

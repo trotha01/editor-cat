@@ -24,6 +24,7 @@ import {
   migrateProject,
   moveAudioClip,
   placeAudioClip,
+  retypeTrack,
 } from '../lib/audioTracks'
 import {
   captionCuesOf,
@@ -42,6 +43,17 @@ import {
   trimCue,
   type TimedWord,
 } from '../lib/captions'
+import {
+  addVideoTrack,
+  createVideoTrack,
+  laneForClip,
+  moveVideoClip,
+  trimVideoClip,
+  videoClipForAsset,
+  videoClipsOf,
+  videoTrackHasRoom,
+  videoTracksOf,
+} from '../lib/videoTracks'
 import { newId } from '../lib/media'
 import type {
   Asset,
@@ -54,6 +66,7 @@ import type {
   Clip,
   PositionedClip,
   Project,
+  VideoTrack,
 } from '../lib/types'
 
 /**
@@ -99,6 +112,7 @@ interface ProjectState {
   project: Project
   selectedClipId: string | null
   selectedAudioClipId: string | null
+  selectedVideoClipId: string | null
   selectedCaption: CaptionSelection | null
   loaded: boolean
 
@@ -141,7 +155,31 @@ interface ProjectState {
   removeAudioClip: (id: string) => void
   selectAudioClip: (id: string | null) => void
 
+  /** Adds an empty lane of picture on top of the others. */
+  addVideoTrack: () => void
+  updateVideoTrack: (id: string, patch: Partial<VideoTrack>) => void
+  removeVideoTrack: (id: string) => void
+  /**
+   * Puts an asset on a video lane at `startTime`, making a lane if every
+   * existing one is busy then. Returns the clip's id, or null when the project
+   * has no lanes at all and none could be made.
+   */
+  addVideoClip: (asset: Asset, startTime: number, trackId?: string) => string | null
+  /** Moves a layer along its lane or to another, refusing an overlap. */
+  moveVideoClipTo: (id: string, startTime: number, trackId?: string) => boolean
+  trimVideoClipEdge: (
+    id: string,
+    asset: Asset | undefined,
+    edge: 'start' | 'end',
+    value: number,
+  ) => void
+  setVideoClipAudio: (id: string, patch: { muted?: boolean; volume?: number }) => void
+  removeVideoClip: (id: string) => void
+  selectVideoClip: (id: string | null) => void
+
   addTrack: (kind: AudioTrackKind) => void
+  /** Changes what a lane is for, renaming and regrouping it to match. */
+  setTrackKind: (id: string, kind: AudioTrackKind) => void
   updateTrack: (id: string, patch: Partial<AudioTrack>) => void
   removeTrack: (id: string) => void
 
@@ -206,6 +244,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     project: emptyProject(),
     selectedClipId: null,
     selectedAudioClipId: null,
+    selectedVideoClipId: null,
     selectedCaption: null,
     loaded: false,
 
@@ -225,6 +264,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           loaded: true,
           selectedClipId: null,
           selectedAudioClipId: null,
+          selectedVideoClipId: null,
           selectedCaption: null,
         })
       } catch {
@@ -239,6 +279,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         loaded: true,
         selectedClipId: null,
         selectedAudioClipId: null,
+        selectedVideoClipId: null,
         selectedCaption: null,
       })
     },
@@ -388,6 +429,126 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           project.audioTracks,
           createTrack(newId('track'), kind, project.audioTracks),
         ),
+      })),
+
+    // --- Picture layered over the picture track ---------------------------
+
+    addVideoTrack: () =>
+      mutate((project) => ({
+        ...project,
+        videoTracks: addVideoTrack(videoTracksOf(project), newId('vtrack')),
+      })),
+
+    updateVideoTrack: (id, patch) =>
+      mutate((project) => ({
+        ...project,
+        videoTracks: videoTracksOf(project).map((track) =>
+          track.id === id ? { ...track, ...patch } : track,
+        ),
+      })),
+
+    removeVideoTrack: (id) => {
+      mutate((project) => ({
+        ...project,
+        videoTracks: videoTracksOf(project).filter((track) => track.id !== id),
+        // The clips go with the lane. Leaving them behind would keep them in
+        // the export, layered over the picture by a lane that no longer exists
+        // and with nothing on screen to say where they came from.
+        videoClips: videoClipsOf(project).filter((clip) => clip.trackId !== id),
+      }))
+      set((state) => ({
+        selectedVideoClipId: videoClipsOf(state.project).some(
+          (clip) => clip.id === state.selectedVideoClipId,
+        )
+          ? state.selectedVideoClipId
+          : null,
+      }))
+    },
+
+    addVideoClip: (asset, startTime, trackId) => {
+      const { project } = get()
+      const tracks = videoTracksOf(project)
+      const clips = videoClipsOf(project)
+      const draft = videoClipForAsset(asset, newId('vclip'), '', startTime)
+
+      // An explicit lane is a request, not a suggestion: refuse rather than
+      // quietly putting the clip somewhere else, because a drop that lands two
+      // lanes away is harder to understand than one that does not land.
+      if (trackId) {
+        if (!videoTrackHasRoom(clips, trackId, draft)) return null
+        mutate((current) => ({
+          ...current,
+          videoClips: [...videoClipsOf(current), { ...draft, trackId }],
+        }))
+        set({ selectedVideoClipId: draft.id })
+        return draft.id
+      }
+
+      const lane = laneForClip(tracks, clips, draft)
+      const laneId = lane?.id ?? newId('vtrack')
+      mutate((current) => ({
+        ...current,
+        videoTracks: lane
+          ? videoTracksOf(current)
+          : [
+              ...videoTracksOf(current),
+              { ...createVideoTrack(laneId, videoTracksOf(current)), id: laneId },
+            ],
+        videoClips: [...videoClipsOf(current), { ...draft, trackId: laneId }],
+      }))
+      set({ selectedVideoClipId: draft.id })
+      return draft.id
+    },
+
+    moveVideoClipTo: (id, startTime, trackId) => {
+      const { project } = get()
+      const result = moveVideoClip(videoClipsOf(project), id, {
+        startTime,
+        ...(trackId ? { trackId } : {}),
+      })
+      if (!result.moved) return false
+      mutate((current) => ({ ...current, videoClips: result.clips }))
+      return true
+    },
+
+    trimVideoClipEdge: (id, asset, edge, value) =>
+      mutate((project) => {
+        const clips = videoClipsOf(project)
+        const clip = clips.find((entry) => entry.id === id)
+        if (!clip) return project
+        const trimmed = trimVideoClip(clip, asset, edge, value)
+        // A trim that would run this layer into its neighbour is refused, the
+        // same way a drag into one is. Nothing on a lane may overlap, and a
+        // trim is only another way of moving an edge.
+        const others = clips.filter((entry) => entry.id !== id)
+        if (!videoTrackHasRoom(others, clip.trackId, trimmed)) return project
+        return { ...project, videoClips: clips.map((entry) => (entry.id === id ? trimmed : entry)) }
+      }),
+
+    setVideoClipAudio: (id, patch) =>
+      mutate((project) => ({
+        ...project,
+        videoClips: videoClipsOf(project).map((clip) =>
+          clip.id === id ? { ...clip, ...patch } : clip,
+        ),
+      })),
+
+    removeVideoClip: (id) => {
+      mutate((project) => ({
+        ...project,
+        videoClips: videoClipsOf(project).filter((clip) => clip.id !== id),
+      }))
+      set((state) => ({
+        selectedVideoClipId: state.selectedVideoClipId === id ? null : state.selectedVideoClipId,
+      }))
+    },
+
+    selectVideoClip: (id) => set({ selectedVideoClipId: id }),
+
+    setTrackKind: (id, kind) =>
+      mutate((project) => ({
+        ...project,
+        audioTracks: retypeTrack(project.audioTracks, id, kind),
       })),
 
     updateTrack: (id, patch) =>
@@ -576,7 +737,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     clearTimeline: () => {
       mutate((project) => ({ ...project, clips: [], audioClips: [], captionCues: [] }))
-      set({ selectedClipId: null, selectedAudioClipId: null, selectedCaption: null })
+      set({
+        selectedClipId: null,
+        selectedAudioClipId: null,
+        selectedVideoClipId: null,
+        selectedCaption: null,
+      })
     },
 
     positioned: () => {
