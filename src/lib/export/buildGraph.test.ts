@@ -6,6 +6,8 @@ import {
   type ExportOverlayClip,
   type ExportTransition,
 } from './buildGraph'
+import { moveVideoTrack } from '../videoTracks'
+import type { VideoClip, VideoTrack } from '../types'
 
 const base = { width: 1280, height: 720, fps: 30, outputFile: 'out.mp4' }
 
@@ -43,6 +45,11 @@ function graphOf(args: string[]): string {
   const index = args.indexOf('-filter_complex')
   expect(index).toBeGreaterThanOrEqual(0)
   return args[index + 1] as string
+}
+
+/** The input files in the order they were declared, which is the input order. */
+function inputFiles(args: string[]): string[] {
+  return args.filter((_arg, index) => args[index - 1] === '-i')
 }
 
 describe('buildExportPlan', () => {
@@ -474,6 +481,50 @@ describe('buildExportPlan', () => {
 
       expect(graph).toContain('[vcat][ov0]overlay=')
       expect(graph).toContain('[vov0][ov1]overlay=')
+    })
+
+    /**
+     * The overlays for a stack of lanes, built the way the export dialog builds
+     * them: every clip of every lane, walked in track order, because the track
+     * order is the stacking order. Written out here rather than mocked so that
+     * what this proves about reordering is about the real path to the encoder.
+     */
+    const stackOf = (tracks: readonly VideoTrack[], clips: readonly VideoClip[]) =>
+      tracks.flatMap((track) =>
+        clips
+          .filter((clip) => clip.trackId === track.id)
+          .map((clip) => over(`${clip.assetId}.mp4`, clip.startTime, clip.duration)),
+      )
+
+    it('composites a restacked pair of lanes in their new order', () => {
+      // Nothing in the exporter knows a lane has moved: it lays the overlays on
+      // in the order it is handed them, so moving a lane along the array is the
+      // whole of moving the picture it carries up the frame. This is the test
+      // that says so, since neither this file nor the preview had to change.
+      const tracks: VideoTrack[] = [
+        { id: 'v1', name: 'Video 1', hidden: false, opacity: 1 },
+        { id: 'v2', name: 'Video 2', hidden: false, opacity: 1 },
+      ]
+      const clips: VideoClip[] = [
+        { id: 'c1', trackId: 'v1', assetId: 'lower', startTime: 0, inPoint: 0, duration: 2 },
+        { id: 'c2', trackId: 'v2', assetId: 'upper', startTime: 0, inPoint: 0, duration: 2 },
+      ]
+      const plan = (stack: readonly VideoTrack[]) =>
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: stackOf(stack, clips),
+        }).args
+
+      // ov0 is laid on the picture first and ov1 over the result of that, so
+      // the first overlay input is the one at the bottom of the stack.
+      expect(inputFiles(plan(tracks))).toEqual(['a.png', 'lower.mp4', 'upper.mp4'])
+
+      const restacked = plan(moveVideoTrack(tracks, 'v1', 'up'))
+      expect(inputFiles(restacked)).toEqual(['a.png', 'upper.mp4', 'lower.mp4'])
+      expect(graphOf(restacked)).toContain('[vcat][ov0]overlay=')
+      expect(graphOf(restacked)).toContain('[vov0][ov1]overlay=')
     })
 
     it('goes on after the lead-in, so a layer lands when it was placed', () => {
