@@ -1,9 +1,11 @@
 /**
  * The project name, and the menu for switching between projects.
  *
- * Signed out (or with no Supabase project configured) there is exactly one
- * project and nothing to switch between, so this collapses to the plain
- * renameable title it was before.
+ * The name is a label here, not a field — renaming lives in Settings now, so
+ * clicking it does the same thing clicking anywhere else on this control
+ * does: open the switcher. Signed out (or with no Supabase project
+ * configured) there is exactly one project and nothing to switch to, so it
+ * collapses to a plain, unclickable label.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Button, Spinner } from './ui'
@@ -14,7 +16,6 @@ import { useProjectsStore } from '../state/useProjectsStore'
 
 export function ProjectPicker() {
   const name = useProjectStore((state) => state.project.name)
-  const rename = useProjectStore((state) => state.rename)
   const driveFolderId = useProjectStore((state) => state.project.driveFolderId)
 
   const driveStatus = useDriveStore((state) => state.status)
@@ -49,28 +50,25 @@ export function ProjectPicker() {
     }
   }, [open])
 
-  const title = (
-    <input
-      value={name}
-      onChange={(event) => rename(event.target.value)}
-      aria-label="Project name"
-      className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm hover:border-line focus:border-accent focus:outline-none"
-    />
-  )
-
-  if (status === 'local') return title
+  if (status === 'local') {
+    return (
+      <span className="min-w-0 flex-1 truncate px-2 py-1 text-sm" title={name}>
+        {name || 'Untitled project'}
+      </span>
+    )
+  }
 
   return (
-    <div className="relative flex min-w-0 flex-1 items-center gap-1" ref={menuRef}>
-      {title}
-
+    <div className="relative flex min-w-0 flex-1 items-center" ref={menuRef}>
       <Button
+        variant="ghost"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-haspopup="menu"
         title="Switch project"
-        className="shrink-0"
+        className="min-w-0 flex-1 justify-start gap-1.5 truncate px-2 py-1 text-sm font-normal"
       >
+        <span className="min-w-0 flex-1 truncate text-left">{name || 'Untitled project'}</span>
         {busy ? <Spinner /> : <span aria-hidden>▾</span>}
       </Button>
 

@@ -15,6 +15,7 @@ import { LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
 import { AccountSettings } from './AccountSettings'
 import { DriveSettings } from './DriveSettings'
+import { ProjectSettings } from './ProjectSettings'
 import { verifyKey } from '../lib/elevenlabs'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
@@ -74,6 +75,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   return (
     <Modal open={open} onClose={onClose} title="Settings" wide>
       <div className="flex flex-col gap-5">
+        <ProjectSettings />
+
         {isMockEnabled() ? (
           <Callout tone="info" title="Mock mode is on">
             Every AI call is faked locally, so no keys are needed and nothing is charged. Turn off{' '}
