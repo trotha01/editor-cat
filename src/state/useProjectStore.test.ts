@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyProject, useProjectStore } from './useProjectStore'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
-import type { Project } from '../lib/types'
+import type { Asset, Project } from '../lib/types'
 
 const saveProject = vi.fn<(project: Project) => Promise<void>>()
 
@@ -490,5 +490,125 @@ describe('transitions reach storage, and carry the timeline with them', () => {
     useProjectStore.getState().setTransition('clip-2', { kind: 'dissolve', duration: 0.5 })
 
     expect(stored().audioClips[0]?.startTime).toBeCloseTo(5.5)
+  })
+})
+
+/**
+ * Where a clip added from the library lands, and what has to come with it.
+ *
+ * Inserting into the middle of the run is the one clip edit that makes the
+ * picture longer as well as rearranging it, so everything past the insertion
+ * point that is timed in absolute seconds — captions, and the takes anchored to
+ * a shot — has to be carried by exactly the length of what was inserted. The
+ * failure this is here to catch is the sound staying put while the picture
+ * slides out from under it, which is silent until you play the thing back.
+ */
+describe('a clip added at the playhead', () => {
+  const asset: Asset = {
+    id: 'a-new',
+    kind: 'video',
+    blobKey: 'b-new',
+    mimeType: 'video/mp4',
+    name: 'new.mp4',
+    duration: 4,
+    createdAt: 0,
+  }
+
+  /** Three shots of 2s, 3s and 5s, so they run 0–2, 2–5 and 5–10. */
+  const threeShots = (): Project => ({
+    ...emptyProject(),
+    clips: [
+      { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+      { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+      { id: 'clip-3', assetId: 'c', inPoint: 0, outPoint: 5 },
+    ],
+  })
+
+  /** What was inserted, which is whatever is not one of the three shots. */
+  const added = () => stored().clips.filter((clip) => !clip.id.startsWith('clip-'))
+
+  it('lands after the clip the playhead is over rather than on the end', () => {
+    useProjectStore.setState({ project: threeShots() })
+
+    // A second into the first shot.
+    useProjectStore.getState().addClip(asset, 1)
+
+    const order = stored().clips.map((clip) => (clip.id.startsWith('clip-') ? clip.id : 'added'))
+    expect(order).toEqual(['clip-1', 'added', 'clip-2', 'clip-3'])
+    // Selected, so the next edit lands on what was just added.
+    expect(useProjectStore.getState().selectedClipId).toBe(added()[0]?.id)
+  })
+
+  it('carries the captions behind it by the length of what was inserted', () => {
+    useProjectStore.setState({ project: threeShots() })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'One.', start: 0.5, end: 0.9, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'Two.', start: 2.5, end: 2.9, source: { id: 'clip-2', label: 'b.mp4' } },
+      { text: 'Three.', start: 5.5, end: 5.9, source: { id: 'clip-3', label: 'c.mp4' } },
+    ])
+
+    useProjectStore.getState().addClip(asset, 1)
+
+    const startFor = (clipId: string) =>
+      captionCuesOf(stored()).find((cue) => cue.source?.id === clipId)?.start ?? NaN
+    // Four seconds of new picture between the first shot and the second. The
+    // line spoken over the first is in front of it and does not move; the two
+    // behind it move by exactly that much, each keeping its offset into its own
+    // shot — half a second in.
+    expect(startFor('clip-1')).toBeCloseTo(0.5)
+    expect(startFor('clip-2')).toBeCloseTo(6.5)
+    expect(startFor('clip-3')).toBeCloseTo(9.5)
+  })
+
+  it('carries the takes anchored behind it, and leaves the music where it was laid', () => {
+    useProjectStore.setState({ project: threeShots() })
+    const base = { assetId: 'rec', useConverted: false, inPoint: 0, duration: 1 }
+    // A line read half a second into the second shot, a count-in leading into
+    // the third, and a bed under the whole piece.
+    useProjectStore.getState().addAudioClip('voice', { ...base, startTime: 2.5 })
+    useProjectStore.getState().addAudioClip('countdown', { ...base, startTime: 6 })
+    useProjectStore.getState().addAudioClip('music', { ...base, startTime: 0, duration: 10 })
+
+    useProjectStore.getState().addClip(asset, 1)
+
+    const startFor = (anchorClipId: string) =>
+      stored().audioClips.find((clip) => clip.anchorClipId === anchorClipId)?.startTime ?? NaN
+    expect(startFor('clip-2')).toBeCloseTo(6.5)
+    expect(startFor('clip-3')).toBeCloseTo(10)
+    // The bed belongs to the piece rather than to a shot, so four more seconds
+    // of picture in front of it change nothing about where it starts.
+    const music = stored().audioClips.find((clip) => clip.duration === 10)
+    expect(music?.anchorClipId).toBeUndefined()
+    expect(music?.startTime).toBe(0)
+  })
+
+  it('goes on the end from past the picture, and from inside a lead-in', () => {
+    useProjectStore.setState({ project: threeShots() })
+    useProjectStore.getState().addClip(asset, 99)
+    expect(stored().clips.at(-1)?.id).toBe(added()[0]?.id)
+
+    // The black in front of the first clip is not a position in the run: there
+    // is no clip there to be after, and putting one in the gap would only close
+    // it.
+    useProjectStore.setState({ project: { ...threeShots(), leadIn: 4 } })
+    useProjectStore.getState().addClip(asset, 2)
+    expect(stored().clips).toHaveLength(4)
+    expect(stored().clips.at(-1)?.id).toBe(added()[0]?.id)
+  })
+
+  it('goes on the end when nothing says where', () => {
+    // What the Image and Video steps do: a clip generated there arrives with no
+    // playhead to place it at, and lands where it always has.
+    useProjectStore.setState({ project: threeShots() })
+
+    useProjectStore.getState().addClip(asset)
+
+    expect(
+      stored()
+        .clips.map((clip) => clip.id)
+        .slice(0, 3),
+    ).toEqual(['clip-1', 'clip-2', 'clip-3'])
+    expect(stored().clips).toHaveLength(4)
   })
 })

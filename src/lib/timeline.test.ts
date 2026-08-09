@@ -11,6 +11,7 @@ import {
   formatTime,
   formatTimecode,
   frameDuration,
+  insertIndexAt,
   isThroughCut,
   joinCutAt,
   layoutClips,
@@ -258,6 +259,53 @@ describe('clipForAsset', () => {
   it('falls back to a default when a video reports no duration', () => {
     const unknown = { ...video, duration: undefined }
     expect(clipDuration(clipForAsset(unknown, 'c'))).toBeGreaterThan(0)
+  })
+})
+
+describe('insertIndexAt', () => {
+  // 2s, 3s and 5s laid end to end, so the clips run 0–2, 2–5 and 5–10.
+  const clips = [clip('1', 0, 2), clip('2', 0, 3), clip('3', 0, 5)]
+
+  it('goes after the clip the playhead is over', () => {
+    expect(insertIndexAt(clips, 1)).toBe(1)
+    expect(insertIndexAt(clips, 3.5)).toBe(2)
+    expect(insertIndexAt(clips, 9.9)).toBe(3)
+  })
+
+  it('goes after the clip a cut starts, not the one it ends', () => {
+    // A boundary belongs to the clip beginning there, because that is the one
+    // on screen at that moment — so parking on a cut and adding puts the new
+    // clip after the shot you can see rather than in front of it.
+    expect(insertIndexAt(clips, 2)).toBe(2)
+    expect(insertIndexAt(clips, 5)).toBe(3)
+  })
+
+  it('goes on the end from past the picture', () => {
+    // Exactly at the end holds the last clip's final frame, and one frame later
+    // there is nothing at all; both mean the same thing here.
+    expect(insertIndexAt(clips, 10)).toBe(3)
+    expect(insertIndexAt(clips, 99)).toBe(3)
+  })
+
+  it('goes on the end from inside a lead-in', () => {
+    // There is no clip under the playhead to be after, and clips sit end to end
+    // — a clip put *in* the black could only close it. Past the black it is the
+    // run of clips again, measured from where the picture actually starts.
+    expect(insertIndexAt(clips, 1, 4)).toBe(3)
+    expect(insertIndexAt(clips, 3.99, 4)).toBe(3)
+    expect(insertIndexAt(clips, 5, 4)).toBe(1)
+  })
+
+  it('is the only index there is on an empty timeline', () => {
+    expect(insertIndexAt([], 0)).toBe(0)
+    expect(insertIndexAt([], 12)).toBe(0)
+  })
+
+  it('arrives between the two clips a transition blends', () => {
+    // Through the overlap the outgoing clip is the one playing, so the new clip
+    // goes after it — which is where the picture says the playhead is.
+    const blended = [clip('1', 0, 3), withTransition(clip('2', 0, 3), dissolve(1))]
+    expect(insertIndexAt(blended, 2.5)).toBe(1)
   })
 })
 

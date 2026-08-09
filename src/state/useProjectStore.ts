@@ -9,6 +9,7 @@ import { loadProject, saveProject } from '../lib/db'
 import {
   clampLeadIn,
   clipForAsset,
+  insertIndexAt,
   joinCutAt,
   layoutClips,
   leadInOf,
@@ -140,7 +141,12 @@ interface ProjectState {
    */
   setLeadIn: (seconds: number) => void
 
-  addClip: (asset: Asset) => void
+  /**
+   * Puts an asset on the picture track after the clip `atTime` falls in, which
+   * is where the next shot goes when you are working from the playhead. With no
+   * time named there is no playhead to work from, so it goes on the end.
+   */
+  addClip: (asset: Asset, atTime?: number) => void
   removeClip: (clipId: string) => void
   selectClip: (clipId: string | null) => void
   moveClip: (from: number, to: number) => void
@@ -348,9 +354,25 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     setLeadIn: (seconds) =>
       mutate((project) => underClips(project, { ...project, leadIn: clampLeadIn(seconds) })),
 
-    addClip: (asset) => {
+    addClip: (asset, atTime) => {
       const clip = clipForAsset(asset, newId('clip'))
-      mutate((project) => ({ ...project, clips: [...project.clips, clip] }))
+      mutate((project) => {
+        // No time named is the generation panels, which add what they have just
+        // made without a playhead to add it at; they keep putting it on the end.
+        const index =
+          atTime === undefined
+            ? project.clips.length
+            : insertIndexAt(project.clips, atTime, leadInOf(project))
+        const clips = [...project.clips]
+        clips.splice(index, 0, clip)
+        // Through `underClips` like every other edit that rearranges the run.
+        // Inserting mid-track is the one that also makes the timeline longer:
+        // everything after the new clip is pushed later by the whole length of
+        // it, and captions and the takes anchored to a shot are timed in
+        // absolute seconds, so without this the picture would slide out from
+        // under words that were spoken over it.
+        return underClips(project, { ...project, clips })
+      })
       set({ selectedClipId: clip.id })
     },
 
