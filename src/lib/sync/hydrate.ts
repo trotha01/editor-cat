@@ -6,6 +6,13 @@
  * to lay the timeline out immediately — and their `drive_file_id` says where
  * the bytes actually live.
  *
+ * That id is a file id and not a path, which is what makes this indifferent to
+ * media now being spread across a folder per project rather than pooled in one:
+ * `downloadFile` asks Drive for a file, and Drive knows where its own files are.
+ * Nothing here needs to know which folder a project was saving into, or that the
+ * folder has been renamed, or moved, or that the project's assets predate it and
+ * sit in the parent alongside another project's.
+ *
  * Metadata is restored first and bytes second, on purpose: the editor is
  * usable, scrubbable and re-orderable while the downloads are still running.
  */

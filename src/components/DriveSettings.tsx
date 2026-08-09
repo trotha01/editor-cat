@@ -6,6 +6,12 @@
  * Settings both already exist — the only thing left is where the files go.
  * Anything that goes wrong with the connection afterwards is reported in the
  * editor, next to the uploads it affects (see DriveUploads).
+ *
+ * The folder named here is the parent, not the destination: each project gets a
+ * folder of its own inside it. Worth saying on screen rather than leaving to be
+ * discovered, because it changes what changing it does — new projects go under
+ * the new folder, and projects that already have one keep it, so their media
+ * stays in one piece.
  */
 import { useState } from 'react'
 import { Button, Callout } from './ui'
@@ -50,6 +56,12 @@ export function DriveSettings() {
           Change folder
         </Button>
       </div>
+
+      <p className="text-xs text-ink-dim">
+        New projects get a folder of their own in here, named after the project. Changing this moves
+        where the next one goes; projects that already have a folder keep it, so their media stays
+        together.
+      </p>
 
       {error ? (
         <Callout tone="error" title="Could not change folder">

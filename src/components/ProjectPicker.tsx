@@ -7,12 +7,18 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { Button, Spinner } from './ui'
+import { folderUrl } from '../lib/google/drive'
+import { useDriveStore } from '../state/useDriveStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useProjectsStore } from '../state/useProjectsStore'
 
 export function ProjectPicker() {
   const name = useProjectStore((state) => state.project.name)
   const rename = useProjectStore((state) => state.rename)
+  const driveFolderId = useProjectStore((state) => state.project.driveFolderId)
+
+  const driveStatus = useDriveStore((state) => state.status)
+  const driveParent = useDriveStore((state) => state.folder)
 
   const status = useProjectsStore((state) => state.status)
   const projects = useProjectsStore((state) => state.projects)
@@ -118,6 +124,33 @@ export function ProjectPicker() {
               <span aria-hidden>＋</span> New project
             </button>
           </div>
+
+          {/*
+            Where this project's media is going. Shown here rather than in
+            Settings because it is a fact about the open project, not about the
+            account — and because the answer differs per project: one made before
+            projects had folders of their own still saves into the chosen folder,
+            and saying so is better than letting someone hunt for a folder that
+            was never made.
+          */}
+          {driveStatus === 'connected' && driveParent ? (
+            <div className="border-t border-line px-2.5 pt-2 pb-1 text-xs text-ink-dim">
+              {driveFolderId ? (
+                <a
+                  href={folderUrl(driveFolderId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:text-ink"
+                >
+                  <span aria-hidden>📁</span> This project’s Drive folder
+                </a>
+              ) : (
+                <span className="block truncate">
+                  <span aria-hidden>📁</span> Saving into {driveParent.name}
+                </span>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

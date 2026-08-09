@@ -1,0 +1,23 @@
+-- Each project's own folder in the user's Google Drive.
+--
+-- Media used to go into one folder, chosen once at first run, for every project
+-- at once. That folder is now the *parent*: a project gets a folder of its own
+-- inside it, named after the project, and its media goes there. This column is
+-- the pointer to that folder.
+--
+-- A column rather than a key inside `doc`, for three reasons. It is not part of
+-- the document — nobody edits it on the timeline, and it should not ride along
+-- in a value that is replaced wholesale on every keystroke's worth of editing.
+-- It is written outside the optimistic-concurrency guard (see
+-- setProjectDriveFolder), which a doc key could not be: recording where a folder
+-- lives is not a new version of the project, and making it one would reject the
+-- push of another tab that agrees with it. And it costs no schema_version bump,
+-- so every stored document stays byte-identical and an older client reading one
+-- is unaffected.
+--
+-- Null on every project made before this existed, and on any project created
+-- while Drive was disconnected or refusing to make a folder. Null means "no
+-- folder of its own": the client saves that project's media into the chosen
+-- folder itself, which is where the rest of that project's media already is.
+alter table projects
+  add column if not exists drive_folder_id text;

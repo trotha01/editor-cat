@@ -42,6 +42,13 @@ vi.mock('./useAssetStore', () => ({
   useAssetStore: { getState: () => ({ update }) },
 }))
 
+/** The open project, which is what says where its media goes. */
+let openProject: { id: string; driveFolderId?: string } = { id: 'project_1' }
+
+vi.mock('./useProjectStore', () => ({
+  useProjectStore: { getState: () => ({ project: openProject }) },
+}))
+
 const { useDriveStore } = await import('./useDriveStore')
 
 const asset = (extra: Partial<Asset> = {}): Asset => ({
@@ -62,6 +69,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
+  openProject = { id: 'project_1' }
   currentUser.mockResolvedValue({ email: 'someone@example.com', name: 'Someone' })
   loadConnectionStatus.mockResolvedValue({ durable: false, connected: false })
   isDurableConnection.mockReturnValue(null)
@@ -219,19 +227,45 @@ describe('setFolder', () => {
 })
 
 describe('uploadAsset', () => {
-  it('uploads into the chosen folder and records the resulting file id', async () => {
+  it('uploads into the open project’s own folder and records the resulting file id', async () => {
+    openProject = { id: 'project_1', driveFolderId: 'folder_project_1' }
     uploadFile.mockResolvedValue({ id: 'drive_9', name: 'shot.png', mimeType: 'image/png' })
 
     useDriveStore.getState().uploadAsset(asset(), blob)
     await flush()
 
+    // The chosen folder is the parent; the project's own folder is the target.
     expect(uploadFile).toHaveBeenCalledWith(
       blob,
-      expect.objectContaining({ name: 'shot.png', parentId: 'folder_1' }),
+      expect.objectContaining({ name: 'shot.png', parentId: 'folder_project_1' }),
     )
     expect(update).toHaveBeenCalledWith('asset_1', { driveFileId: 'drive_9' })
     // The job disappears once it is safely in Drive.
     expect(useDriveStore.getState().uploads).toEqual([])
+  })
+
+  it('falls back to the chosen folder for a project that has none of its own', async () => {
+    // A project made before projects had folders, or one created while Drive
+    // could not make one. Its earlier media is in the chosen folder already, so
+    // that is where the rest of it belongs too.
+    uploadFile.mockResolvedValue({ id: 'drive_9', name: 'shot.png', mimeType: 'image/png' })
+
+    useDriveStore.getState().uploadAsset(asset(), blob)
+    await flush()
+
+    expect(uploadFile).toHaveBeenCalledWith(blob, expect.objectContaining({ parentId: 'folder_1' }))
+  })
+
+  it('does nothing when no folder has been chosen, project folder or not', async () => {
+    // The parent is what says Drive is set up at all. Without it there is no
+    // corner of anyone's Drive this app has been pointed at.
+    openProject = { id: 'project_1', driveFolderId: 'folder_project_1' }
+    useDriveStore.setState({ folder: null })
+
+    useDriveStore.getState().uploadAsset(asset(), blob)
+    await flush()
+
+    expect(uploadFile).not.toHaveBeenCalled()
   })
 
   it('does nothing for an asset that already came from Drive', () => {

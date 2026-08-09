@@ -15,6 +15,7 @@ import {
   listProjects,
   ProjectConflictError,
   fromStored,
+  setProjectDriveFolder,
   toDoc,
   updateProject,
   type ProjectSummary,
@@ -22,11 +23,13 @@ import {
 import { deleteProject as deleteLocal } from '../lib/db'
 import { createScheduler, type Scheduler } from '../lib/sync/scheduler'
 import { hydrateProject, type HydrationProgress } from '../lib/sync/hydrate'
+import { createFolder, findFolder, renameFolder } from '../lib/google/drive'
 import { migrateProject } from '../lib/audioTracks'
 import { newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { emptyProject, LOCAL_PROJECT_ID, useProjectStore } from './useProjectStore'
 import { useAssetStore } from './useAssetStore'
+import { useDriveStore } from './useDriveStore'
 import { requiresSignIn } from './useAuthStore'
 import type { Project } from '../lib/types'
 
@@ -88,12 +91,145 @@ let scheduler: Scheduler | null = null
 let unsubscribe: (() => void) | null = null
 
 export const useProjectsStore = create<ProjectsState>((set, get) => {
+  /**
+   * Writes a project's folder id to the row, and does not care if it fails.
+   *
+   * The server copy is what the *next* machine reads; this session already has
+   * the id in hand. Losing the write costs that machine one lookup by name,
+   * which is exactly what `findFolder` is there for — not worth failing a
+   * project creation over.
+   */
+  const recordFolder = (projectId: string, folderId: string) => {
+    void setProjectDriveFolder(projectId, folderId).catch(() => {
+      // See above: recoverable by name on the other side.
+    })
+  }
+
+  /** Puts a folder id onto the project list, and onto the open document. */
+  const attachFolder = (projectId: string, folderId: string) => {
+    set({
+      projects: get().projects.map((entry) =>
+        entry.id === projectId ? { ...entry, driveFolderId: folderId } : entry,
+      ),
+    })
+
+    if (useProjectStore.getState().project.id !== projectId) return
+    // Installed the way a fetched document is, guard and all. Where a folder
+    // turned out to be is a fact from elsewhere rather than an edit, and letting
+    // it look like one would schedule a push of a timeline nobody touched. It
+    // deliberately does not go through the editor's own persist: the id belongs
+    // to the row, and the local cache picks it up from there on the next open.
+    applyingRemote = true
+    try {
+      useProjectStore.setState((state) => ({
+        project: { ...state.project, driveFolderId: folderId },
+      }))
+    } finally {
+      applyingRemote = false
+    }
+  }
+
+  /**
+   * The folder ids the other projects have already recorded.
+   *
+   * Every project is born called "Untitled project", so a folder that matches by
+   * name is not thereby this project's. The recorded id is the real link, and one
+   * already claimed belongs to whoever claimed it.
+   */
+  const claimedFolders = (exceptId: string): string[] =>
+    get()
+      .projects.filter((entry) => entry.id !== exceptId)
+      .map((entry) => entry.driveFolderId)
+      .filter((id): id is string => Boolean(id))
+
+  /**
+   * Makes a new project a folder of its own, named after it.
+   *
+   * Best-effort from end to end, deliberately: Drive may be unconfigured, never
+   * connected, disconnected since, out of quota or simply down, and none of that
+   * is a reason to lose a project that already exists on the server. A project
+   * with no folder saves into the chosen folder itself — what every project did
+   * before this — so a failure here costs tidiness and nothing else.
+   *
+   * No lookup first. This project was created seconds ago and cannot already
+   * have a folder, and creating unconditionally is what keeps two projects
+   * sharing the name "Untitled project" from sharing one folder.
+   */
+  const makeFolderFor = async (projectId: string, name: string): Promise<string | undefined> => {
+    const { status, folder } = useDriveStore.getState()
+    if (status !== 'connected' || !folder) return undefined
+
+    try {
+      const made = await createFolder(name, folder.id)
+      recordFolder(projectId, made.id)
+      return made.id
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Finds the folder a project has but never recorded, without making one.
+   *
+   * The gap this closes: a folder is created and its id written in a second
+   * call, so a create that lands while the record does not — a dropped
+   * connection, a 5xx on the way back that `driveFetch` rightly will not
+   * retry — leaves a folder nothing points at. Another machine opening that
+   * project would otherwise make a second one beside it.
+   *
+   * It only ever adopts. A project that genuinely has no folder is left without
+   * one rather than given one on open: media it uploaded before this feature is
+   * sitting in the chosen folder, and a new folder from here on would split one
+   * project's media across two places to no one's benefit.
+   */
+  const adoptFolderFor = (project: Project) => {
+    if (project.driveFolderId) return
+    const { status, folder } = useDriveStore.getState()
+    if (status !== 'connected' || !folder) return
+
+    void findFolder(project.name, folder.id, claimedFolders(project.id))
+      .then((found) => {
+        if (!found) return
+        attachFolder(project.id, found.id)
+        recordFolder(project.id, found.id)
+      })
+      .catch(() => {
+        // Nothing is lost by not knowing: uploads go to the chosen folder, the
+        // same as they did before projects had folders of their own.
+      })
+  }
+
+  /**
+   * Keeps a project's folder named the same as the project.
+   *
+   * Hung off the push rather than off `rename`, which fires on every keystroke
+   * in the title field — one Drive write per character is not a thing to do to
+   * someone's Drive. The push is already debounced to a quiet period, so the
+   * name that reaches here is the one they stopped typing on.
+   *
+   * Best-effort again. A folder that could not be renamed is still the right
+   * folder, because uploads go by id; it just reads as the old name in Drive
+   * until the next rename lands.
+   */
+  const syncFolderName = (project: Project, previousName: string | undefined) => {
+    const folderId = project.driveFolderId
+    if (!folderId || project.name === previousName) return
+    if (useDriveStore.getState().status !== 'connected') return
+
+    void renameFolder(folderId, project.name).catch(() => {
+      // The name is a label. The id is the link, and it has not moved.
+    })
+  }
+
   /** Sends the open project up, guarded by the version we last saw. */
   const push = async () => {
     const { activeId, version } = get()
     if (!activeId) return
 
     const project = useProjectStore.getState().project
+    // Read before the push, because the push is what replaces it: this is the
+    // name the folder in Drive was last given.
+    const pushedName = get().projects.find((entry) => entry.id === activeId)?.name
     set({ status: 'saving' })
 
     try {
@@ -107,6 +243,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             : entry,
         ),
       })
+      syncFolderName(project, pushedName)
     } catch (cause) {
       if (cause instanceof ProjectConflictError) {
         // Deliberately not resolved automatically. Merging two timelines has no
@@ -188,8 +325,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           await useProjectStore.getState().open(LOCAL_PROJECT_ID)
           const local = useProjectStore.getState().project
           const created = await createProject(local.name, toDoc(local))
+          // Their first cloud project is still a project being created, and gets
+          // a folder on the same terms as every one after it.
+          const driveFolderId = await makeFolderFor(created.id, created.name)
 
-          apply(fromStored(created))
+          apply({ ...fromStored(created), ...(driveFolderId ? { driveFolderId } : {}) })
           rememberActive(created.id)
           set({
             projects: [
@@ -198,6 +338,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
                 name: created.name,
                 updatedAt: created.updatedAt,
                 version: created.version,
+                ...(driveFolderId ? { driveFolderId } : {}),
               },
             ],
             activeId: created.id,
@@ -241,6 +382,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         set({ activeId: id, version: stored.version, status: 'saved' })
         watch()
         hydrate(project)
+        adoptFolderFor(project)
       } catch (cause) {
         set({ status: 'error', error: toDisplayMessage(cause) })
       } finally {
@@ -255,8 +397,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
 
         const blank = emptyProject(LOCAL_PROJECT_ID, 'Untitled project')
         const created = await createProject(blank.name, toDoc(blank))
+        // The row is the project and it is already safe. The folder is only
+        // where its media will go, and nothing about making it — or failing
+        // to — can reach back and undo the row.
+        const driveFolderId = await makeFolderFor(created.id, created.name)
 
-        apply(fromStored(created))
+        apply({ ...fromStored(created), ...(driveFolderId ? { driveFolderId } : {}) })
         rememberActive(created.id)
         set({
           projects: [
@@ -265,6 +411,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               name: created.name,
               updatedAt: created.updatedAt,
               version: created.version,
+              ...(driveFolderId ? { driveFolderId } : {}),
             },
             ...get().projects,
           ],
@@ -284,6 +431,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       set({ busy: true, error: null })
       try {
         if (get().activeId === id) scheduler?.cancel()
+        // The project's folder in Drive stays, media and all. Those are the
+        // user's files in the user's own Drive, and deleting a timeline is not
+        // an instruction to throw away the footage it was cut from — the whole
+        // point of copying it out there was that it survives this app.
         await deleteRemote(id)
         await deleteLocal(id).catch(() => {
           // The local cache is disposable; the server is the record.

@@ -166,9 +166,27 @@ Resolution is a reload — merging two timelines has no sensible automatic answe
 Drive comes with the sign-in, and the step straight after it is choosing where
 your media goes: make an `editor-cat` folder in one click, or pick an existing
 one. From then on everything the app makes — generated images, rendered clips,
-recordings, files you upload — is copied into that folder as it is created, and
-**Library → Import from Drive** opens the Google Picker inside it to bring
-existing media in.
+recordings, files you upload — is copied into your Drive as it is created, and
+**Library → Import from Drive** opens the Google Picker inside that folder to
+bring existing media in.
+
+**Each project gets a folder of its own**, named after the project, inside the
+one you chose — so the folder you pick is the parent rather than the destination,
+and a Drive full of six projects' footage is six folders instead of one heap.
+Creating a project creates the folder; renaming the project renames it, once the
+name settles. The project menu links straight to it.
+
+Three things are worth knowing about the edges of that:
+
+- **Projects you already had keep saving into the chosen folder.** Their media is
+  already in there, and giving them a new folder now would split one project
+  across two places. Only projects created from here on get their own.
+- **A folder is a convenience, not a condition.** If Drive is disconnected, out
+  of quota, or simply down when a project is created, the project is still
+  created — it saves into the chosen folder instead, and nothing is lost but the
+  tidiness.
+- **Changing the folder in Settings only moves where the next project goes.**
+  Projects that already have one keep it.
 
 The editor does not open until all three are in place — session, permission,
 folder — because an editor that silently saves nowhere is worse than one more

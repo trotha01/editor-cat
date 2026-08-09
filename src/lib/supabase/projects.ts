@@ -14,6 +14,12 @@ export interface ProjectSummary {
   name: string
   updatedAt: string
   version: number
+  /**
+   * Carried in the summary as well as on the project itself, because the folder
+   * ids other projects hold are what stops a lookup by name from handing one
+   * project the folder of another called the same thing.
+   */
+  driveFolderId?: string
 }
 
 /** A project as it exists on the server: the document plus its sync metadata. */
@@ -24,6 +30,8 @@ export interface StoredProject {
   schemaVersion: number
   version: number
   updatedAt: string
+  /** The project's own folder in Drive. Absent until one has been made. */
+  driveFolderId?: string
 }
 
 interface ProjectRow {
@@ -33,9 +41,20 @@ interface ProjectRow {
   schema_version: number
   version: number
   updated_at: string
+  drive_folder_id: string | null
 }
 
-/** Splits the editable document away from the identity fields around it. */
+/** Every column a whole project is read back through. */
+const PROJECT_FIELDS = 'id,name,doc,schema_version,version,updated_at,drive_folder_id'
+
+/**
+ * Splits the editable document away from the identity fields around it.
+ *
+ * `driveFolderId` is one of those fields and is deliberately not written here.
+ * It has a column of its own, set by `setProjectDriveFolder` outside the version
+ * guard, so putting it in the document would give it a second home that a stale
+ * push could overwrite with an older answer.
+ */
 export function toDoc(project: Project): ProjectDoc {
   return {
     clips: project.clips,
@@ -55,7 +74,14 @@ export function toDoc(project: Project): ProjectDoc {
 }
 
 export function fromStored(stored: StoredProject): Project {
-  return { id: stored.id, name: stored.name, ...stored.doc }
+  return {
+    id: stored.id,
+    name: stored.name,
+    ...stored.doc,
+    // Only written when there is one, so a project with no folder of its own
+    // round-trips to exactly the shape it had rather than growing an empty key.
+    ...(stored.driveFolderId ? { driveFolderId: stored.driveFolderId } : {}),
+  }
 }
 
 function toStored(row: ProjectRow): StoredProject {
@@ -66,22 +92,30 @@ function toStored(row: ProjectRow): StoredProject {
     schemaVersion: row.schema_version,
     version: row.version,
     updatedAt: row.updated_at,
+    ...(row.drive_folder_id ? { driveFolderId: row.drive_folder_id } : {}),
   }
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
   const { data, error } = await supabase()
     .from('projects')
-    .select('id,name,updated_at,version')
+    .select('id,name,updated_at,version,drive_folder_id')
     .order('updated_at', { ascending: false })
 
   if (error) throw new Error(error.message)
   return (data ?? []).map(
-    (row: { id: string; name: string; updated_at: string; version: number }) => ({
+    (row: {
+      id: string
+      name: string
+      updated_at: string
+      version: number
+      drive_folder_id: string | null
+    }) => ({
       id: row.id,
       name: row.name,
       updatedAt: row.updated_at,
       version: row.version,
+      ...(row.drive_folder_id ? { driveFolderId: row.drive_folder_id } : {}),
     }),
   )
 }
@@ -89,7 +123,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 export async function getProject(id: string): Promise<StoredProject | null> {
   const { data, error } = await supabase()
     .from('projects')
-    .select('id,name,doc,schema_version,version,updated_at')
+    .select(PROJECT_FIELDS)
     .eq('id', id)
     .maybeSingle()
 
@@ -101,11 +135,31 @@ export async function createProject(name: string, doc: ProjectDoc): Promise<Stor
   const { data, error } = await supabase()
     .from('projects')
     .insert({ name, doc, schema_version: SCHEMA_VERSION })
-    .select('id,name,doc,schema_version,version,updated_at')
+    .select(PROJECT_FIELDS)
     .single()
 
   if (error) throw new Error(error.message)
   return toStored(data as ProjectRow)
+}
+
+/**
+ * Records which folder in Drive a project's media goes into.
+ *
+ * A write of its own rather than part of the document push, and deliberately
+ * outside the version guard. Nobody edited anything: this is where a folder that
+ * already exists turned out to be, so counting it as a new version would reject
+ * the next push from a tab that is mid-edit and agrees with us completely.
+ *
+ * It also leaves `updated_at` alone, so discovering a folder does not reshuffle
+ * the project list under someone.
+ */
+export async function setProjectDriveFolder(id: string, driveFolderId: string): Promise<void> {
+  const { error } = await supabase()
+    .from('projects')
+    .update({ drive_folder_id: driveFolderId })
+    .eq('id', id)
+
+  if (error) throw new Error(error.message)
 }
 
 /** Raised when the row moved on before our write landed. */
@@ -140,7 +194,7 @@ export async function updateProject(
     })
     .eq('id', id)
     .eq('version', expectedVersion)
-    .select('id,name,doc,schema_version,version,updated_at')
+    .select(PROJECT_FIELDS)
     .maybeSingle()
 
   if (error) throw new Error(error.message)

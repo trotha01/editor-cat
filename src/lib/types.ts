@@ -356,6 +356,21 @@ export interface Project {
   width: number
   height: number
   fps: number
+  /**
+   * The folder in the user's Drive this project's media is saved into: a
+   * subfolder of the one chosen in Settings, named after the project.
+   *
+   * Absent on projects made before projects had folders of their own, and on any
+   * project created while Drive was disconnected or unable to make one. Their
+   * media goes into the chosen folder itself — where all of it went before this
+   * existed, and where their earlier uploads already are. See
+   * `useDriveStore.uploadAsset`.
+   *
+   * A column of its own on the server rather than part of the document, so it is
+   * left out of `ProjectDoc` alongside `id` and `name`: nobody edits it, and
+   * recording it must not read as a new version of the timeline.
+   */
+  driveFolderId?: string
   /** Present only on projects saved before multitrack. Read by migrateProject. */
   voiceovers?: LegacyVoiceoverTake[]
 }
@@ -364,9 +379,10 @@ export interface Project {
  * The part of a project that gets stored as one value.
  *
  * `id` and `name` are columns of their own so the project list can be rendered
- * without pulling every timeline down with it.
+ * without pulling every timeline down with it. `driveFolderId` is a column for a
+ * different reason — see the field.
  */
-export type ProjectDoc = Omit<Project, 'id' | 'name' | 'voiceovers'>
+export type ProjectDoc = Omit<Project, 'id' | 'name' | 'driveFolderId' | 'voiceovers'>
 
 /**
  * The shape version written alongside a stored document.

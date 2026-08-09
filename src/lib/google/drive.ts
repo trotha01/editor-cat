@@ -3,13 +3,15 @@
  *
  * Hand-written against the REST endpoints rather than pulled from `googleapis`:
  * that package targets Node, assumes a service-account style auth chain, and
- * would add tens of megabytes to a browser bundle to cover four calls.
+ * would add tens of megabytes to a browser bundle to cover a handful of calls.
  *
- * Everything here works under `drive.file` alone — creating, uploading,
- * and reading back files this app made or the user handed over through the
- * Google Picker. Listing or searching someone's existing Drive is deliberately
- * absent: that needs a restricted scope, and the Picker does it better. See
- * `picker.ts`.
+ * Everything here works under `drive.file` alone — creating, renaming,
+ * uploading, and reading back files this app made or the user handed over
+ * through the Google Picker. `findFolder` lists, but only within that same
+ * grant: a list under `drive.file` returns nothing the app did not already have
+ * access to, so it can find a project folder we created and nothing else.
+ * Searching someone's own Drive is still deliberately absent — that needs a
+ * restricted scope, and the Picker does it better. See `picker.ts`.
  */
 import { accessToken, invalidateToken } from './gis'
 import type { AssetKind } from '../types'
@@ -172,6 +174,19 @@ async function driveErrorFrom(response: Response): Promise<DriveError> {
 /** Shared by every call, so shared drives behave like My Drive. */
 const SHARED_DRIVE_PARAMS = 'supportsAllDrives=true&includeItemsFromAllDrives=true'
 
+/**
+ * A value as Drive's query language wants it: single-quoted, with backslashes
+ * and quotes inside escaped.
+ *
+ * Project folders are named after projects, and project names are typed by the
+ * user. Without this, a project called "Bob's cut" closes the quote early and
+ * the search comes back a 400 — or, with a name picked for the purpose, comes
+ * back as a different search than the one written here.
+ */
+function quoted(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+}
+
 /** The account behind the current token, for display in Settings. */
 export async function currentUser(): Promise<{ email: string; name: string }> {
   const response = await driveFetch(`${API}/about?fields=user(emailAddress,displayName)`)
@@ -198,6 +213,77 @@ export async function createFolder(name: string, parentId = 'root'): Promise<Dri
     body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
   })
   return (await response.json()) as DriveFolder
+}
+
+/**
+ * The folder called `name` directly inside `parentId`, or null if there is none.
+ *
+ * This is not the Drive search the module note above rules out. Under
+ * `drive.file` a list only ever returns files this app created or was handed
+ * through the Picker, so the only thing it can turn up here is a project folder
+ * we made ourselves — no window onto the user's own files, and nothing beyond
+ * what the consent screen already covers.
+ *
+ * It exists because a folder can be created without that fact reaching us: a
+ * create may apply and still fail on the way back, which is precisely why
+ * `driveFetch` refuses to retry a 5xx, and the id is recorded in a second write
+ * that can fail on its own. Looking the folder up by name is how the next
+ * session — or the next machine — finds it again instead of making a second one.
+ *
+ * `claimed` is the answer to two projects sharing a name, which they routinely
+ * do: every project is born "Untitled project". A folder another project has
+ * already recorded is not this project's however well the name matches, so it is
+ * skipped and the caller makes its own.
+ */
+export async function findFolder(
+  name: string,
+  parentId: string,
+  claimed: readonly string[] = [],
+): Promise<DriveFolder | null> {
+  const params = new URLSearchParams({
+    q: [
+      `name = ${quoted(name)}`,
+      `mimeType = ${quoted(FOLDER_MIME)}`,
+      `${quoted(parentId)} in parents`,
+      'trashed = false',
+    ].join(' and '),
+    fields: 'files(id,name)',
+    // Oldest first, so two machines looking while a duplicate exists settle on
+    // the same folder rather than each keeping whichever came back on top.
+    orderBy: 'createdTime',
+    // Enough to see past a few same-named folders belonging to other projects.
+    // Beyond that the honest answer is "none of these are mine", which is what
+    // finding nothing means anyway.
+    pageSize: '20',
+  })
+
+  const response = await driveFetch(`${API}/files?${params.toString()}&${SHARED_DRIVE_PARAMS}`)
+  const body = (await response.json()) as { files?: DriveFolder[] }
+  return (body.files ?? []).find((folder) => !claimed.includes(folder.id)) ?? null
+}
+
+/**
+ * Renames a folder, so a project's folder goes on matching the project.
+ *
+ * Cosmetic on the face of it — uploads go by id, and the id never changes — but
+ * the name is also how `findFolder` recognises a folder whose id was never
+ * recorded, so letting the two drift quietly costs that recovery.
+ */
+export async function renameFolder(folderId: string, name: string): Promise<DriveFolder> {
+  const response = await driveFetch(
+    `${API}/files/${encodeURIComponent(folderId)}?fields=id,name&${SHARED_DRIVE_PARAMS}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    },
+  )
+  return (await response.json()) as DriveFolder
+}
+
+/** Where a folder lives in the Drive web UI, for linking out of the app. */
+export function folderUrl(folderId: string): string {
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`
 }
 
 /** Pulls a file's bytes down for local playback and export. */

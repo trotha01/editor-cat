@@ -45,6 +45,9 @@ function roundTrip(source: Project): Project {
     schemaVersion: 3,
     version: 1,
     updatedAt: '2026-01-01T00:00:00Z',
+    // A column beside the document rather than a key inside it, which is why it
+    // has to be carried across separately here.
+    ...(source.driveFolderId ? { driveFolderId: source.driveFolderId } : {}),
   })
 }
 
@@ -83,6 +86,29 @@ describe('toDoc', () => {
     expect(doc.captionTracks).toEqual([track])
     expect('captionCues' in doc).toBe(false)
   })
+
+  it('leaves the Drive folder out of the document', () => {
+    // It has a column of its own, written outside the version guard. In the
+    // document it would have a second home, and a push carrying a stale copy
+    // would quietly overwrite the fresher one.
+    const doc = toDoc(project({ driveFolderId: 'folder_project_1' }))
+    expect('driveFolderId' in doc).toBe(false)
+  })
+})
+
+describe('fromStored', () => {
+  it('puts the project’s Drive folder back on it, from the column', () => {
+    // Which is what makes an upload know where to go: the open project carries
+    // the id, and the uploader reads it off there.
+    const reopened = roundTrip(project({ driveFolderId: 'folder_project_1' }))
+    expect(reopened.driveFolderId).toBe('folder_project_1')
+  })
+
+  it('adds no key at all for a project with no folder of its own', () => {
+    // Every project made before projects had folders is one of these, and it
+    // should come back the shape it went in rather than growing an empty key.
+    expect('driveFolderId' in roundTrip(project())).toBe(false)
+  })
 })
 
 describe('a project through a save and an open', () => {
@@ -108,6 +134,11 @@ describe('a project through a save and an open', () => {
 
   it('loses nothing from a project that never had captions', () => {
     const source = project()
+    expect(roundTrip(source)).toEqual(source)
+  })
+
+  it('comes back with the same Drive folder it was saving into', () => {
+    const source = project({ driveFolderId: 'folder_project_1' })
     expect(roundTrip(source)).toEqual(source)
   })
 })

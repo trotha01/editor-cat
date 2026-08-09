@@ -1,6 +1,6 @@
 /**
- * The Google Drive connection: whose it is, which folder we write to, and what
- * is currently uploading.
+ * The Google Drive connection: whose it is, which folder we write under, and
+ * what is currently uploading.
  *
  * There is nothing here that grants it. Drive is authorised at the sign-in
  * screen, in the same consent as identity, and the connection is stored against
@@ -8,7 +8,12 @@
  * asking Google, and a browser that has never seen them still picks it up.
  *
  * The chosen folder is the one thing kept locally. It is not a credential; it is
- * a preference about where new media goes.
+ * a preference about where new media goes. It is a *parent*: each project has a
+ * folder of its own inside it and uploads go there, so the folder chosen here
+ * says which corner of someone's Drive this app writes to rather than being the
+ * single place everything lands. Which is why the stored value did not need a
+ * new key when that changed — a folder that used to be the target is exactly the
+ * right parent, and the media already in it stays where it is.
  */
 import { create } from 'zustand'
 import {
@@ -24,6 +29,7 @@ import { currentUser, DriveError, uploadFile, type DriveFolder } from '../lib/go
 import { toDisplayMessage } from '../lib/errors'
 import { recordAsset } from '../lib/sync/assetSync'
 import { useAssetStore } from './useAssetStore'
+import { useProjectStore } from './useProjectStore'
 import type { Asset } from '../lib/types'
 
 const FOLDER_KEY = 'editor-cat.drive.folder.v1'
@@ -47,6 +53,10 @@ export interface UploadJob {
 interface DriveState {
   status: DriveStatus
   account: { email: string; name: string } | null
+  /**
+   * The folder chosen at first run, and the parent of every project folder.
+   * Media only lands in it directly for a project that has none of its own.
+   */
   folder: DriveFolder | null
   error: string | null
   uploads: UploadJob[]
@@ -171,6 +181,10 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     invalidateToken()
     // The folder goes with it for the same reason: it is an id in someone
     // else's Drive, and uploading into it would fail in a way nobody could read.
+    //
+    // The project folders inside it need no clearing here. They are recorded
+    // against the projects, which belong to the account and are re-fetched for
+    // whoever signs in next, and with no parent folder nothing uploads anyway.
     persistFolder(null)
     set({
       status: isDriveConfigured() ? 'disconnected' : 'unconfigured',
@@ -182,6 +196,10 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     })
   },
 
+  // Changing the folder moves where *new* projects put their folders, and
+  // nothing else. A project that already has one keeps it: its media is in
+  // there, and splitting one project across two corners of a Drive to honour a
+  // preference set afterwards is worse than leaving it whole.
   setFolder: (folder) => {
     persistFolder(folder)
     set({ folder })
@@ -194,6 +212,14 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     // Already in Drive: this asset was imported from there in the first place.
     if (asset.driveFileId) return
     if (status !== 'connected' || !folder) return
+
+    // The open project's own folder is the target; the chosen one is its parent.
+    // A project with none — made before projects had folders, or created while
+    // Drive could not make one — falls back to the parent itself, which is where
+    // media went before this and where that project's earlier uploads already
+    // are. The dependency points one way, as it does to the asset store: the
+    // project knows nothing about Drive.
+    const parentId = useProjectStore.getState().project.driveFolderId ?? folder.id
 
     const job: UploadJob = { assetId: asset.id, name: asset.name, progress: 0 }
     set((state) => ({ uploads: [...state.uploads, job] }))
@@ -209,7 +235,7 @@ export const useDriveStore = create<DriveState>((set, get) => ({
       try {
         const file = await uploadFile(blob, {
           name: asset.name,
-          parentId: folder.id,
+          parentId,
           onProgress: (progress) => patch({ progress }),
         })
 
