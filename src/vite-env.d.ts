@@ -35,6 +35,13 @@ interface ImportMeta {
 /** Substituted by Vite at build time. See `define` in vite.config.ts. */
 declare const __BUILD__: import('./lib/version').Build
 
+/**
+ * The pull request this staging deploy is showing, substituted at build time
+ * alongside `__BUILD__` — and `null` in every build that is not a staging one,
+ * which is most of them. See src/lib/stagingBuild.ts.
+ */
+declare const __STAGING__: import('./lib/stagingBuild').StagingBuild | null
+
 interface Window {
   /**
    * The deployed build, so `VERSION` in the browser console answers "which
