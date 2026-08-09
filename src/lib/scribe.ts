@@ -19,9 +19,16 @@
  * samples like anything else. See `speechAudio.ts`. It travels inside the
  * request as a data URI rather than being uploaded first, for reasons set out
  * where it happens.
+ *
+ * Chunks are retried, and this is the layer that retries them — see
+ * `transcribeChunk`. Captioning a timeline is not one request but a queue of
+ * them fired one after another, so the failure that matters here is not an
+ * outage, it is the one request in twelve that comes back rate limited while
+ * the other eleven are fine.
  */
-import { run } from './falClient'
+import { run, sleep } from './falClient'
 import { chunkRanges, speechChunkWav } from './speechAudio'
+import { isAbort, isRetryable, RetriedError } from './errors'
 import { isMockEnabled, mockTranscribe } from './mock'
 import { SPEECH_TO_TEXT_MODEL } from './models'
 import type { TimedWord } from './captions'
@@ -118,6 +125,17 @@ export interface TranscribeProgress {
   message: string
   /** 0–1 across the chunks of one source, where there is more than one. */
   ratio?: number
+  /**
+   * Which go at the current chunk this is, counting from 1 — and set only once
+   * it is past the first, so the ordinary case carries nothing extra.
+   *
+   * A number rather than a phrase because the UI wants to draw it differently
+   * from the rest of the line, not merely append it: a retry is the one thing
+   * in here that is not progress, and the point of saying it at all is that a
+   * job which has gone quiet for a couple of seconds is waiting rather than
+   * stuck.
+   */
+  attempt?: number
 }
 
 export interface TranscribeStretchOptions {
@@ -171,11 +189,12 @@ export async function transcribeStretch({
     const result = await transcribeChunk({
       audio: await speechChunkWav(buffer, range),
       ...(languageCode ? { languageCode } : {}),
-      onProgress: (message) =>
+      onProgress: ({ message, attempt }) =>
         onProgress?.({
           message:
             ranges.length > 1 ? `part ${index + 1} of ${ranges.length} · ${message}` : message,
           ...(ranges.length > 1 ? { ratio: index / ranges.length } : {}),
+          ...(attempt > 1 ? { attempt } : {}),
         }),
       ...(signal ? { signal } : {}),
     })
@@ -191,41 +210,130 @@ export async function transcribeStretch({
   return { words, ...(detected ? { languageCode: detected } : {}) }
 }
 
+/**
+ * How many goes one chunk gets before its source is called a failure.
+ *
+ * Three, and the third is not there for luck: the failure this answers is a
+ * rate limit, and a rate limit clears on a timescale the waits below have to
+ * span rather than merely survive. Exported because the progress line says
+ * "retrying (2 of 3)", and a UI that hard-coded the 3 would go on saying it
+ * after this number changed.
+ */
+export const TRANSCRIBE_ATTEMPTS = 3
+
+/**
+ * How long to wait before the go after `attempt`: one second, then two.
+ *
+ * Exponential rather than flat because the two failures being waited out are
+ * different sizes. A dropped connection is over by the time the first second
+ * has passed; a rate limit is a window that has to expire, and hammering it on
+ * a fixed interval is what keeps it shut. Doubling covers both without asking
+ * which one this was.
+ *
+ * Three seconds of waiting, all told, on top of a request that already takes
+ * seconds — small enough that a chunk which recovers on its second go is barely
+ * slower than one that never failed, and small enough that a source which is
+ * going to fail anyway is not spent slowly. There is no jitter: every chunk of
+ * a timeline is sent from one browser, in order, so there is no fleet here to
+ * spread out — the only thing jitter would add is a test that cannot assert
+ * when the next go happens.
+ */
+function retryDelayMs(attempt: number): number {
+  return 1000 * 2 ** (attempt - 1)
+}
+
+interface ChunkProgress {
+  message: string
+  /** Which go this is, counting from 1. */
+  attempt: number
+}
+
 interface ChunkOptions {
   audio: Blob
   languageCode?: string
-  onProgress?: (message: string) => void
+  onProgress?: (progress: ChunkProgress) => void
   signal?: AbortSignal
 }
 
+/**
+ * One chunk, asked for up to `TRANSCRIBE_ATTEMPTS` times.
+ *
+ * The retry is here — around a whole chunk — rather than down in the queue
+ * client, because this is the largest unit of work that is safe to simply do
+ * again. A chunk is at most 75 seconds of 16kHz mono and a fraction of a cent,
+ * and repeating one has no effect on the project beyond that spend. The same is
+ * not true one level down: `run` is a submit followed by a poll, so retrying it
+ * after a poll fails would submit a *second* job for work already running and
+ * already being billed — which for a video model is real money for a blip.
+ *
+ * Only failures that could answer differently are repeated; see `isRetryable`.
+ * A cancellation is never one of them, and is rethrown as itself rather than
+ * wrapped, because every layer above this tells an abort from a failure by its
+ * type and a cancelled run has to stay silent all the way up.
+ *
+ * What comes back after the last go is a `RetriedError` around the real one, so
+ * the source can be reported as persistently broken rather than as unlucky.
+ */
 async function transcribeChunk({
   audio,
   languageCode,
   onProgress,
   signal,
 }: ChunkOptions): Promise<ScribeResult> {
-  const output = await run<ScribeOutput>(
-    SPEECH_TO_TEXT_MODEL,
-    // A data URI rather than an uploaded file. fal offers both, and documents
-    // the third option — `fal.storage.upload` — as the convenient one, but it
-    // wants credentials in the browser, which is the whole thing this app's
-    // proxy exists to avoid. It also leaves the audio at a publicly reachable
-    // URL, and someone's voiceover is not ours to park somewhere public. A data
-    // URI exists for the life of the request and nowhere else.
-    //
-    // fal notes that large files sent this way cost request performance, which
-    // is the other half of why the chunks are sized the way they are.
-    scribeInput(await toDataUrl(audio), languageCode),
-    {
-      ...(signal ? { signal } : {}),
-      onProgress: (progress) =>
-        onProgress?.(progress.status === 'IN_QUEUE' ? 'queued' : 'transcribing'),
-    },
-  )
+  // A data URI rather than an uploaded file. fal offers both, and documents the
+  // third option — `fal.storage.upload` — as the convenient one, but it wants
+  // credentials in the browser, which is the whole thing this app's proxy
+  // exists to avoid. It also leaves the audio at a publicly reachable URL, and
+  // someone's voiceover is not ours to park somewhere public. A data URI exists
+  // for the life of the request and nowhere else.
+  //
+  // fal notes that large files sent this way cost request performance, which is
+  // the other half of why the chunks are sized the way they are.
+  //
+  // Encoded once, outside the loop: the bytes do not change between goes, and
+  // base64-ing a couple of megabytes again for each one would be the retry
+  // taxing the case it exists to rescue.
+  const audioUrl = await toDataUrl(audio)
 
-  return {
-    words: wordsFromScribe(output),
-    ...(output.language_code ? { languageCode: output.language_code } : {}),
+  const ask = async (attempt: number): Promise<ScribeResult> => {
+    const output = await run<ScribeOutput>(
+      SPEECH_TO_TEXT_MODEL,
+      scribeInput(audioUrl, languageCode),
+      {
+        ...(signal ? { signal } : {}),
+        onProgress: (progress) =>
+          onProgress?.({
+            attempt,
+            message: progress.status === 'IN_QUEUE' ? 'queued' : 'transcribing',
+          }),
+      },
+    )
+
+    return {
+      words: wordsFromScribe(output),
+      ...(output.language_code ? { languageCode: output.language_code } : {}),
+    }
+  }
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await ask(attempt)
+    } catch (cause) {
+      if (isAbort(cause)) throw cause
+      if (attempt >= TRANSCRIBE_ATTEMPTS || !isRetryable(cause)) {
+        throw attempt > 1 ? new RetriedError(cause, attempt) : cause
+      }
+
+      const waitMs = retryDelayMs(attempt)
+      // Said before the wait, not after it. The wait is the part with nothing
+      // happening in it, and a status line that goes quiet for two seconds and
+      // then carries on is exactly what a hang looks like.
+      onProgress?.({
+        attempt: attempt + 1,
+        message: `that request failed · trying again in ${Math.round(waitMs / 1000)}s`,
+      })
+      await sleep(waitMs, signal)
+    }
   }
 }
 

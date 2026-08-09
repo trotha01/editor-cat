@@ -99,6 +99,75 @@ export function explainStatus(provider: 'fal.ai' | 'ElevenLabs', status: number)
   }
 }
 
+/**
+ * Which status codes describe the moment rather than the request.
+ *
+ * A 429 is the provider saying *not yet* and a 5xx is it saying *something
+ * broke at our end*. Both are answers that change on their own, and both are
+ * what a caption run actually meets, because captioning a timeline is a queue
+ * of requests fired one after another at a service that meters them.
+ *
+ * Everything else is a decision already made, and it will be made again the
+ * same way: a rejected key is still rejected in two seconds, a content filter
+ * still objects to the same audio, and a model ID that does not exist does not
+ * start existing. Asking three times over only makes that failure slower to
+ * report, with the user watching a spinner for something settled on the first
+ * try.
+ */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+/**
+ * Whether asking the same question again could plausibly get a different
+ * answer.
+ *
+ * A `fetch` that never got an answer at all rejects with a `TypeError` rather
+ * than a status — a dropped connection, or a proxy that closed the socket. That
+ * is the most transient failure of the lot, so it counts too. Anything else
+ * thrown is something this app does not recognise well enough to repeat safely,
+ * and guessing would mean doing unknown work twice.
+ */
+export function isRetryable(error: unknown): boolean {
+  // Never. A cancellation is the user's decision, not a fault to work around,
+  // and retrying one would mean ignoring the button they just pressed.
+  if (isAbort(error)) return false
+  if (error instanceof ProviderError) return isRetryableStatus(error.status)
+  return error instanceof TypeError
+}
+
+/**
+ * A failure that was already asked about more than once.
+ *
+ * Worth distinguishing from a first-attempt failure only because of how it
+ * reads: "rate limited" invites the user to press the button again straight
+ * away, which is the one thing that will not work, while the same words plus
+ * "tried 3 times" say that the wait needs to be longer than a press. It carries
+ * the original as its `cause` and borrows its wording, so nothing downstream
+ * has to know this class exists to render it sensibly.
+ */
+export class RetriedError extends Error {
+  readonly attempts: number
+
+  constructor(cause: unknown, attempts: number) {
+    super(toDisplayMessage(cause), { cause })
+    this.name = 'RetriedError'
+    this.attempts = attempts
+  }
+}
+
+/**
+ * A cancellation, as opposed to a failure.
+ *
+ * Spelled out once because the check is easy to write slightly differently in
+ * each place that needs it, and every one of those places treats the two kinds
+ * of thrown value as opposites: an abort travels all the way up and says
+ * nothing, a failure is collected and shown.
+ */
+export function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 export async function providerErrorFrom(
   provider: 'fal.ai' | 'ElevenLabs',
   response: Response,
@@ -129,7 +198,7 @@ export function toDisplayMessage(error: unknown): string {
   if (error instanceof ProviderError) {
     return error.detail ? `${error.message} — ${error.detail}` : error.message
   }
-  if (error instanceof DOMException && error.name === 'AbortError') return 'Cancelled.'
+  if (isAbort(error)) return 'Cancelled.'
   if (error instanceof Error) return error.message
   return String(error)
 }

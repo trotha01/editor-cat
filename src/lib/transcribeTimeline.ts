@@ -10,12 +10,16 @@
  * Everything else here is sequencing and error handling. One source failing —
  * an undecodable file, a model that will not load — must not lose the words from
  * the others, so failures are collected and reported rather than thrown.
+ *
+ * A source only reaches that list once `transcribeStretch` has run out of goes
+ * at it, so the failures here are the settled ones rather than every blip along
+ * the way.
  */
 import { getBlob } from './db'
 import { dedupeOverlappingWords, wordsOntoTimeline, type TimedWord } from './captions'
 import { decodeAudio } from './speechAudio'
 import { transcribeStretch } from './scribe'
-import { toDisplayMessage } from './errors'
+import { isAbort, RetriedError, toDisplayMessage } from './errors'
 import type { SpeechSource } from './captionSources'
 import type { Asset } from './types'
 
@@ -29,6 +33,13 @@ export interface TranscribeProgress {
   detail?: string
   /** 0–1 within the current source, where it can be measured. */
   ratio?: number
+  /**
+   * Which go at the current source's chunk this is, past the first. Carried
+   * through from `scribe.ts` untouched, because the thing worth telling the
+   * user — that a slow moment is a wait and not a hang — is the same fact at
+   * both ends of this function.
+   */
+  attempt?: number
 }
 
 export interface TimelineTranscript {
@@ -47,6 +58,26 @@ export interface TranscribeTimelineOptions {
   languageCode?: string
   onProgress?: (progress: TranscribeProgress) => void
   signal?: AbortSignal
+}
+
+/**
+ * How one source's failure reads in the list the panel shows.
+ *
+ * The count is the whole addition, and it changes what the sentence is asking
+ * for. "fal.ai is rate limiting you. Wait a moment and try again." on its own
+ * invites another press straight away — which is the one thing that will not
+ * work, because this already tried three times over several seconds and got the
+ * same answer each time. Saying how many goes it had turns the same words into
+ * a reason to wait properly, or to caption fewer clips at once.
+ *
+ * A failure with no count behind it is left exactly as it was: the ones that
+ * never reach a retry at all — an undecodable file, media missing from the
+ * library — are settled on the first look, and "tried 1 time" would be noise
+ * pretending to be reassurance.
+ */
+function describeFailure(cause: unknown): string {
+  const message = toDisplayMessage(cause)
+  return cause instanceof RetriedError ? `${message} (tried ${cause.attempts} times)` : message
 }
 
 export async function transcribeTimeline({
@@ -84,6 +115,7 @@ export async function transcribeTimeline({
             label: source.label,
             ...(progress.message ? { detail: progress.message } : {}),
             ...(progress.ratio === undefined ? {} : { ratio: progress.ratio }),
+            ...(progress.attempt === undefined ? {} : { attempt: progress.attempt }),
           }),
         ...(signal ? { signal } : {}),
       })
@@ -91,8 +123,8 @@ export async function transcribeTimeline({
       if (result.languageCode) languages.add(result.languageCode)
       words.push(...wordsOntoTimeline(result.words, source))
     } catch (cause) {
-      if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
-      failures.push(`${source.label}: ${toDisplayMessage(cause)}`)
+      if (isAbort(cause)) throw cause
+      failures.push(`${source.label}: ${describeFailure(cause)}`)
     } finally {
       done += 1
     }
