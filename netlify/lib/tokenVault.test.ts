@@ -119,6 +119,38 @@ describe('googleAccessToken', () => {
     ).rejects.toMatchObject({ status: 409, code: 'invalid_grant' })
   })
 
+  it('treats a missing federated refresh token as the same thing', async () => {
+    // What Auth0 actually answers when Google issued no refresh token, which is
+    // the ordinary outcome for a returning user whose consent Google considers
+    // to stand. It arrives under a different code, and sending the gate to
+    // "reload" over it would be advice that can never work.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        answer(
+          {
+            error: 'invalid_request',
+            error_description: 'Federated connection Refresh Token not found.',
+          },
+          400,
+        ),
+      )
+
+    await expect(
+      googleAccessToken('auth0-token', CONFIG, fetchImpl as unknown as typeof fetch),
+    ).rejects.toMatchObject({ status: 409 })
+  })
+
+  it('carries Auth0’s code beside its prose, so a branch has something to read', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(answer({ error: 'invalid_client', error_description: 'nope' }, 401))
+
+    await expect(
+      googleAccessToken('auth0-token', CONFIG, fetchImpl as unknown as typeof fetch),
+    ).rejects.toThrow('invalid_client: nope')
+  })
+
   it('reports anything else as ours or Auth0’s to fix', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(answer({ error: 'invalid_client' }, 401))
 

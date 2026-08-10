@@ -167,12 +167,21 @@ export async function googleAccessToken(
 
   if (!response.ok || !body.access_token) {
     const code = body.error ?? 'token_exchange_failed'
+    const description =
+      body.error_description ?? `Auth0 refused the token exchange (${response.status}).`
+
     throw new TokenVaultError(
-      // `invalid_grant` is the user's to fix by consenting again, so it is
-      // reported as a 409 rather than a 502: nothing is broken here.
-      code === 'invalid_grant' ? 409 : 502,
+      // Two ways of saying the same thing, and both are the user's to fix by
+      // consenting again rather than anything being broken here: `invalid_grant`
+      // is the documented one, and a missing federated refresh token is what
+      // Auth0 actually answers when Google issued none — which is the ordinary
+      // outcome for a returning user whose consent Google considers to stand.
+      // Reported as 409 so the gate offers a sign-in rather than a reload.
+      code === 'invalid_grant' || /refresh token not found/i.test(description) ? 409 : 502,
       code,
-      body.error_description ?? `Auth0 refused the token exchange (${response.status}).`,
+      // Auth0's own code travels with its description. The description alone
+      // reads like prose and says nothing a branch can be written against.
+      `${code}: ${description}`,
     )
   }
 
