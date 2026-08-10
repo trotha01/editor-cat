@@ -103,12 +103,13 @@ Then the editor. The second step is asked with the first one's email as a hint,
 so Google does not make you choose an account twice. Settings keeps the folder
 and the sign-out, and nothing else about Google.
 
-It used to be two steps, because one Google consent screen covered both identity
-and Drive. Auth0 carries the Drive scope through its login, so it is one screen
-again — what
-it returns proves who you are and nothing more — so the grant that used to ride
-along now has a screen of its own. See [what sign-in
-needs](#what-sign-in-needs).
+It was briefly two, because Auth0 will carry a Drive scope through its login and
+the consent screen duly shows the folder next to the account. That grant lands
+against the user's _identity_, and Token Vault — which is what the functions
+exchange against — reads `connected_accounts`, a store only Auth0's own connect
+flow fills. So the folder is asked for after the sign-in rather than during it:
+not a screen that could have been saved, but the only ask that stocks the vault.
+See [what sign-in needs](#what-sign-in-needs).
 
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
 placement, resolution, and the captions with every word timing in them — plus a
@@ -299,7 +300,28 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
    "no 'refresh_token' was issued because the authorization code exchange
    originated from a browser"
 
-7. On that API's page, press **Add Application**, name it, and press **Add** —
+7. Turn on the half of Token Vault that a login does not fill. Three things have
+   to be true before the browser's connect flow can run, and only the first has
+   a dashboard:
+
+   - **Activate the My Account API** (Dashboard → Applications → APIs). Its
+     identifier is `https://YOUR_TENANT.us.auth0.com/me/`, trailing slash and
+     all.
+   - Give the SPA a **user-delegated** grant on it, from that API's Application
+     Access tab, with the `*:me:connected_accounts` permissions.
+   - Add an **MRRT policy** to the SPA naming that same audience, so one refresh
+     token reaches both this app's API and Auth0's.
+
+   The last two have no dashboard between them and no error when they are
+   missing: a policy naming an API that is not activated is silently ignored,
+   and a client grant created over the Management API with `subject_type: user`
+   can come back stored as `client` — accepted, inert, and sitting right there
+   while the browser is refused for want of it.
+   `scripts/auth0-connect-setup.mjs` does the last two and reads back what it
+   wrote; `scripts/auth0-tokenvault-doctor.mjs` reads the objects rather than
+   the pages when they disagree.
+
+8. On that API's page, press **Add Application**, name it, and press **Add** —
    which, despite the wording, creates a **Custom API Client** rather than
    authorising an application that already exists. Then **Configure
    Application**: its type reads _Custom API Client_, and under Advanced
@@ -314,7 +336,7 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
    of what makes it the same entity. An M2M client answers "This client is not a
    resource server and cannot exchange access tokens."
 
-8. Create a Google **API key** under the same Cloud credentials page, restricted
+9. Create a Google **API key** under the same Cloud credentials page, restricted
    by HTTP referrer. The Picker will not open without one.
 
 ```
@@ -973,11 +995,12 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
-- **Getting in costs two trips to Google.** One signs you in through Netlify
-  Identity, the other grants Drive, because an Identity login cannot carry a
-  Drive scope. The second is asked with the first one's address as a hint, so it
-  is one question rather than two — but it is still a second screen, and it was
-  one before Auth0 took the login back to a single screen.
+- **Getting in costs two trips to Google.** One signs you in, the other grants
+  Drive. Not a limit of the login — Auth0 will carry the scope through it — but
+  of where the result lands: a login files Google's tokens against the user's
+  identity, and Token Vault reads `connected_accounts`, which only the connect
+  flow writes. The second trip is asked with the first one's address as a hint,
+  so it is one approval rather than another choice of account.
 - **A clip's sound cannot be moved off its clip.** It is mixed where the clip
   sits and trimmed with it, which is what you want for filmed footage; but there
   is no way to slide it, keep it running under the next clip, or drop it onto an

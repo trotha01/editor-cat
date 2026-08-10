@@ -277,9 +277,9 @@ function SignInScreen() {
       )}
 
       <p className="text-xs leading-relaxed text-ink-dim">
-        One screen covers both: who you are, and permission to save your media to a folder in your
-        own Google Drive. This site only ever sees that folder and the files it puts there. Your API
-        keys stay in this browser and are never part of your account.
+        Signing in tells us who you are. Saving your media needs one more permission after it, for a
+        folder in your own Google Drive — this site only ever sees that folder and the files it puts
+        there. Your API keys stay in this browser and are never part of your account.
       </p>
     </Panel>
   )
