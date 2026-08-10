@@ -57,9 +57,17 @@ export interface VaultConfig {
  * The credentials for the exchange, or null when this deployment has not been
  * set up for it.
  *
- * Deliberately its own client rather than the SPA's: this one holds a secret,
- * and the SPA's cannot. `AUTH0_DOMAIN` falls back to the build-time `VITE_` form
- * because it is the same tenant either way — the *secret* has no such fallback,
+ * These belong to the API's **Custom API Client**, not to a machine-to-machine
+ * application. Access token exchange is the variant where the caller is the
+ * resource server the subject token was minted for, and Auth0 checks that by
+ * whose credentials authenticated the request: a plain M2M client, however
+ * generously granted, answers "This client is not a resource server and cannot
+ * exchange access tokens." The Custom API Client shares the API's identifier,
+ * which is what makes it the same entity.
+ *
+ * Its own client rather than the SPA's either way: this one holds a secret, and
+ * the SPA's cannot. `AUTH0_DOMAIN` falls back to the build-time `VITE_` form
+ * because it is the same tenant regardless — the *secret* has no such fallback,
  * by design.
  */
 export function vaultConfig(): VaultConfig | null {

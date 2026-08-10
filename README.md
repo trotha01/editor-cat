@@ -268,9 +268,15 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
      functions exchange a caller's token for a Google one.
 5. Create an **API** in Auth0 — its identifier is `VITE_AUTH0_AUDIENCE`, and any
    URI will do so long as it matches everywhere.
-6. Create two **applications**: a _Single Page Application_ for the browser, and
-   a _Machine to Machine_ one for the functions to exchange tokens with.
-7. Create a Google **API key** under the same Cloud credentials page, restricted
+6. Create a **Single Page Application** for the browser. Its client id is
+   `VITE_AUTH0_CLIENT_ID`; its Allowed Callback URLs, Allowed Logout URLs and
+   Allowed Web Origins cover wherever the app is served from.
+7. On the API, create its **Custom API Client**, and enable the **Token Vault**
+   grant type on it. Its credentials are what the functions exchange with.
+   Not a machine-to-machine application: access token exchange requires the
+   caller to _be_ the resource server the token was minted for, and Auth0 tells
+   an M2M client so in as many words.
+8. Create a Google **API key** under the same Cloud credentials page, restricted
    by HTTP referrer. The Picker will not open without one.
 
 ```
@@ -280,7 +286,7 @@ VITE_AUTH0_AUDIENCE=https://editor-cat/api
 VITE_GOOGLE_API_KEY=AIza...
 VITE_GOOGLE_PROJECT_NUMBER=1234567890   # Cloud console → project number
 
-AUTH0_BACKEND_CLIENT_ID=         # the machine-to-machine application
+AUTH0_BACKEND_CLIENT_ID=         # the API's Custom API Client, not an M2M app
 AUTH0_BACKEND_CLIENT_SECRET=     # scoped to Functions, and genuinely secret
 ```
 
@@ -328,7 +334,7 @@ these.
 
 ```
 SUPABASE_JWT_SECRET=             # Supabase → Project settings → API → JWT keys
-AUTH0_BACKEND_CLIENT_SECRET=     # the machine-to-machine application
+AUTH0_BACKEND_CLIENT_SECRET=     # the API's Custom API Client
 ```
 
 Run the migrations in `supabase/migrations/` in order. `0004_auth0.sql` drops the
