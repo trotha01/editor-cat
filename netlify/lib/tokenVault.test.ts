@@ -124,17 +124,15 @@ describe('googleAccessToken', () => {
     // the ordinary outcome for a returning user whose consent Google considers
     // to stand. It arrives under a different code, and sending the gate to
     // "reload" over it would be advice that can never work.
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        answer(
-          {
-            error: 'invalid_request',
-            error_description: 'Federated connection Refresh Token not found.',
-          },
-          400,
-        ),
-      )
+    const fetchImpl = vi.fn().mockResolvedValue(
+      answer(
+        {
+          error: 'invalid_request',
+          error_description: 'Federated connection Refresh Token not found.',
+        },
+        400,
+      ),
+    )
 
     await expect(
       googleAccessToken('auth0-token', CONFIG, fetchImpl as unknown as typeof fetch),
