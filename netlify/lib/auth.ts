@@ -5,26 +5,23 @@
  * unauthenticated request could only ever spend the caller's own money. Now the
  * key belongs to the deployment, which turns `/api/fal/*` into a button that
  * spends the operator's credits — and anyone who finds the URL could hold it
- * down. So the proxy verifies the Supabase session the editor already requires
- * (see src/components/SignInGate.tsx).
+ * down. So the proxy verifies the session the editor already requires (see
+ * src/components/SignInGate.tsx).
  *
- * Verification is local: the signature is checked against Supabase's published
- * keys rather than by asking Supabase about every request. One video
- * generation polls for minutes, so a round trip per poll would be both slow and
- * rude to a service that is not being paid to answer them.
+ * The session it checks is the one `/api/session` mints: a Supabase-shaped JWT
+ * signed with the project's own secret, carrying the Netlify Identity user id in
+ * `sub`. Verification is therefore local — an HMAC over bytes we already have,
+ * with no call to Netlify, Supabase, or anyone else. That matters because one
+ * video generation polls for minutes, and a round trip per poll would be both
+ * slow and rude to a service that is not being paid to answer them. It is also
+ * the whole reason the Identity check happens once at the mint rather than here.
  *
  * Every *secret* here reads an unprefixed environment variable. A `VITE_` prefix
  * would inline the value into the browser bundle, which is exactly the mistake
- * this module exists to avoid. The project URL is the one exception, and only
- * because it is not a secret — see `supabaseProjectUrl`.
+ * this module exists to avoid.
  */
 import { jsonError } from './proxy'
-import { supabaseProjectUrl } from './supabase'
-
-/** Set only on projects still signing with the legacy shared secret. */
-function jwtSecret(): string {
-  return (process.env.SUPABASE_JWT_SECRET ?? '').trim()
-}
+import { SESSION_ISSUER, supabaseJwtSecret } from './supabaseToken'
 
 /**
  * Escape hatch for `netlify dev` against a checkout with no Supabase project.
@@ -43,15 +40,10 @@ export interface JwtClaims {
 
 export interface DecodedJwt {
   alg: string
-  kid: string | null
   claims: JwtClaims
   /** The `<header>.<payload>` bytes the signature covers. */
   signedData: Uint8Array<ArrayBuffer>
   signature: Uint8Array<ArrayBuffer>
-}
-
-export interface Jwks {
-  keys?: JsonWebKey[]
 }
 
 function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> | null {
@@ -93,7 +85,6 @@ export function decodeJwt(token: string): DecodedJwt | null {
 
   return {
     alg: header.alg,
-    kid: typeof header.kid === 'string' ? header.kid : null,
     claims: {
       sub: typeof claims.sub === 'string' ? claims.sub : undefined,
       exp: typeof claims.exp === 'number' ? claims.exp : undefined,
@@ -105,91 +96,18 @@ export function decodeJwt(token: string): DecodedJwt | null {
 }
 
 /**
- * A minute of leeway absorbs clock skew between Supabase and the function host.
- * A token with no `exp` at all counts as expired — an unbounded session is not
- * something to accept by omission.
+ * A minute of leeway absorbs clock skew between the minting function and the
+ * one checking. A token with no `exp` at all counts as expired — an unbounded
+ * session is not something to accept by omission.
  */
 export function isExpired(claims: JwtClaims, nowSeconds: number, leewaySeconds = 60): boolean {
   if (typeof claims.exp !== 'number') return true
   return nowSeconds > claims.exp + leewaySeconds
 }
 
-/** Finds the key a token names, or the only key there is when it names none. */
-export function pickJwk(jwks: Jwks, kid: string | null): JsonWebKey | null {
-  const keys = jwks.keys ?? []
-  if (kid) return keys.find((key) => (key as { kid?: string }).kid === kid) ?? null
-  return keys.length === 1 ? (keys[0] ?? null) : null
-}
-
-let jwksCache: { keys: JsonWebKey[]; fetchedAt: number } | null = null
-
-/** How long to wait before believing an unknown `kid` warrants another fetch. */
-const JWKS_REFETCH_INTERVAL_MS = 60_000
-
-async function fetchJwks(baseUrl: string): Promise<JsonWebKey[]> {
-  const response = await fetch(`${baseUrl}/auth/v1/.well-known/jwks.json`)
-  if (!response.ok) throw new Error(`JWKS request failed with ${response.status}`)
-  const body = (await response.json()) as Jwks
-  return body.keys ?? []
-}
-
-/**
- * The signing key for a token, refetching the set when the `kid` is unknown.
- *
- * Functions stay warm across the submit and the many status polls that follow,
- * so caching turns one fetch into one per cold start. Rate-limiting the refetch
- * matters too: without it, a token bearing a junk `kid` would let anyone make
- * us hammer the JWKS endpoint.
- */
-async function signingKey(baseUrl: string, kid: string | null): Promise<JsonWebKey | null> {
-  const cached = jwksCache ? pickJwk({ keys: jwksCache.keys }, kid) : null
-  if (cached) return cached
-
-  const dueForRefetch = !jwksCache || Date.now() - jwksCache.fetchedAt > JWKS_REFETCH_INTERVAL_MS
-  if (!dueForRefetch) return null
-
-  const keys = await fetchJwks(baseUrl)
-  jwksCache = { keys, fetchedAt: Date.now() }
-  return pickJwk({ keys }, kid)
-}
-
-/** Test seam: drop the cached key set. */
-export function resetJwksCacheForTests(): void {
-  jwksCache = null
-}
-
-async function verifyAsymmetric(jwt: DecodedJwt, jwk: JsonWebKey): Promise<boolean> {
-  if (jwt.alg === 'ES256') {
-    const key = await crypto.subtle.importKey(
-      'jwk',
-      jwk,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['verify'],
-    )
-    return crypto.subtle.verify(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      key,
-      jwt.signature,
-      jwt.signedData,
-    )
-  }
-
-  if (jwt.alg === 'RS256') {
-    const key = await crypto.subtle.importKey(
-      'jwk',
-      jwk,
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-      false,
-      ['verify'],
-    )
-    return crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, jwt.signature, jwt.signedData)
-  }
-
-  return false
-}
-
 async function verifyHmac(jwt: DecodedJwt, secret: string): Promise<boolean> {
+  // Checked rather than assumed: without it `alg` would be attacker-controlled,
+  // and "none" or a downgrade to a family we do not verify would sail through.
   if (jwt.alg !== 'HS256') return false
   const key = await crypto.subtle.importKey(
     'raw',
@@ -222,18 +140,16 @@ export type SessionResult =
 export async function requireSession(request: Request): Promise<SessionResult> {
   if (allowAnonymous()) return { ok: true, userId: null }
 
-  const baseUrl = supabaseProjectUrl()
-  const secret = jwtSecret()
+  const secret = supabaseJwtSecret()
 
-  if (!baseUrl && !secret) {
+  if (!secret) {
     // An operator misconfiguration, not something the visitor did wrong.
     return {
       ok: false,
       response: jsonError(
         503,
         'This site is not set up to authorise generation requests.',
-        'Set SUPABASE_URL — or VITE_SUPABASE_URL, which is the same public string — plus ' +
-          'SUPABASE_JWT_SECRET if the project signs with a shared secret, or ' +
+        'Set SUPABASE_JWT_SECRET — the same secret /api/session signs with — or ' +
           'FAL_PROXY_ALLOW_ANONYMOUS=1 for local development.',
       ),
     }
@@ -249,23 +165,16 @@ export async function requireSession(request: Request): Promise<SessionResult> {
     return { ok: false, response: unauthorised('That session has expired.') }
   }
 
-  if (baseUrl && jwt.claims.iss !== `${baseUrl}/auth/v1`) {
-    return { ok: false, response: unauthorised('That session was issued by another project.') }
+  // A token this site did not mint, however well signed. Checked before the
+  // signature so that a Supabase-issued token — same secret, same project,
+  // different issuer — is refused rather than quietly accepted as one of ours.
+  if (jwt.claims.iss !== SESSION_ISSUER) {
+    return { ok: false, response: unauthorised('That session was not issued by this site.') }
   }
 
-  let verified = false
-  try {
-    if (jwt.alg === 'HS256') {
-      verified = secret.length > 0 && (await verifyHmac(jwt, secret))
-    } else if (baseUrl) {
-      const jwk = await signingKey(baseUrl, jwt.kid)
-      verified = jwk !== null && (await verifyAsymmetric(jwt, jwk))
-    }
-  } catch {
-    // An unreachable JWKS endpoint or an unusable key is a failed verification,
-    // never a reason to let the request through.
-    verified = false
-  }
+  // An unusable key is a failed verification, never a reason to let the request
+  // through — so the rejection becomes a `false` rather than a 500.
+  const verified = await verifyHmac(jwt, secret).catch(() => false)
 
   if (!verified) {
     return { ok: false, response: unauthorised('That session could not be verified.') }

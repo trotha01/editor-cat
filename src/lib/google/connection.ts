@@ -3,15 +3,15 @@
  *
  * Thin wrapper over `/api/google/*`, which holds the refresh token this side
  * deliberately never sees. Everything here is authorised with the user's own
- * Supabase session token — the same one the fal proxy checks — because the
- * connection is filed under their account id.
+ * session token — the same one the fal proxy checks, minted from their Netlify
+ * Identity sign-in — because the connection is filed under their account id.
  *
  * A deployment that has not been set up for this answers `durable: false` and
  * says why. There is no degraded mode behind that: the editor writes to Drive,
  * so a site that cannot keep the connection cannot let anyone in, and the gate
  * shows the reason instead of a button that would fail after consent.
  */
-import { currentAccessToken } from '../../state/useAuthStore'
+import { supabaseAccessToken } from '../supabase/session'
 
 const BASE = '/api/google'
 
@@ -105,7 +105,7 @@ const STATUS_TIMEOUT_MS = 8000
 const DEFAULT_LIFETIME_SECONDS = 3600
 
 async function call(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = currentAccessToken()
+  const token = await supabaseAccessToken()
   return await fetch(`${BASE}${path}`, {
     ...init,
     headers: {

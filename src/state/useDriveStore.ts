@@ -59,13 +59,7 @@ interface DriveState {
 
   /** Resumes the account's connection without prompting. Safe to call on mount. */
   restore: () => Promise<void>
-  /**
-   * Claims the connection while sign-in is still in flight, so the `restore`
-   * that runs as the editor mounts does not race it to a stale answer. Released
-   * with `false` if the sign-in it was claimed for never happened.
-   */
-  setConnecting: (pending: boolean) => void
-  /** Completes a connection authorised during sign-in. */
+  /** Completes a connection the user has just authorised at Google. */
   adopt: (code: string) => Promise<void>
   /**
    * Drops this browser's Drive state on sign-out, leaving the stored connection
@@ -116,10 +110,9 @@ export const useDriveStore = create<DriveState>((set, get) => ({
 
   restore: async () => {
     if (!isDriveConfigured()) return
-    // Signing in authorises Drive too, so by the time the editor mounts the
-    // connection may already be in hand or on its way. Asking the server again
-    // would at best duplicate work and at worst overwrite a fresher answer with
-    // a stale one.
+    // A connection may already be in hand, or on its way from the consent the
+    // user is in the middle of giving. Asking the server again would at best
+    // duplicate work and at worst overwrite a fresher answer with a stale one.
     if (get().status === 'connected' || get().status === 'connecting') return
 
     const { durable, connected } = await loadConnectionStatus()
@@ -148,8 +141,6 @@ export const useDriveStore = create<DriveState>((set, get) => ({
       })
     }
   },
-
-  setConnecting: (pending) => set({ status: pending ? 'connecting' : 'disconnected', error: null }),
 
   adopt: async (code) => {
     set({ status: 'connecting', error: null })

@@ -100,28 +100,18 @@ describe('adopt', () => {
   })
 
   it('is not undone by the restore that runs as the editor mounts', async () => {
-    // Sign-in claims the connection before the session exists, so the two run
-    // concurrently. Without the guard, restore's older answer lands last and
-    // holds someone at the gate who has just been let through.
+    // `adopt` claims the connection before its exchange returns, and the gate
+    // restores on every render pass that sees a session. Without the guard,
+    // restore's older answer lands last and holds someone at the gate who has
+    // just connected.
     loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
-    useDriveStore.getState().setConnecting(true)
 
-    const adopting = useDriveStore.getState().adopt('sign-in-code')
+    const adopting = useDriveStore.getState().adopt('consent-code')
     await useDriveStore.getState().restore()
     await adopting
 
     expect(loadConnectionStatus).not.toHaveBeenCalled()
     expect(useDriveStore.getState().status).toBe('connected')
-  })
-
-  it('releases the claim when the sign-in it was made for never landed', () => {
-    useDriveStore.getState().setConnecting(true)
-    expect(useDriveStore.getState().status).toBe('connecting')
-
-    // Otherwise a failed sign-in leaves the gate spinning, and the next
-    // `restore` stands down for a connection that is not coming.
-    useDriveStore.getState().setConnecting(false)
-    expect(useDriveStore.getState().status).toBe('disconnected')
   })
 })
 

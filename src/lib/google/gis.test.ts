@@ -46,22 +46,24 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-describe('SIGN_IN_SCOPES', () => {
-  it('carries Drive, because signing in is the only time this app asks for it', () => {
-    const asked = gis.SIGN_IN_SCOPES.split(' ')
-
-    for (const scope of gis.DRIVE_SCOPE_LIST) expect(asked).toContain(scope)
-    expect(asked).toContain('openid')
-  })
-
+describe('DRIVE_SCOPES', () => {
   it('asks for no restricted scope, which is what the Picker buys', () => {
     // `drive.readonly` reads as "See and download all your Google Drive files"
     // on the consent screen and needs Google's annual third-party security
     // assessment before that screen can be published. The Picker hands over the
     // files the user chose instead, so this must never creep back.
-    expect(gis.SIGN_IN_SCOPES).not.toContain('drive.readonly')
-    expect(gis.SIGN_IN_SCOPES).not.toContain('auth/drive ')
+    expect(gis.DRIVE_SCOPES).not.toContain('drive.readonly')
+    expect(gis.DRIVE_SCOPES).not.toContain('auth/drive ')
     expect(gis.DRIVE_SCOPE_LIST).toEqual(['https://www.googleapis.com/auth/drive.file'])
+  })
+
+  it('asks for nothing about identity, which Netlify Identity now owns', () => {
+    // These were here when one consent screen did both jobs. Asking for them now
+    // would mean requesting an ID token nothing reads, from a screen whose only
+    // purpose is the folder.
+    expect(gis.DRIVE_SCOPES).not.toContain('openid')
+    expect(gis.DRIVE_SCOPES).not.toContain('email')
+    expect(gis.DRIVE_SCOPES).not.toContain('profile')
   })
 })
 

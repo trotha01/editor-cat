@@ -1,77 +1,53 @@
 /**
- * Signing in with Google, which is also how Drive is authorised.
+ * Authorising Google Drive.
  *
- * One OAuth request asks for identity and Drive together and comes back with an
- * ID token *and* a consent code. Supabase turns the first into a session; the
- * second becomes the stored Drive connection. That is the only prompt this app
- * shows, and the only place it talks to Google.
+ * This used to be sign-in as well. One OAuth request asked for identity and
+ * Drive together and came back with an ID token *and* a consent code, so a
+ * single screen covered both. Netlify Identity owns sign-in now, and an Identity
+ * login returns proof of who someone is and nothing else — there is no scope to
+ * add on the way past. So Drive is asked for on its own, in the step
+ * immediately after signing in.
  *
- * Deliberately not Google Identity Services. GIS splits the two jobs across
- * libraries that cannot do each other's — `google.accounts.id` issues an ID token
- * and cannot authorise Drive, `google.accounts.oauth2` authorises Drive and
- * cannot issue an ID token — so anything built on it asks the user twice.
+ * The cost of splitting them is one extra screen, and `loginHint` is what keeps
+ * it to that: the account is already known from the Identity session, so Google
+ * goes straight to the consent rather than asking which account first.
+ *
+ * A pop-up rather than a redirect, unlike the Identity login: this one can be
+ * reached from Settings with a project open, and reconnecting Drive must not
+ * navigate away mid-edit.
  */
-import { clientId, SIGN_IN_SCOPES } from './gis'
+import { clientId, DRIVE_SCOPES } from './gis'
 import { requestAuthorization } from './oauthPopup'
 
 /**
- * A nonce ties one ID token to one sign-in attempt.
+ * Opens Google's consent screen for Drive and returns the code it hands back.
  *
- * Google signs the hash into the token; Supabase re-hashes the raw value and
- * compares. A token lifted from elsewhere therefore cannot be replayed into a
- * session here.
- */
-export interface Nonce {
-  /** Sent to Supabase. */
-  raw: string
-  /** Sent to Google. */
-  hashed: string
-}
-
-export async function createNonce(): Promise<Nonce> {
-  const bytes = crypto.getRandomValues(new Uint8Array(32))
-  const raw = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))
-  const hashed = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('')
-
-  return { raw, hashed }
-}
-
-export interface SignInGrant {
-  /** Proves who the user is. Exchanged with Supabase for a session. */
-  idToken: string
-  /** Becomes the stored Drive connection, once there is a session to file it under. */
-  code: string
-}
-
-/**
- * Signs in and authorises Drive in one pass.
- *
- * `select_account` so the account in use is always a deliberate choice, and
- * `consent` because Google only issues a refresh token alongside a fresh grant —
- * without it a returning user would sign in fine and have no Drive connection
- * worth keeping.
+ * The code is one-time and useless without the client secret, which only the
+ * Netlify function has — so it travels straight there to be exchanged for a
+ * refresh token. See connection.ts.
  *
  * Must be called straight from a click, or the pop-up is blocked.
+ *
+ * @param email The signed-in address, offered to Google as a hint so the user is
+ *   not asked to choose an account they have already chosen.
  */
-export async function requestSignIn(nonce: Nonce): Promise<SignInGrant> {
+export async function requestDriveAuthorization(email?: string): Promise<string> {
   const id = clientId()
   if (!id) {
     throw new Error(
-      'Google sign-in is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.',
+      'Google Drive is not configured for this site: VITE_GOOGLE_CLIENT_ID is not set.',
     )
   }
 
   const result = await requestAuthorization({
     clientId: id,
-    scope: SIGN_IN_SCOPES,
-    nonce: nonce.hashed,
-    prompt: 'select_account consent',
+    scope: DRIVE_SCOPES,
+    // `consent` because Google only issues a refresh token alongside a fresh
+    // grant — without it a returning user would connect successfully and find
+    // themselves disconnected an hour later.
+    prompt: 'consent',
+    ...(email ? { loginHint: email } : {}),
   })
 
-  if (!result.idToken) throw new Error('Google did not return a sign-in token. Try again.')
-  return { idToken: result.idToken, code: result.code }
+  return result.code
 }

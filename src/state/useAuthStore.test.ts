@@ -1,51 +1,105 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { User } from 'gotrue-js'
 
 /**
  * Sign-in has to survive a reload.
  *
- * The whole mechanism is a Supabase client configured to persist its session
- * plus a `start()` that reads it back, which is easy to break silently: a
- * `persistSession: false` slipped into the client options, a storage override, a
- * `signOut()` on some unrelated failure path. None of that shows up in the
- * editor until someone closes the tab and finds themselves at the sign-in screen
- * again.
+ * The whole mechanism is gotrue-js persisting its session plus a `start()` that
+ * reads it back and trades it for a Supabase one, which is easy to break
+ * silently: a `remember` flag dropped from `createUser`, a `logout()` on some
+ * unrelated failure path, a mint that throws and is treated as a dead session.
+ * None of that shows up in the editor until someone closes the tab and finds
+ * themselves at the sign-in screen again.
  *
- * So this exercises the real client against a seeded localStorage rather than a
- * mocked `supabase.auth`, because a mock of the thing being tested would prove
- * nothing. Nothing here touches the network: the seeded session is well inside
- * its lifetime, so there is nothing for the client to refresh.
+ * So this exercises the real gotrue-js client against a seeded localStorage
+ * rather than a mocked identity module, because a mock of the thing being tested
+ * would prove nothing. Only the network is faked.
  */
 const PROJECT_URL = 'https://persistedproject.supabase.co'
-const STORAGE_KEY = 'sb-persistedproject-auth-token'
+const IDENTITY_STORAGE_KEY = 'gotrue.user'
 
 const HOUR = 60 * 60
 
-function storedSession(expiresInSeconds = HOUR) {
-  const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds
+function identityUrl(): string {
+  return `${window.location.origin}/.netlify/identity`
+}
+
+/** A JWT gotrue-js can read an expiry out of. Never verified by anything here. */
+function fakeJwt(expiresInSeconds: number): string {
+  const claims = { sub: 'netlify-user-42', exp: Math.floor(Date.now() / 1000) + expiresInSeconds }
+  const segment = (value: object) => btoa(JSON.stringify(value)).replace(/=+$/, '')
+  return `${segment({ alg: 'HS256', typ: 'JWT' })}.${segment(claims)}.signature`
+}
+
+function tokenResponse(expiresInSeconds = HOUR) {
   return {
-    access_token: 'stored-access-token',
+    access_token: fakeJwt(expiresInSeconds),
     refresh_token: 'stored-refresh-token',
     token_type: 'bearer',
     expires_in: expiresInSeconds,
-    expires_at: expiresAt,
-    user: {
-      id: 'user_42',
-      aud: 'authenticated',
-      role: 'authenticated',
-      email: 'someone@example.com',
-      app_metadata: { provider: 'google' },
-      user_metadata: {},
-      created_at: new Date(0).toISOString(),
-    },
+    expires_at: Date.now() + expiresInSeconds * 1000,
   }
+}
+
+/** The shape gotrue-js writes to localStorage, and reads back on the next load. */
+function storedIdentitySession() {
+  return {
+    url: identityUrl(),
+    token: tokenResponse(),
+    audience: '',
+    id: 'netlify-user-42',
+    email: 'someone@example.com',
+    app_metadata: { provider: 'google' },
+    user_metadata: {},
+  }
+}
+
+let sessionMints = 0
+
+/**
+ * Answers the two endpoints a restore touches, and refuses everything else.
+ *
+ * An unexpected request is a failed test rather than a silent fallback: the
+ * point of several of these is that a *particular* call did or did not happen.
+ */
+function stubNetwork(): void {
+  sessionMints = 0
+  vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input)
+    const method = (init?.method ?? 'GET').toUpperCase()
+
+    if (url.endsWith('/api/session') && method === 'POST') {
+      sessionMints += 1
+      return Promise.resolve(
+        new Response(JSON.stringify({ access_token: fakeJwt(HOUR), expires_in: HOUR }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    }
+
+    if (url === `${identityUrl()}/user`) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ id: 'netlify-user-42', email: 'someone@example.com', app_metadata: {} }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      )
+    }
+
+    if (url === `${identityUrl()}/logout`) {
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+
+    return Promise.reject(new Error(`Unexpected request in test: ${method} ${url}`))
+  })
 }
 
 /**
  * Imports the store fresh, so its module-level env reads happen under the stubs.
  *
- * `resetModules` is what drops the cached Supabase client too — it lives in a
- * module-level variable, and a client built against a previous test's URL would
- * read a different storage key.
+ * `resetModules` is what drops gotrue-js's own module-level cache of the current
+ * user too — without it, a user recovered in one test is handed straight back in
+ * the next, whatever localStorage says.
  */
 async function loadStore() {
   vi.resetModules()
@@ -56,11 +110,22 @@ beforeEach(() => {
   vi.stubEnv('VITE_SUPABASE_URL', PROJECT_URL)
   vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'anon-key-for-tests')
   vi.stubEnv('VITE_MOCK_PROVIDERS', '')
+
+  // gotrue-js caches the recovered user in a module-level variable, and
+  // `vi.resetModules()` cannot reach it: the package is externalised, so Node's
+  // own module cache hands back the same instance every time. Without this, a
+  // user recovered in one test is still signed in for the next one however
+  // empty localStorage is.
+  User.recoverSession()?.clearSession()
+
   window.localStorage.clear()
+  window.history.replaceState({}, '', '/')
+  stubNetwork()
 })
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   window.localStorage.clear()
 })
 
@@ -73,51 +138,90 @@ describe('a configured build', () => {
   })
 
   it('restores the session left behind by a previous visit', async () => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(storedSession()))
+    window.localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(storedIdentitySession()))
 
-    const { useAuthStore, currentUserId, currentAccessToken } = await loadStore()
-    const unsubscribe = await useAuthStore.getState().start()
+    const { useAuthStore, isSignedIn } = await loadStore()
+    await useAuthStore.getState().start()
 
     expect(useAuthStore.getState().status).toBe('signed-in')
-    expect(currentUserId()).toBe('user_42')
-    // What the fal proxy is sent. Read through the store rather than captured,
-    // so a token refreshed mid-session is picked up.
-    expect(currentAccessToken()).toBe('stored-access-token')
+    expect(useAuthStore.getState().account).toEqual({
+      id: 'netlify-user-42',
+      email: 'someone@example.com',
+    })
+    expect(isSignedIn()).toBe(true)
+  })
 
-    unsubscribe()
+  it('mints the Supabase session up front, so a dead Identity session is caught here', async () => {
+    // A refresh token that has run out looks exactly like a valid stored session
+    // until something asks it for a token. Finding out at the gate beats finding
+    // out on the first save.
+    window.localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(storedIdentitySession()))
+
+    const { useAuthStore } = await loadStore()
+    await useAuthStore.getState().start()
+
+    expect(sessionMints).toBe(1)
   })
 
   it('asks for a sign-in when there is nothing stored', async () => {
     const { useAuthStore } = await loadStore()
-    const unsubscribe = await useAuthStore.getState().start()
+    await useAuthStore.getState().start()
 
     expect(useAuthStore.getState().status).toBe('signed-out')
-
-    unsubscribe()
+    expect(sessionMints).toBe(0)
   })
 
   it('does not treat unreadable stored data as a session', async () => {
-    window.localStorage.setItem(STORAGE_KEY, '{not json')
+    window.localStorage.setItem(IDENTITY_STORAGE_KEY, '{not json')
 
     const { useAuthStore } = await loadStore()
-    const unsubscribe = await useAuthStore.getState().start()
+    await useAuthStore.getState().start()
 
     expect(useAuthStore.getState().status).toBe('signed-out')
-
-    unsubscribe()
   })
 
-  it('keeps signing in with Google out of local storage as a raw credential', async () => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(storedSession()))
+  it('adopts the session Google redirected back with, and clears the address bar', async () => {
+    const token = tokenResponse()
+    window.history.replaceState(
+      {},
+      '',
+      `/#access_token=${token.access_token}&refresh_token=${token.refresh_token}` +
+        `&expires_in=${HOUR}&token_type=bearer`,
+    )
 
     const { useAuthStore } = await loadStore()
-    const unsubscribe = await useAuthStore.getState().start()
+    await useAuthStore.getState().start()
 
-    // The session token is stored — that is the point — but the Google ID token
-    // that produced it is single-use and must not be lying around next to it.
-    expect(JSON.stringify(window.localStorage)).not.toContain('id_token')
+    expect(useAuthStore.getState().status).toBe('signed-in')
+    expect(useAuthStore.getState().account?.email).toBe('someone@example.com')
 
-    unsubscribe()
+    // A token left in the fragment would be replayed by a reload, and would sit
+    // in this tab's history in the meantime.
+    expect(window.location.hash).toBe('')
+    // Remembered, or the sign-in would not survive the next reload.
+    expect(window.localStorage.getItem(IDENTITY_STORAGE_KEY)).toContain('netlify-user-42')
+  })
+
+  it('reports a refusal from Google rather than looking like nobody tried', async () => {
+    window.history.replaceState({}, '', '/#error=access_denied&error_description=Nope')
+
+    const { useAuthStore } = await loadStore()
+    await useAuthStore.getState().start()
+
+    expect(useAuthStore.getState().status).toBe('signed-out')
+    expect(useAuthStore.getState().error).toContain('Nope')
+  })
+
+  it('clears the stored session on the way out', async () => {
+    window.localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(storedIdentitySession()))
+
+    const { useAuthStore } = await loadStore()
+    await useAuthStore.getState().start()
+    await useAuthStore.getState().signOut()
+
+    expect(useAuthStore.getState().status).toBe('signed-out')
+    expect(useAuthStore.getState().account).toBeNull()
+    expect(window.localStorage.getItem(IDENTITY_STORAGE_KEY)).toBeNull()
   })
 })
 
@@ -132,8 +236,7 @@ describe('an unconfigured build', () => {
     expect(useAuthStore.getState().status).toBe('local')
 
     // Safe to call regardless: App mounts before knowing which build this is.
-    const unsubscribe = await useAuthStore.getState().start()
+    await useAuthStore.getState().start()
     expect(useAuthStore.getState().status).toBe('local')
-    unsubscribe()
   })
 })

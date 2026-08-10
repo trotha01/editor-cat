@@ -9,12 +9,17 @@ import { render, screen, waitFor } from '@testing-library/react'
  * let someone in without Drive or a folder, or they land in an editor that
  * silently saves nothing; and it must not throw them back out when a grant lapses
  * mid-session, which would lose whatever they had open.
+ *
+ * The three are three separate screens because they come from three separate
+ * places: Netlify Identity signs the user in, Google grants Drive afterwards,
+ * and the folder is ours to ask about. The order matters — a Drive prompt in
+ * front of someone with no session has no account to file the result under.
  */
 const authState = {
   status: 'checking' as string,
-  session: null as { user: { email: string } } | null,
+  account: null as { id: string; email: string } | null,
   error: null as string | null,
-  start: vi.fn(async () => () => {}),
+  start: vi.fn(async () => {}),
   signIn: vi.fn(),
   signOut: vi.fn(),
   setError: vi.fn(),
@@ -22,10 +27,11 @@ const authState = {
 
 const driveState = {
   status: 'disconnected' as string,
+  /** Null until the account has been asked what it has stored. */
+  durable: true as boolean | null,
   error: null as string | null,
   folder: null as { id: string; name: string } | null,
   restore: vi.fn(async () => {}),
-  setConnecting: vi.fn(),
   setFolder: vi.fn(),
   adopt: vi.fn(),
   forget: vi.fn(),
@@ -61,9 +67,22 @@ vi.mock('../lib/google/gis', () => ({
   loadConnectionStatus: () => loadConnectionStatus(),
 }))
 
+const requestDriveAuthorization = vi.fn<(email?: string) => Promise<string>>()
+
 vi.mock('../lib/google/identity', () => ({
-  createNonce: async () => ({ raw: 'raw', hashed: 'hashed' }),
-  requestSignIn: vi.fn(),
+  requestDriveAuthorization: (email?: string) => requestDriveAuthorization(email),
+}))
+
+const identityGoogleEnabled = vi.fn<() => Promise<boolean>>()
+const sessionReadiness =
+  vi.fn<() => Promise<{ ready: boolean; problem?: 'not-configured' | 'unreachable' }>>()
+
+vi.mock('../lib/netlify/identity', () => ({
+  identityGoogleEnabled: () => identityGoogleEnabled(),
+}))
+
+vi.mock('../lib/supabase/session', () => ({
+  sessionReadiness: () => sessionReadiness(),
 }))
 
 const createFolder = vi.fn()
@@ -88,9 +107,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   signInRequired = true
   authState.status = 'signed-out'
-  authState.session = null
+  authState.account = null
   authState.error = null
   driveState.status = 'disconnected'
+  driveState.durable = true
   driveState.error = null
   driveState.folder = null
   pickerConfigured = true
@@ -98,6 +118,9 @@ beforeEach(() => {
   createFolder.mockResolvedValue({ id: 'folder_new', name: 'editor-cat' })
   pickFolder.mockResolvedValue({ id: 'folder_chosen', name: 'Renders' })
   loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
+  identityGoogleEnabled.mockResolvedValue(true)
+  sessionReadiness.mockResolvedValue({ ready: true })
+  requestDriveAuthorization.mockResolvedValue('consent-code')
 })
 
 afterEach(() => {
@@ -115,25 +138,47 @@ describe('an unconfigured build', () => {
 })
 
 describe('the gate', () => {
-  it('offers one button, which asks for Drive as well as identity', async () => {
+  it('offers a sign-in, and asks nothing about Drive yet', async () => {
     mount()
 
     expect(await screen.findByRole('button', { name: /sign in with google/i })).toBeInTheDocument()
-    // There is no second Google affordance anywhere: one prompt is the point.
-    expect(screen.queryByRole('button', { name: /drive/i })).not.toBeInTheDocument()
+    // Drive comes after. Asking here would have no account to file the grant
+    // under, and the function would refuse the code it produced.
+    expect(screen.queryByRole('button', { name: /allow google drive/i })).not.toBeInTheDocument()
+  })
+
+  it('does not ask the server about Drive before anyone is signed in', () => {
+    // `/api/google/status` reports on *this account's* connection, and there is
+    // no account yet. Asking would spend a round trip to learn nothing.
+    mount()
+
+    expect(loadConnectionStatus).not.toHaveBeenCalled()
   })
 
   it('holds a signed-in visitor who has no Drive connection', async () => {
-    // Unticking Drive on Google's screen, or a session made before the app
-    // started asking for both. Letting them through would mean an editor that
-    // quietly saves nothing.
+    // Netlify Identity signs someone in and grants nothing else, so this is the
+    // ordinary path rather than an edge case. Letting them through would mean an
+    // editor that quietly saves nothing.
     authState.status = 'signed-in'
-    authState.session = { user: { email: 'someone@example.com' } }
+    authState.account = { id: 'user_1', email: 'someone@example.com' }
 
     mount()
 
     expect(await screen.findByRole('button', { name: /allow google drive/i })).toBeInTheDocument()
     expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
+  })
+
+  it('hints the signed-in address, so Google does not ask which account twice', async () => {
+    authState.status = 'signed-in'
+    authState.account = { id: 'user_1', email: 'someone@example.com' }
+
+    mount()
+    ;(await screen.findByRole('button', { name: /allow google drive/i })).click()
+
+    await waitFor(() =>
+      expect(requestDriveAuthorization).toHaveBeenCalledWith('someone@example.com'),
+    )
+    await waitFor(() => expect(driveState.adopt).toHaveBeenCalledWith('consent-code'))
   })
 
   it('offers a way out to someone stranded with the wrong account', async () => {
@@ -148,17 +193,46 @@ describe('the gate', () => {
     expect(authState.signOut).toHaveBeenCalled()
   })
 
-  it('says so when the deployment cannot sign anyone in, instead of a dead button', async () => {
-    loadConnectionStatus.mockResolvedValue({
-      durable: false,
-      connected: false,
-      problem: 'not-configured',
+  /**
+   * What the sign-in screen says when it cannot offer a button.
+   *
+   * Two unrelated halves have to be in place — Netlify Identity with Google
+   * switched on, and a signing secret to turn that into a Supabase session — and
+   * a single "not set up" message covering both sends whoever deployed the site
+   * to re-check the half that was already right.
+   */
+  describe('what stops a sign-in', () => {
+    it('names Identity when the site has none, before blaming anything else', async () => {
+      // Checked first: without it there is nothing to sign in with, however well
+      // the Supabase half is configured.
+      identityGoogleEnabled.mockResolvedValue(false)
+      sessionReadiness.mockResolvedValue({ ready: false, problem: 'not-configured' })
+
+      mount()
+
+      const callout = await screen.findByRole('alert')
+      expect(callout).toHaveTextContent(/Netlify Identity is not enabled/i)
+      expect(callout).not.toHaveTextContent('SUPABASE_JWT_SECRET')
+      expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
     })
 
-    mount()
+    it('names the signing secret when that is the only thing missing', async () => {
+      sessionReadiness.mockResolvedValue({ ready: false, problem: 'not-configured' })
 
-    expect(await screen.findByText(/not set up for sign-in/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
+      mount()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('SUPABASE_JWT_SECRET')
+    })
+
+    it('offers a reload for a server that did not answer, not a verdict on the setup', async () => {
+      sessionReadiness.mockResolvedValue({ ready: false, problem: 'unreachable' })
+
+      mount()
+
+      const callout = await screen.findByRole('alert')
+      expect(callout).toHaveTextContent(/reload/i)
+      expect(callout).not.toHaveTextContent(/not set up/i)
+    })
   })
 
   /**
@@ -167,8 +241,9 @@ describe('the gate', () => {
    * the reader had no way to tell which — so the screen reliably sent whoever
    * deployed the site to go and re-check something that was already correct.
    */
-  describe('what it says is wrong', () => {
+  describe('what it says is wrong about Drive', () => {
     async function blockedBy(problem: string, detail?: string): Promise<HTMLElement> {
+      authState.status = 'signed-in'
       loadConnectionStatus.mockResolvedValue({ durable: false, connected: false, problem, detail })
       mount()
       return await screen.findByRole('alert')
@@ -214,6 +289,7 @@ describe('the gate', () => {
       // The server half can be flawless and this still cannot work, so it is
       // checked before the server's answer is even considered.
       driveConfigured = false
+      authState.status = 'signed-in'
       loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
 
       mount()
@@ -232,6 +308,21 @@ describe('the gate', () => {
 
     expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
     expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
+  })
+
+  it('waits for the account to be asked before saying Drive is not connected', () => {
+    // `restore` runs from an effect, a paint later than the first render. Until
+    // it answers, "disconnected" only means "not asked yet" — and showing the
+    // grant screen on the strength of it tells a returning visitor to hand over
+    // permission they gave months ago.
+    authState.status = 'signed-in'
+    driveState.status = 'disconnected'
+    driveState.durable = null
+
+    mount()
+
+    expect(screen.queryByRole('button', { name: /allow google drive/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/one more permission/i)).not.toBeInTheDocument()
   })
 
   it('restores Drive itself, since the editor it gates cannot', async () => {

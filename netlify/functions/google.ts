@@ -39,15 +39,15 @@ import {
  * The refresh token never appears in a response body. What the browser gets is
  * the same hour-long access token it always had.
  *
- * Storing anything needs a verified Supabase session, because the user id from
- * that session is the key the refresh token is filed under. That also means
- * anonymous local development (`FAL_PROXY_ALLOW_ANONYMOUS=1`) cannot use this
- * path at all — `status` says so plainly, and the app falls back to the
- * in-memory token flow it used before.
+ * Storing anything needs a verified session, because the user id from that
+ * session is the key the refresh token is filed under. That id comes from
+ * Netlify Identity by way of `/api/session`, which is also why anonymous local
+ * development (`FAL_PROXY_ALLOW_ANONYMOUS=1`) cannot use this path at all —
+ * there is no account to file a connection under, and `status` says so plainly.
  *
- * `connect` is reached during sign-in as well as from Settings: signing in asks
- * Google for Drive at the same time, so the code that comes back is exchanged
- * the moment the new session exists.
+ * `connect` is reached from the gate's Drive step, which runs immediately after
+ * signing in: Netlify Identity cannot carry a Drive scope through its own login,
+ * so the consent that produces this code is asked for separately.
  */
 
 interface Setup {
@@ -167,10 +167,11 @@ export default async (request: Request): Promise<Response> => {
   const ready = setup()
 
   // Deliberately answered before any session is required, and the only route
-  // that is. The sign-in screen asks this to decide whether it can request Drive
-  // alongside identity — which is precisely the moment before a session exists.
-  // All it discloses is whether the deployment is set up for that, which the
-  // README states publicly; anything about a *user* still needs their token.
+  // that is. The gate asks it to decide whether to offer the Drive button at
+  // all, and a session that lapsed while a laptop slept must not turn "this
+  // site keeps connections" into "this site does not". All it discloses is
+  // whether the deployment is set up for that, which the README states
+  // publicly; anything about a *user* still needs their token.
   if (route === 'status') {
     const unusable = (problem: StatusProblem, detail?: string) =>
       json({ durable: false, connected: false, problem, ...(detail ? { detail } : {}) })

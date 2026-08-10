@@ -1,11 +1,11 @@
 /**
  * The Google Drive section of Settings: the folder, and how to change it.
  *
- * Nothing here is about the connection. Drive is granted at the sign-in screen
- * and a folder is chosen before the editor opens, so by the time anyone reaches
- * Settings both already exist — the only thing left is where the files go.
- * Anything that goes wrong with the connection afterwards is reported in the
- * editor, next to the uploads it affects (see DriveUploads).
+ * Nothing here is about the connection. Drive is granted in the step after
+ * signing in and a folder is chosen before the editor opens, so by the time
+ * anyone reaches Settings both already exist — the only thing left is where the
+ * files go. Anything that goes wrong with the connection afterwards is reported
+ * in the editor, next to the uploads it affects (see DriveUploads).
  */
 import { useState } from 'react'
 import { Button, Callout } from './ui'

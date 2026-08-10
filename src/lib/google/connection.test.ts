@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const currentAccessToken = vi.fn<() => string | null>(() => 'supabase-session-token')
+const supabaseAccessToken = vi.fn<() => Promise<string | null>>(
+  async () => 'supabase-session-token',
+)
 
-vi.mock('../../state/useAuthStore', () => ({
-  currentAccessToken: () => currentAccessToken(),
+vi.mock('../supabase/session', () => ({
+  supabaseAccessToken: () => supabaseAccessToken(),
 }))
 
 const {
@@ -32,7 +34,7 @@ function serve(status: number, body: unknown = {}) {
 }
 
 beforeEach(() => {
-  currentAccessToken.mockReturnValue('supabase-session-token')
+  supabaseAccessToken.mockResolvedValue('supabase-session-token')
 })
 
 afterEach(() => {
@@ -205,7 +207,7 @@ describe('requestAccessToken', () => {
     // A laptop waking from sleep presents a token that expired while it slept.
     // Reading that as "this site cannot store connections" would abandon the
     // stored connection for the rest of the session over a passing hiccup.
-    currentAccessToken.mockReturnValue(null)
+    supabaseAccessToken.mockResolvedValue(null)
     serve(401, { error: 'Sign in to generate.' })
     await expect(requestAccessToken()).rejects.toBeInstanceOf(SessionRequiredError)
 

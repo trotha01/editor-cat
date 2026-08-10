@@ -26,6 +26,13 @@ interface ImportMetaEnv {
    */
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
+  /**
+   * Where Netlify Identity lives. Defaults to `/.netlify/identity` on this
+   * origin, which is right for every deployed site and for `netlify dev`. Set it
+   * only for plain `npm run dev`, which serves the app on :5173 with no Netlify
+   * behind it — point it at a deployed site to sign in locally.
+   */
+  readonly VITE_NETLIFY_IDENTITY_URL?: string
 }
 
 interface ImportMeta {

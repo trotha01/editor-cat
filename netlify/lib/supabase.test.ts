@@ -70,6 +70,7 @@ describe('the two halves that read it', () => {
   it('agree that a build-time-only deployment is configured', async () => {
     process.env.VITE_SUPABASE_URL = PROJECT
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
+    process.env.SUPABASE_JWT_SECRET = 'signing-secret'
 
     expect(storeConfig()).toEqual({ url: PROJECT, serviceKey: 'service-role-key' })
 
@@ -79,6 +80,23 @@ describe('the two halves that read it', () => {
     expect(session.ok).toBe(false)
     if (session.ok) return
     expect(session.response.status).toBe(401)
+  })
+
+  it('agree that a deployment with no signing secret cannot authorise anyone', async () => {
+    // The halves read different variables now — the store needs a URL and a
+    // service key, sessions need the signing secret — so the failure they have
+    // to agree on is the one where a session cannot be verified at all. A store
+    // that says it is ready must not sit behind a check that answers 401 and
+    // sends people back to a sign-in that was never the problem.
+    process.env.VITE_SUPABASE_URL = PROJECT
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
+
+    expect(storeConfig()).toEqual({ url: PROJECT, serviceKey: 'service-role-key' })
+
+    const session = await requireSession(new Request('https://x.test/api/google/connect'))
+    expect(session.ok).toBe(false)
+    if (session.ok) return
+    expect(session.response.status).toBe(503)
   })
 
   it('agree that a deployment with no project at all is not configured', async () => {
