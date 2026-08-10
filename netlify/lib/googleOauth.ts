@@ -63,8 +63,16 @@ export function oauthConfig(): OauthConfig | null {
  * console's authorised list.
  *
  * Derived from the request rather than taken from the caller, so there is no
- * client-supplied value to validate. `GOOGLE_REDIRECT_URI` overrides it for
- * deployments sitting behind a proxy that rewrites the host.
+ * client-supplied value to validate. `GOOGLE_REDIRECT_URI` overrides it, which
+ * is what a site whose deploys have URLs of their own needs: the browser sent
+ * one registered origin as `redirect_uri` (see `callbackOrigin` in
+ * src/lib/google/oauthPopup.ts) and Google compares this against that one, not
+ * against the host this function happens to be answering on.
+ *
+ * Which makes it a per-deploy-context variable, not a production one. Set only
+ * for production, a preview derives its own host here, Google sees two different
+ * URIs and refuses the exchange — after a consent screen that looked like it
+ * worked.
  */
 export function redirectUri(requestUrl: string): string {
   const override = (process.env.GOOGLE_REDIRECT_URI ?? '').trim()

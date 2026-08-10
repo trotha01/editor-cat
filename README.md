@@ -258,7 +258,8 @@ Netlify dashboard rather than here.
 5. Add the same origins with `/oauth/google` on the end to **Authorised redirect
    URIs** — `http://localhost:8888/oauth/google`, `https://your-site/oauth/google`.
    That is where the consent pop-up lands. Google compares it byte for byte, so
-   no trailing slash, and connecting Drive fails without it.
+   no trailing slash, and connecting Drive fails without it. If your deploys do
+   not all share one URL, read the next section before filling this list in.
 6. Create an **API key** under the same credentials page, restricted by HTTP
    referrer to your origins. The Picker will not open without one.
 7. Put all three in `.env` locally, and in Netlify under **Site settings →
@@ -275,6 +276,60 @@ None of these is a secret — they ship in the bundle by design, and origin and
 referrer allowlisting are what protect them. The project number is passed to the
 Picker as its app id, which is what Google requires for files picked there to
 stay reachable under `drive.file`.
+
+### Connecting Drive from a deploy preview
+
+Step 5 is the one that does not scale. Google matches redirect URIs byte for
+byte and accepts no wildcard of any kind, and Netlify gives every pull request a
+host of its own — so there is no entry you can add in advance that covers
+`deploy-preview-28`, and Drive simply cannot be connected from a preview.
+
+Sign-in is unaffected: Netlify Identity owns that, with a Google client of
+Netlify's rather than yours, so no preview URL ever reaches your console.
+
+The way out is to stop giving Google more than one URI to know about. Every
+deploy runs its consent screen on **one registered origin**; that window is
+served by whichever deploy owns it, and hands the answer back across to the
+preview that opened it. `state` carries the opener's origin, because it is the
+only thing Google returns untouched.
+
+1. Give previews hosts under a domain you own — Netlify's **Automatic deploy
+   subdomains**, under Domain management. `deploy-preview-123.staging.your.site`
+   rather than `deploy-preview-123--sitename.netlify.app`.
+2. Register **one** authorised redirect URI:
+   `https://staging.your.site/oauth/google`. That is now the whole list, for
+   every preview there will ever be.
+3. Restrict the API key by HTTP referrer to `https://*.staging.your.site/*`.
+   Referrer restrictions _do_ take a wildcard, unlike redirect URIs — but only
+   as a whole label, so `deploy-preview-*--sitename.netlify.app` is rejected.
+4. Set these for **all deploy contexts**, not production alone:
+
+```
+VITE_GOOGLE_CALLBACK_ORIGIN=https://staging.your.site
+VITE_GOOGLE_CALLBACK_ALLOWED_SUFFIX=.staging.your.site
+GOOGLE_REDIRECT_URI=https://staging.your.site/oauth/google
+```
+
+Scoped to production, a preview derives its own host for the exchange, and
+Google refuses it — after a consent screen that looked like it worked.
+
+> **The suffix is a security boundary.** `state` arrives as a query parameter, so
+> the origin in it is whatever the URL that opened the callback window said it
+> was, and anyone can write one naming a site of their own. Google's exact
+> matching used to make that impossible; one URI in its place means this check
+> stands where it did. Name only domains you control. Never a shared one like
+> `.netlify.app`, where an attacker can deploy a site that matches in a minute.
+
+Two consequences worth knowing. The callback window runs the build deployed at
+the registered origin, not the pull request's — so this has to be merged and
+live before any preview can use it, and the `state` format is a contract between
+that deploy and every open branch. And Netlify keeps the
+`*--sitename.netlify.app` alias working: Drive will not connect there, correctly,
+because that host is outside the suffix.
+
+Leave both `VITE_` variables unset and everything behaves as it did — the
+callback is this origin, which is right for `netlify dev` and for a site whose
+deploys all share one URL.
 
 ### What sign-in needs
 

@@ -13,19 +13,7 @@
  * one.
  */
 
-/**
- * Where Google sends the browser back to.
- *
- * Handled by the app itself: Netlify's SPA fallback serves index.html for this
- * path, and main.tsx peels it off before React mounts (see oauthCallback.ts).
- * Serving it from a function instead would need inline script to reach the
- * opener, which the site's Content-Security-Policy does not allow.
- *
- * Must stay in step with `CALLBACK_PATH` in `netlify/lib/googleOauth.ts`, which
- * rebuilds the same URI for the code exchange — Google compares the two — and
- * with the authorised redirect URI registered in the Google console.
- */
-export const CALLBACK_PATH = '/oauth/google'
+import { CALLBACK_PATH } from './callbackPath'
 
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 
@@ -39,8 +27,55 @@ export interface CallbackMessage {
   error?: string
 }
 
+/**
+ * The origin Google redirects back to, which is not necessarily this one.
+ *
+ * Google matches redirect URIs byte for byte and accepts no wildcard, so on its
+ * own every origin that runs a consent flow needs an entry in the console.
+ * Netlify gives each pull request a host of its own, and there is no registering
+ * those in advance — which is why Drive could not be connected from a deploy
+ * preview at all.
+ *
+ * Pointing every deploy at one registered origin is what fixes that: the pop-up
+ * lands there whichever deploy opened it, and hands the answer back across (see
+ * oauthCallback.ts). One URI in the Google console then covers every preview
+ * that will ever exist.
+ *
+ * Left unset this is the origin the app is already running on, which is what it
+ * did before and is still right for `netlify dev` and for a site with one URL.
+ */
+export function callbackOrigin(): string {
+  const configured = import.meta.env.VITE_GOOGLE_CALLBACK_ORIGIN?.trim()
+  if (!configured) return window.location.origin
+  return configured.replace(/\/+$/, '')
+}
+
 export function callbackUri(): string {
-  return `${window.location.origin}${CALLBACK_PATH}`
+  return `${callbackOrigin()}${CALLBACK_PATH}`
+}
+
+/**
+ * `state` carries the opener's origin as well as the value tying one answer to
+ * one request.
+ *
+ * The callback window belongs to whichever deploy owns `callbackOrigin()`, so it
+ * has no way of its own to know where the answer should go. `state` is the only
+ * channel Google preserves across the round trip untouched, so it is the one
+ * that can say. The opener still compares the whole string, so the nonce half
+ * goes on doing its job exactly as it did.
+ *
+ * A colon separates them: a UUID contains none, so the first one is always the
+ * boundary and the `https://` in an origin cannot be mistaken for it.
+ */
+export function encodeState(nonce: string, origin: string): string {
+  return `${nonce}:${origin}`
+}
+
+/** The origin packed into `state`, or null when it carries only a nonce. */
+export function openerOrigin(state: string): string | null {
+  const boundary = state.indexOf(':')
+  if (boundary < 0) return null
+  return state.slice(boundary + 1) || null
 }
 
 export interface AuthorizationRequest {
@@ -110,7 +145,7 @@ const POPUP_FEATURES = 'popup=yes,width=520,height=660,left=100,top=60'
  * attribute to a user gesture is blocked outright.
  */
 export async function requestAuthorization(request: AuthorizationRequest): Promise<Authorization> {
-  const state = crypto.randomUUID()
+  const state = encodeState(crypto.randomUUID(), window.location.origin)
 
   // Opened before anything is awaited. Any `await` first would break the gesture
   // attribution the pop-up blocker relies on.
@@ -131,9 +166,10 @@ export async function requestAuthorization(request: AuthorizationRequest): Promi
     }
 
     const onMessage = (event: MessageEvent) => {
-      // The callback page is served from this origin, so anything else is not
-      // the answer we are waiting for.
-      if (event.origin !== window.location.origin) return
+      // The callback window is served by the registered callback origin, which
+      // is this one unless this deploy is borrowing another's. Anything else is
+      // not the answer we are waiting for.
+      if (event.origin !== callbackOrigin()) return
 
       const data = event.data as Partial<CallbackMessage> | null
       if (!data || data.source !== CALLBACK_MESSAGE) return

@@ -20,6 +20,22 @@ interface ImportMetaEnv {
    */
   readonly VITE_GOOGLE_PROJECT_NUMBER?: string
   /**
+   * The one origin registered with Google as an authorised redirect URI, for
+   * sites whose deploys do not all share a URL. Every deploy sends its consent
+   * pop-up there and is handed the answer back, so a deploy preview needs no
+   * entry of its own in a console that accepts no wildcards. Leave it unset for
+   * a site with one URL, and for `netlify dev`.
+   */
+  readonly VITE_GOOGLE_CALLBACK_ORIGIN?: string
+  /**
+   * The domain whose subdomains that callback window may hand an authorisation
+   * back to — `.previews.example.com`, say. Required alongside
+   * `VITE_GOOGLE_CALLBACK_ORIGIN`, and deliberately not derived from it: it is
+   * the only thing standing where Google's byte-for-byte matching used to, so
+   * it names what the operator owns rather than what this code guessed.
+   */
+  readonly VITE_GOOGLE_CALLBACK_ALLOWED_SUFFIX?: string
+  /**
    * Supabase project URL and anon key. Both must be set for projects to be
    * saved to the cloud; leave them unset to run purely against IndexedDB.
    * The anon key is public — row-level security is what protects the data.

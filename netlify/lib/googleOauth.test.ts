@@ -8,7 +8,7 @@ import {
   refreshAccessToken,
   revokeToken,
 } from './googleOauth'
-import { CALLBACK_PATH as BROWSER_CALLBACK_PATH } from '../../src/lib/google/oauthPopup'
+import { CALLBACK_PATH as BROWSER_CALLBACK_PATH } from '../../src/lib/google/callbackPath'
 
 describe('the callback path', () => {
   it('is the same string the browser sends, which Google compares byte for byte', () => {
