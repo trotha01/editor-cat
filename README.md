@@ -273,16 +273,21 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
    Allowed Web Origins cover wherever the app is served from, and its
    Connections tab has `google-oauth2` enabled.
 
-   **A Single Page Application, and not a Regular Web Application with its
-   authentication method set to None.** Those two look identical from the
-   browser — both do PKCE, both sign in — and Auth0 issues no refresh token to
-   the second, because it refuses one when a non-SPA client's code exchange
-   arrives from a browser. Nothing says so at the time. The session appears to
-   work, stops surviving reloads once the access token expires, and Token Vault
-   has no Google tokens to hold because none were ever stored, which surfaces
-   hours later and somewhere else entirely as `tokenset_not_found`. The tenant
-   log says it plainly under Monitoring → Logs, which is the only place it is
-   ever said.
+   Enable **Refresh Token Rotation** on it. Auth0 refuses to issue a
+   _non-rotating_ refresh token to a browser at all — a long-lived one sitting
+   in a page is the thing rotation exists to avoid — and `useRefreshTokens` in
+   src/lib/auth0/client.ts expects one. A Single Page Application has rotation
+   on by default, which is most of why the type matters: a Regular Web
+   Application with its authentication method set to None looks identical from
+   the browser, does PKCE, signs in, and defaults to non-rotating.
+
+   Nothing surfaces at the time. The session appears to work, stops surviving
+   reloads once the access token expires, and Token Vault holds no Google tokens
+   because none were ever stored — which appears hours later, somewhere else,
+   against a different client id, as `tokenset_not_found`. Only the tenant log
+   under Monitoring → Logs connects the three, and only if you think to look:
+   "no 'refresh_token' was issued because the authorization code exchange
+   originated from a browser"
 
 7. On that API's page, press **Add Application**, name it, and press **Add** —
    which, despite the wording, creates a **Custom API Client** rather than
