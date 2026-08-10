@@ -77,6 +77,8 @@ describe('vaultConfig', () => {
 
 describe('googleAccessToken', () => {
   it('asks Auth0 for a federated token, in the shape it insists on', async () => {
+    // Pinned exactly, because the one time this was wrong Auth0 answered by
+    // naming two parameters that were right and not the one that was not.
     const fetchImpl = vi.fn().mockResolvedValue(answer({ access_token: 'ya29.token' }))
 
     await googleAccessToken('auth0-token', CONFIG, fetchImpl as unknown as typeof fetch)
@@ -84,7 +86,8 @@ describe('googleAccessToken', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://tenant.auth0.com/oauth/token')
     const body = new URLSearchParams(String(fetchImpl.mock.calls[0]?.[1]?.body))
     expect(Object.fromEntries(body)).toEqual({
-      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      grant_type:
+        'urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token',
       subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
       subject_token: 'auth0-token',
       requested_token_type: 'http://auth0.com/oauth/token-type/federated-connection-access-token',

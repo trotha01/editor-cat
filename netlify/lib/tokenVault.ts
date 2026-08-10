@@ -20,7 +20,26 @@
  * never be able to make it.
  */
 
-const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange'
+/**
+ * Auth0's own grant type, not RFC 8693's generic one.
+ *
+ * The exchange is a token exchange in every other respect, so
+ * `urn:ietf:params:oauth:grant-type:token-exchange` is the obvious guess and it
+ * is wrong: Auth0 accepts it, gets as far as reading the token types, and
+ * answers "Invalid subject_token_type and requested_token_type combination" —
+ * which points at the two parameters that were right, and not at the one that
+ * was not.
+ */
+const TOKEN_EXCHANGE_GRANT =
+  'urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token'
+
+/**
+ * The access-token variant, which is the one a backend API can use.
+ *
+ * Token Vault also exchanges an Auth0 *refresh* token, but a browser never
+ * sends one of those to its own API — it sends an access token, which is what
+ * arrives here.
+ */
 const ACCESS_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token'
 const FEDERATED_TOKEN_TYPE = 'http://auth0.com/oauth/token-type/federated-connection-access-token'
 
