@@ -130,8 +130,21 @@ export default async (request: Request): Promise<Response> => {
       return json({ durable: false, connected: false, problem: 'not-configured' })
     }
 
+    // Every way of being unconnected says which one it was.
+    //
+    // They are otherwise indistinguishable — same JSON, same screen, and the
+    // function log is the only witness, which on a deploy preview is somewhere
+    // most people never think to look. And they are fixed in unrelated places:
+    // one is an audience that disagrees with the bundle, another is consent
+    // nobody has granted yet. `detail` says which, the browser prints it to the
+    // console, and nobody has to go and find a log.
+    //
+    // Safe to disclose. Each names a step of this deployment's own setup, which
+    // the README states publicly, and none of them says anything about a user.
+    const unconnected = (detail: string) => json({ durable: true, connected: false, detail })
+
     const token = bearerToken(request)
-    if (!token) return json({ durable: true, connected: false })
+    if (!token) return unconnected('no-token: the browser sent no Auth0 token with this request.')
 
     let caller
     try {
@@ -139,20 +152,15 @@ export default async (request: Request): Promise<Response> => {
     } catch (error) {
       // Auth0 did not answer. The question asked was whether this deployment can
       // reach Drive, and an unanswerable check is not evidence that it cannot.
-      console.warn(
-        `[google] Could not verify the caller: ${error instanceof Error ? error.message : String(error)}`,
+      return unconnected(
+        `verify-unreachable: ${error instanceof Error ? error.message : String(error)}`,
       )
-      return json({ durable: true, connected: false })
     }
     if (!caller) {
-      // Logged because it is otherwise indistinguishable from a missing Google
-      // grant — same answer, same screen — and the two are fixed in completely
-      // different places. A rejected token is almost always AUTH0_AUDIENCE
-      // disagreeing with what the browser was built with.
-      console.warn(
-        '[google] Auth0 did not accept that token: check AUTH0_AUDIENCE and AUTH0_DOMAIN.',
+      return unconnected(
+        'token-rejected: Auth0 did not accept that token. AUTH0_AUDIENCE or AUTH0_DOMAIN in the ' +
+          'function environment probably disagrees with the VITE_ pair the bundle was built with.',
       )
-      return json({ durable: true, connected: false })
     }
 
     try {
@@ -161,15 +169,18 @@ export default async (request: Request): Promise<Response> => {
     } catch (error) {
       if (error instanceof TokenVaultError && error.code === 'invalid_grant') {
         // Ordinary enough not to be an error — consent withdrawn, or a grant
-        // Google made without a refresh token — but worth naming, because from
-        // the outside it looks identical to a token this deployment refused.
-        console.warn('[google] Token Vault holds no usable Google grant for this account.')
-        return json({ durable: true, connected: false })
+        // Google made without a refresh token, which is what happens when it
+        // decides an existing consent still stands and issues no refresh token
+        // at all. Auth0's own words come along, because they are more specific
+        // than anything that could be said from here.
+        return unconnected(`no-grant: Token Vault holds no usable Google grant. ${error.message}`)
       }
-      console.warn(
-        `[google] Token Vault did not answer: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      return json({ durable: true, connected: false, problem: 'unreachable' })
+      return json({
+        durable: true,
+        connected: false,
+        problem: 'unreachable',
+        detail: `vault-unreachable: ${error instanceof Error ? error.message : String(error)}`,
+      })
     }
   }
 

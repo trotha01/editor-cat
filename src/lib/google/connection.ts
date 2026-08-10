@@ -38,6 +38,17 @@ export interface ConnectionStatus {
   connected: boolean
   /** Why not, when `durable` is false. */
   problem?: StatusProblem
+  /**
+   * Which step of the setup answered no, in the server's own words.
+   *
+   * Never shown to a visitor — there is nothing here they could act on. It
+   * exists because the half-dozen ways of ending up unconnected are otherwise
+   * identical from the outside: same JSON, same screen, and only the function
+   * log knows which, on a deploy preview whose logs most people never find.
+   * Printed to the console instead, where whoever is standing the deployment up
+   * is already looking.
+   */
+  detail?: string
 }
 
 export interface DriveGrant {
@@ -125,6 +136,16 @@ export async function connectionStatus(): Promise<ConnectionStatus> {
       durable?: unknown
       connected?: unknown
       problem?: unknown
+      detail?: unknown
+    }
+
+    const detail = typeof body.detail === 'string' ? body.detail : undefined
+
+    // Printed rather than shown. Ending up here is nearly always a half-finished
+    // deployment, and the person who can finish it is the one with the console
+    // open — a visitor has nothing to do with `token-rejected` but read it.
+    if (detail && body.connected !== true) {
+      console.warn(`[editor-cat] Google Drive is not connected — ${detail}`)
     }
 
     return {
@@ -133,6 +154,7 @@ export async function connectionStatus(): Promise<ConnectionStatus> {
       ...(typeof body.problem === 'string' && PROBLEMS.includes(body.problem)
         ? { problem: body.problem as StatusProblem }
         : {}),
+      ...(detail ? { detail } : {}),
     }
   } catch {
     // A static host with an SPA fallback answers /api/* with index.html and a

@@ -78,7 +78,11 @@ describe('status', () => {
     const response = await handler(get('status'))
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toEqual({ durable: true, connected: false })
+    await expect(response.json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      detail: expect.stringContaining('no-token'),
+    })
     // Nothing about a *user* is disclosed to an anonymous caller — only whether
     // the deployment is set up, which the README states publicly anyway.
     expect(googleAccessToken).not.toHaveBeenCalled()
@@ -98,7 +102,26 @@ describe('status', () => {
     const response = await handler(get('status', 'auth0-token'))
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toEqual({ durable: true, connected: false })
+    // Named, because from the outside it is identical to a token this
+    // deployment refused — and the two are fixed in unrelated places.
+    await expect(response.json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      detail: expect.stringContaining('no-grant'),
+    })
+  })
+
+  it('names a token it refused, which is the other way to look unconnected', async () => {
+    // Almost always AUTH0_AUDIENCE in the function environment disagreeing with
+    // the VITE_ pair the bundle was built with, and nothing whatever to do with
+    // Google. Without this the two are one symptom.
+    auth0User.mockResolvedValue(null)
+
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      detail: expect.stringContaining('token-rejected'),
+    })
   })
 
   it('names an unconfigured deployment rather than blaming the visitor', async () => {
@@ -123,19 +146,21 @@ describe('status', () => {
     const response = await handler(get('status', 'auth0-token'))
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       durable: true,
       connected: false,
       problem: 'unreachable',
+      detail: expect.stringContaining('vault-unreachable'),
     })
   })
 
   it('does not treat an unverifiable token as a broken deployment', async () => {
     auth0User.mockRejectedValue(new FakeAuth0UnavailableError('jwks down'))
 
-    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toEqual({
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
       durable: true,
       connected: false,
+      detail: expect.stringContaining('verify-unreachable'),
     })
   })
 })
