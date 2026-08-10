@@ -266,6 +266,16 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
    - enable **Offline Access** in Permissions, so Auth0 can hold a refresh token,
    - turn on **Connected Accounts for Token Vault**, which is what lets the
      functions exchange a caller's token for a Google one.
+
+   Confirm the client id and secret actually saved. Token Vault refuses to
+   store anything against Auth0's shared development keys, and a connection
+   that has quietly fallen back to them fails much later and somewhere else, as
+   `federated_connection_refresh_token_not_found` — a sentence about refresh
+   tokens, three steps downstream, naming a different client. The tell is on
+   Google's own consent screen: **"auth0.com wants access to your Google
+   Account"** means the dev keys, and your own application's name means your own
+   keys. The tenant log says it outright too, as a warning during login.
+
 5. Create an **API** in Auth0 — its identifier is `VITE_AUTH0_AUDIENCE`, and any
    URI will do so long as it matches everywhere.
 6. Create a **Single Page Application** for the browser. Its client id is
