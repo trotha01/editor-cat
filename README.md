@@ -270,7 +270,20 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
    URI will do so long as it matches everywhere.
 6. Create a **Single Page Application** for the browser. Its client id is
    `VITE_AUTH0_CLIENT_ID`; its Allowed Callback URLs, Allowed Logout URLs and
-   Allowed Web Origins cover wherever the app is served from.
+   Allowed Web Origins cover wherever the app is served from, and its
+   Connections tab has `google-oauth2` enabled.
+
+   **A Single Page Application, and not a Regular Web Application with its
+   authentication method set to None.** Those two look identical from the
+   browser — both do PKCE, both sign in — and Auth0 issues no refresh token to
+   the second, because it refuses one when a non-SPA client's code exchange
+   arrives from a browser. Nothing says so at the time. The session appears to
+   work, stops surviving reloads once the access token expires, and Token Vault
+   has no Google tokens to hold because none were ever stored, which surfaces
+   hours later and somewhere else entirely as `tokenset_not_found`. The tenant
+   log says it plainly under Monitoring → Logs, which is the only place it is
+   ever said.
+
 7. On that API's page, press **Add Application**, name it, and press **Add** —
    which, despite the wording, creates a **Custom API Client** rather than
    authorising an application that already exists. Then **Configure
