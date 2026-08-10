@@ -6,18 +6,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  * Lives here rather than beside the handler because Netlify turns every file in
  * the functions directory into a deployable endpoint — see functionNames.test.ts.
  *
- * Identity itself is mocked out; identity.test.ts covers talking to it. What is
+ * Auth0 itself is mocked out; auth0.test.ts covers verifying its tokens. What is
  * worth pinning down here is what the handler does with each answer, because
  * every one of them is a different thing to tell the browser: sign in again,
  * try again later, or "this site was never finished".
  */
-const identityUser = vi.fn()
+const auth0User = vi.fn()
 
-class FakeIdentityUnavailableError extends Error {}
+class FakeAuth0UnavailableError extends Error {}
 
-vi.mock('./identity', () => ({
-  identityUser: (token: string, requestUrl: string) => identityUser(token, requestUrl) as unknown,
-  IdentityUnavailableError: FakeIdentityUnavailableError,
+vi.mock('./auth0', () => ({
+  auth0User: (token: string, config: unknown) => auth0User(token, config) as unknown,
+  auth0Config: () => ({ domain: 'tenant.auth0.com', audience: 'https://editor-cat/api' }),
+  Auth0UnavailableError: FakeAuth0UnavailableError,
 }))
 
 const handler = (await import('../functions/session')).default
@@ -33,7 +34,7 @@ beforeEach(() => {
 
   process.env.SUPABASE_JWT_SECRET = 'a-shared-signing-secret'
   process.env.SUPABASE_URL = 'https://abcdefgh.supabase.co'
-  identityUser.mockResolvedValue({ id: 'user-uuid', email: 'someone@example.com' })
+  auth0User.mockResolvedValue({ id: 'auth0|42', email: 'someone@example.com' })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
@@ -88,20 +89,23 @@ describe('GET /api/session', () => {
 })
 
 describe('POST /api/session', () => {
-  it('mints a session for a token Identity accepts', async () => {
-    const response = await handler(post('identity-token'))
+  it('mints a session for a token Auth0 accepts', async () => {
+    const response = await handler(post('auth0-token'))
 
     expect(response.status).toBe(200)
     const minted = await body(response)
     expect(typeof minted.access_token).toBe('string')
     expect(minted.expires_in).toBe(3600)
-    expect(minted.user).toEqual({ id: 'user-uuid', email: 'someone@example.com' })
+    expect(minted.user).toEqual({ id: 'auth0|42', email: 'someone@example.com' })
 
-    expect(identityUser).toHaveBeenCalledWith('identity-token', 'https://site.example/api/session')
+    expect(auth0User).toHaveBeenCalledWith('auth0-token', {
+      domain: 'tenant.auth0.com',
+      audience: 'https://editor-cat/api',
+    })
   })
 
   it('never lets the minted token be cached between here and the browser', async () => {
-    const response = await handler(post('identity-token'))
+    const response = await handler(post('auth0-token'))
 
     expect(response.headers.get('cache-control')).toBe('no-store')
   })
@@ -110,22 +114,22 @@ describe('POST /api/session', () => {
     const response = await handler(post())
 
     expect(response.status).toBe(401)
-    expect(identityUser).not.toHaveBeenCalled()
+    expect(auth0User).not.toHaveBeenCalled()
   })
 
-  it('refuses a token Identity does not accept', async () => {
-    identityUser.mockResolvedValue(null)
+  it('refuses a token Auth0 does not accept', async () => {
+    auth0User.mockResolvedValue(null)
 
     expect((await handler(post('stale-token'))).status).toBe(401)
   })
 
-  it('answers 502 rather than 401 when Identity could not be asked', async () => {
+  it('answers 502 rather than 401 when Auth0 could not be asked', async () => {
     // The difference is what the browser tells the user to do. A 401 sends
-    // someone to sign in again, which during an Identity outage is the one
+    // someone to sign in again, which during an Auth0 outage is the one
     // thing guaranteed not to work.
-    identityUser.mockRejectedValue(new FakeIdentityUnavailableError('nothing answered'))
+    auth0User.mockRejectedValue(new FakeAuth0UnavailableError('nothing answered'))
 
-    expect((await handler(post('identity-token'))).status).toBe(502)
+    expect((await handler(post('auth0-token'))).status).toBe(502)
   })
 
   it('answers 503 when the site cannot sign a session at all', async () => {
@@ -133,16 +137,16 @@ describe('POST /api/session', () => {
     // round trip so a misconfigured site does not lean on Netlify to find out.
     delete process.env.SUPABASE_JWT_SECRET
 
-    const response = await handler(post('identity-token'))
+    const response = await handler(post('auth0-token'))
 
     expect(response.status).toBe(503)
-    expect(identityUser).not.toHaveBeenCalled()
+    expect(auth0User).not.toHaveBeenCalled()
   })
 
   it('answers 503 when no Supabase project is named', async () => {
     delete process.env.SUPABASE_URL
 
-    expect((await handler(post('identity-token'))).status).toBe(503)
+    expect((await handler(post('auth0-token'))).status).toBe(503)
   })
 
   it('counts a project named only by the build-time variable as configured', async () => {
@@ -151,7 +155,7 @@ describe('POST /api/session', () => {
     delete process.env.SUPABASE_URL
     process.env.VITE_SUPABASE_URL = 'https://abcdefgh.supabase.co'
 
-    expect((await handler(post('identity-token'))).status).toBe(200)
+    expect((await handler(post('auth0-token'))).status).toBe(200)
   })
 
   it('refuses any other method', async () => {

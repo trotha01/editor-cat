@@ -6,20 +6,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * Lives here rather than beside the handler because Netlify turns every file in
  * the functions directory into a deployable endpoint — see functionNames.test.ts.
  *
- * The exchange itself is covered by googleOauth.test.ts, so Google is mocked out
- * entirely. What is worth pinning down here is the part that only exists in the
- * handler: which routes demand a session, and what happens when Google hands
- * back an access token but no refresh token.
+ * The exchange itself is covered by tokenVault.test.ts and token verification by
+ * auth0.test.ts, so both are mocked out. What is worth pinning down here is what
+ * only exists in the handler: which routes demand a token, and the difference
+ * between a grant the user has to restore and a deployment nobody has finished
+ * setting up.
  */
-const requireSession = vi.fn()
-const readConnection = vi.fn()
-const writeConnection = vi.fn()
-const deleteConnection = vi.fn()
-const exchangeCode = vi.fn()
-const refreshAccessToken = vi.fn()
-const revokeToken = vi.fn()
+const auth0User = vi.fn()
+const googleAccessToken = vi.fn()
 
-class FakeGoogleOauthError extends Error {
+let vaultReady = true
+let authReady = true
+
+class FakeTokenVaultError extends Error {
   readonly status: number
   readonly code: string
 
@@ -30,322 +29,212 @@ class FakeGoogleOauthError extends Error {
   }
 }
 
-class FakeStoreError extends Error {
-  readonly summary: string
+class FakeAuth0UnavailableError extends Error {}
 
-  constructor(summary: string) {
-    super(summary)
-    this.summary = summary
-  }
-}
-
-class FakeMissingTableError extends FakeStoreError {}
-
-vi.mock('./auth', () => ({
-  requireSession: (request: Request) => requireSession(request) as unknown,
+vi.mock('./auth0', () => ({
+  auth0User: (token: string, config: unknown) => auth0User(token, config) as unknown,
+  auth0Config: () =>
+    authReady ? { domain: 'tenant.auth0.com', audience: 'https://editor-cat/api' } : null,
+  Auth0UnavailableError: FakeAuth0UnavailableError,
 }))
 
-vi.mock('./googleConnections', () => ({
-  storeConfig: () => ({ url: 'https://project.supabase.co', serviceKey: 'service-key' }),
-  readConnection: (userId: string) => readConnection(userId) as unknown,
-  writeConnection: (userId: string, connection: unknown) =>
-    writeConnection(userId, connection) as unknown,
-  deleteConnection: (userId: string) => deleteConnection(userId) as unknown,
-  MissingTableError: FakeMissingTableError,
-  StoreError: FakeStoreError,
-}))
-
-vi.mock('./googleOauth', () => ({
-  oauthConfig: () => ({ clientId: 'client-abc', clientSecret: 'secret-xyz' }),
-  redirectUri: (requestUrl: string) => `${new URL(requestUrl).origin}/oauth/google`,
-  exchangeCode: (code: string) => exchangeCode(code) as unknown,
-  refreshAccessToken: (token: string) => refreshAccessToken(token) as unknown,
-  revokeToken: (token: string) => revokeToken(token) as unknown,
-  GoogleOauthError: FakeGoogleOauthError,
+vi.mock('./tokenVault', () => ({
+  vaultConfig: () =>
+    vaultReady
+      ? { domain: 'tenant.auth0.com', clientId: 'backend-abc', clientSecret: 'secret-xyz' }
+      : null,
+  googleAccessToken: (subject: string) => googleAccessToken(subject) as unknown,
+  TokenVaultError: FakeTokenVaultError,
 }))
 
 const handler = (await import('../functions/google')).default
 
-const SIGNED_IN = { ok: true, userId: 'user_42' }
-const SIGNED_OUT = { ok: false, response: new Response('nope', { status: 401 }) }
+const GRANT = { accessToken: 'ya29.token', expiresIn: 3599, scope: 'drive.file' }
 
-const grant = { accessToken: 'ya29.token', expiresIn: 3599, scope: 'drive.file' }
-
-function call(route: string, init: RequestInit = {}): Promise<Response> {
-  return handler(new Request(`https://editor.test/api/google/${route}`, init))
+function get(route: string, token?: string): Request {
+  return new Request(`https://site.example/api/google/${route}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  })
 }
 
-const post = (route: string, body?: unknown): Promise<Response> =>
-  call(route, {
+function post(route: string, token?: string): Request {
+  return new Request(`https://site.example/api/google/${route}`, {
     method: 'POST',
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: token ? { authorization: `Bearer ${token}` } : {},
   })
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
-  requireSession.mockResolvedValue(SIGNED_IN)
-  readConnection.mockResolvedValue(null)
-  writeConnection.mockResolvedValue(undefined)
-  deleteConnection.mockResolvedValue(undefined)
-  revokeToken.mockResolvedValue(undefined)
+  vaultReady = true
+  authReady = true
+  auth0User.mockResolvedValue({ id: 'auth0|42', email: 'someone@example.com' })
+  googleAccessToken.mockResolvedValue(GRANT)
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
 describe('status', () => {
-  it('answers a caller with no usable session, rather than refusing outright', () => {
-    requireSession.mockResolvedValue(SIGNED_OUT)
+  it('answers without a token, because the gate asks before there is one', async () => {
+    const response = await handler(get('status'))
 
-    // Whether this deployment can keep a Drive connection is not a fact about
-    // the caller, and a token that expired while a laptop slept must not turn
-    // it into "this site does not store connections" for the rest of the visit.
-    return expect(call('status').then((r) => r.json())).resolves.toEqual({
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
       durable: true,
       connected: false,
+      detail: expect.stringContaining('no-token'),
     })
+    // Nothing about a *user* is disclosed to an anonymous caller — only whether
+    // the deployment is set up, which the README states publicly anyway.
+    expect(googleAccessToken).not.toHaveBeenCalled()
   })
 
-  it('reports a stored connection for a caller who has one', async () => {
-    readConnection.mockResolvedValue({ refreshToken: '1//refresh', scope: 'drive.file' })
+  it('reports a usable grant for a caller who has one', async () => {
+    const response = await handler(get('status', 'auth0-token'))
 
-    await expect(call('status').then((r) => r.json())).resolves.toEqual({
+    await expect(response.json()).resolves.toEqual({ durable: true, connected: true })
+  })
+
+  it('reports a withdrawn grant as simply not connected', async () => {
+    // Revoking Drive from the Google account page is an ordinary thing to do,
+    // and the gate answers it by asking for a fresh sign-in — not an error.
+    googleAccessToken.mockRejectedValue(new FakeTokenVaultError(409, 'invalid_grant', 'gone'))
+
+    const response = await handler(get('status', 'auth0-token'))
+
+    expect(response.status).toBe(200)
+    // Named, because from the outside it is identical to a token this
+    // deployment refused — and the two are fixed in unrelated places.
+    await expect(response.json()).resolves.toMatchObject({
       durable: true,
-      connected: true,
+      connected: false,
+      detail: expect.stringContaining('no-grant'),
     })
   })
 
-  it('never says anything about a user without checking their token first', async () => {
-    requireSession.mockResolvedValue(SIGNED_OUT)
+  it('calls a missing federated grant consent, whatever Auth0 named it', async () => {
+    // Auth0 says this in at least two vocabularies. The exchange decides which
+    // are consent and which are outages; re-testing the code here is how the
+    // two halves of that decision drifted apart once already.
+    googleAccessToken.mockRejectedValue(
+      new FakeTokenVaultError(409, 'federated_connection_refresh_token_not_found', 'not found'),
+    )
 
-    await call('status')
-
-    expect(readConnection).not.toHaveBeenCalled()
-  })
-
-  /**
-   * A store that cannot be read used to come back as a 502, which the browser
-   * could only render as "this site is not set up" — the same words it uses for
-   * missing environment variables. Whoever deployed it then went and re-checked
-   * the variables, which were fine, while the actual gap went unnamed.
-   */
-  describe('when the store cannot be read', () => {
-    let warn: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-      // The reason belongs in the function log, where the operator can see the
-      // whole PostgREST body. Silenced here only to keep the run readable.
-      warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    })
-
-    it('names the unrun migration, so the fix is the thing that is actually wrong', async () => {
-      readConnection.mockRejectedValue(new FakeMissingTableError('relation does not exist'))
-
-      const response = await call('status')
-
-      // 200, not 502: "no, because the table is missing" is an answer to the
-      // question, and a 502 would collapse it back into "something went wrong".
-      expect(response.status).toBe(200)
-      await expect(response.json()).resolves.toEqual({
-        durable: false,
-        connected: false,
-        problem: 'no-table',
-      })
-      expect(String(warn.mock.calls[0]?.[0])).toContain('0002_google_connections.sql')
-    })
-
-    it('separates a store that is merely down from one that was never migrated', async () => {
-      // Distinct because the advice differs: one is "reload in a minute", the
-      // other is "nobody will ever get in until someone runs the migration".
-      readConnection.mockRejectedValue(new FakeStoreError('503 · upstream connect error'))
-
-      const response = await call('status')
-
-      expect(response.status).toBe(200)
-      await expect(response.json()).resolves.toMatchObject({
-        durable: false,
-        connected: false,
-        problem: 'unreachable',
-      })
-    })
-
-    it('repeats what the database said, to a caller who has already signed in', async () => {
-      // Whoever stands a deployment up is the first person to sign into it, and
-      // this is the difference between fixing it now and going to find a log.
-      readConnection.mockRejectedValue(
-        new FakeStoreError('401 · 42501 · permission denied for table google_connections'),
-      )
-
-      await expect(call('status').then((r) => r.json())).resolves.toMatchObject({
-        detail: '401 · 42501 · permission denied for table google_connections',
-      })
-    })
-
-    it('says nothing extra when the failure was not the store answering', async () => {
-      // A DNS failure or an aborted fetch has no database complaint attached,
-      // and inventing one would put a guess on the sign-in screen.
-      readConnection.mockRejectedValue(new Error('fetch failed'))
-
-      const body = (await call('status').then((r) => r.json())) as Record<string, unknown>
-
-      expect(body.problem).toBe('unreachable')
-      expect(body).not.toHaveProperty('detail')
-    })
-  })
-})
-
-describe('the routes that touch a stored connection', () => {
-  it('refuse a caller whose session did not verify', async () => {
-    requireSession.mockResolvedValue(SIGNED_OUT)
-
-    for (const route of ['connect', 'token', 'disconnect']) {
-      expect((await post(route, { code: 'c' })).status).toBe(401)
-    }
-    expect(readConnection).not.toHaveBeenCalled()
-    expect(writeConnection).not.toHaveBeenCalled()
-  })
-
-  it('refuse anonymous development builds, which have no account to file one under', async () => {
-    requireSession.mockResolvedValue({ ok: true, userId: null })
-
-    expect((await post('token')).status).toBe(503)
-  })
-
-  it('refuse the wrong method, so a stray GET cannot look like a disconnect', async () => {
-    expect((await call('disconnect')).status).toBe(405)
-    expect(deleteConnection).not.toHaveBeenCalled()
-  })
-
-  it('answer 404 for a route that does not exist', async () => {
-    expect((await post('nonsense')).status).toBe(404)
-  })
-})
-
-describe('connect', () => {
-  it('stores the refresh token and returns only the access token', async () => {
-    exchangeCode.mockResolvedValue({ ...grant, refreshToken: '1//refresh' })
-
-    const body = (await post('connect', { code: 'one-time-code' }).then((r) => r.json())) as Record<
-      string,
-      unknown
-    >
-
-    expect(writeConnection).toHaveBeenCalledWith('user_42', {
-      refreshToken: '1//refresh',
-      scope: 'drive.file',
-    })
-    expect(body).toEqual({
-      access_token: 'ya29.token',
-      expires_in: 3599,
-      scope: 'drive.file',
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
       durable: true,
+      connected: false,
+      detail: expect.stringContaining('no-grant'),
     })
-    // The whole point of putting this behind a function: the long-lived half
-    // must never appear in something the browser can read.
-    expect(JSON.stringify(body)).not.toContain('1//refresh')
   })
 
-  it('keeps the previous token when Google decides the grant still stands', async () => {
-    exchangeCode.mockResolvedValue({ ...grant, refreshToken: null })
-    readConnection.mockResolvedValue({ refreshToken: '1//earlier', scope: 'drive.file' })
+  it('names a token it refused, which is the other way to look unconnected', async () => {
+    // Almost always AUTH0_AUDIENCE in the function environment disagreeing with
+    // the VITE_ pair the bundle was built with, and nothing whatever to do with
+    // Google. Without this the two are one symptom.
+    auth0User.mockResolvedValue(null)
 
-    const body = (await post('connect', { code: 'c' }).then((r) => r.json())) as {
-      durable: boolean
-    }
-
-    expect(writeConnection).not.toHaveBeenCalled()
-    expect(body.durable).toBe(true)
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      detail: expect.stringContaining('token-rejected'),
+    })
   })
 
-  it('says the connection is not durable when there is no token to fall back on', async () => {
-    // The access token still works, so this is not a failure — but the browser
-    // has to be told now rather than discovering it an hour later.
-    exchangeCode.mockResolvedValue({ ...grant, refreshToken: null })
-    readConnection.mockResolvedValue(null)
+  it('names an unconfigured deployment rather than blaming the visitor', async () => {
+    vaultReady = false
 
-    const body = (await post('connect', { code: 'c' }).then((r) => r.json())) as {
-      durable: boolean
-    }
+    const response = await handler(get('status', 'auth0-token'))
 
-    expect(body.durable).toBe(false)
+    await expect(response.json()).resolves.toEqual({
+      durable: false,
+      connected: false,
+      problem: 'not-configured',
+    })
+    expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toContain('AUTH0_BACKEND_CLIENT_ID')
   })
 
-  it('rejects a request with no readable code rather than calling Google', async () => {
-    expect((await post('connect', { code: '  ' })).status).toBe(400)
-    expect((await post('connect')).status).toBe(400)
-    expect(exchangeCode).not.toHaveBeenCalled()
+  it('keeps a store that is merely down apart from one never set up', async () => {
+    // Answered 200, not 502, on purpose. The question asked was whether this
+    // deployment can reach Drive, and a 502 collapses the reason back into
+    // "something went wrong", which is then all the browser can show.
+    googleAccessToken.mockRejectedValue(new FakeTokenVaultError(502, 'unreachable', 'down'))
+
+    const response = await handler(get('status', 'auth0-token'))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      problem: 'unreachable',
+      detail: expect.stringContaining('vault-unreachable'),
+    })
+  })
+
+  it('does not treat an unverifiable token as a broken deployment', async () => {
+    auth0User.mockRejectedValue(new FakeAuth0UnavailableError('jwks down'))
+
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      detail: expect.stringContaining('verify-unreachable'),
+    })
   })
 })
 
 describe('token', () => {
-  it('mints an access token from the stored refresh token', async () => {
-    readConnection.mockResolvedValue({ refreshToken: '1//refresh', scope: 'drive.file' })
-    refreshAccessToken.mockResolvedValue({ ...grant, refreshToken: null })
+  it('hands back the Google token the exchange produced', async () => {
+    const response = await handler(post('token', 'auth0-token'))
 
-    const response = await post('token')
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual(GRANT)
+    // The caller's own Auth0 token is the subject: it is what proves to Auth0
+    // whose Google grant is being asked for.
+    expect(googleAccessToken).toHaveBeenCalledWith('auth0-token')
+  })
 
-    expect(refreshAccessToken).toHaveBeenCalledWith('1//refresh')
-    expect(await response.json()).toEqual({
-      access_token: 'ya29.token',
-      expires_in: 3599,
-      scope: 'drive.file',
-    })
-    // Nothing between here and the browser should keep a copy.
+  it('never lets a Google token be cached between here and the browser', async () => {
+    const response = await handler(post('token', 'auth0-token'))
     expect(response.headers.get('cache-control')).toBe('no-store')
   })
 
-  it('falls back to the recorded scopes when a refresh response omits them', async () => {
-    readConnection.mockResolvedValue({ refreshToken: '1//refresh', scope: 'recorded-at-connect' })
-    refreshAccessToken.mockResolvedValue({ ...grant, scope: '', refreshToken: null })
-
-    const body = (await post('token').then((r) => r.json())) as { scope: string }
-
-    // An empty scope would read as a partial grant in the browser and take the
-    // user to a reconnect button for no reason.
-    expect(body.scope).toBe('recorded-at-connect')
+  it('refuses a request carrying no token', async () => {
+    expect((await handler(post('token'))).status).toBe(401)
+    expect(googleAccessToken).not.toHaveBeenCalled()
   })
 
-  it('answers 404 for an account that has simply never connected', async () => {
-    readConnection.mockResolvedValue(null)
-
-    // Not an error: it is the ordinary state of a new user, and the browser
-    // treats it as "offer the button".
-    expect((await post('token')).status).toBe(404)
+  it('refuses a token Auth0 does not accept', async () => {
+    auth0User.mockResolvedValue(null)
+    expect((await handler(post('token', 'auth0-token'))).status).toBe(401)
   })
 
-  it('drops a refresh token Google has stopped honouring', async () => {
-    readConnection.mockResolvedValue({ refreshToken: '1//revoked', scope: 'drive.file' })
-    refreshAccessToken.mockRejectedValue(
-      new FakeGoogleOauthError(409, 'invalid_grant', 'Token revoked'),
-    )
+  it('answers 502 rather than 401 when Auth0 could not be asked', async () => {
+    // Telling someone to sign in again during an outage is advice that cannot
+    // work, and they will take it repeatedly.
+    auth0User.mockRejectedValue(new FakeAuth0UnavailableError('jwks down'))
+    expect((await handler(post('token', 'auth0-token'))).status).toBe(502)
+  })
 
-    const response = await post('token')
+  it('reports a withdrawn grant as the user’s to fix, not an outage', async () => {
+    googleAccessToken.mockRejectedValue(new FakeTokenVaultError(409, 'invalid_grant', 'gone'))
 
-    // Keeping it would mean retrying forever against a dead credential, and
-    // resuming a connection on every load that cannot work.
-    expect(deleteConnection).toHaveBeenCalledWith('user_42')
+    const response = await handler(post('token', 'auth0-token'))
+
     expect(response.status).toBe(409)
-  })
-})
-
-describe('disconnect', () => {
-  it('forgets the connection before telling Google, so a hang there still disconnects', async () => {
-    readConnection.mockResolvedValue({ refreshToken: '1//refresh', scope: 'drive.file' })
-
-    const response = await post('disconnect')
-
-    expect(deleteConnection).toHaveBeenCalledWith('user_42')
-    expect(revokeToken).toHaveBeenCalledWith('1//refresh')
-    // Order is the point, not just that both ran: revocation is a courtesy to
-    // the user's Google account page, and if it stalls or fails this site must
-    // already have lost its own ability to reach their Drive.
-    expect(deleteConnection.mock.invocationCallOrder[0]).toBeLessThan(
-      revokeToken.mock.invocationCallOrder[0] as number,
-    )
-    expect(response.status).toBe(204)
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/Sign in/),
+    })
   })
 
-  it('is happy to disconnect an account that was not connected', async () => {
-    readConnection.mockResolvedValue(null)
+  it('refuses the wrong method, so a stray GET cannot look like a token request', async () => {
+    expect((await handler(get('token', 'auth0-token'))).status).toBe(405)
+  })
 
-    expect((await post('disconnect')).status).toBe(204)
-    expect(revokeToken).not.toHaveBeenCalled()
+  it('refuses every route that is not one of the two', async () => {
+    expect((await handler(post('connect', 'auth0-token'))).status).toBe(404)
+    expect((await handler(post('disconnect', 'auth0-token'))).status).toBe(404)
+  })
+
+  it('says the site is not set up rather than failing the exchange', async () => {
+    authReady = false
+    expect((await handler(post('token', 'auth0-token'))).status).toBe(503)
   })
 })

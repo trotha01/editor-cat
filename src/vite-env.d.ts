@@ -1,17 +1,22 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /**
+   * The Auth0 tenant this site signs in against, the SPA application's client
+   * id, and the API identifier its access tokens are minted for. All three are
+   * required for sign-in — and therefore for Drive, which rides on the same
+   * login. None is a secret: the domain is in every authorisation URL, the
+   * client id is public by design, and the audience is in every token.
+   */
+  readonly VITE_AUTH0_DOMAIN?: string
+  readonly VITE_AUTH0_CLIENT_ID?: string
+  readonly VITE_AUTH0_AUDIENCE?: string
   /** Set to "1" to fake every provider call locally. See src/lib/mock.ts. */
   readonly VITE_MOCK_PROVIDERS?: string
   /**
-   * Google OAuth client ID (a Web application client). Leave unset to build
-   * without sign-in or Drive at all.
-   */
-  readonly VITE_GOOGLE_CLIENT_ID?: string
-  /**
-   * Google API key, for the Google Picker. Public by design and restricted by
-   * HTTP referrer in the Cloud console, exactly as the client ID is restricted
-   * by origin.
+   * Google API key, for the Google Picker. Public by design, and restricted by
+   * HTTP referrer in the Cloud console — which is the one Google allowlist this
+   * app still keeps, since the Picker calls Google straight from the page.
    */
   readonly VITE_GOOGLE_API_KEY?: string
   /**
@@ -26,13 +31,6 @@ interface ImportMetaEnv {
    */
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
-  /**
-   * Where Netlify Identity lives. Defaults to `/.netlify/identity` on this
-   * origin, which is right for every deployed site and for `netlify dev`. Set it
-   * only for plain `npm run dev`, which serves the app on :5173 with no Netlify
-   * behind it — point it at a deployed site to sign in locally.
-   */
-  readonly VITE_NETLIFY_IDENTITY_URL?: string
 }
 
 interface ImportMeta {

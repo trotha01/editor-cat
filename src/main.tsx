@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { SignInGate } from './components/SignInGate'
 import { StagingBadge } from './components/StagingBadge'
-import { completeOauthCallback, isOauthCallback } from './lib/google/oauthCallback'
 import { installVersionGlobal } from './lib/version'
 import './index.css'
 
@@ -33,10 +32,8 @@ function mount(): void {
 // a screen that is refusing them entry.
 installVersionGlobal()
 
-// Google's consent pop-up lands back on this origin, and the SPA fallback serves
-// it as this app. That window exists for a few milliseconds, so it hands the
-// authorisation code to whoever opened it and closes; mounting the editor there
-// would load a second copy of everything and flash the sign-in gate inside the
-// pop-up on the way past.
-if (isOauthCallback()) completeOauthCallback()
-else mount()
+// Auth0 returns from Google to this same page, carrying `code` and `state` in
+// the query string, and the auth store consumes them on mount — so unlike the
+// pop-up flow this replaced, there is no second entry point here and no callback
+// route to keep out of the editor. See src/lib/auth0/client.ts.
+mount()

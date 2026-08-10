@@ -1,11 +1,11 @@
 /**
- * The Supabase session, minted from a Netlify Identity sign-in.
+ * The Supabase session, minted from an Auth0 sign-in.
  *
- * Supabase will not accept a Netlify Identity token: row-level security reads
- * `auth.uid()` out of a JWT signed with the project's own secret, and Identity's
- * is signed with Netlify's. So `/api/session` — the one place that holds that
- * secret — verifies the Identity token and signs a Supabase-shaped session
- * carrying the same user id. See netlify/functions/session.ts.
+ * Supabase will not accept an Auth0 token: row-level security reads `auth.uid()`
+ * out of a JWT signed with the project's own secret, and Auth0's is signed with
+ * its own key. So `/api/session` — the one place that holds that secret —
+ * verifies the Auth0 token and signs a Supabase-shaped session carrying the same
+ * user id. See netlify/functions/session.ts.
  *
  * This module is the browser's half of that: it asks for one, holds it until it
  * is nearly expired, and asks again. The token is what the Supabase client sends
@@ -14,14 +14,14 @@
  * identity systems are involved at all.
  *
  * Held in memory rather than storage. It is a live credential for the user's own
- * rows, it is cheap to replace, and the durable half — the Identity session that
- * mints it — is already persisted by gotrue-js.
+ * rows, it is cheap to replace, and the durable half — the Auth0 session that
+ * mints it — is already persisted by auth0-spa-js.
  */
-import { currentIdentityUser, identityToken } from '../netlify/identity'
+import { auth0Token, currentAccount } from '../auth0/client'
 
 const ENDPOINT = '/api/session'
 
-/** Raised when there is no Identity session behind the request any more. */
+/** Raised when there is no Auth0 session behind the request any more. */
 export class SignInRequiredError extends Error {
   constructor(message = 'Sign in again to continue.') {
     super(message)
@@ -66,19 +66,19 @@ async function messageFrom(response: Response, fallback: string): Promise<string
 }
 
 async function mint(): Promise<string> {
-  let identityJwt: string | null
+  let auth0Jwt: string | null
   try {
-    identityJwt = await identityToken()
+    auth0Jwt = await auth0Token()
   } catch {
-    // gotrue-js clears the stored session when a refresh is refused, so this is
-    // the shape an Identity session that has run out arrives in.
+    // auth0-spa-js throws rather than returning null when a silent refresh is
+    // refused, which is the shape a session that has run out arrives in.
     throw new SignInRequiredError()
   }
-  if (!identityJwt) throw new SignInRequiredError()
+  if (!auth0Jwt) throw new SignInRequiredError()
 
   const response = await fetch(ENDPOINT, {
     method: 'POST',
-    headers: { authorization: `Bearer ${identityJwt}` },
+    headers: { authorization: `Bearer ${auth0Jwt}` },
   })
 
   if (!response.ok) {
@@ -128,7 +128,7 @@ let minting: Promise<string> | null = null
 export async function supabaseAccessToken(): Promise<string | null> {
   const current = validToken()
   if (current) return current
-  if (!currentIdentityUser()) return null
+  if (!currentAccount()) return null
 
   if (!minting) {
     const attempt = mint()
