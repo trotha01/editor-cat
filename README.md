@@ -103,6 +103,14 @@ Then the editor. The second step is asked with the first one's email as a hint,
 so Google does not make you choose an account twice. Settings keeps the folder
 and the sign-out, and nothing else about Google.
 
+**Three steps once, one step after that.** Both answers are kept against the
+account rather than in the browser that gave them — the Drive grant by Auth0's
+Token Vault, the folder by a table of this app's own — so every later sign-in is
+a single click, on a new machine as much as on the same one. The folder used to
+live in localStorage alone, which signing out clears (it is an id in one
+account's Drive, and the next person at that keyboard must not inherit it), so
+every login was asked where its media should go all over again.
+
 It was briefly two, because Auth0 will carry a Drive scope through its login and
 the consent screen duly shows the folder next to the account. That grant lands
 against the user's _identity_, and Token Vault — which is what the functions
@@ -113,7 +121,8 @@ See [what sign-in needs](#what-sign-in-needs).
 
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
 placement, resolution, and the captions with every word timing in them — plus a
-catalogue of asset metadata. It never holds media bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
+catalogue of asset metadata and the Drive folder each account writes into. It
+never holds media bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
 Opening a project on a new machine restores the timeline from metadata
 immediately, so you can rearrange it while the media is still coming down from
 Drive behind you.
@@ -138,6 +147,8 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    fails on a constraint. `0006` changes `user_id` from `uuid` to `text` and
    moves the policies onto `auth.jwt() ->> 'sub'`, because Auth0 subjects are not
    UUIDs — see [migrating an existing project](#migrating-an-existing-project).
+   `0007` adds the one-row-per-user table holding the Drive folder each account
+   writes into, so a sign-in restores it instead of asking for it again.
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
    What Supabase needs instead is Auth0 registered as a third-party auth
    provider, and one Auth0 Action. Both are dashboard work, neither can be done
@@ -461,12 +472,12 @@ AUTH0_BACKEND_CLIENT_SECRET=     # the API's Custom API Client
 Run the files in `supabase/migrations/` in order, but check which have actually
 been applied first — this project's history is not a clean run. On the live
 project (`dxfxvvrbltjckstlnhup`) only `0005_project_drive_folder.sql` has been
-applied; **`0003`, `0004` and `0006` are outstanding**. All three need running.
-The order between them does not matter: `0004` only drops a table, and `0006`
-repeats `0003`'s two `drop constraint if exists` statements rather than assuming
-`0003` has run — it has to, because `alter column ... type` rebuilds any foreign
-key on the column, and a text column referencing `auth.users (id)` cannot be
-rebuilt at all.
+applied; **`0003`, `0004`, `0006` and `0007` are outstanding**. All four need
+running, and the order between them does not matter: `0004` only drops a table,
+`0007` only creates one, and `0006` repeats `0003`'s two
+`drop constraint if exists` statements rather than assuming `0003` has run — it
+has to, because `alter column ... type` rebuilds any foreign key on the column,
+and a text column referencing `auth.users (id)` cannot be rebuilt at all.
 
 `0006_auth0_subject_ids.sql` is numbered around `0005` deliberately: `0005`
 belongs to an open pull request that adds a `drive_folder_id` column and was
