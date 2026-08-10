@@ -84,55 +84,6 @@ beforeEach(() => {
   })
 })
 
-describe('adopt', () => {
-  it('completes the connection Google granted during sign-in', async () => {
-    useDriveStore.setState({ status: 'disconnected', folder: null })
-
-    await useDriveStore.getState().adopt('sign-in-code')
-
-    expect(adoptConnection).toHaveBeenCalledWith('sign-in-code')
-    expect(useDriveStore.getState().status).toBe('connected')
-    expect(useDriveStore.getState().account?.email).toBe('someone@example.com')
-  })
-
-  it('leaves the user signed in when they decline the Drive permissions', async () => {
-    adoptConnection.mockRejectedValue(new Error('Google Drive access was only partly granted.'))
-    useDriveStore.setState({ status: 'connecting', folder: null })
-
-    await useDriveStore.getState().adopt('sign-in-code')
-
-    // Reported as never having connected — which is true — so the gate asks
-    // again rather than letting them into an editor with nowhere to save.
-    expect(useDriveStore.getState().status).toBe('disconnected')
-    expect(useDriveStore.getState().error).toMatch(/partly granted/)
-  })
-
-  it('is not undone by the restore that runs as the editor mounts', async () => {
-    // Sign-in claims the connection before the session exists, so the two run
-    // concurrently. Without the guard, restore's older answer lands last and
-    // holds someone at the gate who has just been let through.
-    loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
-    useDriveStore.getState().setConnecting(true)
-
-    const adopting = useDriveStore.getState().adopt('sign-in-code')
-    await useDriveStore.getState().restore()
-    await adopting
-
-    expect(loadConnectionStatus).not.toHaveBeenCalled()
-    expect(useDriveStore.getState().status).toBe('connected')
-  })
-
-  it('releases the claim when the sign-in it was made for never landed', () => {
-    useDriveStore.getState().setConnecting(true)
-    expect(useDriveStore.getState().status).toBe('connecting')
-
-    // Otherwise a failed sign-in leaves the gate spinning, and the next
-    // `restore` stands down for a connection that is not coming.
-    useDriveStore.getState().setConnecting(false)
-    expect(useDriveStore.getState().status).toBe('disconnected')
-  })
-})
-
 describe('restore', () => {
   it('resumes a connection stored against the account, on a browser that has never seen it', async () => {
     // The whole point of storing it server-side: a machine with an empty local

@@ -1,15 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { decodeJwt, isExpired, pickJwk, requireSession, resetJwksCacheForTests } from './auth'
+import { decodeJwt, isExpired, requireSession } from './auth'
+import { SESSION_ISSUER } from './supabaseToken'
 
 const SECRET = 'a-shared-signing-secret'
-const PROJECT = 'https://abcdefgh.supabase.co'
 
-const ENV_KEYS = [
-  'SUPABASE_URL',
-  'VITE_SUPABASE_URL',
-  'SUPABASE_JWT_SECRET',
-  'FAL_PROXY_ALLOW_ANONYMOUS',
-] as const
+const ENV_KEYS = ['SUPABASE_JWT_SECRET', 'FAL_PROXY_ALLOW_ANONYMOUS'] as const
 
 let saved: Record<string, string | undefined> = {}
 
@@ -18,7 +13,6 @@ beforeEach(() => {
   // or they leak into whatever file runs next.
   saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]))
   for (const key of ENV_KEYS) delete process.env[key]
-  resetJwksCacheForTests()
 })
 
 afterEach(() => {
@@ -47,7 +41,7 @@ async function signHs256(claims: Record<string, unknown>, secret = SECRET): Prom
 function validClaims(overrides: Record<string, unknown> = {}) {
   return {
     sub: 'user-123',
-    iss: `${PROJECT}/auth/v1`,
+    iss: SESSION_ISSUER,
     exp: Math.floor(Date.now() / 1000) + 3600,
     ...overrides,
   }
@@ -66,7 +60,7 @@ describe('decodeJwt', () => {
 
     expect(jwt?.alg).toBe('HS256')
     expect(jwt?.claims.sub).toBe('user-123')
-    expect(jwt?.claims.iss).toBe(`${PROJECT}/auth/v1`)
+    expect(jwt?.claims.iss).toBe(SESSION_ISSUER)
   })
 
   it('refuses anything that is not three readable segments', () => {
@@ -79,7 +73,7 @@ describe('decodeJwt', () => {
 })
 
 describe('isExpired', () => {
-  it('allows a minute of clock skew between Supabase and the function host', () => {
+  it('allows a minute of clock skew between the minting host and this one', () => {
     expect(isExpired({ exp: 1000 }, 1030)).toBe(false)
     expect(isExpired({ exp: 1000 }, 1100)).toBe(true)
   })
@@ -90,62 +84,15 @@ describe('isExpired', () => {
   })
 })
 
-describe('pickJwk', () => {
-  it('matches on kid, and accepts a lone key that names none', () => {
-    // `kid` is not part of TypeScript's JsonWebKey, though every real key set
-    // carries it — which is why pickJwk has to reach for it the same way.
-    const keys = [{ kid: 'a' }, { kid: 'b' }] as unknown as JsonWebKey[]
-    expect(pickJwk({ keys }, 'b')).toBe(keys[1])
-    expect(pickJwk({ keys }, 'missing')).toBeNull()
-    expect(pickJwk({ keys: [keys[0]!] }, null)).toBe(keys[0])
-  })
-
-  it('refuses to guess between several unnamed keys', () => {
-    expect(pickJwk({ keys: [{}, {}] as JsonWebKey[] }, null)).toBeNull()
-    expect(pickJwk({}, null)).toBeNull()
-  })
-})
-
 describe('requireSession', () => {
-  it('accepts a session signed with the project secret', async () => {
-    process.env.SUPABASE_URL = PROJECT
+  it('accepts a session this site minted', async () => {
     process.env.SUPABASE_JWT_SECRET = SECRET
 
     const result = await requireSession(requestWith(await signHs256(validClaims())))
 
     expect(result.ok).toBe(true)
+    // The Netlify Identity user id, which is what every row is filed under.
     if (result.ok) expect(result.userId).toBe('user-123')
-  })
-
-  it('counts a project named only by the build-time variable as configured', async () => {
-    // Operators set VITE_SUPABASE_URL because the browser bundle needs it. When
-    // this module insisted on the unprefixed name it called such a deployment
-    // unconfigured and answered 503 — after the sign-in screen, reading a
-    // different variable, had already let the user in and taken their consent.
-    process.env.VITE_SUPABASE_URL = PROJECT
-
-    const result = await requireSession(requestWith(await signHs256(validClaims())))
-
-    expect(result.ok).toBe(false)
-    // 401 "sign in", never 503 "this site is not set up": the token is the
-    // problem here, not the deployment.
-    if (!result.ok) expect(result.response.status).toBe(401)
-  })
-
-  it('verifies against a project named only by the build-time variable', async () => {
-    // The fallback widens where the URL is read from, never what it means — so
-    // the issuer it names still has to be the one that signed the session.
-    process.env.VITE_SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
-
-    const own = await requireSession(requestWith(await signHs256(validClaims())))
-    expect(own.ok).toBe(true)
-    if (own.ok) expect(own.userId).toBe('user-123')
-
-    const foreign = await signHs256(
-      validClaims({ iss: 'https://someone-else.supabase.co/auth/v1' }),
-    )
-    expect((await requireSession(requestWith(foreign))).ok).toBe(false)
   })
 
   it('fails closed when the deployment is not configured at all', async () => {
@@ -165,7 +112,6 @@ describe('requireSession', () => {
   })
 
   it('rejects a request with no token, or one that is not a bearer', async () => {
-    process.env.SUPABASE_URL = PROJECT
     process.env.SUPABASE_JWT_SECRET = SECRET
 
     expect((await requireSession(requestWith())).ok).toBe(false)
@@ -179,26 +125,27 @@ describe('requireSession', () => {
   })
 
   it('rejects an expired session', async () => {
-    process.env.SUPABASE_URL = PROJECT
     process.env.SUPABASE_JWT_SECRET = SECRET
 
     const stale = await signHs256(validClaims({ exp: Math.floor(Date.now() / 1000) - 3600 }))
     expect((await requireSession(requestWith(stale))).ok).toBe(false)
   })
 
-  it('rejects a session issued by a different Supabase project', async () => {
-    process.env.SUPABASE_URL = PROJECT
+  it('rejects a token this site did not issue, however well signed', async () => {
+    // The signing secret is the Supabase project's, so a token Supabase itself
+    // minted carries a valid signature. It is still not one of ours, and the
+    // issuer is the only thing that says so.
     process.env.SUPABASE_JWT_SECRET = SECRET
 
-    const foreign = await signHs256(
-      validClaims({ iss: 'https://someone-else.supabase.co/auth/v1' }),
-    )
-    expect((await requireSession(requestWith(foreign))).ok).toBe(false)
+    const foreign = await signHs256(validClaims({ iss: 'https://abcdefgh.supabase.co/auth/v1' }))
+    const result = await requireSession(requestWith(foreign))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.response.status).toBe(401)
   })
 
   it('rejects a token signed with the wrong secret', async () => {
     // The whole point: readable claims are not the same as a verified session.
-    process.env.SUPABASE_URL = PROJECT
     process.env.SUPABASE_JWT_SECRET = SECRET
 
     const forged = await signHs256(validClaims(), 'not-the-real-secret')
@@ -208,12 +155,15 @@ describe('requireSession', () => {
     if (!result.ok) expect(result.response.status).toBe(401)
   })
 
-  it('rejects an HS256 token when only asymmetric verification is configured', async () => {
-    // Otherwise "alg" would be attacker-controlled: anyone could downgrade to a
-    // secret we never set and have it accepted.
-    process.env.SUPABASE_URL = PROJECT
+  it('rejects any algorithm but the one it verifies', async () => {
+    // Otherwise `alg` would be attacker-controlled: "none", or a family this
+    // module does not check, would sail straight through.
+    process.env.SUPABASE_JWT_SECRET = SECRET
 
-    const result = await requireSession(requestWith(await signHs256(validClaims())))
-    expect(result.ok).toBe(false)
+    const header = b64url(JSON.stringify({ alg: 'none', typ: 'JWT' }))
+    const payload = b64url(JSON.stringify(validClaims()))
+    const unsigned = `${header}.${payload}.${b64url('')}`
+
+    expect((await requireSession(requestWith(unsigned))).ok).toBe(false)
   })
 })

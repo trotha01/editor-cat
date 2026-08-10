@@ -1,0 +1,22 @@
+-- Auth0 replaces Netlify Identity, and Token Vault replaces the Drive
+-- connection this project used to keep for itself.
+--
+-- Two unrelated consequences, both of them subtractions.
+--
+-- The Google refresh token no longer belongs here. This app used to run Google's
+-- consent itself and store what came back, because the browser-only token flow
+-- issues an access token and nothing else. Auth0 holds it now, and hands out
+-- short-lived Google access tokens through a token exchange — so there is no
+-- refresh token in this database, and nothing to back up, rotate or leak. The
+-- table goes with it.
+--
+-- Row-level security is untouched. `auth.uid()` still comes out of a JWT signed
+-- with the project's own secret; only the system that vouches for the user id
+-- inside it has changed, from Netlify Identity to Auth0. Both are external, both
+-- were already unable to have a row in `auth.users`, and 0003 dropped those
+-- foreign keys — so every policy on `projects` and `assets` keeps working with
+-- no change at all.
+--
+-- Safe to run against a project that never had 0002 applied.
+
+drop table if exists public.google_connections;

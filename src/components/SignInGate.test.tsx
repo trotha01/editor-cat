@@ -9,12 +9,17 @@ import { render, screen, waitFor } from '@testing-library/react'
  * let someone in without Drive or a folder, or they land in an editor that
  * silently saves nothing; and it must not throw them back out when a grant lapses
  * mid-session, which would lose whatever they had open.
+ *
+ * The three are three separate screens because they come from three separate
+ * places: Netlify Identity signs the user in, Google grants Drive afterwards,
+ * and the folder is ours to ask about. The order matters — a Drive prompt in
+ * front of someone with no session has no account to file the result under.
  */
 const authState = {
   status: 'checking' as string,
-  session: null as { user: { email: string } } | null,
+  account: null as { id: string; email: string } | null,
   error: null as string | null,
-  start: vi.fn(async () => () => {}),
+  start: vi.fn(async () => {}),
   signIn: vi.fn(),
   signOut: vi.fn(),
   setError: vi.fn(),
@@ -22,12 +27,13 @@ const authState = {
 
 const driveState = {
   status: 'disconnected' as string,
+  /** Null until the account has been asked what it has stored. */
+  durable: true as boolean | null,
   error: null as string | null,
   folder: null as { id: string; name: string } | null,
   restore: vi.fn(async () => {}),
-  setConnecting: vi.fn(),
+  connect: vi.fn(),
   setFolder: vi.fn(),
-  adopt: vi.fn(),
   forget: vi.fn(),
 }
 
@@ -61,9 +67,15 @@ vi.mock('../lib/google/gis', () => ({
   loadConnectionStatus: () => loadConnectionStatus(),
 }))
 
-vi.mock('../lib/google/identity', () => ({
-  createNonce: async () => ({ raw: 'raw', hashed: 'hashed' }),
-  requestSignIn: vi.fn(),
+const sessionReadiness =
+  vi.fn<() => Promise<{ ready: boolean; problem?: 'not-configured' | 'unreachable' }>>()
+
+vi.mock('../lib/auth0/client', () => ({
+  isAuth0Configured: () => driveConfigured,
+}))
+
+vi.mock('../lib/supabase/session', () => ({
+  sessionReadiness: () => sessionReadiness(),
 }))
 
 const createFolder = vi.fn()
@@ -88,9 +100,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   signInRequired = true
   authState.status = 'signed-out'
-  authState.session = null
+  authState.account = null
   authState.error = null
   driveState.status = 'disconnected'
+  driveState.durable = true
   driveState.error = null
   driveState.folder = null
   pickerConfigured = true
@@ -98,6 +111,7 @@ beforeEach(() => {
   createFolder.mockResolvedValue({ id: 'folder_new', name: 'editor-cat' })
   pickFolder.mockResolvedValue({ id: 'folder_chosen', name: 'Renders' })
   loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
+  sessionReadiness.mockResolvedValue({ ready: true })
 })
 
 afterEach(() => {
@@ -115,20 +129,30 @@ describe('an unconfigured build', () => {
 })
 
 describe('the gate', () => {
-  it('offers one button, which asks for Drive as well as identity', async () => {
+  it('offers a sign-in, and asks nothing about Drive yet', async () => {
     mount()
 
     expect(await screen.findByRole('button', { name: /sign in with google/i })).toBeInTheDocument()
-    // There is no second Google affordance anywhere: one prompt is the point.
-    expect(screen.queryByRole('button', { name: /drive/i })).not.toBeInTheDocument()
+    // Drive comes after. Asking here would have no account to file the grant
+    // under, and the function would refuse the code it produced.
+    expect(screen.queryByRole('button', { name: /allow google drive/i })).not.toBeInTheDocument()
+  })
+
+  it('does not ask the server about Drive before anyone is signed in', () => {
+    // `/api/google/status` reports on *this account's* connection, and there is
+    // no account yet. Asking would spend a round trip to learn nothing.
+    mount()
+
+    expect(loadConnectionStatus).not.toHaveBeenCalled()
   })
 
   it('holds a signed-in visitor who has no Drive connection', async () => {
-    // Unticking Drive on Google's screen, or a session made before the app
-    // started asking for both. Letting them through would mean an editor that
-    // quietly saves nothing.
+    // The ordinary path rather than an edge case: a login establishes the
+    // account and stocks Token Vault with nothing, so every new user arrives
+    // here. Letting them through would mean an editor that quietly saves
+    // nothing.
     authState.status = 'signed-in'
-    authState.session = { user: { email: 'someone@example.com' } }
+    authState.account = { id: 'user_1', email: 'someone@example.com' }
 
     mount()
 
@@ -136,52 +160,76 @@ describe('the gate', () => {
     expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
   })
 
-  it('offers a way out to someone stranded with the wrong account', async () => {
+  it('asks for the grant without disturbing the session', async () => {
+    // The connect flow, not a fresh login. What is missing is a permission, and
+    // signing the user out to collect it would cost them their session to fix
+    // something the session was never the problem with.
     authState.status = 'signed-in'
+    authState.account = { id: 'user_1', email: 'someone@example.com' }
 
     mount()
+    ;(await screen.findByRole('button', { name: /allow google drive/i })).click()
 
-    const escape = await screen.findByRole('button', { name: /use a different account/i })
-    escape.click()
-
-    expect(driveState.forget).toHaveBeenCalled()
-    expect(authState.signOut).toHaveBeenCalled()
-  })
-
-  it('says so when the deployment cannot sign anyone in, instead of a dead button', async () => {
-    loadConnectionStatus.mockResolvedValue({
-      durable: false,
-      connected: false,
-      problem: 'not-configured',
-    })
-
-    mount()
-
-    expect(await screen.findByText(/not set up for sign-in/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
+    await waitFor(() => expect(driveState.connect).toHaveBeenCalled())
+    expect(authState.signOut).not.toHaveBeenCalled()
+    expect(driveState.forget).not.toHaveBeenCalled()
   })
 
   /**
-   * Every one of these used to print the same paragraph, naming two environment
-   * variables and a migration. Only one of the three was ever the problem, and
-   * the reader had no way to tell which — so the screen reliably sent whoever
-   * deployed the site to go and re-check something that was already correct.
+   * What the sign-in screen says when it cannot offer a button.
+   *
+   * Two unrelated halves have to be in place — Auth0 settings in the bundle, and
+   * a signing secret to turn an Auth0 login into a Supabase session — and
+   * a single "not set up" message covering both sends whoever deployed the site
+   * to re-check the half that was already right.
    */
-  describe('what it says is wrong', () => {
-    async function blockedBy(problem: string, detail?: string): Promise<HTMLElement> {
-      loadConnectionStatus.mockResolvedValue({ durable: false, connected: false, problem, detail })
+  describe('what stops a sign-in', () => {
+    it('names Auth0 when the bundle has none, before blaming anything else', async () => {
+      // Checked first: without it there is nothing to sign in with, however well
+      // the Supabase half is configured.
+      driveConfigured = false
+      sessionReadiness.mockResolvedValue({ ready: false, problem: 'not-configured' })
+
+      mount()
+
+      const callout = await screen.findByRole('alert')
+      expect(callout).toHaveTextContent(/VITE_AUTH0_DOMAIN/i)
+      expect(callout).not.toHaveTextContent('SUPABASE_JWT_SECRET')
+      expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
+    })
+
+    it('names the signing secret when that is the only thing missing', async () => {
+      sessionReadiness.mockResolvedValue({ ready: false, problem: 'not-configured' })
+
+      mount()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('SUPABASE_JWT_SECRET')
+    })
+
+    it('offers a reload for a server that did not answer, not a verdict on the setup', async () => {
+      sessionReadiness.mockResolvedValue({ ready: false, problem: 'unreachable' })
+
+      mount()
+
+      const callout = await screen.findByRole('alert')
+      expect(callout).toHaveTextContent(/reload/i)
+      expect(callout).not.toHaveTextContent(/not set up/i)
+    })
+  })
+
+  /**
+   * Both of these used to print the same paragraph, naming two environment
+   * variables and a migration. Only one was ever the problem, and the reader had
+   * no way to tell which — so the screen reliably sent whoever deployed the site
+   * to go and re-check something that was already correct.
+   */
+  describe('what it says is wrong about Drive', () => {
+    async function blockedBy(problem: string): Promise<HTMLElement> {
+      authState.status = 'signed-in'
+      loadConnectionStatus.mockResolvedValue({ durable: false, connected: false, problem })
       mount()
       return await screen.findByRole('alert')
     }
-
-    it('sends someone to the migration, and only the migration, when that is the gap', async () => {
-      const callout = await blockedBy('no-table')
-
-      expect(callout).toHaveTextContent('0002_google_connections.sql')
-      // The two secrets demonstrably are set: the request got far enough to ask
-      // the database a question. Naming them here is what wasted the afternoon.
-      expect(callout).not.toHaveTextContent(/GOOGLE_CLIENT_SECRET|SUPABASE_SERVICE_ROLE_KEY/)
-    })
 
     it('offers a reload for a server that did not answer, not a verdict on the setup', async () => {
       const callout = await blockedBy('unreachable')
@@ -190,56 +238,13 @@ describe('the gate', () => {
       expect(callout).not.toHaveTextContent(/not set up/i)
     })
 
-    it('quotes the database rather than making someone find the function log', async () => {
-      const callout = await blockedBy(
-        'unreachable',
-        '401 · 42501 · permission denied for table google_connections',
-      )
-
-      expect(callout).toHaveTextContent('permission denied for table google_connections')
-      // Because that is what a permission complaint from the store points at,
-      // and guessing wrong here is how the last three rounds were spent.
-      expect(callout).toHaveTextContent('SUPABASE_SERVICE_ROLE_KEY')
-    })
-
-    it('names the two secrets only when the deployment really is missing them', async () => {
+    it('names the Token Vault credentials, and only those, when they are the gap', async () => {
       const callout = await blockedBy('not-configured')
 
-      expect(callout).toHaveTextContent('GOOGLE_CLIENT_SECRET')
-      expect(callout).toHaveTextContent('SUPABASE_SERVICE_ROLE_KEY')
-      expect(callout).not.toHaveTextContent('0002_google_connections.sql')
+      expect(callout).toHaveTextContent('AUTH0_BACKEND_CLIENT_ID')
+      expect(callout).toHaveTextContent('AUTH0_BACKEND_CLIENT_SECRET')
+      expect(callout).not.toHaveTextContent(/SUPABASE_SERVICE_ROLE_KEY/)
     })
-
-    it('blames the bundle when it was built without a Google client id', async () => {
-      // The server half can be flawless and this still cannot work, so it is
-      // checked before the server's answer is even considered.
-      driveConfigured = false
-      loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
-
-      mount()
-
-      expect(await screen.findByRole('alert')).toHaveTextContent('VITE_GOOGLE_CLIENT_ID')
-      expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
-    })
-  })
-
-  it('waits rather than flashing the sign-in screen at a returning visitor', () => {
-    authState.status = 'signed-in'
-    driveState.status = 'connecting'
-    driveState.folder = { id: 'folder_1', name: 'Renders' }
-
-    mount()
-
-    expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
-    expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
-  })
-
-  it('restores Drive itself, since the editor it gates cannot', async () => {
-    authState.status = 'signed-in'
-
-    mount()
-
-    await waitFor(() => expect(driveState.restore).toHaveBeenCalled())
   })
 })
 

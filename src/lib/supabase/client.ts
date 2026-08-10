@@ -5,8 +5,16 @@
  * security is what actually protects the data. Every table this app touches has
  * RLS enabled with an `auth.uid() = user_id` policy, so a token is the only
  * thing that grants access to a row.
+ *
+ * That token does not come from Supabase Auth. Sign-in is Netlify Identity, and
+ * `accessToken` hands the client the session minted from it — the third-party
+ * auth seam supabase-js provides for exactly this, and the reason none of the
+ * query code above had to learn where identity comes from. Setting it takes the
+ * `auth` namespace out of use, which is correct: this project has no Supabase
+ * Auth users to sign in, out, or refresh.
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { supabaseAccessToken } from './session'
 
 function url(): string {
   return import.meta.env.VITE_SUPABASE_URL?.trim() ?? ''
@@ -37,13 +45,10 @@ export function supabase(): SupabaseClient {
   }
 
   client ??= createClient(url(), anonKey(), {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      // No OAuth redirect lands back here — sign-in hands Supabase a Google ID
-      // token from the page itself — so there is never a session in the URL.
-      detectSessionInUrl: false,
-    },
+    // Called per request rather than captured, so a session renewed mid-edit is
+    // picked up without rebuilding the client. See session.ts for the caching
+    // that keeps this from becoming a request of its own each time.
+    accessToken: supabaseAccessToken,
   })
   return client
 }
