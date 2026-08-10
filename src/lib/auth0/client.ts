@@ -205,26 +205,26 @@ export async function adoptRedirect(): Promise<Account | null> {
 /**
  * Sends the browser to Google, by way of Auth0. Nothing after this runs.
  *
- * Three parameters carry the whole feature, and Auth0 passes the last two
- * through to Google untouched:
+ * `connection_scope` is what makes this one screen rather than two: Google is
+ * asked for Drive at the same time it is asked who this is.
  *
- * - `connection_scope` is what makes this one screen rather than two: Google is
- *   asked for Drive at the same time it is asked who this is.
- * - `access_type=offline` is what asks for a refresh token at all.
- * - `prompt=consent` is what makes Google issue one *again* for someone who has
- *   already granted these scopes. A refresh token only comes back with a fresh
- *   grant, so without it a returning user signs in successfully, Token Vault
- *   receives an access token and nothing durable to renew it with, and the very
- *   next Drive request fails — which reads as a sign-in loop, because signing in
- *   again changes nothing Google is willing to reconsider.
+ * What is deliberately *not* here is anything forcing a fresh Google grant.
+ * Google issues a refresh token only alongside one, so a returning user whose
+ * consent it already holds leaves Token Vault with an access token and nothing
+ * to renew it — the sign-in loop this app spent an afternoon in. The fix for
+ * that is real, but it belongs to the connection rather than to the request:
+ * `access_type` and `approval_prompt` are Google's parameters, and Auth0
+ * forwards them only when they are configured as the connection's
+ * `upstream_params`. Sent from here they are worse than useless — `access_type`
+ * is rejected outright by `/authorize`, and `prompt` is a standard OIDC
+ * parameter that Auth0 answers *itself*, putting its own consent screen in front
+ * of the user instead of passing anything on. See the README.
  */
 export async function beginGoogleSignIn(): Promise<void> {
   await auth0().loginWithRedirect({
     authorizationParams: {
       connection: GOOGLE_CONNECTION,
       connection_scope: DRIVE_SCOPES,
-      access_type: 'offline',
-      prompt: 'consent',
       redirect_uri: window.location.origin,
     },
   })
