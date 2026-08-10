@@ -134,29 +134,3 @@ describe('loadConnectionStatus', () => {
     expect(gis.isDurableConnection()).toBe(true)
   })
 })
-
-describe('adoptConnection', () => {
-  it('turns a code from the sign-in screen into a live connection', async () => {
-    saveConnection.mockResolvedValue({ ...storedGrant, durable: true })
-
-    await expect(gis.adoptConnection('sign-in-code')).resolves.toBe('stored-token')
-    expect(gis.hasToken()).toBe(true)
-    expect(gis.isDurableConnection()).toBe(true)
-  })
-
-  it('drops a grant that arrived without the Drive permission', async () => {
-    // Google's consent screen lets the Drive scope be unticked, which signs the
-    // user in with a connection that can do nothing. Keeping it would mean
-    // resuming it on every load and failing the same way each time.
-    saveConnection.mockResolvedValue({
-      accessToken: 'partial',
-      expiresIn: 3600,
-      scope: 'openid email',
-      durable: true,
-    })
-
-    await expect(gis.adoptConnection('sign-in-code')).rejects.toThrow(/was not granted/)
-    expect(clearConnection).toHaveBeenCalled()
-    expect(gis.hasToken()).toBe(false)
-  })
-})

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { requireSession } from './auth'
-import { storeConfig } from './googleConnections'
 import { supabaseProjectUrl } from './supabase'
 
 const PROJECT = 'https://abcdefgh.supabase.co'
@@ -9,7 +8,6 @@ const ENV_KEYS = [
   'SUPABASE_URL',
   'VITE_SUPABASE_URL',
   'SUPABASE_JWT_SECRET',
-  'SUPABASE_SERVICE_ROLE_KEY',
   'FAL_PROXY_ALLOW_ANONYMOUS',
 ] as const
 
@@ -72,8 +70,6 @@ describe('the two halves that read it', () => {
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
     process.env.SUPABASE_JWT_SECRET = 'signing-secret'
 
-    expect(storeConfig()).toEqual({ url: PROJECT, serviceKey: 'service-role-key' })
-
     // Not signed in, so this must fail — but as 401 "sign in", never 503 "this
     // site is not set up". Which of the two comes back is the whole bug.
     const session = await requireSession(new Request('https://x.test/api/google/connect'))
@@ -91,8 +87,6 @@ describe('the two halves that read it', () => {
     process.env.VITE_SUPABASE_URL = PROJECT
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
 
-    expect(storeConfig()).toEqual({ url: PROJECT, serviceKey: 'service-role-key' })
-
     const session = await requireSession(new Request('https://x.test/api/google/connect'))
     expect(session.ok).toBe(false)
     if (session.ok) return
@@ -101,8 +95,6 @@ describe('the two halves that read it', () => {
 
   it('agree that a deployment with no project at all is not configured', async () => {
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
-
-    expect(storeConfig()).toBeNull()
 
     const session = await requireSession(new Request('https://x.test/api/google/connect'))
     expect(session.ok).toBe(false)

@@ -3,8 +3,8 @@
  * is currently uploading.
  *
  * There is nothing here that grants it. Drive is authorised at the sign-in
- * screen, in the same consent as identity, and the connection is stored against
- * the account — so `restore` asks the server what this user has rather than
+ * screen, in the same Google consent as identity, and Auth0 keeps what comes
+ * back — so `restore` asks our own server what this account has rather than
  * asking Google, and a browser that has never seen them still picks it up.
  *
  * The chosen folder is the one thing kept locally. It is not a credential; it is
@@ -12,11 +12,9 @@
  */
 import { create } from 'zustand'
 import {
-  adoptConnection,
   accessToken,
   invalidateToken,
   isDriveConfigured,
-  isDurableConnection,
   loadConnectionStatus,
   NeedsConsentError,
 } from '../lib/google/gis'
@@ -59,10 +57,8 @@ interface DriveState {
 
   /** Resumes the account's connection without prompting. Safe to call on mount. */
   restore: () => Promise<void>
-  /** Completes a connection the user has just authorised at Google. */
-  adopt: (code: string) => Promise<void>
   /**
-   * Drops this browser's Drive state on sign-out, leaving the stored connection
+   * Drops this browser's Drive state on sign-out, leaving the grant itself
    * alone — it belongs to the account, and signing back in resumes it.
    */
   forget: () => void
@@ -139,20 +135,6 @@ export const useDriveStore = create<DriveState>((set, get) => ({
         status: 'needs-reconnect',
         ...(cause instanceof NeedsConsentError ? {} : { error: toDisplayMessage(cause) }),
       })
-    }
-  },
-
-  adopt: async (code) => {
-    set({ status: 'connecting', error: null })
-    try {
-      await adoptConnection(code)
-      set({ status: 'connected', durable: isDurableConnection(), account: await currentUser() })
-    } catch (cause) {
-      // Signing in worked; only the Drive half did not — someone unticked it on
-      // Google's own screen. Reported as never having connected, because that is
-      // what it is, and the gate asks again rather than letting them in without
-      // anywhere to put their media.
-      set({ status: 'disconnected', account: null, error: toDisplayMessage(cause) })
     }
   },
 

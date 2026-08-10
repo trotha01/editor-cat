@@ -1,17 +1,22 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /**
+   * The Auth0 tenant this site signs in against, the SPA application's client
+   * id, and the API identifier its access tokens are minted for. All three are
+   * required for sign-in — and therefore for Drive, which rides on the same
+   * login. None is a secret: the domain is in every authorisation URL, the
+   * client id is public by design, and the audience is in every token.
+   */
+  readonly VITE_AUTH0_DOMAIN?: string
+  readonly VITE_AUTH0_CLIENT_ID?: string
+  readonly VITE_AUTH0_AUDIENCE?: string
   /** Set to "1" to fake every provider call locally. See src/lib/mock.ts. */
   readonly VITE_MOCK_PROVIDERS?: string
   /**
-   * Google OAuth client ID (a Web application client). Leave unset to build
-   * without sign-in or Drive at all.
-   */
-  readonly VITE_GOOGLE_CLIENT_ID?: string
-  /**
-   * Google API key, for the Google Picker. Public by design and restricted by
-   * HTTP referrer in the Cloud console, exactly as the client ID is restricted
-   * by origin.
+   * Google API key, for the Google Picker. Public by design, and restricted by
+   * HTTP referrer in the Cloud console — which is the one Google allowlist this
+   * app still keeps, since the Picker calls Google straight from the page.
    */
   readonly VITE_GOOGLE_API_KEY?: string
   /**
@@ -20,47 +25,12 @@ interface ImportMetaEnv {
    */
   readonly VITE_GOOGLE_PROJECT_NUMBER?: string
   /**
-   * The one origin registered with Google as an authorised redirect URI, for
-   * deploys whose URL is not known in advance. Such a deploy sends its consent
-   * pop-up there and is handed the answer back, so a deploy preview needs no
-   * entry of its own in a console that accepts no wildcards.
-   *
-   * Per deploy context. Production registers its own URL and wants this unset —
-   * pointed at another deploy's callback it would be refused on the way back,
-   * for not being under the suffix below. Unset is also right for `netlify dev`.
-   */
-  readonly VITE_GOOGLE_CALLBACK_ORIGIN?: string
-  /**
-   * The domain whose subdomains that callback window may hand an authorisation
-   * back to — `.previews.example.com`, say. Required alongside
-   * `VITE_GOOGLE_CALLBACK_ORIGIN`, and deliberately not derived from it: it is
-   * the only thing standing where Google's byte-for-byte matching used to, so
-   * it names what the operator owns rather than what this code guessed.
-   */
-  readonly VITE_GOOGLE_CALLBACK_ALLOWED_SUFFIX?: string
-  /**
    * Supabase project URL and anon key. Both must be set for projects to be
    * saved to the cloud; leave them unset to run purely against IndexedDB.
    * The anon key is public — row-level security is what protects the data.
    */
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
-  /**
-   * The domain Netlify's automatic deploy subdomains hang off —
-   * `staging.example.com`, for deploys at `deploy-preview-32.staging.example.com`.
-   * Set it and a deploy that finds itself on its `--sitename.netlify.app`
-   * address moves to the subdomain form before anything reads the URL, which is
-   * what undoes Netlify Identity returning to a deploy's canonical host after
-   * sign-in. Leave it unset for a site without deploy subdomains.
-   */
-  readonly VITE_NETLIFY_DEPLOY_DOMAIN?: string
-  /**
-   * Where Netlify Identity lives. Defaults to `/.netlify/identity` on this
-   * origin, which is right for every deployed site and for `netlify dev`. Set it
-   * only for plain `npm run dev`, which serves the app on :5173 with no Netlify
-   * behind it — point it at a deployed site to sign in locally.
-   */
-  readonly VITE_NETLIFY_IDENTITY_URL?: string
 }
 
 interface ImportMeta {

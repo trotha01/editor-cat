@@ -1,28 +1,28 @@
 /**
  * Minting the session token the browser actually carries.
  *
- * Netlify Identity says who someone is; Supabase will not take its word for it.
+ * Auth0 says who someone is; Supabase will not take its word for it.
  * Its row-level security reads `auth.uid()` out of a JWT signed with the
- * project's own secret, so an Identity token presented to PostgREST is simply
+ * project's own secret, so an Auth0 token presented to PostgREST is simply
  * rejected — different issuer, different key, no session.
  *
- * So this signs one. The claims describe the Netlify account (`sub` is the
- * Identity user id) in the shape Supabase expects, using the project's signing
+ * So this signs one. The claims describe the Auth0 account (`sub` is the
+ * Auth0 user id) in the shape Supabase expects, using the project's signing
  * secret, and the result is a perfectly ordinary Supabase session as far as
- * Postgres is concerned: `auth.uid()` returns the Identity id, and the existing
+ * Postgres is concerned: `auth.uid()` returns the Auth0 id, and the existing
  * `auth.uid() = user_id` policies keep working untouched. This is the same shape
  * as Supabase's own third-party auth integrations — the external provider stays
  * the identity, and RLS stays the thing that guards the data.
  *
  * The one thing that does *not* survive is the foreign key to `auth.users`:
- * there is no row there for a Netlify account. See
+ * there is no row there for an Auth0 account. See
  * supabase/migrations/0003_netlify_identity.sql.
  *
  * The same token is what `/api/fal/*` and `/api/google/*` check, which is why
- * they can verify it locally — see auth.ts. That is deliberate: it puts the one
- * round trip to Netlify Identity at the mint, not on every poll of a video job.
+ * they can verify it locally — see auth.ts. Auth0's own token is verified
+ * locally too now (see auth0.ts), so the mint costs no round trip at all.
  */
-import type { IdentityUser } from './identity'
+import type { Auth0User } from './auth0'
 
 /**
  * Who these tokens say issued them.
@@ -83,10 +83,10 @@ export interface SessionClaims {
   iat: number
   exp: number
   /** Which external system vouched for this user, for anything reading claims later. */
-  app_metadata: { provider: 'netlify' }
+  app_metadata: { provider: 'auth0' }
 }
 
-export function sessionClaims(user: IdentityUser, nowSeconds: number): SessionClaims {
+export function sessionClaims(user: Auth0User, nowSeconds: number): SessionClaims {
   return {
     sub: user.id,
     email: user.email,
@@ -98,13 +98,13 @@ export function sessionClaims(user: IdentityUser, nowSeconds: number): SessionCl
     iss: SESSION_ISSUER,
     iat: nowSeconds,
     exp: nowSeconds + SESSION_LIFETIME_SECONDS,
-    app_metadata: { provider: 'netlify' },
+    app_metadata: { provider: 'auth0' },
   }
 }
 
-/** Signs a Supabase-shaped session for an Identity user. */
+/** Signs a Supabase-shaped session for an Auth0 user. */
 export async function mintSessionToken(
-  user: IdentityUser,
+  user: Auth0User,
   secret: string,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<string> {

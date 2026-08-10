@@ -19,10 +19,12 @@
  * it. Requiring the same public string under a second name buys nothing and
  * costs exactly the class of misconfiguration described above.
  *
- * That reasoning covers the URL and nothing else. `SUPABASE_JWT_SECRET` and
- * `SUPABASE_SERVICE_ROLE_KEY` have no `VITE_` fallback and must never gain one —
- * a `VITE_` prefix inlines a value into the bundle, and for those two that would
- * publish the keys to every account on the site.
+ * That reasoning covers the URL and nothing else. `SUPABASE_JWT_SECRET` has no
+ * `VITE_` fallback and must never gain one — a `VITE_` prefix inlines a value
+ * into the bundle, and for that one it would hand every visitor the ability to
+ * mint a session as anybody. The service role key this once said the same of is
+ * gone entirely: nothing here bypasses row-level security any more, now that
+ * Auth0 keeps the Google tokens this project used to store.
  *
  * The trailing slash is easy to leave on a pasted URL, and would otherwise break
  * both the `iss` comparison and every PostgREST path built from it.

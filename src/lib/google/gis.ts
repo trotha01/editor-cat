@@ -1,58 +1,49 @@
 /**
  * Google Drive authorisation.
  *
- * Granted at the step straight after signing in: a consent screen asks for
- * Drive, a Netlify function exchanges the code it returns for a refresh token
- * and keeps that server-side, and this module asks for a fresh access token
- * whenever it needs one. See identity.ts, connection.ts and `/api/google/*`.
+ * Granted at sign-in rather than after it: the Auth0 login names Drive as a
+ * connection scope, so one Google screen covers the account and the folder
+ * together, and Auth0 keeps the tokens that come back. This module asks
+ * `/api/google/token` for a fresh access token whenever it needs one, which is
+ * answered by exchanging the caller's Auth0 token through Token Vault. See
+ * ../auth0/client.ts and connection.ts.
  *
- * Drive is its own prompt because Netlify Identity owns sign-in now, and what an
- * Identity login returns proves who someone is and nothing more — there is no
- * way to ask it for a Drive scope on the way past. So the two consents are two
- * screens: Google for the account, then Google again for the folder. The second
- * is asked with the first one's email as a hint, so it does not also ask which
- * account.
+ * There is no separate Drive prompt any more, and no consent code to adopt. The
+ * two-screen flow was a cost of Netlify Identity, whose login proved who someone
+ * was and nothing more; Auth0 can carry the scope, so the second screen is gone.
  *
  * The access token is held in memory, never in storage. It is the credential
- * Drive actually accepts, and it is cheap to replace; the refresh token, which is
- * neither, never reaches this side at all.
+ * Drive actually accepts and it is cheap to replace; the refresh token behind it
+ * is Auth0's, and never reaches this side at all.
+ *
+ * The filename is a leftover. It was Google Identity Services once, which could
+ * not do any of this — kept only because renaming it would touch every importer
+ * for no behavioural gain.
  */
+import { DRIVE_SCOPE_LIST, isAuth0Configured } from '../auth0/client'
 import {
   ConnectionExpiredError,
   NoConnectionError,
   NotDurableError,
   SessionRequiredError,
-  clearConnection,
   connectionStatus,
   requestAccessToken,
-  saveConnection,
   type ConnectionStatus,
   type DriveGrant,
 } from './connection'
 
-/**
- * The only Drive scope this app asks for, and deliberately the narrowest one
- * Google offers: per-file access to what the app creates, plus whatever the user
- * hands it through the Google Picker.
- *
- * It used to ask for `drive.readonly` as well, to list media already sitting in
- * the chosen folder. That is a *restricted* scope — "see and download all your
- * Google Drive files" on the consent screen, and an annual third-party security
- * assessment before the consent screen can be published. The Picker does the
- * same job by handing over exactly the files the user chose, which is both
- * Google's recommendation and a much smaller thing to ask for.
- */
-export const DRIVE_SCOPE_LIST: readonly string[] = ['https://www.googleapis.com/auth/drive.file']
+export { DRIVE_SCOPE_LIST }
 
 export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
 
-export function clientId(): string {
-  return import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() ?? ''
-}
-
-/** Whether the deployment is configured for Drive at all. */
+/**
+ * Whether the deployment is configured for Drive at all.
+ *
+ * Which is now the same question as whether it can sign anyone in: Drive rides
+ * on the Auth0 login, so a site with no Auth0 settings has neither.
+ */
 export function isDriveConfigured(): boolean {
-  return clientId().length > 0
+  return isAuth0Configured()
 }
 
 /** Raised when the user must interact before a token can be issued. */
@@ -77,12 +68,12 @@ interface StoredToken {
 let token: StoredToken | null = null
 
 /**
- * Whether this deployment stores connections server-side.
+ * Whether this deployment can reach Drive.
  *
  * `null` until asked. Resolved by `loadConnectionStatus`, which the gate calls
- * before drawing anything — a site that cannot store a connection cannot sign
- * anyone in either, and says so rather than offering a button that fails after
- * the user has already consented.
+ * before drawing anything — a site that cannot reach Drive cannot sign anyone in
+ * either, and says so rather than offering a button that fails after the user
+ * has already consented.
  */
 let durable: boolean | null = null
 
@@ -104,11 +95,13 @@ function grantsAllScopes(scope: string): boolean {
   return DRIVE_SCOPE_LIST.every((needed) => granted.has(needed))
 }
 
-/** Caches a grant from the stored connection and hands back its access token. */
+/** Caches a grant and hands back its access token. */
 function keep(grant: DriveGrant): string {
-  // The stored connection reports its scopes too, and a partial grant has to
-  // surface here rather than as a confusing 403 from the folder list later.
-  if (!grantsAllScopes(grant.scope)) throw new Error(PARTIAL_GRANT)
+  // Token Vault reports the scopes the grant actually carries, and a partial one
+  // has to surface here rather than as a confusing 403 from the folder list
+  // later. An empty scope is not evidence of a partial grant — it means the
+  // exchange did not say — so it is only checked when something came back.
+  if (grant.scope && !grantsAllScopes(grant.scope)) throw new Error(PARTIAL_GRANT)
 
   token = {
     value: grant.accessToken,
@@ -118,7 +111,7 @@ function keep(grant: DriveGrant): string {
 }
 
 /**
- * Asks the server whether a connection is stored for this account.
+ * Asks the server whether this deployment and this account can reach Drive.
  *
  * Also settles `durable` for the rest of the session. A `false` here is the end
  * of the road — there is no degraded mode left to fall into — so the reason
@@ -131,40 +124,21 @@ export async function loadConnectionStatus(): Promise<ConnectionStatus> {
   return status
 }
 
-/** Whether this site can store a connection at all. Null until first asked. */
+/** Whether this site can reach Drive at all. Null until first asked. */
 export function isDurableConnection(): boolean | null {
   return durable
-}
-
-/**
- * Turns the consent code from the sign-in screen into a stored connection and a
- * live token.
- */
-export async function adoptConnection(code: string): Promise<string> {
-  const grant = await saveConnection(code)
-  durable = grant.durable
-
-  try {
-    return keep(grant)
-  } catch (cause) {
-    // Someone who unticked Drive on the consent screen leaves a connection that
-    // cannot do anything. Storing it would mean resuming it on every load and
-    // failing the same way each time, so it is dropped and reported instead.
-    await clearConnection().catch(() => {})
-    throw cause
-  }
 }
 
 /** The renewal currently running, shared by everyone waiting on it. */
 let renewal: Promise<string> | null = null
 
 /**
- * Mints a token from the stored connection.
+ * Mints a token through the Token Vault exchange.
  *
- * Every way of not having one ends the same way — the user has to sign in again,
- * which is the only place this app asks for Google. So they all become
- * `NeedsConsentError` rather than four different failures the callers would each
- * have to know about.
+ * Every way of not getting one ends the same way — the user has to sign in
+ * again, which is the only place this app asks Google for anything. So they all
+ * become `NeedsConsentError` rather than four different failures the callers
+ * would each have to know about.
  */
 async function renew(): Promise<string> {
   try {

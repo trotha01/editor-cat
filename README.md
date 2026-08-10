@@ -71,7 +71,9 @@ netlify dev          # serves the app and /api/* together
 Against a checkout with no Supabase project, add `FAL_PROXY_ALLOW_ANONYMOUS=1`
 so the fal proxy stops asking for a session it cannot verify.
 
-Signing in needs Netlify Identity, which only exists on a deployed site.
+Signing in needs Auth0, which works anywhere the app is served from — including
+`npm run dev`, so long as `http://localhost:5173` is in the application's allowed
+callback and origin lists.
 `netlify dev` proxies it for you once the checkout is linked to one; plain `npm
 run dev` does not, so point it at a deployed site with
 `VITE_NETLIFY_IDENTITY_URL=https://your-site.netlify.app/.netlify/identity` — or
@@ -91,7 +93,7 @@ genuine workout. This is also what the end-to-end test drives.
 ## Saving projects (optional)
 
 With a Supabase project configured, the app asks you to sign in with Google —
-through **Netlify Identity** — and then keeps your timelines in your account: a
+through **Auth0** — and then keeps your timelines in your account: a
 project switcher in the header, auto-save about two seconds after you stop
 editing, and projects that open on any machine you sign in from.
 
@@ -102,7 +104,8 @@ so Google does not make you choose an account twice. Settings keeps the folder
 and the sign-out, and nothing else about Google.
 
 It used to be two steps, because one Google consent screen covered both identity
-and Drive. Netlify Identity cannot carry a Drive scope through its login — what
+and Drive. Auth0 carries the Drive scope through its login, so it is one screen
+again — what
 it returns proves who you are and nothing more — so the grant that used to ride
 along now has a screen of its own. See [what sign-in
 needs](#what-sign-in-needs).
@@ -130,7 +133,7 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    ever read and write rows on their own account. `0002` adds the table that
    holds Google refresh tokens, which no browser can read at all — Drive does
    not work without it, so it is not optional. `0003` drops the foreign keys
-   that pointed at `auth.users`, which a Netlify Identity account has no row in;
+   that pointed at `auth.users`, which an external account has no row in;
    without it every insert fails on a constraint.
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
    What Supabase needs instead is its signing secret, under **Project settings →
@@ -240,207 +243,117 @@ requests, so a `<video>` pointed straight at it could not seek — and export
 needs the bytes locally regardless. A failed upload therefore costs you the
 backup and nothing else.
 
-`VITE_GOOGLE_CLIENT_ID` is what turns Drive on. It is nothing to do with signing
-in any more — Netlify Identity holds its own Google client, configured in the
-Netlify dashboard rather than here.
+The Auth0 settings are what turn Drive on, because Drive rides on the same
+login. There is no Google client id in this repository any more: Auth0 holds it,
+and your Google console only ever learns about Auth0.
 
-### Setting up the client ID
+### Setting up Auth0
+
+Sign-in and Drive are one consent, so this is one setup rather than two. Auth0
+holds the Google client; your Google Cloud console only ever learns about Auth0.
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a
-   project and enable the **Google Drive API**.
+   project and enable the **Google Drive API** and the **Google Picker API**.
 2. Configure the **OAuth consent screen**. While it is in _Testing_ you can add
    up to 100 test users and nothing further is required.
-3. Enable the **Google Picker API** as well — it is what chooses folders and
-   imports media.
-4. Create an **OAuth client ID** of type _Web application_. Add your origins to
-   **Authorised JavaScript origins**: `http://localhost:5173` for `npm run dev`,
-   `http://localhost:8888` for `netlify dev`, plus your deployed URL.
-5. Add the same origins with `/oauth/google` on the end to **Authorised redirect
-   URIs** — `http://localhost:8888/oauth/google`, `https://your-site/oauth/google`.
-   That is where the consent pop-up lands. Google compares it byte for byte, so
-   no trailing slash, and connecting Drive fails without it. If your deploys do
-   not all share one URL, read the next section before filling this list in.
-6. Create an **API key** under the same credentials page, restricted by HTTP
-   referrer to your origins. The Picker will not open without one.
-7. Put all three in `.env` locally, and in Netlify under **Site settings →
-   Environment variables** (they are read at build time, so redeploy after
-   adding them):
+3. Create an **OAuth client ID** of type _Web application_. Its one authorised
+   redirect URI is Auth0's: `https://YOUR_TENANT.us.auth0.com/login/callback`.
+   Not this site's — no URL of yours goes in this list, now or ever, which is
+   what makes deploy previews possible at all.
+4. In Auth0, create a **Google social connection** with that client id and
+   secret. Under its settings:
+   - add `https://www.googleapis.com/auth/drive.file` to the connection scopes,
+   - enable **Offline Access** in Permissions, so Auth0 can hold a refresh token,
+   - turn on **Connected Accounts for Token Vault**, which is what lets the
+     functions exchange a caller's token for a Google one.
+5. Create an **API** in Auth0 — its identifier is `VITE_AUTH0_AUDIENCE`, and any
+   URI will do so long as it matches everywhere.
+6. Create two **applications**: a _Single Page Application_ for the browser, and
+   a _Machine to Machine_ one for the functions to exchange tokens with.
+7. Create a Google **API key** under the same Cloud credentials page, restricted
+   by HTTP referrer. The Picker will not open without one.
 
 ```
-VITE_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+VITE_AUTH0_DOMAIN=your-tenant.us.auth0.com
+VITE_AUTH0_CLIENT_ID=            # the SPA application
+VITE_AUTH0_AUDIENCE=https://editor-cat/api
 VITE_GOOGLE_API_KEY=AIza...
 VITE_GOOGLE_PROJECT_NUMBER=1234567890   # Cloud console → project number
+
+AUTH0_BACKEND_CLIENT_ID=         # the machine-to-machine application
+AUTH0_BACKEND_CLIENT_SECRET=     # scoped to Functions, and genuinely secret
 ```
 
-None of these is a secret — they ship in the bundle by design, and origin and
-referrer allowlisting are what protect them. The project number is passed to the
-Picker as its app id, which is what Google requires for files picked there to
-stay reachable under `drive.file`.
+Only the last one is a secret. The rest ship in the bundle by design, and
+referrer allowlisting is what protects the API key. The project number is passed
+to the Picker as its app id, which is what Google requires for files picked
+there to stay reachable under `drive.file`.
 
-### Connecting Drive from a deploy preview
+Optionally, add an Auth0 **Action** that puts the address into the access token
+as `https://editor-cat/email`. Nothing depends on it — the browser reads the
+address from its own ID token — but without it the minted Supabase session
+carries an empty `email` claim.
 
-Step 5 is the one that does not scale. Google matches redirect URIs byte for
-byte and accepts no wildcard of any kind, and Netlify gives every pull request a
-host of its own — so there is no entry you can add in advance that covers
-`deploy-preview-28`, and Drive simply cannot be connected from a preview.
+### Deploy previews
 
-Sign-in is unaffected: Netlify Identity owns that, with a Google client of
-Netlify's rather than yours, so no preview URL ever reaches your console.
+They work, and they need nothing per preview.
 
-The way out is to stop giving Google more than one URI to know about. Every
-deploy runs its consent screen on **one registered origin**; that window is
-served by whichever deploy owns it, and hands the answer back across to the
-preview that opened it. `state` carries the opener's origin, because it is the
-only thing Google returns untouched.
+Google matches redirect URIs byte for byte and accepts no wildcard, which is why
+this used to be impossible: Netlify gives every pull request a host of its own,
+and there is no registering those in advance. Since Google now only ever sees
+Auth0's callback, that constraint lands on Auth0 instead — and Auth0 takes a
+wildcard subdomain.
 
-1. Give previews hosts under a domain you own — Netlify's **Automatic deploy
-   subdomains**, under Domain management. `deploy-preview-123.staging.your.site`
-   rather than `deploy-preview-123--sitename.netlify.app`.
-2. Register **one** authorised redirect URI:
-   `https://staging.your.site/oauth/google`. That is now the whole list, for
-   every preview there will ever be.
-3. Restrict the API key by HTTP referrer to `https://*.staging.your.site/*`.
-   Referrer restrictions _do_ take a wildcard, unlike redirect URIs — but only
-   as a whole label, so `deploy-preview-*--sitename.netlify.app` is rejected.
-4. Set these on **Deploy Previews and Branch deploys only** — Netlify's
-   environment variables take a different value per deploy context, and this is
-   what that is for:
+Add `https://*.staging.your.site` to the SPA application's **Allowed Callback
+URLs**, **Allowed Logout URLs** and **Allowed Web Origins**, and give previews
+hosts under that domain with Netlify's **Automatic deploy subdomains**.
 
-```
-VITE_GOOGLE_CALLBACK_ORIGIN=https://staging.your.site
-VITE_GOOGLE_CALLBACK_ALLOWED_SUFFIX=.staging.your.site
-VITE_NETLIFY_DEPLOY_DOMAIN=staging.your.site
-GOOGLE_REDIRECT_URI=https://staging.your.site/oauth/google
-```
+> **Only a domain you own.** Never `https://*.netlify.app`: every site Netlify
+> hosts matches it, so anyone could deploy one and be handed your users' tokens.
+> The same goes for the API key's referrer list, which needs
+> `https://*.staging.your.site/*` for the Picker — that one is a separate Google
+> allowlist, because the Picker calls Google straight from the page and Auth0 is
+> nowhere in that path.
 
-`VITE_NETLIFY_DEPLOY_DOMAIN` is what keeps a visitor on that domain once they
-sign in. Netlify does not retire a deploy's `--sitename.netlify.app` address when
-it gives it a subdomain — it stays live, and it stays _canonical_ — and Netlify
-Identity redirects to canonical after Google, whichever host the visitor started
-from. So signing in is itself what moves them off the allowlisted domain, and
-the Drive consent that follows is refused for a host you could not have
-allowlisted anyway. Nothing configures that away: `gotrue-js` sends no return
-address, and Netlify's hosted GoTrue overrides the referrer it would otherwise
-use. Set this and a deploy that lands on its netlify.app address relocates to the
-subdomain form before anything reads the URL, carrying the Identity tokens in
-the fragment across with it. See `src/lib/netlify/deployHost.ts`.
-
-Setting it also changes which host serves the staging badge, so **`STAGING_HOST`
-has to name the subdomain form** — `staging.staging.your.site` rather than
-`staging--sitename.netlify.app` — or the badge decides it is not on staging and
-draws nothing.
-
-**Leave all three unset on production**, which keeps its own
-`https://your.site/oauth/google` in the console and behaves exactly as it always
-did. Set there too, production would send its users' consent to the staging
-callback and then be refused on the way back — production is not under
-`.staging.your.site`, and widening the suffix until it is would put every
-production sign-in behind staging being deployed and healthy.
-
-`GOOGLE_REDIRECT_URI` belongs in the same contexts as
-`VITE_GOOGLE_CALLBACK_ORIGIN` and carries the same origin, because the exchange
-has to present the URI the browser asked with. In one but not the other, Google
-sees two different URIs and refuses — after a consent screen that looked like it
-worked.
-
-The suffix is read by whichever deploy _serves_ the callback rather than by the
-one that opened it. Setting it across both contexts covers that without anyone
-having to work out which: `staging.your.site` is a branch deploy, and on a
-preview the variable is simply never read.
-
-> **The suffix is a security boundary.** `state` arrives as a query parameter, so
-> the origin in it is whatever the URL that opened the callback window said it
-> was, and anyone can write one naming a site of their own. Google's exact
-> matching used to make that impossible; one URI in its place means this check
-> stands where it did. Name only domains you control. Never a shared one like
-> `.netlify.app`, where an attacker can deploy a site that matches in a minute.
-
-One consequence worth knowing: the callback window runs the build deployed at the
-registered origin, not the pull request's. So this has to be merged and live
-there before any preview can use it, and the `state` format is a contract between
-that deploy and every open branch. A stale one fails in a way worth recognising —
-consent succeeds, the window closes, and the preview reports that the Google
-window was closed before finishing, because the old callback posted its answer to
-its own origin and the browser dropped it.
-
-Leave all three `VITE_` variables unset and everything behaves as it did — the
-callback is this origin, no deploy relocates anywhere, and that is right for
-`netlify dev`, for production, and for a site whose deploys all share one URL.
+Deploys stay reachable at `*--sitename.netlify.app` too, and those hosts are
+outside the wildcard, so sign-in will refuse them. That is the allowlist working;
+use the subdomain URLs.
 
 ### What sign-in needs
 
-Turn on **Netlify Identity** for the site, and enable **Google** under its
-external providers. That is the whole of the sign-in provider setup, and it
-happens in the Netlify dashboard rather than in this repository — the Google
-client Identity uses is Netlify's business, not the one in
-`VITE_GOOGLE_CLIENT_ID`.
-
-> **Netlify Identity is closed to new sites.** Netlify deprecated it and no
-> longer offers it on sites that do not already have it; the widget's repository
-> is archived. This app talks to it through `gotrue-js` and one endpoint,
-> `/api/session`, precisely so that swapping in another provider is a change to
-> those two files rather than to the editor — but if your site cannot turn
-> Identity on, that swap is the work, not a configuration step.
-
-Then three variables, all genuinely secret. Mark them as such and **scope them
-to Functions** — they are read at request time, not at build time. The `VITE_`
-variables are the opposite: they are inlined into the browser bundle by design,
-so marking one secret makes secrets scanning fail the build.
+Beyond the Auth0 setup above, one secret and one project URL, both **scoped to
+Functions** — they are read at request time, not at build time. Marking a
+`VITE_` variable secret makes secrets scanning fail the build, so mark only
+these.
 
 ```
 SUPABASE_JWT_SECRET=             # Supabase → Project settings → API → JWT keys
-GOOGLE_CLIENT_SECRET=            # same OAuth client as the ID above
-SUPABASE_SERVICE_ROLE_KEY=       # Supabase → Project settings → API
+AUTH0_BACKEND_CLIENT_SECRET=     # the machine-to-machine application
 ```
 
-The first is what makes signing in work at all; the other two are what make
-Drive work, and the editor needs both halves before it opens. Then run
-`supabase/migrations/0002_google_connections.sql` and `0003_netlify_identity.sql`.
+Run the migrations in `supabase/migrations/` in order. `0004_auth0.sql` drops the
+`google_connections` table, which nothing writes to any more.
 
-If sign-in is refused, the screen says which step is unfinished — Identity not
-enabled, signing secret missing, migration unrun, or a store that simply did not
-answer — and the function log for `/api/session` or `/api/google/status` names
-the variable or prints the database's own complaint.
+**Why a signing secret.** Auth0 says who someone is. Supabase will not take its
+word for it: row-level security reads `auth.uid()` out of a JWT signed with the
+project's own key, and an Auth0 token presented to PostgREST is simply rejected.
+So `/api/session` verifies the Auth0 token and signs a Supabase-shaped one
+carrying the same user id. RLS stays the security boundary, and every query in
+`src/lib/supabase/*` is untouched — the same shape as Supabase's own third-party
+auth integrations.
 
-**Why a signing secret.** Netlify Identity says who someone is. Supabase will
-not take its word for it: row-level security reads `auth.uid()` out of a JWT
-signed with the project's own key, and an Identity token presented to PostgREST
-is rejected outright — different issuer, different key, no session. So
-`/api/session` verifies the Identity token with Netlify and signs a
-Supabase-shaped one carrying the same user id. The alternative was to route every
-read and write through functions holding the service role key, which would move
-the security boundary out of Postgres and into our own code, where one scoping
-mistake leaks everything.
+**No round trip to verify.** Auth0 signs with RS256 and publishes the public
+half, so `netlify/lib/auth0.ts` checks a token without leaving the process —
+signature, issuer, audience and expiry, with the signing keys cached and
+refetched once on an unrecognised key id. Netlify Identity could not be verified
+locally at all, so this is one hop cheaper than what it replaced.
 
-**One Identity round trip, not one per request.** That minted token is also what
-`/api/fal/*` and `/api/google/*` check, and they check it locally — an HMAC over
-bytes they already have. It matters because a single video generation polls for
-minutes, and asking Netlify to confirm the caller on every poll would be both
-slow and rude to a service that is not being paid to answer. The Identity check
-happens once, when the hour-long session is minted.
-
-**Two consent screens, and why it is not one.** It was one, when this app asked
-Google itself: `response_type=code id_token` returns proof of identity and a
-Drive authorisation code from a single screen. Netlify Identity has no way to
-add a scope to its own login, so the Drive grant needs a prompt of its own. What
-takes the sting out of it is `login_hint` — the address is already known from
-the Identity session, so the second screen asks for Drive rather than asking
-which account again.
-
-**A connection that outlives the tab.** A browser-only Drive flow hands back an
-access token and no way to renew it, so a connection lasted about an hour and a
-reload asked you to reconnect. The code from the consent screen is exchanged by
-`/api/google/*` for a refresh token, written to `google_connections`, and never
-sent to the browser. What the page holds is the same hour-long access token it
-always had; when that expires it asks the function for another. The connection
-belongs to the account, so it also comes back on any machine you sign in from.
-
-**Why a service role key.** The `google_connections` table has row-level
-security enabled and no policies at all, so no browser can read it whatever
-token it presents — not even its owner's. The service role bypasses RLS, and
-that key exists only in the function environment. A refresh token is a standing
-key to someone's Drive, and this is what keeps it from being readable by
-anything running on the page.
+**Where the Drive token comes from.** Auth0's Token Vault holds the Google
+tokens. `/api/google/token` exchanges the caller's Auth0 token for a Google one
+(`netlify/lib/tokenVault.ts`), so Google's refresh token never reaches this
+codebase — there is none here to leak, and no table to back up or lose. That
+endpoint is the one place that takes the Auth0 token rather than the minted
+Supabase session, because the Auth0 token is the subject of the exchange.
 
 ### One scope, and why
 
@@ -473,9 +386,9 @@ publish directory, functions directory, SPA fallback and security headers.
 4. If anyone is to sign in, turn on **Identity** for the site and enable
    **Google** under its external providers.
 
-If you are using the Drive integration, set `VITE_GOOGLE_CLIENT_ID` in the
-site's environment variables and add the deployed origin to the OAuth client's
-authorised origins.
+If you are using the Drive integration, set the `VITE_AUTH0_*` variables in the
+site's environment variables and add the deployed origin to the Auth0
+application's allowed callback, logout and web-origin lists.
 
 ### The one secret this needs
 
@@ -496,13 +409,13 @@ account, so it verifies the caller's session before attaching the key:
   Netlify's own password protection or access controls are worth adding on top
   if the site is not meant to be public at all.
 
-`VITE_GOOGLE_CLIENT_ID` and the two `VITE_SUPABASE_*` variables are build-time
+The `VITE_AUTH0_*` and `VITE_SUPABASE_*` variables are build-time
 and not secret — the anon key is protected by row-level security, and the client
 ID by origin allowlisting.
 
 Three are **required if you want anyone to be able to sign in and save**:
-**`SUPABASE_JWT_SECRET`**, **`GOOGLE_CLIENT_SECRET`** and
-**`SUPABASE_SERVICE_ROLE_KEY`**. See [what sign-in needs](#what-sign-in-needs).
+**`SUPABASE_JWT_SECRET`** and **`AUTH0_BACKEND_CLIENT_SECRET`**. See [what
+sign-in needs](#what-sign-in-needs).
 
 ## How it fits together
 
@@ -514,7 +427,7 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Timeline  — picture + audio + caption lanes      /api/fal/*        → queue.fal.run
   Captions  — words with their own timings           session verified, site's key attached
   Speech    — audio decoded here, Scribe there     /api/elevenlabs/* → api.elevenlabs.io
-  Sign-in   — Netlify Identity (gotrue-js)           the caller's own key, forwarded once
+  Sign-in   — Auth0 (auth0-spa-js)                   the caller's own key, forwarded once
   Projects  — timelines in Supabase (no media)     /api/media        → streams provider media
   Drive     — media in your own Drive              /api/google/*     → oauth2.googleapis.com
   Preview   — custom player over <video>             holds the refresh token, mints
@@ -575,7 +488,7 @@ this is the first time.
 
 **Two trips to Google, and the second is not optional.** Signing in and
 authorising Drive used to be one request (`response_type=code id_token`), which
-returned proof of identity and a consent code together. Netlify Identity owns
+returned proof of identity and a consent code together. Auth0 owns
 the login now and has no way to add a scope to it, so Drive is asked for
 separately. What is _not_ done is making it optional: a Drive grant that sits
 switched off until someone finds a button in Settings is a backup that quietly
@@ -983,7 +896,8 @@ allowlist, including the cloud-metadata address and lookalike hostnames.
 
 Several exist because the bug they guard against is invisible until you close
 the tab or lose a token. `src/state/useAuthStore.test.ts` restores a sign-in
-against a real gotrue-js client with a seeded local storage.
+against a mocked Auth0 client, since persisting the session is auth0-spa-js's
+job rather than ours.
 `src/lib/supabase/session.test.ts` holds the caching that keeps every Supabase
 query from minting a session of its own, and keeps "your session lapsed" apart
 from "this site was never finished". `netlify/lib/supabaseToken.test.ts` mints a
@@ -1019,7 +933,7 @@ If your CI image ships its own browser, point the test at it with
   Identity, the other grants Drive, because an Identity login cannot carry a
   Drive scope. The second is asked with the first one's address as a hint, so it
   is one question rather than two — but it is still a second screen, and it was
-  one before Netlify Identity took over the login.
+  one before Auth0 took the login back to a single screen.
 - **A clip's sound cannot be moved off its clip.** It is mixed where the clip
   sits and trimmed with it, which is what you want for filmed footage; but there
   is no way to slide it, keep it running under the next clip, or drop it onto an

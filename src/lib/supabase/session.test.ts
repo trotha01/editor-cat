@@ -1,19 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
- * Holding the Supabase session that Netlify Identity buys.
+ * Holding the Supabase session that an Auth0 sign-in buys.
  *
  * Every Supabase query calls into here, and the editor saves, syncs assets and
  * uploads at once — so the caching is not a nicety. Without it a single expiry
  * fans out into a burst of identical mints, and supabase-js is explicit that it
  * may call the hook concurrently and often.
  */
-const identityToken = vi.fn<() => Promise<string | null>>()
-const currentIdentityUser = vi.fn<() => object | null>()
+const auth0Token = vi.fn<() => Promise<string | null>>()
+const currentAccount = vi.fn<() => object | null>()
 
-vi.mock('../netlify/identity', () => ({
-  identityToken: () => identityToken(),
-  currentIdentityUser: () => currentIdentityUser(),
+vi.mock('../auth0/client', () => ({
+  auth0Token: () => auth0Token(),
+  currentAccount: () => currentAccount(),
 }))
 
 const {
@@ -56,8 +56,8 @@ function serve(status: number, body: unknown = {}) {
 
 beforeEach(() => {
   clearSupabaseSession()
-  identityToken.mockResolvedValue('identity-token')
-  currentIdentityUser.mockReturnValue({ id: 'user-uuid' })
+  auth0Token.mockResolvedValue('auth0-token')
+  currentAccount.mockReturnValue({ id: 'auth0|42', email: 'someone@example.com' })
   serveMints()
 })
 
@@ -67,14 +67,14 @@ afterEach(() => {
 })
 
 describe('supabaseAccessToken', () => {
-  it('trades the Identity token for a Supabase one', async () => {
+  it('trades the Auth0 token for a Supabase one', async () => {
     const calls = serve(200, { access_token: 'minted-token', expires_in: 3600 })
 
     await expect(supabaseAccessToken()).resolves.toBe('minted-token')
 
     expect(calls[0]?.url).toBe('/api/session')
     expect(calls[0]?.init?.method).toBe('POST')
-    expect(calls[0]?.init?.headers).toMatchObject({ authorization: 'Bearer identity-token' })
+    expect(calls[0]?.init?.headers).toMatchObject({ authorization: 'Bearer auth0-token' })
   })
 
   it('holds the session rather than minting one per query', async () => {
@@ -108,21 +108,21 @@ describe('supabaseAccessToken', () => {
   })
 
   it('answers null when nobody is signed in, which is not an error', async () => {
-    currentIdentityUser.mockReturnValue(null)
+    currentAccount.mockReturnValue(null)
 
     await expect(supabaseAccessToken()).resolves.toBeNull()
     expect(minted).toBe(0)
   })
 
-  it('asks for a sign-in when the Identity session has run out', async () => {
-    // gotrue-js clears the stored session when a refresh is refused, so a throw
+  it('asks for a sign-in when the Auth0 session has run out', async () => {
+    // auth0-spa-js throws when a silent refresh is refused, so a throw
     // from here is what an expired refresh token looks like.
-    identityToken.mockRejectedValue(new Error('failed to refresh'))
+    auth0Token.mockRejectedValue(new Error('failed to refresh'))
 
     await expect(supabaseAccessToken()).rejects.toBeInstanceOf(SignInRequiredError)
   })
 
-  it('asks for a sign-in when the function refuses the Identity token', async () => {
+  it('asks for a sign-in when the function refuses the Auth0 token', async () => {
     serve(401, { error: 'Sign in to continue.' })
 
     await expect(supabaseAccessToken()).rejects.toBeInstanceOf(SignInRequiredError)
