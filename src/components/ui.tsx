@@ -3,10 +3,10 @@ import {
   useEffect,
   useRef,
   type ButtonHTMLAttributes,
+  type ComponentPropsWithRef,
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
-  type TextareaHTMLAttributes,
 } from 'react'
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
@@ -63,10 +63,12 @@ export function TextInput({ className = '', ...props }: InputHTMLAttributes<HTML
   return <input {...props} className={`${CONTROL} ${className}`} />
 }
 
-export function TextArea({
-  className = '',
-  ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+/**
+ * Takes a `ref` — which in React 19 is an ordinary prop, so nothing has to be
+ * forwarded — because a text box that something else wants to focus is a real
+ * case: the help bubble focuses its composer as it opens.
+ */
+export function TextArea({ className = '', ...props }: ComponentPropsWithRef<'textarea'>) {
   return <textarea {...props} className={`${CONTROL} resize-y leading-relaxed ${className}`} />
 }
 

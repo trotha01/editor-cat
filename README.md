@@ -23,6 +23,7 @@ account, so visitors need **no key** for any of them. Voice conversion uses
 | **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                              |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Help**         | A bubble in the bottom-right corner answers questions about the editor, and turns "this is broken" into a report on the project's issue tracker. It drafts; you check it, edit it and post it. See [Asking for help, and reporting bugs](#asking-for-help-and-reporting-bugs).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 ## What you need
 
@@ -51,6 +52,64 @@ preview switches the whole pipeline at once — the shape of generated images, t
 aspect ratio sent to the video model, and the export frame — because a clip
 generated one way up and exported the other just gets black bars. Existing
 projects keep the orientation they were made with until you change it.
+
+## Asking for help, and reporting bugs
+
+There is a **💬 bubble in the bottom-right corner** of the editor. Open it and
+you can ask how something works — the steps, the timeline, captions, what things
+cost — or say that something is broken.
+
+It answers from a written description of this editor
+(`src/lib/support/knowledge.ts`), running on the same fal any-llm endpoint the
+two **Improve with AI** buttons use. So it needs no key of its own, it is paid
+for by the deployment like everything else there, and it costs a fraction of a
+cent per question. The model it runs on is the one picked in **Settings**.
+
+**Reports are drafted, never sent.** When you are describing something broken or
+something you wish existed, the assistant asks whatever it still needs and then
+writes the report as a card in the chat: kind, title, body, all editable, plus a
+**What gets attached** disclosure showing the exact build, browser and project
+details that would go with it. Nothing reaches GitHub until you press **Post**.
+The assistant has no way to file anything itself — the endpoint is only reachable
+from that button — which is what keeps a model that reads whatever anyone pastes
+into it from writing to a public tracker.
+
+What is attached is the build SHA, branch and deploy context, the page origin,
+the user agent, the window and screen size, and the shape of the open project
+(how many clips, how long, how many audio clips and captions, which way up).
+Nothing about the account, no email, no prompt text, no media.
+
+### Letting a deployment file issues
+
+Two environment variables, both server-side:
+
+- **`GITHUB_TOKEN`** — a **fine-grained personal access token** scoped to the one
+  repository, with **Issues: read and write** and nothing else. That is the whole
+  permission it needs: so scoped, a leak cannot read code, push, or touch another
+  repository. No `VITE_` prefix, or it would be inlined into the browser bundle
+  and published.
+- **`GITHUB_REPO`** — `owner/repo`, the tracker reports go to.
+
+Without both, `/api/github/status` answers `configured: false`, the bubble drops
+the offer to report, and the assistant is told it cannot file — so nobody is
+walked through writing a report that has nowhere to go. Questions still work.
+
+Filing is deliberately narrow, because it writes to a public place under the
+deployment's own account:
+
+- **Signed in only.** `/api/github/issues` verifies the caller's Auth0 token, the
+  same check `/api/fal/*` makes.
+- **Five reports per account per ten minutes**, best-effort: functions scale out,
+  so the counter is per instance. It exists to stop a stuck retry loop, not to
+  stand in for the session check.
+- **Titles and bodies are capped** server-side, and truncated rather than
+  refused — losing five minutes of somebody's writing to a limit nobody showed
+  them is worse than filing a report that says it was cut short.
+- **`@mentions` and `#123` references are neutralised** with a zero-width space,
+  so a report cannot be used to notify a stranger or cross-link an unrelated
+  issue. The collected details go in a fenced block, which renders nothing.
+- Issues arrive labelled `from-app` alongside `bug`, `enhancement` or `question`,
+  and carry a footer saying the reporter is probably not watching the thread.
 
 ## Running it locally
 
@@ -564,6 +623,11 @@ ID by origin allowlisting.
 able to sign in and save, alongside the dashboard steps in [what sign-in
 needs](#what-sign-in-needs).
 
+**`GITHUB_TOKEN` and `GITHUB_REPO`** are optional, and only decide whether the
+help bubble can file what it drafts. Without them the editor is unchanged and the
+bubble simply answers questions. See [letting a deployment file
+issues](#letting-a-deployment-file-issues).
+
 ## How it fits together
 
 ```
@@ -577,8 +641,9 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Sign-in   — Auth0 (auth0-spa-js)                 /api/google/*     → oauth2.googleapis.com
   Projects  — timelines in Supabase (no media)       exchanges the caller's Auth0 token
   Drive     — media in your own Drive                through Token Vault for a Google one
-  Preview   — custom player over <video>
-  Export    — ffmpeg.wasm → MP4, captions burnt in
+  Preview   — custom player over <video>           /api/github/*     → api.github.com
+  Export    — ffmpeg.wasm → MP4, captions burnt in   files what the help bubble drafted,
+  Help      — chat bubble, drafts bug reports        once a person has pressed Post
 
                                                  Supabase and Drive themselves talk to the
                                                  browser directly, not through us — Supabase
@@ -1016,7 +1081,8 @@ npm test          # unit tests — timeline maths, caption grouping and retiming
                   # the karaoke subtitle file, reading Scribe's word list, ffmpeg
                   # argv, SSRF guard, session
                   # verification and persistence, the Drive connection flow, the
-                  # video request body, orientation, key storage
+                  # video request body, orientation, key storage, and what the
+                  # help bubble will and will not file
 npm run lint
 npm run build
 
@@ -1060,6 +1126,15 @@ request. And `src/components/SignInGate.test.tsx` holds the gate rules that
 decide whether anyone can use the app — no entry without Drive, no Drive prompt
 before there is an account to file it under, and no ejection once inside.
 
+`src/components/HelpChat.test.tsx` and `src/lib/support/chat.test.ts` are there
+for the same kind of reason. One holds the rule that no report reaches GitHub
+without a person pressing the button on a draft they can see and edit; the other
+holds the parser to never inventing a report out of a reply it could not read,
+since a model that fumbles the format must not end up putting words in somebody's
+mouth on a public tracker. `netlify/lib/github.test.ts` covers what is written
+once they have — the caps, and the neutralising that stops a report notifying a
+stranger.
+
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track, cutting a clip and
 reloading the page to see the cut come back, putting a count-in in front of the
@@ -1078,6 +1153,12 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
+- **The help bubble knows only what is written down for it.** Its notes live in
+  `src/lib/support/knowledge.ts` and are kept in step with this README by hand,
+  so a feature that changes without that file changing gets answered wrongly and
+  confidently. It cannot see your timeline, read your project or press anything
+  for you; the details attached to a report are collected separately by the app
+  itself, not by the model.
 - **Getting in costs two trips to Google.** One signs you in, the other grants
   Drive. Not a limit of the login — Auth0 will carry the scope through it — but
   of where the result lands: a login files Google's tokens against the user's
