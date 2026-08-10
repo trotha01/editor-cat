@@ -7,12 +7,12 @@
  */
 import { upsertAsset } from '../supabase/assets'
 import { isSupabaseConfigured } from '../supabase/client'
-import { useAuthStore } from '../../state/useAuthStore'
+import { isSignedIn } from '../../state/useAuthStore'
 import type { Asset } from '../types'
 
 /** Whether there is an account to record against right now. */
 function canRecord(): boolean {
-  return isSupabaseConfigured() && useAuthStore.getState().session !== null
+  return isSupabaseConfigured() && isSignedIn()
 }
 
 /**

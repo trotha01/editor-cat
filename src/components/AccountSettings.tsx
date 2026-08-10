@@ -11,7 +11,7 @@ import { requiresSignIn, useAuthStore } from '../state/useAuthStore'
 import { useDriveStore } from '../state/useDriveStore'
 
 export function AccountSettings() {
-  const session = useAuthStore((state) => state.session)
+  const account = useAuthStore((state) => state.account)
   const signOut = useAuthStore((state) => state.signOut)
   // A build with no Supabase project behind it has no account to show, and the
   // editor is open to anyone who loads it.
@@ -30,7 +30,7 @@ export function AccountSettings() {
         <div className="min-w-0">
           <p className="text-sm font-medium">Account</p>
           <p className="truncate text-xs text-ink-dim">
-            {session?.user.email ?? 'Signed in with Google'}
+            {account?.email || 'Signed in with Google'}
           </p>
         </div>
         <Button variant="ghost" onClick={() => void leave()}>

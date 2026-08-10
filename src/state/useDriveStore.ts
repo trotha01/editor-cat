@@ -2,9 +2,11 @@
  * The Google Drive connection: whose it is, which folder we write to, and what
  * is currently uploading.
  *
- * There is nothing here that grants it. Drive is authorised at the sign-in
- * screen, in the same consent as identity, and the connection is stored against
- * the account — so `restore` asks the server what this user has rather than
+ * Granting it is `connect`, and it is a screen of its own: Auth0 files a login's
+ * provider tokens against the user's identity, which is not the store Token
+ * Vault reads, so the folder permission has to be asked for as a connected
+ * account rather than ridden in on the sign-in. Auth0 keeps what comes back —
+ * which is why `restore` asks our own server what this account has rather than
  * asking Google, and a browser that has never seen them still picks it up.
  *
  * The chosen folder is the one thing kept locally. It is not a credential; it is
@@ -12,15 +14,15 @@
  */
 import { create } from 'zustand'
 import {
-  adoptConnection,
   accessToken,
   invalidateToken,
   isDriveConfigured,
-  isDurableConnection,
   loadConnectionStatus,
   NeedsConsentError,
 } from '../lib/google/gis'
 import { currentUser, DriveError, uploadFile, type DriveFolder } from '../lib/google/drive'
+import { connectDrive } from '../lib/auth0/client'
+import { useAuthStore } from './useAuthStore'
 import { toDisplayMessage } from '../lib/errors'
 import { recordAsset } from '../lib/sync/assetSync'
 import { useAssetStore } from './useAssetStore'
@@ -60,15 +62,15 @@ interface DriveState {
   /** Resumes the account's connection without prompting. Safe to call on mount. */
   restore: () => Promise<void>
   /**
-   * Claims the connection while sign-in is still in flight, so the `restore`
-   * that runs as the editor mounts does not race it to a stale answer. Released
-   * with `false` if the sign-in it was claimed for never happened.
+   * Asks Google for the folder permission. Leaves the page.
+   *
+   * A step of its own, because a login's provider tokens land somewhere Token
+   * Vault cannot read — see lib/auth0/client.ts. The account stays signed in
+   * throughout: what is missing is a permission, not a session.
    */
-  setConnecting: (pending: boolean) => void
-  /** Completes a connection authorised during sign-in. */
-  adopt: (code: string) => Promise<void>
+  connect: () => void
   /**
-   * Drops this browser's Drive state on sign-out, leaving the stored connection
+   * Drops this browser's Drive state on sign-out, leaving the grant itself
    * alone — it belongs to the account, and signing back in resumes it.
    */
   forget: () => void
@@ -116,10 +118,9 @@ export const useDriveStore = create<DriveState>((set, get) => ({
 
   restore: async () => {
     if (!isDriveConfigured()) return
-    // Signing in authorises Drive too, so by the time the editor mounts the
-    // connection may already be in hand or on its way. Asking the server again
-    // would at best duplicate work and at worst overwrite a fresher answer with
-    // a stale one.
+    // A connection may already be in hand, or on its way from the consent the
+    // user is in the middle of giving. Asking the server again would at best
+    // duplicate work and at worst overwrite a fresher answer with a stale one.
     if (get().status === 'connected' || get().status === 'connecting') return
 
     const { durable, connected } = await loadConnectionStatus()
@@ -149,20 +150,14 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     }
   },
 
-  setConnecting: (pending) => set({ status: pending ? 'connecting' : 'disconnected', error: null }),
-
-  adopt: async (code) => {
+  connect: () => {
     set({ status: 'connecting', error: null })
-    try {
-      await adoptConnection(code)
-      set({ status: 'connected', durable: isDurableConnection(), account: await currentUser() })
-    } catch (cause) {
-      // Signing in worked; only the Drive half did not — someone unticked it on
-      // Google's own screen. Reported as never having connected, because that is
-      // what it is, and the gate asks again rather than letting them in without
-      // anywhere to put their media.
-      set({ status: 'disconnected', account: null, error: toDisplayMessage(cause) })
-    }
+    // Navigates away, so nothing after it runs — but the navigation happens
+    // inside the SDK after a round trip to Auth0, and a refusal there would
+    // otherwise leave the gate spinning at `connecting` with nothing to show.
+    void connectDrive(useAuthStore.getState().account?.email).catch((cause: unknown) => {
+      set({ status: 'disconnected', error: toDisplayMessage(cause) })
+    })
   },
 
   forget: () => {
