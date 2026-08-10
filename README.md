@@ -309,8 +309,26 @@ only thing Google returns untouched.
 ```
 VITE_GOOGLE_CALLBACK_ORIGIN=https://staging.your.site
 VITE_GOOGLE_CALLBACK_ALLOWED_SUFFIX=.staging.your.site
+VITE_NETLIFY_DEPLOY_DOMAIN=staging.your.site
 GOOGLE_REDIRECT_URI=https://staging.your.site/oauth/google
 ```
+
+`VITE_NETLIFY_DEPLOY_DOMAIN` is what keeps a visitor on that domain once they
+sign in. Netlify does not retire a deploy's `--sitename.netlify.app` address when
+it gives it a subdomain — it stays live, and it stays _canonical_ — and Netlify
+Identity redirects to canonical after Google, whichever host the visitor started
+from. So signing in is itself what moves them off the allowlisted domain, and
+the Drive consent that follows is refused for a host you could not have
+allowlisted anyway. Nothing configures that away: `gotrue-js` sends no return
+address, and Netlify's hosted GoTrue overrides the referrer it would otherwise
+use. Set this and a deploy that lands on its netlify.app address relocates to the
+subdomain form before anything reads the URL, carrying the Identity tokens in
+the fragment across with it. See `src/lib/netlify/deployHost.ts`.
+
+Setting it also changes which host serves the staging badge, so **`STAGING_HOST`
+has to name the subdomain form** — `staging.staging.your.site` rather than
+`staging--sitename.netlify.app` — or the badge decides it is not on staging and
+draws nothing.
 
 **Leave all three unset on production**, which keeps its own
 `https://your.site/oauth/google` in the console and behaves exactly as it always
@@ -337,16 +355,17 @@ preview the variable is simply never read.
 > stands where it did. Name only domains you control. Never a shared one like
 > `.netlify.app`, where an attacker can deploy a site that matches in a minute.
 
-Two consequences worth knowing. The callback window runs the build deployed at
-the registered origin, not the pull request's — so this has to be merged and
-live before any preview can use it, and the `state` format is a contract between
-that deploy and every open branch. And Netlify keeps the
-`*--sitename.netlify.app` alias working: Drive will not connect there, correctly,
-because that host is outside the suffix.
+One consequence worth knowing: the callback window runs the build deployed at the
+registered origin, not the pull request's. So this has to be merged and live
+there before any preview can use it, and the `state` format is a contract between
+that deploy and every open branch. A stale one fails in a way worth recognising —
+consent succeeds, the window closes, and the preview reports that the Google
+window was closed before finishing, because the old callback posted its answer to
+its own origin and the browser dropped it.
 
-Leave both `VITE_` variables unset and everything behaves as it did — the
-callback is this origin, which is right for `netlify dev` and for a site whose
-deploys all share one URL.
+Leave all three `VITE_` variables unset and everything behaves as it did — the
+callback is this origin, no deploy relocates anywhere, and that is right for
+`netlify dev`, for production, and for a site whose deploys all share one URL.
 
 ### What sign-in needs
 

@@ -46,6 +46,15 @@ interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
   /**
+   * The domain Netlify's automatic deploy subdomains hang off —
+   * `staging.example.com`, for deploys at `deploy-preview-32.staging.example.com`.
+   * Set it and a deploy that finds itself on its `--sitename.netlify.app`
+   * address moves to the subdomain form before anything reads the URL, which is
+   * what undoes Netlify Identity returning to a deploy's canonical host after
+   * sign-in. Leave it unset for a site without deploy subdomains.
+   */
+  readonly VITE_NETLIFY_DEPLOY_DOMAIN?: string
+  /**
    * Where Netlify Identity lives. Defaults to `/.netlify/identity` on this
    * origin, which is right for every deployed site and for `netlify dev`. Set it
    * only for plain `npm run dev`, which serves the app on :5173 with no Netlify

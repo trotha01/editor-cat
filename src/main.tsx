@@ -4,6 +4,7 @@ import App from './App'
 import { SignInGate } from './components/SignInGate'
 import { StagingBadge } from './components/StagingBadge'
 import { completeOauthCallback, isOauthCallback } from './lib/google/oauthCallback'
+import { relocateToDeployDomain } from './lib/netlify/deployHost'
 import { installVersionGlobal } from './lib/version'
 import './index.css'
 
@@ -28,15 +29,22 @@ function mount(): void {
   )
 }
 
-// Before anything that can fail, and before the gate decides whether to let
-// anyone in: whoever is debugging a deployment needs `VERSION` to answer even on
-// a screen that is refusing them entry.
-installVersionGlobal()
+// Before everything, including `VERSION`: this document may not be on the host
+// it is supposed to be on — Netlify Identity returns from Google to a deploy's
+// netlify.app address whichever one the visitor started from — and every line
+// below reads the address it landed on. Nothing else should run in a page that
+// is already leaving. See ./lib/netlify/deployHost.ts.
+if (!relocateToDeployDomain()) {
+  // Before anything that can fail, and before the gate decides whether to let
+  // anyone in: whoever is debugging a deployment needs `VERSION` to answer even
+  // on a screen that is refusing them entry.
+  installVersionGlobal()
 
-// Google's consent pop-up lands back on this origin, and the SPA fallback serves
-// it as this app. That window exists for a few milliseconds, so it hands the
-// authorisation code to whoever opened it and closes; mounting the editor there
-// would load a second copy of everything and flash the sign-in gate inside the
-// pop-up on the way past.
-if (isOauthCallback()) completeOauthCallback()
-else mount()
+  // Google's consent pop-up lands back on the registered callback origin, and
+  // the SPA fallback serves it as this app. That window exists for a few
+  // milliseconds, so it hands the authorisation code to whoever opened it and
+  // closes; mounting the editor there would load a second copy of everything and
+  // flash the sign-in gate inside the pop-up on the way past.
+  if (isOauthCallback()) completeOauthCallback()
+  else mount()
+}
