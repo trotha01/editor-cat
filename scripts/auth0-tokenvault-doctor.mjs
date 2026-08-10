@@ -79,9 +79,15 @@ function reportConnection(connection) {
   const ownKeys = Boolean(options.client_id)
 
   console.log(`\nCONNECTION  ${connection.name}  (${connection.id})`)
-  console.log(`  ${mark(ownKeys)} own Google client   ${options.client_id ?? '— using Auth0 dev keys —'}`)
-  console.log(`  ${mark(offline)} offline_access      ${offline ? 'set' : 'MISSING: no refresh token will ever be issued'}`)
-  console.log(`  ${mark(drive)} a drive scope       ${scopes.filter((s) => s.includes('drive')).join(', ') || '— none —'}`)
+  console.log(
+    `  ${mark(ownKeys)} own Google client   ${options.client_id ?? '— using Auth0 dev keys —'}`,
+  )
+  console.log(
+    `  ${mark(offline)} offline_access      ${offline ? 'set' : 'MISSING: no refresh token will ever be issued'}`,
+  )
+  console.log(
+    `  ${mark(drive)} a drive scope       ${scopes.filter((s) => s.includes('drive')).join(', ') || '— none —'}`,
+  )
   console.log(`    all scopes        ${scopes.join(' ') || '— none —'}`)
 
   if (options.upstream_params) {
@@ -154,7 +160,18 @@ function reportClient(client) {
         : 'none — refresh token reaches the default audience only'
     }`,
   )
-  console.log(`  ${mark(client.cross_origin_auth === true)} cross_origin_auth   ${client.cross_origin_auth === true ? 'on' : 'off'}`)
+  // Reported, not scored. `cross_origin_auth` turns on Cross-Origin
+  // Authentication — the /co/authenticate endpoint behind embedded login, which
+  // this app does not use and Auth0 steers away from. The connect flow's own
+  // cross-origin POST to /me/v1/connected-accounts is gated on Allowed Web
+  // Origins instead, so a ✗ against this line sends people to enable a feature
+  // they do not want.
+  console.log(
+    `    cross_origin_auth ${client.cross_origin_auth === true ? 'on — embedded login only; not needed here' : 'off (expected)'}`,
+  )
+  console.log(
+    `    web_origins       ${(client.web_origins ?? []).join(', ') || 'none — the connect POST will be refused by CORS'}`,
+  )
 
   if (client.app_type === 'spa' && !rotating) {
     console.log('    ^ a browser client without rotation is refused a refresh token entirely.')
@@ -194,13 +211,17 @@ async function reportUser(email) {
     if (connected) {
       console.log(
         `  ${mark(connected.length > 0)} connected_accounts  ${connected.length} entr${connected.length === 1 ? 'y' : 'ies'}` +
-          (connected.length ? ` (${connected.map((a) => a.connection ?? a.provider).join(', ')})` : ' — Token Vault holds nothing for this user'),
+          (connected.length
+            ? ` (${connected.map((a) => a.connection ?? a.provider).join(', ')})`
+            : ' — Token Vault holds nothing for this user'),
       )
     }
 
     for (const identity of user.identities ?? []) {
       const has = Boolean(identity.refresh_token)
-      console.log(`  ${mark(has)} ${identity.provider}  refresh_token ${has ? 'present' : 'ABSENT'}`)
+      console.log(
+        `  ${mark(has)} ${identity.provider}  refresh_token ${has ? 'present' : 'ABSENT'}`,
+      )
       if (identity.access_token && !has) {
         console.log('    ^ Google returned an access token and no refresh token: either the')
         console.log('      connection did not ask for offline access, or consent already stood.')
@@ -216,7 +237,13 @@ try {
   if (!connections.length) console.log('\nNo google-oauth2 connection in this tenant.')
   connections.forEach(reportConnection)
 
-  const clients = await api('/clients?fields=client_id,name,app_type,grant_types,refresh_token&include_fields=true')
+  // Every field this report reads has to be named here. `fields` is a
+  // whitelist, and a field left out of it comes back `undefined` — which the
+  // lines below cannot tell from "off", so an unrequested setting reads as a
+  // failing one and sends people to fix what was never broken.
+  const clients = await api(
+    '/clients?fields=client_id,name,app_type,grant_types,refresh_token,cross_origin_auth,web_origins&include_fields=true',
+  )
   for (const client of clients) {
     // Every application the tenant has that a browser could be signing in with.
     if (client.app_type === 'spa' || client.app_type === 'regular_web') reportClient(client)

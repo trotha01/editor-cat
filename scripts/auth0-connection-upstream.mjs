@@ -73,8 +73,12 @@ const nextUpstream = Object.keys(kept).length ? kept : undefined
 const nextOptions = { ...options, ...(nextUpstream ? { upstream_params: nextUpstream } : {}) }
 if (!nextUpstream) delete nextOptions.upstream_params
 
-console.log(`  after     ${nextUpstream ? JSON.stringify(nextUpstream) : '(upstream_params removed)'}`)
-console.log(`  keeping   client_id, ${Array.isArray(options.scope) ? options.scope.length : 0} scope(s), offline_access=${options.offline_access === true}`)
+console.log(
+  `  after     ${nextUpstream ? JSON.stringify(nextUpstream) : '(upstream_params removed)'}`,
+)
+console.log(
+  `  keeping   client_id, ${Array.isArray(options.scope) ? options.scope.length : 0} scope(s), offline_access=${options.offline_access === true}`,
+)
 
 if (!apply) {
   console.log('\nDry run. Re-run with --apply to make the change.')
@@ -93,7 +97,9 @@ const after = await api(`/connections/${connectionId}`)
 const check = after.options ?? {}
 console.log('\nAfter the write:')
 console.log(`  upstream_params  ${JSON.stringify(check.upstream_params ?? '(none)')}`)
-console.log(`  client_id        ${check.client_id ?? '*** MISSING — re-enter the Google client id and secret ***'}`)
+console.log(
+  `  client_id        ${check.client_id ?? '*** MISSING — re-enter the Google client id and secret ***'}`,
+)
 console.log(`  offline_access   ${check.offline_access === true}`)
 console.log(`  scopes           ${(check.scope ?? []).join(' ')}`)
 console.log(

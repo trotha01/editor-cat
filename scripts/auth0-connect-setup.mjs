@@ -40,7 +40,9 @@ const clientId = process.argv[2]
 const apply = process.argv.includes('--apply')
 
 if (!domain || !token || !clientId || clientId.startsWith('--')) {
-  console.error('Usage: AUTH0_DOMAIN=… AUTH0_MGMT_TOKEN=… node scripts/auth0-connect-setup.mjs <spa-client-id> [--apply]')
+  console.error(
+    'Usage: AUTH0_DOMAIN=… AUTH0_MGMT_TOKEN=… node scripts/auth0-connect-setup.mjs <spa-client-id> [--apply]',
+  )
   process.exit(1)
 }
 
@@ -215,9 +217,13 @@ if (already) {
 
   console.log('\n→ MRRT policy      set refresh_token.policies to:')
   for (const policy of next.policies) {
-    console.log(`                   ${policy.audience}  [${(policy.scope ?? []).join(' ') || 'no scope restriction'}]`)
+    console.log(
+      `                   ${policy.audience}  [${(policy.scope ?? []).join(' ') || 'no scope restriction'}]`,
+    )
   }
-  console.log(`                   (keeping rotation_type=${refresh.rotation_type}, expiration_type=${refresh.expiration_type})`)
+  console.log(
+    `                   (keeping rotation_type=${refresh.rotation_type}, expiration_type=${refresh.expiration_type})`,
+  )
 
   if (apply) {
     await api(`/clients/${clientId}`, {
@@ -230,11 +236,23 @@ if (already) {
 
 // ---- 3. the things only a human can judge --------------------------------
 
-console.log('\nCheck by hand — the connect call is made from the browser, so it needs CORS:')
-console.log(`  cross_origin_auth  ${client.cross_origin_auth === true ? '✓ on' : '✗ off — Dashboard -> the app -> Allow Cross-Origin Authentication'}`)
+console.log('\nCheck by hand — the connect flow makes a cross-origin call and then a redirect:')
 console.log(`  web_origins        ${(client.web_origins ?? []).join(', ') || '✗ none set'}`)
 console.log(`  callbacks          ${(client.callbacks ?? []).join(', ') || '✗ none set'}`)
-console.log('\nThe connect flow redirects back to a callback URL, so whatever origin the app is')
-console.log('served from has to appear in both lists — deploy previews included.')
+console.log('\nThe SDK POSTs from the page to /me/v1/connected-accounts/connect, which Auth0')
+console.log('gates on Allowed Web Origins, and Auth0 then redirects back to a callback URL.')
+console.log('Whatever origin the app is served from has to appear in both lists — deploy')
+console.log('previews included.')
+
+// Not cross_origin_auth, which is the question this line used to ask. That
+// setting turns on Cross-Origin Authentication, the /co/authenticate endpoint
+// behind *embedded* login — a different feature, one Auth0 steers away from in
+// favour of Universal Login, and one this app does not use: the SDK bundle does
+// not reference that endpoint at all. Reported so a tenant that has it on can be
+// asked why, rather than recommended.
+if (client.cross_origin_auth === true) {
+  console.log('\n?  cross_origin_auth is ON. Nothing here needs it — it enables embedded login,')
+  console.log('   not the connect flow. Worth turning off unless something else uses it.')
+}
 
 if (!apply) console.log('\nDry run. Re-run with --apply to make these changes.')
