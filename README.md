@@ -271,11 +271,21 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
 6. Create a **Single Page Application** for the browser. Its client id is
    `VITE_AUTH0_CLIENT_ID`; its Allowed Callback URLs, Allowed Logout URLs and
    Allowed Web Origins cover wherever the app is served from.
-7. On the API, create its **Custom API Client**, and enable the **Token Vault**
-   grant type on it. Its credentials are what the functions exchange with.
-   Not a machine-to-machine application: access token exchange requires the
-   caller to _be_ the resource server the token was minted for, and Auth0 tells
-   an M2M client so in as many words.
+7. On that API's page, press **Add Application**, name it, and press **Add** —
+   which, despite the wording, creates a **Custom API Client** rather than
+   authorising an application that already exists. Then **Configure
+   Application**: its type reads _Custom API Client_, and under Advanced
+   Settings → Grant Types the **Token Vault** grant is already enabled. Its
+   client id and secret are `AUTH0_BACKEND_CLIENT_ID` and
+   `AUTH0_BACKEND_CLIENT_SECRET`.
+
+   Not a machine-to-machine application, however generously granted. Access
+   token exchange is the variant where the caller _is_ the resource server the
+   token was minted for, and Auth0 decides that by whose credentials signed the
+   request — a Custom API Client shares the API's identifier, which is the whole
+   of what makes it the same entity. An M2M client answers "This client is not a
+   resource server and cannot exchange access tokens."
+
 8. Create a Google **API key** under the same Cloud credentials page, restricted
    by HTTP referrer. The Picker will not open without one.
 
