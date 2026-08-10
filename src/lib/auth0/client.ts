@@ -177,6 +177,24 @@ export async function adoptRedirect(): Promise<Account | null> {
       }
     }
 
+    // Before reading the user, not after: `getUser` only looks in the cache —
+    // it is a synchronous read dressed as a promise — and the cached token
+    // expires in hours while the rotating refresh token behind it lasts weeks.
+    // Without this, the first reload past the API's token lifetime reports
+    // nobody signed in with a perfectly good refresh token sitting in storage,
+    // which is most of what `useRefreshTokens` was turned on to prevent.
+    //
+    // `getTokenSilently` rather than `checkSession`, which gates on a cookie of
+    // its own that expires a day after login and would reintroduce the same
+    // cliff a little further out.
+    try {
+      await auth0().getTokenSilently()
+    } catch {
+      // Nobody signed in, or a refresh token that has genuinely run out. Both
+      // leave the cache empty, `getUser` answers undefined, and the gate asks
+      // for a sign-in — which is the right end for either.
+    }
+
     account = toAccount(await auth0().getUser())
     return account
   })()
