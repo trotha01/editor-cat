@@ -138,9 +138,26 @@ describe('beginGoogleSignIn', () => {
       authorizationParams: {
         connection: 'google-oauth2',
         connection_scope: 'https://www.googleapis.com/auth/drive.file',
+        access_type: 'offline',
+        prompt: 'consent',
         redirect_uri: window.location.origin,
       },
     })
+  })
+
+  it('forces a fresh grant, which is the only way a refresh token comes back', async () => {
+    // Without these two, a returning user signs in fine and Token Vault gets an
+    // access token with nothing to renew it — and because Google will not
+    // reconsider a grant it already made, signing in again cannot fix it. The
+    // symptom is a loop between the gate and the consent screen.
+    await client.beginGoogleSignIn()
+
+    const params = loginWithRedirect.mock.calls[0]?.[0]?.authorizationParams as Record<
+      string,
+      unknown
+    >
+    expect(params.access_type).toBe('offline')
+    expect(params.prompt).toBe('consent')
   })
 })
 

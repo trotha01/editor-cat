@@ -136,18 +136,34 @@ export default async (request: Request): Promise<Response> => {
     let caller
     try {
       caller = await auth0User(token, { domain: ready.domain, audience: ready.audience })
-    } catch {
+    } catch (error) {
       // Auth0 did not answer. The question asked was whether this deployment can
       // reach Drive, and an unanswerable check is not evidence that it cannot.
+      console.warn(
+        `[google] Could not verify the caller: ${error instanceof Error ? error.message : String(error)}`,
+      )
       return json({ durable: true, connected: false })
     }
-    if (!caller) return json({ durable: true, connected: false })
+    if (!caller) {
+      // Logged because it is otherwise indistinguishable from a missing Google
+      // grant — same answer, same screen — and the two are fixed in completely
+      // different places. A rejected token is almost always AUTH0_AUDIENCE
+      // disagreeing with what the browser was built with.
+      console.warn(
+        '[google] Auth0 did not accept that token: check AUTH0_AUDIENCE and AUTH0_DOMAIN.',
+      )
+      return json({ durable: true, connected: false })
+    }
 
     try {
       await googleAccessToken(token, ready.vault)
       return json({ durable: true, connected: true })
     } catch (error) {
       if (error instanceof TokenVaultError && error.code === 'invalid_grant') {
+        // Ordinary enough not to be an error — consent withdrawn, or a grant
+        // Google made without a refresh token — but worth naming, because from
+        // the outside it looks identical to a token this deployment refused.
+        console.warn('[google] Token Vault holds no usable Google grant for this account.')
         return json({ durable: true, connected: false })
       }
       console.warn(

@@ -202,14 +202,29 @@ export async function adoptRedirect(): Promise<Account | null> {
   return await adoption
 }
 
-/** Sends the browser to Google, by way of Auth0. Nothing after this runs. */
+/**
+ * Sends the browser to Google, by way of Auth0. Nothing after this runs.
+ *
+ * Three parameters carry the whole feature, and Auth0 passes the last two
+ * through to Google untouched:
+ *
+ * - `connection_scope` is what makes this one screen rather than two: Google is
+ *   asked for Drive at the same time it is asked who this is.
+ * - `access_type=offline` is what asks for a refresh token at all.
+ * - `prompt=consent` is what makes Google issue one *again* for someone who has
+ *   already granted these scopes. A refresh token only comes back with a fresh
+ *   grant, so without it a returning user signs in successfully, Token Vault
+ *   receives an access token and nothing durable to renew it with, and the very
+ *   next Drive request fails — which reads as a sign-in loop, because signing in
+ *   again changes nothing Google is willing to reconsider.
+ */
 export async function beginGoogleSignIn(): Promise<void> {
   await auth0().loginWithRedirect({
     authorizationParams: {
       connection: GOOGLE_CONNECTION,
-      // What makes this one screen rather than two: Google is asked for Drive at
-      // the same time it is asked who this is.
       connection_scope: DRIVE_SCOPES,
+      access_type: 'offline',
+      prompt: 'consent',
       redirect_uri: window.location.origin,
     },
   })
