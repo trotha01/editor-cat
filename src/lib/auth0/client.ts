@@ -280,10 +280,12 @@ export async function connectDrive(loginHint?: string): Promise<void> {
     // naming it here too is what keeps the ask visible in the code that depends
     // on it.
     scopes: [...DRIVE_SCOPE_LIST],
-    authorizationParams: {
-      redirect_uri: window.location.origin,
-      ...(loginHint ? { login_hint: loginHint } : {}),
-    },
+    // Three naming conventions in one call, and they are the SDK's rather than
+    // ours: `redirectUri` camel and top-level, `authorization_params` snake,
+    // `login_hint` snake inside it. `loginWithRedirect` above spells the first
+    // two the other way round.
+    redirectUri: window.location.origin,
+    ...(loginHint ? { authorization_params: { login_hint: loginHint } } : {}),
   })
 }
 
