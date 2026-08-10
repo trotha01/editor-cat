@@ -94,8 +94,8 @@ export class StoreError extends Error {
  * Worth its own type because it is the one storage failure with a specific,
  * one-line fix, and because it is otherwise indistinguishable from Supabase
  * having a moment. Telling the two apart is the difference between a site that
- * says "run the migration" and one that says "not set up for sign-in" — the
- * second sends whoever deployed it to re-check variables that were fine.
+ * says "run the migration" and one that says "not set up for Google Drive" —
+ * the second sends whoever deployed it to re-check variables that were fine.
  */
 export class MissingTableError extends StoreError {
   constructor(status: number, summary: string, body: string) {

@@ -91,11 +91,12 @@ beforeEach(() => {
 })
 
 describe('status', () => {
-  it('answers a signed-out caller, because the sign-in screen asks before there is a session', () => {
+  it('answers a caller with no usable session, rather than refusing outright', () => {
     requireSession.mockResolvedValue(SIGNED_OUT)
 
-    // Signing in requests Drive at the same time, so the screen has to know
-    // whether this deployment supports that *before* anyone has a token.
+    // Whether this deployment can keep a Drive connection is not a fact about
+    // the caller, and a token that expired while a laptop slept must not turn
+    // it into "this site does not store connections" for the rest of the visit.
     return expect(call('status').then((r) => r.json())).resolves.toEqual({
       durable: true,
       connected: false,

@@ -14,12 +14,11 @@ export function isOauthCallback(): boolean {
 }
 
 /**
- * Where the answer arrives depends on what was asked for.
+ * The answer arrives in the query string, which is where a code response goes.
  *
- * A bare code request comes back in the query string. The hybrid request — the
- * one that also carries an ID token — comes back in the fragment, because an ID
- * token must never be put somewhere a server could log it. Both are read, so
- * neither flow needs to know which it is.
+ * The fragment is read too, and costs one line. Google puts nothing there for
+ * this flow, but a redirect that ever came back that way would otherwise look
+ * like a consent that returned nothing at all.
  */
 function responseParams(): URLSearchParams {
   const merged = new URLSearchParams(window.location.search)
@@ -44,13 +43,12 @@ export function completeOauthCallback(): void {
     source: CALLBACK_MESSAGE,
     state: value('state'),
     ...(value('code') ? { code: value('code') } : {}),
-    ...(value('id_token') ? { idToken: value('id_token') } : {}),
     ...(value('error') ? { error: value('error') } : {}),
   }
 
   // Taken out of the address bar as soon as it has been read. The window is
-  // about to close, but a blocked close would otherwise leave an ID token
-  // sitting in a visible URL and in this window's session history.
+  // about to close, but a blocked close would otherwise leave the code sitting
+  // in a visible URL and in this window's session history.
   window.history.replaceState({}, '', window.location.pathname)
 
   // Written before the close attempt rather than only as a fallback: a browser
@@ -58,7 +56,7 @@ export function completeOauthCallback(): void {
   // this is the one instruction that recovers every version of that — no
   // opener, a severed opener, or a close that did not happen.
   document.body.textContent =
-    'You can close this window and return to editor-cat to finish signing in.'
+    'You can close this window and return to editor-cat to finish connecting Google Drive.'
 
   if (!window.opener) return
 

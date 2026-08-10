@@ -43,19 +43,20 @@ describe('authorizationUrl', () => {
     expect(url().searchParams.get('state')).toBe('state-1')
   })
 
-  it('asks for an ID token alongside the code when a nonce is given', () => {
-    // The hybrid flow is what lets one consent screen cover both signing in and
-    // authorising Drive. Drop back to a bare code and sign-in would need a
-    // second trip to Google through a library that cannot ask for Drive.
-    const hybrid = url({ nonce: 'hashed-nonce' })
-
-    expect(hybrid.searchParams.get('response_type')).toBe('code id_token')
-    expect(hybrid.searchParams.get('nonce')).toBe('hashed-nonce')
+  it('passes the signed-in address as a hint, so Google skips the account picker', () => {
+    // Sign-in and Drive are two screens now that Netlify Identity owns the
+    // login. This is what keeps them from being two *questions*.
+    expect(url({ loginHint: 'someone@example.com' }).searchParams.get('login_hint')).toBe(
+      'someone@example.com',
+    )
   })
 
-  it('asks for a bare code when no ID token is wanted', () => {
+  it('asks for a bare code, never an ID token', () => {
+    // Nothing reads one any more: identity comes from Netlify Identity, and a
+    // token in the fragment would only be something else to keep out of a log.
     expect(url().searchParams.get('response_type')).toBe('code')
     expect(url().searchParams.has('nonce')).toBe(false)
+    expect(url().searchParams.has('login_hint')).toBe(false)
   })
 
   it('lets the caller widen the prompt, for picking an account at sign-in', () => {
@@ -138,13 +139,6 @@ describe('requestAuthorization', () => {
     await expect(pending).resolves.toEqual({ code: 'code-1' })
   })
 
-  it('returns the ID token beside the code when the hybrid flow answers', async () => {
-    const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE, nonce: 'hashed' })
-    reply({ state: 'state-1', code: 'code-1', idToken: 'eyJhbGciOi.signed' })
-
-    await expect(pending).resolves.toEqual({ code: 'code-1', idToken: 'eyJhbGciOi.signed' })
-  })
-
   it('treats a declined consent as a decision rather than a fault', async () => {
     const pending = requestAuthorization({ clientId: CLIENT_ID, scope: SCOPE })
     reply({ state: 'state-1', error: 'access_denied' })
@@ -211,10 +205,11 @@ describe('the callback window', () => {
     expect(close).toHaveBeenCalled()
   })
 
-  it('reads the hybrid answer out of the fragment, where the ID token arrives', () => {
-    // Google returns `code id_token` in the fragment rather than the query, so
-    // the ID token never reaches a server log on the way past.
-    window.history.replaceState({}, '', '/oauth/google#code=code-1&id_token=signed&state=state-1')
+  it('reads an answer out of the fragment too, wherever Google chose to put it', () => {
+    // The code flow answers in the query string. Reading the fragment as well
+    // costs one line and means a redirect that ever came back that way is not
+    // mistaken for a consent that returned nothing.
+    window.history.replaceState({}, '', '/oauth/google#code=code-1&state=state-1')
 
     const postMessage = vi.fn()
     vi.spyOn(window, 'close').mockImplementation(() => {})
@@ -226,7 +221,6 @@ describe('the callback window', () => {
       source: CALLBACK_MESSAGE,
       state: 'state-1',
       code: 'code-1',
-      idToken: 'signed',
     })
   })
 

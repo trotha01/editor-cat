@@ -1,17 +1,17 @@
 /**
  * Google Drive authorisation.
  *
- * There is one way in, and it is signing in: the consent screen at the gate asks
- * for identity and Drive together, a Netlify function exchanges the code it
- * returns for a refresh token and keeps that server-side, and this module asks
- * for a fresh access token whenever it needs one. See connection.ts and
- * `/api/google/*`.
+ * Granted at the step straight after signing in: a consent screen asks for
+ * Drive, a Netlify function exchanges the code it returns for a refresh token
+ * and keeps that server-side, and this module asks for a fresh access token
+ * whenever it needs one. See identity.ts, connection.ts and `/api/google/*`.
  *
- * This file used to carry a second path built on Google Identity Services, for
- * deployments with no server behind them. It is gone. GIS splits its two jobs
- * across libraries that cannot do each other's, so using it meant asking the user
- * for Google twice — once to sign in, once for Drive, from a button buried in
- * Settings. One prompt was worth more than the fallback.
+ * Drive is its own prompt because Netlify Identity owns sign-in now, and what an
+ * Identity login returns proves who someone is and nothing more — there is no
+ * way to ask it for a Drive scope on the way past. So the two consents are two
+ * screens: Google for the account, then Google again for the folder. The second
+ * is asked with the first one's email as a hint, so it does not also ask which
+ * account.
  *
  * The access token is held in memory, never in storage. It is the credential
  * Drive actually accepts, and it is cheap to replace; the refresh token, which is
@@ -45,18 +45,6 @@ import {
 export const DRIVE_SCOPE_LIST: readonly string[] = ['https://www.googleapis.com/auth/drive.file']
 
 export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
-
-/**
- * What signing in asks for: who you are, plus Drive.
- *
- * Asked together because they are one decision. Splitting them meant two trips to
- * Google and a backup that quietly did nothing until someone found the second
- * button — which is the whole reason this list exists.
- *
- * The Drive half can still be unticked on Google's own screen. That grant cannot
- * do anything, so it is dropped rather than stored, and the gate asks again.
- */
-export const SIGN_IN_SCOPES = ['openid', 'email', 'profile', ...DRIVE_SCOPE_LIST].join(' ')
 
 export function clientId(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() ?? ''

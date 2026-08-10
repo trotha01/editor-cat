@@ -1,24 +1,16 @@
 /**
- * One trip to Google, for whatever this app needs from it.
+ * The trip to Google that authorises Drive.
  *
- * Google's own browser library (GIS, see gis.ts) splits the two things apart:
- * `google.accounts.id` issues an ID token and cannot authorise Drive, while
- * `google.accounts.oauth2` authorises Drive and cannot issue an ID token. Using
- * both means two consent screens for what the user experiences as one decision.
+ * The plain OAuth endpoint rather than Google's own browser library: GIS offers
+ * only the implicit token flow, which issues no refresh token, so a connection
+ * made through it dies within the hour. Asking for `response_type=code` by hand
+ * is what makes a durable connection possible at all — the code goes to a
+ * Netlify function, which exchanges it for a refresh token it keeps.
  *
- * The plain OAuth endpoint has no such split. Asking for `response_type=code
- * id_token` — the OpenID Connect hybrid flow, which Google supports — returns
- * the ID token that proves who they are *and* the one-time code that becomes a
- * durable Drive connection, from a single screen. Signing in therefore grants
- * Drive as well, and Settings has no separate connection step.
- *
- * Doing it by hand is also what makes the code flow available at all: GIS only
- * offers the implicit token flow, which issues no refresh token, so a connection
- * made through it dies within the hour.
- *
- * A pop-up rather than a redirect because sign-in must not navigate away from an
- * open project mid-edit. A window of our own rather than an iframe because
- * Google refuses to render consent in one.
+ * A pop-up rather than a redirect because reconnecting Drive can happen from
+ * Settings with a project open, and it must not navigate away mid-edit. A window
+ * of our own rather than an iframe because Google refuses to render consent in
+ * one.
  */
 
 /**
@@ -44,8 +36,6 @@ export interface CallbackMessage {
   source: typeof CALLBACK_MESSAGE
   state: string
   code?: string
-  /** Present only when the request asked for one — see `AuthorizationRequest`. */
-  idToken?: string
   error?: string
 }
 
@@ -55,26 +45,28 @@ export function callbackUri(): string {
 
 export interface AuthorizationRequest {
   clientId: string
-  /** Space-delimited. Include `openid` to get an ID token back. */
+  /** Space-delimited. */
   scope: string
-  /**
-   * The hashed half of a sign-in nonce. Supplying it switches the request to the
-   * hybrid flow, so an ID token comes back beside the code.
-   */
-  nonce?: string
   /** Defaults to re-asking for consent. See below for why that matters. */
   prompt?: string
+  /**
+   * The address already signed in, so Google does not ask which account.
+   *
+   * Only a hint: someone with several accounts can still switch. It exists
+   * because this consent now follows a Netlify Identity sign-in that already
+   * settled the question, and asking it twice is the cost of splitting them.
+   */
+  loginHint?: string
 }
 
 export interface Authorization {
   code: string
-  idToken?: string
 }
 
 /**
  * The URL the consent pop-up opens.
  *
- * Three parameters carry the whole feature:
+ * Two parameters carry the whole feature:
  *
  * - `access_type=offline` is what asks for a refresh token at all.
  * - `prompt=consent` is what makes Google issue one *again* for someone who has
@@ -82,25 +74,19 @@ export interface Authorization {
  *   grant, so without this a returning user would connect successfully and still
  *   find themselves disconnected an hour later — the exact complaint this path
  *   exists to answer.
- * - `response_type=code id_token`, when a nonce is given, adds the ID token that
- *   Supabase turns into a session. That is what lets one screen cover both
- *   signing in and authorising Drive.
  */
 export function authorizationUrl(request: AuthorizationRequest, state: string): string {
   const params = new URLSearchParams({
     client_id: request.clientId,
     redirect_uri: callbackUri(),
-    response_type: request.nonce ? 'code id_token' : 'code',
+    response_type: 'code',
     scope: request.scope,
     access_type: 'offline',
     prompt: request.prompt ?? 'consent',
     include_granted_scopes: 'true',
     state,
   })
-  // Google signs the value straight into the ID token; Supabase re-hashes the
-  // raw half and compares, which is what stops a token lifted from elsewhere
-  // being replayed into a session here.
-  if (request.nonce) params.set('nonce', request.nonce)
+  if (request.loginHint) params.set('login_hint', request.loginHint)
   return `${AUTH_ENDPOINT}?${params.toString()}`
 }
 
@@ -158,7 +144,7 @@ export async function requestAuthorization(request: AuthorizationRequest): Promi
       finish(() => {
         popup.close()
         if (data.code) {
-          resolve({ code: data.code, ...(data.idToken ? { idToken: data.idToken } : {}) })
+          resolve({ code: data.code })
         } else if (data.error === 'access_denied') {
           reject(new ConsentDeclinedError('Google access was declined.'))
         } else {

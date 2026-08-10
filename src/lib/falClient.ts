@@ -16,7 +16,7 @@
  */
 import { ProviderError, providerErrorFrom } from './errors'
 import { isMockEnabled, mockFal } from './mock'
-import { currentAccessToken } from '../state/useAuthStore'
+import { supabaseAccessToken } from './supabase/session'
 
 const PROXY_BASE = '/api/fal'
 const QUEUE_ORIGIN = 'https://queue.fal.run'
@@ -64,7 +64,11 @@ export function toProxyPath(absoluteUrl: string): string {
 }
 
 async function falFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = currentAccessToken()
+  // Read per request rather than captured: a video job polls for minutes, and
+  // the session is renewed underneath it. Reading it fresh each time is what
+  // keeps a long job from failing halfway through on a token that was valid
+  // when it started.
+  const token = await supabaseAccessToken()
   const response = await fetch(path, {
     ...init,
     headers: {
