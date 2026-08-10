@@ -79,7 +79,8 @@ their initial login, they will be prompted for an additional factor").
 
 ```js
 new Auth0Client({
-  domain, clientId,
+  domain,
+  clientId,
   authorizationParams: { audience: 'https://editor-cat/api', redirect_uri: window.location.origin },
   cacheLocation: 'localstorage',
   useRefreshTokens: true,
@@ -141,7 +142,7 @@ Each of these was a real failure, in this order:
 4. `Unknown or invalid refresh token` — stale/rotated refresh token in
    localStorage after repeated failed exchanges.
 5. Google: `Access blocked: Authorization Error — Conflict params:
-   approval_prompt and prompt`, because the connection's
+approval_prompt and prompt`, because the connection's
    `upstream_params.approval_prompt=force` collided with the `prompt` the
    connect flow sends itself. Removing `approval_prompt` fixed it.
 
