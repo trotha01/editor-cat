@@ -35,8 +35,8 @@ afterEach(() => {
 
 describe('connectionStatus', () => {
   it('carries the Auth0 token, which is the subject of the exchange behind it', async () => {
-    // Not the minted Supabase session that every other endpoint takes: Auth0
-    // will only trade a token it issued itself.
+    // The access token, not the ID token Supabase is given: Auth0 will only
+    // trade a token it issued for this API itself.
     fetchMock.mockResolvedValue(answer({ durable: true, connected: true }))
 
     await expect(connectionStatus()).resolves.toEqual({ durable: true, connected: true })

@@ -29,7 +29,6 @@ import { loadConnectionStatus } from '../lib/google/gis'
 import { createFolder } from '../lib/google/drive'
 import { isPickerConfigured, pickFolder } from '../lib/google/picker'
 import { isAuth0Configured } from '../lib/auth0/client'
-import { sessionReadiness } from '../lib/supabase/session'
 import { toDisplayMessage } from '../lib/errors'
 import { requiresSignIn, useAuthStore } from '../state/useAuthStore'
 import { useDriveStore } from '../state/useDriveStore'
@@ -192,40 +191,34 @@ function Panel({ title, lead, children }: { title: string; lead: string; childre
 }
 
 /**
- * Why this deployment cannot sign anyone in. `null` until the checks answer.
+ * Why this deployment cannot sign anyone in.
  *
- * Two halves have to be in place and they fail for unrelated reasons, so they
- * are reported separately: the bundle has to have been built with Auth0
- * settings, and this site has to be able to turn an Auth0 login into a Supabase
- * session.
+ * This used to be a question for the server, asked over `GET /api/session`
+ * before the button was drawn, because the half that could be missing was a
+ * signing secret only the functions could see. There is no such secret now —
+ * Supabase validates the Auth0 token itself — and with it went the only reason
+ * to ask anyone anything. What is left is `VITE_AUTH0_*`, which is compiled into
+ * this bundle, so the check is a function call and the answer is available on
+ * the first render rather than a round trip later.
+ *
+ * The Supabase half needs no check here at all: `requiresSignIn` is what puts
+ * this screen on the page, and it is false without a project URL and anon key.
+ * A deployment missing those does not show a broken sign-in, it opens the editor
+ * in local-only mode, which is a different screen and the right one.
+ *
+ * What genuinely cannot be checked from here is whether the Supabase project has
+ * Auth0 registered as a third-party auth provider, and whether the tenant's
+ * Login Action sets `role: authenticated`. Both live in dashboards, neither is
+ * visible to a browser before a token exists, and getting either wrong shows up
+ * as an empty project list rather than a refused sign-in. The README says so
+ * next to the steps.
  */
-type SignInReadiness = 'ready' | 'no-auth0' | 'no-session' | 'session-unreachable' | null
-
-function SignInProblem({ problem }: { problem: Exclude<SignInReadiness, 'ready' | null> }) {
-  if (problem === 'no-auth0') {
-    return (
-      <Callout tone="error" title="This site is not set up for sign-in">
-        It was built without <code>VITE_AUTH0_DOMAIN</code>, <code>VITE_AUTH0_CLIENT_ID</code> and{' '}
-        <code>VITE_AUTH0_AUDIENCE</code>, so there is no tenant to sign in against. Nothing you can
-        fix from here.
-      </Callout>
-    )
-  }
-
-  if (problem === 'no-session') {
-    return (
-      <Callout tone="error" title="This site is not finished being set up">
-        It can sign you in, but it cannot turn that into a session for your projects, because{' '}
-        <code>SUPABASE_JWT_SECRET</code> is not set in the site environment. Nothing you can fix
-        from here.
-      </Callout>
-    )
-  }
-
+function SignInProblem() {
   return (
-    <Callout tone="error" title="Cannot reach this site's server">
-      Signing in needs an answer from it, and it did not give one. This is usually temporary —
-      reload to try again.
+    <Callout tone="error" title="This site is not set up for sign-in">
+      It was built without <code>VITE_AUTH0_DOMAIN</code>, <code>VITE_AUTH0_CLIENT_ID</code> and{' '}
+      <code>VITE_AUTH0_AUDIENCE</code>, so there is no tenant to sign in against. Nothing you can
+      fix from here.
     </Callout>
   )
 }
@@ -233,29 +226,6 @@ function SignInProblem({ problem }: { problem: Exclude<SignInReadiness, 'ready' 
 function SignInScreen() {
   const signIn = useAuthStore((state) => state.signIn)
   const error = useAuthStore((state) => state.error)
-
-  const [readiness, setReadiness] = useState<SignInReadiness>(null)
-
-  // Settled before the button is drawn: better to say a site cannot sign anyone
-  // in than to send someone out to Google and fail them on the way back.
-  useEffect(() => {
-    let cancelled = false
-
-    void (async () => {
-      const session = await sessionReadiness()
-      if (cancelled) return
-
-      // Auth0 first: without it there is nothing to sign in with, however well
-      // the Supabase half is configured.
-      if (!isAuth0Configured()) setReadiness('no-auth0')
-      else if (session.ready) setReadiness('ready')
-      else setReadiness(session.problem === 'unreachable' ? 'session-unreachable' : 'no-session')
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   return (
     <Panel
@@ -268,12 +238,10 @@ function SignInScreen() {
         </Callout>
       ) : null}
 
-      {readiness === null ? (
-        <Spinner />
-      ) : readiness === 'ready' ? (
+      {isAuth0Configured() ? (
         <GoogleButton onClick={signIn} label="Sign in with Google" />
       ) : (
-        <SignInProblem problem={readiness} />
+        <SignInProblem />
       )}
 
       <p className="text-xs leading-relaxed text-ink-dim">

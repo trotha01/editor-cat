@@ -4,8 +4,9 @@
  * Auth0 is this site's account system and Google is the only way into it — a
  * social connection configured in the Auth0 dashboard, so the Google client id
  * and secret live there rather than in this repository. What the browser gets
- * back is an Auth0 access token, which `/api/session` trades for the Supabase
- * session the rest of the app carries (see ../supabase/session.ts).
+ * back is an Auth0 session, and it is now the whole of the app's identity:
+ * `/api/*` takes its access token, and Supabase — which registers this tenant as
+ * a third-party auth provider — takes its ID token (see ../supabase/session.ts).
  *
  * Two asks, and the second one is the whole point. `beginGoogleSignIn`
  * establishes the account; `connectDrive` asks Google for the folder afterwards.
@@ -57,7 +58,7 @@ export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
 export interface Auth0Config {
   domain: string
   clientId: string
-  /** The API the access token is minted for — the one `/api/session` verifies. */
+  /** The API the access token is minted for — the one `/api/fal/*` verifies. */
   audience: string
 }
 
@@ -308,12 +309,41 @@ export function currentAccount(): Account | null {
 /**
  * A usable Auth0 access token, refreshed if it is close to expiring.
  *
- * Only `/api/session` is ever shown this. Everything else carries the Supabase
- * session minted from it.
+ * This is the token for `VITE_AUTH0_AUDIENCE` — this site's own API — and it is
+ * what every call to `/api/*` carries: `/api/fal/*` verifies it against the
+ * tenant's published keys (netlify/lib/auth.ts), and `/api/google/*` hands it
+ * straight to Token Vault as the subject of the exchange. Supabase gets the ID
+ * token instead; see `auth0IdToken` below for why they cannot be the same one.
  */
 export async function auth0Token(): Promise<string | null> {
   if (!currentAccount()) return null
   return await auth0().getTokenSilently()
+}
+
+/**
+ * The raw ID token, which is the one Supabase accepts.
+ *
+ * PostgREST switches to the Postgres role named in the JWT's `role` claim, and
+ * `authenticated` is what the row-level security policies are written against —
+ * so a token without it reads the tables as `anon` and RLS refuses everything.
+ * That claim has to be put there by an Auth0 Login Action, and Auth0 will only
+ * carry it on the ID token: it silently strips custom claims from *access*
+ * tokens unless they are namespaced, and a namespaced `role` is not the claim
+ * PostgREST reads. Supabase's own Auth0 guide says the same thing and passes the
+ * ID token for exactly this reason. See the README for the Action.
+ *
+ * `getTokenSilently` first, and not for the value it returns. `getIdTokenClaims`
+ * is a synchronous read of the SDK's cache dressed as a promise; the refresh is
+ * what puts a current entry there, since Auth0 returns a fresh `id_token`
+ * alongside every refreshed access token. Without it a tab left open past the ID
+ * token's lifetime would go on handing PostgREST an expired credential — and
+ * refusing to refresh is also how an exhausted refresh token announces itself,
+ * which is the throw the caller turns into "sign in again".
+ */
+export async function auth0IdToken(): Promise<string | null> {
+  if (!currentAccount()) return null
+  await auth0().getTokenSilently()
+  return (await auth0().getIdTokenClaims())?.__raw ?? null
 }
 
 export async function auth0SignOut(): Promise<void> {

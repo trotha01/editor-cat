@@ -36,6 +36,10 @@ describe('netlify/functions directory', () => {
     // A test or helper here is not just badly named — it also ships as a live
     // endpoint, which is not something to do by accident.
     const names = entries.map((entry) => entry.name).sort()
-    expect(names).toEqual(['elevenlabs.ts', 'fal.ts', 'google.ts', 'media.ts', 'session.ts'])
+    // `session.ts` was here until Supabase started trusting Auth0 directly. It
+    // minted the Supabase session the browser used to carry; with nothing to
+    // mint, keeping it would deploy an endpoint whose only remaining effect
+    // would be to hand out a credential nothing accepts.
+    expect(names).toEqual(['elevenlabs.ts', 'fal.ts', 'google.ts', 'media.ts'])
   })
 })

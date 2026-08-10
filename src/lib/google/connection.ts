@@ -6,8 +6,8 @@
  * nothing durable lives on the function's side either any more — the Google
  * refresh token is Auth0's, and neither half of this app ever sees it.
  *
- * Authorised with the *Auth0* token rather than the minted Supabase session that
- * every other endpoint here takes. That token is the subject of the exchange, so
+ * Authorised with the Auth0 access token — the same one `/api/fal/*` takes, and
+ * not the ID token Supabase gets. That token is the subject of the exchange, so
  * it is the one thing that will do: see netlify/functions/google.ts.
  *
  * A deployment that has not been set up for this answers `durable: false` and

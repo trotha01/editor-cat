@@ -209,6 +209,35 @@ describe('auth0User', () => {
     await expect(auth0User(token, CONFIG)).resolves.toMatchObject({ id: 'auth0|42' })
   })
 
+  it('will not refetch again straight away for another key it has not seen', async () => {
+    // The refetch above is triggered by a `kid` read out of an unverified
+    // header, on a request that need not carry a usable token at all — and
+    // `/api/fal/*` is reachable by anyone with the URL. Ungoverned, a loop of
+    // tokens naming random key ids is a loop of requests to Auth0's JWKS
+    // endpoint; it answers 429, this module starts raising, and the people with
+    // real tokens get 502s. So the second unknown id inside the window is
+    // answered from cache and simply refused.
+    await auth0User(await sign(validClaims()), CONFIG)
+    jwksFetches = 0
+
+    for (const kid of ['nope-1', 'nope-2', 'nope-3', 'nope-4']) {
+      await expect(auth0User(await sign(validClaims(), { kid }), CONFIG)).resolves.toBeNull()
+    }
+
+    expect(jwksFetches).toBe(1)
+  })
+
+  it('refuses a token whose signature is not base64url, rather than raising', async () => {
+    // A throw would leave here as "the tenant could not be reached" and answer
+    // 502, telling someone to wait out an outage over a token that is merely
+    // malformed. It must not reach the JWKS endpoint either.
+    jwksFetches = 0
+    const [header, payload] = (await sign(validClaims())).split('.')
+
+    await expect(auth0User(`${header}.${payload}.@@@@`, CONFIG)).resolves.toBeNull()
+    expect(jwksFetches).toBe(0)
+  })
+
   it('says the tenant is unreachable rather than that the token is bad', async () => {
     // Merging the two would tell someone to sign in again during an outage that
     // signing in again cannot fix.

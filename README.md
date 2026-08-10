@@ -132,22 +132,25 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    dashboard's **SQL editor**, or `supabase db push` with the CLI. `0001` creates
    the projects and assets tables with row-level security, so a user can only
    ever read and write rows on their own account. `0002` adds the table that
-   holds Google refresh tokens, which no browser can read at all — Drive does
-   not work without it, so it is not optional. `0003` drops the foreign keys
-   that pointed at `auth.users`, which an external account has no row in;
-   without it every insert fails on a constraint.
+   held Google refresh tokens, and `0004` drops it again, now that Auth0's Token
+   Vault holds them instead. `0003` drops the foreign keys that pointed at
+   `auth.users`, which an external account has no row in; without it every insert
+   fails on a constraint. `0006` changes `user_id` from `uuid` to `text` and
+   moves the policies onto `auth.jwt() ->> 'sub'`, because Auth0 subjects are not
+   UUIDs — see [migrating an existing project](#migrating-an-existing-project).
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
-   What Supabase needs instead is its signing secret, under **Project settings →
-   API → JWT keys**, set as `SUPABASE_JWT_SECRET` in the site environment. See
+   What Supabase needs instead is Auth0 registered as a third-party auth
+   provider, and one Auth0 Action. Both are dashboard work, neither can be done
+   from this repository, and nothing saves until they are: see
    [what sign-in needs](#what-sign-in-needs).
 4. Copy the project URL and anon key from **Project settings → API** into `.env`
    (and into Netlify's environment variables), then redeploy.
 
-Row-level security is still what protects the data, and the policies are
-untouched: `/api/session` signs a Supabase-shaped session carrying the Netlify
-Identity user id, so `auth.uid()` resolves exactly as it did before. This is the
-same shape as Supabase's own third-party auth integrations — the external
-provider stays the identity, and Postgres stays the thing that guards the rows.
+Row-level security is still what protects the data. What changed under it is
+whose token PostgREST is reading: the browser now hands over the Auth0 ID token
+unaltered, PostgREST validates it against the tenant's published keys, and the
+policies compare `auth.jwt() ->> 'sub'` against the row. Nothing in this
+repository signs anything any more.
 
 ### Which build is deployed
 
@@ -357,8 +360,11 @@ there to stay reachable under `drive.file`.
 
 Optionally, add an Auth0 **Action** that puts the address into the access token
 as `https://editor-cat/email`. Nothing depends on it — the browser reads the
-address from its own ID token — but without it the minted Supabase session
-carries an empty `email` claim.
+address from its own ID token — but without it `netlify/lib/auth0.ts` sees an
+empty `email` for the caller, which is only ever read for logging. Namespaced
+because Auth0 drops unnamespaced custom claims from access tokens; the `role`
+claim Supabase needs is subject to the same rule, which is why it goes on the ID
+token instead. See [what sign-in needs](#what-sign-in-needs).
 
 ### Deploy previews
 
@@ -387,39 +393,113 @@ use the subdomain URLs.
 
 ### What sign-in needs
 
-Beyond the Auth0 setup above, one secret and one project URL, both **scoped to
-Functions** — they are read at request time, not at build time. Marking a
-`VITE_` variable secret makes secrets scanning fail the build, so mark only
-these.
+Beyond the Auth0 setup above, **four steps that can only be done by hand**, in
+two dashboards. None of them is in this repository, and the deploy does not work
+without any of them. Do them before you deploy, or a sign-in succeeds and every
+query afterwards comes back empty.
+
+**1. Register Auth0 on the Supabase project.** Supabase dashboard →
+**Authentication → Third-Party Auth → Add integration → Auth0**, and give it your
+tenant ID (and region, where the dashboard asks for one). That is what tells
+PostgREST to fetch `https://<tenant>/.well-known/jwks.json` and accept tokens it
+can verify against those keys. With the CLI it is the same thing in
+`supabase/config.toml`:
+
+```toml
+[auth.third_party.auth0]
+enabled = true
+tenant = "<id>"
+tenant_region = "<region>"   # where applicable
+```
+
+**2. Add an Auth0 Login Action setting the role claim.** Auth0 → **Actions →
+Triggers → post-login**, a new action containing exactly this:
+
+```js
+exports.onExecutePostLogin = async (event, api) => {
+  api.idToken.setCustomClaim('role', 'authenticated')
+}
+```
+
+Then drag it into the Login flow and deploy it. PostgREST switches to the
+Postgres role named in the token's `role` claim, and `authenticated` is the role
+the policies are written against; without the claim it reads the tables as `anon`
+instead.
+
+> **`idToken`, not `accessToken` — and this is the reason the browser sends
+> Supabase the ID token.** Supabase's Auth0 guide is explicit: "Auth0 silently
+> strips non-namespaced custom claims from access tokens, so
+> `api.accessToken.setCustomClaim('role', 'authenticated')` does not work. Use
+> `api.idToken.setCustomClaim` and pass the ID token to Supabase." A namespaced
+> claim would survive the access token, but `https://example.com/role` is not the
+> claim PostgREST reads. So the ID token is the only one of Auth0's two tokens
+> that can carry it, and `src/lib/auth0/client.ts` has one accessor for each:
+> `auth0IdToken()` for Supabase, `auth0Token()` for this site's own functions.
+> Checked against Supabase's documentation on 2026-08-10.
+
+**3. Make sure the access token's `aud` includes `VITE_AUTH0_AUDIENCE`.** This is
+the API identifier from Auth0 → **Applications → APIs**, and the SPA already asks
+for it — `authorizationParams.audience` in `src/lib/auth0/client.ts`. It is what
+`/api/fal/*` checks before attaching the fal key, so a token minted for some
+other API of the same tenant is refused even though the signature is good. If the
+audience is wrong or absent, sign-in works, saving works, and generation answers 401.
+
+**4. Remove `SUPABASE_JWT_SECRET` from the Netlify environment.** Nothing reads
+it. It is a credential that can mint a session as anybody, and leaving it set
+keeps that risk for no benefit.
+
+One secret is still needed, **scoped to Functions** — read at request time, not
+at build time. Marking a `VITE_` variable secret makes secrets scanning fail the
+build, so mark only this one:
 
 ```
-SUPABASE_JWT_SECRET=             # Supabase → Project settings → API → JWT keys
 AUTH0_BACKEND_CLIENT_SECRET=     # the API's Custom API Client
 ```
 
-Run the migrations in `supabase/migrations/` in order. `0004_auth0.sql` drops the
-`google_connections` table, which nothing writes to any more.
+#### Migrating an existing project
 
-**Why a signing secret.** Auth0 says who someone is. Supabase will not take its
-word for it: row-level security reads `auth.uid()` out of a JWT signed with the
-project's own key, and an Auth0 token presented to PostgREST is simply rejected.
-So `/api/session` verifies the Auth0 token and signs a Supabase-shaped one
-carrying the same user id. RLS stays the security boundary, and every query in
-`src/lib/supabase/*` is untouched — the same shape as Supabase's own third-party
-auth integrations.
+Run the files in `supabase/migrations/` in order, but check which have actually
+been applied first — this project's history is not a clean run. On the live
+project (`dxfxvvrbltjckstlnhup`) only `0005_project_drive_folder.sql` has been
+applied; **`0003`, `0004` and `0006` are outstanding**. All three need running.
+The order between them does not matter: `0004` only drops a table, and `0006`
+repeats `0003`'s two `drop constraint if exists` statements rather than assuming
+`0003` has run — it has to, because `alter column ... type` rebuilds any foreign
+key on the column, and a text column referencing `auth.users (id)` cannot be
+rebuilt at all.
+
+`0006_auth0_subject_ids.sql` is numbered around `0005` deliberately: `0005`
+belongs to an open pull request that adds a `drive_folder_id` column and was
+applied to the live project ahead of merging. Numbering the two independently
+means neither branch has to be renumbered whichever lands first. There is no
+missing `0005` in this branch.
+
+**`0006` makes existing rows unreachable.** `auth.uid()` is
+`(request.jwt.claims ->> 'sub')::uuid`, and Auth0 subjects — `google-oauth2|104372…`
+— are not UUIDs, so the columns become `text` and the policies compare
+`auth.jwt() ->> 'sub'` instead. Rows written under the old UUID user ids are not
+deleted; they simply stop matching any policy, and the account they belonged to
+sees an empty project list. If you have data worth keeping, build the mapping
+from old `user_id` to Auth0 `sub` **before** running it — the file itself carries
+the `update` statements and the warning about ids that map to two accounts.
+
+**Why no signing secret any more.** Supabase used to reject Auth0's tokens
+outright, so `/api/session` verified one and signed a Supabase-shaped replacement
+with the project's own key. That whole endpoint is gone. Registering Auth0 as a
+third-party provider is the supported version of what the mint was imitating, and
+it removes both a credential and a hop.
 
 **No round trip to verify.** Auth0 signs with RS256 and publishes the public
 half, so `netlify/lib/auth0.ts` checks a token without leaving the process —
-signature, issuer, audience and expiry, with the signing keys cached and
-refetched once on an unrecognised key id. Netlify Identity could not be verified
-locally at all, so this is one hop cheaper than what it replaced.
+signature, issuer, audience and expiry, with the signing keys cached for an hour
+and refetched once on an unrecognised key id. That is what lets `/api/fal/*`
+verify every status poll of a minutes-long video job without calling the tenant
+each time.
 
 **Where the Drive token comes from.** Auth0's Token Vault holds the Google
 tokens. `/api/google/token` exchanges the caller's Auth0 token for a Google one
 (`netlify/lib/tokenVault.ts`), so Google's refresh token never reaches this
-codebase — there is none here to leak, and no table to back up or lose. That
-endpoint is the one place that takes the Auth0 token rather than the minted
-Supabase session, because the Auth0 token is the subject of the exchange.
+codebase — there is none here to leak, and no table to back up or lose.
 
 ### One scope, and why
 
@@ -463,13 +543,14 @@ contexts** — scoped to production only, every deploy preview answers 503. No
 `VITE_` prefix: that would inline it into the browser bundle and publish it.
 
 Then decide who is allowed to spend it. `/api/fal/*` generates video on your
-account, so it verifies the caller's session before attaching the key:
+account, so it verifies the caller's Auth0 access token before attaching the key:
 
-- **`SUPABASE_JWT_SECRET`** is what it verifies against — the same secret
-  `/api/session` signs with, so a session it minted is the only thing the proxy
-  accepts. Verification is local, with no round trip per request, which matters
-  because a single video job polls for minutes.
-- **Without it the proxy refuses every request** rather than running open.
+- **`AUTH0_DOMAIN` and `AUTH0_AUDIENCE`** are what it verifies against — the
+  tenant whose published keys must have signed the token, and the API identifier
+  its `aud` must include. Both fall back to their `VITE_` forms, which name the
+  same tenant and API. Verification is local, with no round trip per request,
+  which matters because a single video job polls for minutes.
+- **Without either the proxy refuses every request** rather than running open.
   `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`; setting
   it on a deployed site hands your fal credits to anyone who finds the URL.
   Netlify's own password protection or access controls are worth adding on top
@@ -479,28 +560,29 @@ The `VITE_AUTH0_*` and `VITE_SUPABASE_*` variables are build-time
 and not secret — the anon key is protected by row-level security, and the client
 ID by origin allowlisting.
 
-Three are **required if you want anyone to be able to sign in and save**:
-**`SUPABASE_JWT_SECRET`** and **`AUTH0_BACKEND_CLIENT_SECRET`**. See [what
-sign-in needs](#what-sign-in-needs).
+**`AUTH0_BACKEND_CLIENT_SECRET`** is what is required if you want anyone to be
+able to sign in and save, alongside the dashboard steps in [what sign-in
+needs](#what-sign-in-needs).
 
 ## How it fits together
 
 ```
 Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pass-through)
-  Settings  — one key, in memory or local          /api/session      → .netlify/identity
-  Generate  — images, then image → video             verifies the Identity token once,
-  Library   — blobs in IndexedDB                     signs the hour-long Supabase session
-  Timeline  — picture + audio + caption lanes      /api/fal/*        → queue.fal.run
-  Captions  — words with their own timings           session verified, site's key attached
-  Speech    — audio decoded here, Scribe there     /api/elevenlabs/* → api.elevenlabs.io
-  Sign-in   — Auth0 (auth0-spa-js)                   the caller's own key, forwarded once
-  Projects  — timelines in Supabase (no media)     /api/media        → streams provider media
-  Drive     — media in your own Drive              /api/google/*     → oauth2.googleapis.com
-  Preview   — custom player over <video>             holds the refresh token, mints
-  Export    — ffmpeg.wasm → MP4, captions burnt in   an access token per request
+  Settings  — one key, in memory or local          /api/fal/*        → queue.fal.run
+  Generate  — images, then image → video             Auth0 token verified locally,
+  Library   — blobs in IndexedDB                     site's key attached
+  Timeline  — picture + audio + caption lanes      /api/elevenlabs/* → api.elevenlabs.io
+  Captions  — words with their own timings           the caller's own key, forwarded once
+  Speech    — audio decoded here, Scribe there     /api/media        → streams provider media
+  Sign-in   — Auth0 (auth0-spa-js)                 /api/google/*     → oauth2.googleapis.com
+  Projects  — timelines in Supabase (no media)       exchanges the caller's Auth0 token
+  Drive     — media in your own Drive                through Token Vault for a Google one
+  Preview   — custom player over <video>
+  Export    — ffmpeg.wasm → MP4, captions burnt in
 
                                                  Supabase and Drive themselves talk to the
-                                                 browser directly, not through us.
+                                                 browser directly, not through us — Supabase
+                                                 trusts the Auth0 token on its own.
 ```
 
 A few decisions worth knowing about:
@@ -964,11 +1046,12 @@ Several exist because the bug they guard against is invisible until you close
 the tab or lose a token. `src/state/useAuthStore.test.ts` restores a sign-in
 against a mocked Auth0 client, since persisting the session is auth0-spa-js's
 job rather than ours.
-`src/lib/supabase/session.test.ts` holds the caching that keeps every Supabase
-query from minting a session of its own, and keeps "your session lapsed" apart
-from "this site was never finished". `netlify/lib/supabaseToken.test.ts` mints a
-token and feeds it to the real `requireSession`, because a token nobody accepts
-looks exactly like a user who is not signed in.
+`src/lib/supabase/session.test.ts` pins which of Auth0's two tokens PostgREST is
+handed, because sending the wrong one does not fail loudly — it verifies, reads
+as `anon`, and returns an empty project list. `netlify/lib/auth.test.ts` signs
+real RS256 tokens with a real key pair and feeds them to the real
+`requireSession`, because a token nobody accepts looks exactly like a user who is
+not signed in, and one accepted too readily looks like nothing at all.
 `src/lib/google/oauthPopup.test.ts` and `identity.test.ts` pin the parameters
 the Drive grant rests on — `access_type=offline` and `prompt=consent` for a
 refresh token that outlives the tab, `login_hint` so the second consent screen
