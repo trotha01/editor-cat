@@ -90,7 +90,7 @@ export default function App() {
         </span>
         <h1 className="text-sm font-semibold">editor-cat</h1>
 
-        <ProjectPicker />
+        <ProjectPicker onOpenSettings={() => setSettingsOpen(true)} />
 
         <SyncStatus />
 
