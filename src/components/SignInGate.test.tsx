@@ -32,6 +32,7 @@ const driveState = {
   error: null as string | null,
   folder: null as { id: string; name: string } | null,
   restore: vi.fn(async () => {}),
+  connect: vi.fn(),
   setFolder: vi.fn(),
   forget: vi.fn(),
 }
@@ -146,29 +147,32 @@ describe('the gate', () => {
   })
 
   it('holds a signed-in visitor who has no Drive connection', async () => {
-    // Netlify Identity signs someone in and grants nothing else, so this is the
-    // ordinary path rather than an edge case. Letting them through would mean an
-    // editor that quietly saves nothing.
+    // The ordinary path rather than an edge case: a login establishes the
+    // account and stocks Token Vault with nothing, so every new user arrives
+    // here. Letting them through would mean an editor that quietly saves
+    // nothing.
     authState.status = 'signed-in'
     authState.account = { id: 'user_1', email: 'someone@example.com' }
 
     mount()
 
-    expect(await screen.findByRole('button', { name: /sign in again/i })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /allow google drive/i })).toBeInTheDocument()
     expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
   })
 
-  it('sends someone missing the scope back through sign-in, not a second consent', async () => {
-    // There is no second consent to offer any more. The scope rides on the Auth0
-    // login, so the only way to obtain it is the login that carries it.
+  it('asks for the grant without disturbing the session', async () => {
+    // The connect flow, not a fresh login. What is missing is a permission, and
+    // signing the user out to collect it would cost them their session to fix
+    // something the session was never the problem with.
     authState.status = 'signed-in'
     authState.account = { id: 'user_1', email: 'someone@example.com' }
 
     mount()
-    ;(await screen.findByRole('button', { name: /sign in again/i })).click()
+    ;(await screen.findByRole('button', { name: /allow google drive/i })).click()
 
-    await waitFor(() => expect(driveState.forget).toHaveBeenCalled())
-    await waitFor(() => expect(authState.signOut).toHaveBeenCalled())
+    await waitFor(() => expect(driveState.connect).toHaveBeenCalled())
+    expect(authState.signOut).not.toHaveBeenCalled()
+    expect(driveState.forget).not.toHaveBeenCalled()
   })
 
   /**

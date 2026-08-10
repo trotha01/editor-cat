@@ -92,7 +92,6 @@ describe('the two halves that read it', () => {
   })
 
   it('agree that a deployment with no project at all is not configured', async () => {
-
     const session = await requireSession(new Request('https://x.test/api/google/connect'))
     expect(session.ok).toBe(false)
     if (session.ok) return

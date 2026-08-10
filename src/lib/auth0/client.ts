@@ -1,5 +1,5 @@
 /**
- * Signing in with Auth0, which is also what authorises Drive.
+ * Signing in with Auth0, and asking it to hold the Drive grant.
  *
  * Auth0 is this site's account system and Google is the only way into it — a
  * social connection configured in the Auth0 dashboard, so the Google client id
@@ -7,12 +7,18 @@
  * back is an Auth0 access token, which `/api/session` trades for the Supabase
  * session the rest of the app carries (see ../supabase/session.ts).
  *
- * One screen, not two. The authorisation request names Drive as a
- * `connection_scope`, so the consent Google shows covers the account *and* the
- * folder, and Auth0 keeps the tokens that come back. Netlify Identity could not
- * do that — its login proved who someone was and nothing more, which is why
- * Drive used to be a second prompt — and getting back to one screen is most of
- * why this app is on Auth0 at all.
+ * Two asks, and the second one is the whole point. `beginGoogleSignIn`
+ * establishes the account; `connectDrive` asks Google for the folder afterwards.
+ * They are separate because of where Auth0 files what comes back: a login writes
+ * the provider's tokens against the user's *identity*, and Token Vault — which
+ * is what the functions exchange against — reads `connected_accounts`, a store
+ * nothing but the connect flow fills. A login carrying `connection_scope` is
+ * therefore not one screen saved but one grant wasted.
+ *
+ * Cheaper than it sounds, all the same. The address is known by the time the
+ * second ask runs, so `login_hint` turns it into a single approval rather than
+ * another choice of account — the same trick the old Netlify Identity flow
+ * needed, for a different reason.
  *
  * A full-page redirect rather than a pop-up. There is no project open behind the
  * sign-in screen to navigate away from, and unlike Netlify Identity, Auth0

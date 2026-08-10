@@ -14,6 +14,7 @@ const getUser = vi.fn()
 const getTokenSilently = vi.fn()
 const handleRedirectCallback = vi.fn()
 const loginWithRedirect = vi.fn()
+const connectAccountWithRedirect = vi.fn()
 const logout = vi.fn()
 
 vi.mock('@auth0/auth0-spa-js', () => ({
@@ -22,6 +23,7 @@ vi.mock('@auth0/auth0-spa-js', () => ({
     getTokenSilently = getTokenSilently
     handleRedirectCallback = handleRedirectCallback
     loginWithRedirect = loginWithRedirect
+    connectAccountWithRedirect = connectAccountWithRedirect
     logout = logout
   },
 }))
@@ -129,18 +131,31 @@ describe('adoptRedirect', () => {
 })
 
 describe('beginGoogleSignIn', () => {
-  it('asks Google for Drive in the same breath as the account', async () => {
-    // What makes this one screen rather than two, and the whole reason the app
-    // is on Auth0 rather than Netlify Identity.
+  it('asks for the account and nothing else', async () => {
+    // Deliberately not `connection_scope`. A login files Google's tokens against
+    // the user's *identity*, and Token Vault reads `connected_accounts` — so a
+    // Drive scope asked for here is approved into a store the exchange cannot
+    // read, and costs a consent screen to do it. `connectDrive` is what stocks
+    // the vault.
     await client.beginGoogleSignIn()
 
     expect(loginWithRedirect).toHaveBeenCalledWith({
       authorizationParams: {
         connection: 'google-oauth2',
-        connection_scope: 'https://www.googleapis.com/auth/drive.file',
         redirect_uri: window.location.origin,
       },
     })
+  })
+
+  it('never asks for a Drive scope on the login', async () => {
+    await client.beginGoogleSignIn()
+
+    const params = loginWithRedirect.mock.calls[0]?.[0]?.authorizationParams as Record<
+      string,
+      unknown
+    >
+    expect(params.connection_scope).toBeUndefined()
+    expect(JSON.stringify(params)).not.toContain('drive')
   })
 
   it('never sends `prompt`, which Auth0 answers itself', async () => {
@@ -157,6 +172,48 @@ describe('beginGoogleSignIn', () => {
     >
     expect(params.prompt).toBeUndefined()
     expect(params.access_type).toBeUndefined()
+  })
+})
+
+describe('connectDrive', () => {
+  it('asks the My Account API for the Drive scope, on the SDK’s own spelling', async () => {
+    // `redirectUri` camel and top-level, `authorization_params` snake, and
+    // `login_hint` snake inside it — the connect flow's option names differ from
+    // `loginWithRedirect`'s, and getting one wrong fails silently as a consent
+    // screen that asks which account again.
+    await client.connectDrive('someone@example.com')
+
+    expect(connectAccountWithRedirect).toHaveBeenCalledWith({
+      connection: 'google-oauth2',
+      scopes: ['https://www.googleapis.com/auth/drive.file'],
+      redirectUri: window.location.origin,
+      authorization_params: { login_hint: 'someone@example.com' },
+    })
+  })
+
+  it('omits the hint rather than sending an empty one when the address is unknown', async () => {
+    // `login_hint: ''` is not the same as no hint: Google reads it as an account
+    // to preselect and finds none.
+    await client.connectDrive()
+
+    const options = connectAccountWithRedirect.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(options.authorization_params).toBeUndefined()
+    expect(options.scopes).toEqual(['https://www.googleapis.com/auth/drive.file'])
+  })
+})
+
+describe('adoptRedirect on a finished Drive grant', () => {
+  it('recognises `connect_code` and hands it to the same callback', async () => {
+    // The connect flow comes back with `connect_code` rather than `code`. The
+    // SDK sorts the two out by the transaction it stored, so this only has to
+    // recognise it — but a callback that did not would leave the grant
+    // uncollected and the address bar carrying a spent code.
+    window.history.replaceState({}, '', '/?connect_code=abc&state=xyz')
+
+    await expect(client.adoptRedirect()).resolves.toEqual(ACCOUNT)
+
+    expect(handleRedirectCallback).toHaveBeenCalledOnce()
+    expect(window.location.search).toBe('')
   })
 })
 
