@@ -111,6 +111,21 @@ describe('status', () => {
     })
   })
 
+  it('calls a missing federated grant consent, whatever Auth0 named it', async () => {
+    // Auth0 says this in at least two vocabularies. The exchange decides which
+    // are consent and which are outages; re-testing the code here is how the
+    // two halves of that decision drifted apart once already.
+    googleAccessToken.mockRejectedValue(
+      new FakeTokenVaultError(409, 'federated_connection_refresh_token_not_found', 'not found'),
+    )
+
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
+      durable: true,
+      connected: false,
+      detail: expect.stringContaining('no-grant'),
+    })
+  })
+
   it('names a token it refused, which is the other way to look unconnected', async () => {
     // Almost always AUTH0_AUDIENCE in the function environment disagreeing with
     // the VITE_ pair the bundle was built with, and nothing whatever to do with

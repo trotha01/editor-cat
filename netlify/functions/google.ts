@@ -167,7 +167,12 @@ export default async (request: Request): Promise<Response> => {
       await googleAccessToken(token, ready.vault)
       return json({ durable: true, connected: true })
     } catch (error) {
-      if (error instanceof TokenVaultError && error.code === 'invalid_grant') {
+      // On the status the exchange decided, not on the code again. Auth0 says
+      // this in at least two vocabularies — `invalid_grant` and
+      // `federated_connection_refresh_token_not_found` — and re-testing the
+      // string here is how the two halves of one decision drifted apart, with
+      // tokenVault.ts calling it consent and this calling it an outage.
+      if (error instanceof TokenVaultError && error.status === 409) {
         // Ordinary enough not to be an error — consent withdrawn, or a grant
         // Google made without a refresh token, which is what happens when it
         // decides an existing consent still stands and issues no refresh token
