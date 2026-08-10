@@ -122,12 +122,43 @@ if (state === 'active') {
 
 // ---- 1. the grant that caps what the SPA may ask for ----------------------
 
+/**
+ * `user`, and the whole thing turns on it.
+ *
+ * A client grant says which API an application may reach, and `subject_type`
+ * says on whose behalf: `client` is the machine flow, `user` is every flow that
+ * mints a token for a person. The My Account API answers `deny_all` to the first
+ * and `require_client_grant` to the second, so a grant created without this
+ * field is accepted, stored, and does nothing — while a browser signing a user
+ * in is refused for want of the grant that is sitting right there.
+ *
+ * An application may hold one of each, so the two do not collide.
+ */
+const SUBJECT_TYPE = 'user'
+
 const grants = await api(`/client-grants?client_id=${encodeURIComponent(clientId)}`)
-const existing = (Array.isArray(grants) ? grants : []).find((grant) => grant.audience === MY_ACCOUNT)
+const forMyAccount = (Array.isArray(grants) ? grants : []).filter(
+  (grant) => grant.audience === MY_ACCOUNT,
+)
+const existing = forMyAccount.find((grant) => grant.subject_type === SUBJECT_TYPE)
 const missing = CONNECTED_ACCOUNT_SCOPES.filter((scope) => !(existing?.scope ?? []).includes(scope))
 
+const stray = forMyAccount.filter((grant) => grant.subject_type !== SUBJECT_TYPE)
+if (stray.length) {
+  console.log(
+    `\n→ stray grant      remove ${stray.length} grant(s) with subject_type=${stray.map((g) => g.subject_type ?? '(unset)').join(', ')}`,
+  )
+  console.log('                   inert against this API, and confusing to find later')
+  if (apply) {
+    for (const grant of stray) await api(`/client-grants/${grant.id}`, { method: 'DELETE' })
+    console.log('  done')
+  }
+}
+
 if (existing && !missing.length) {
-  console.log(`\n✓ client grant     already allows ${CONNECTED_ACCOUNT_SCOPES.length} connected-account scopes`)
+  console.log(
+    `\n✓ client grant     subject_type=${SUBJECT_TYPE}, allows ${CONNECTED_ACCOUNT_SCOPES.length} connected-account scopes`,
+  )
 } else if (existing) {
   const scope = [...new Set([...(existing.scope ?? []), ...CONNECTED_ACCOUNT_SCOPES])]
   console.log(`\n→ client grant     add ${missing.join(', ')}`)
@@ -137,6 +168,7 @@ if (existing && !missing.length) {
   }
 } else {
   console.log(`\n→ client grant     create for ${MY_ACCOUNT}`)
+  console.log(`                   subject_type: ${SUBJECT_TYPE}`)
   console.log(`                   scopes: ${CONNECTED_ACCOUNT_SCOPES.join(', ')}`)
   if (apply) {
     await api('/client-grants', {
@@ -145,6 +177,7 @@ if (existing && !missing.length) {
         client_id: clientId,
         audience: MY_ACCOUNT,
         scope: CONNECTED_ACCOUNT_SCOPES,
+        subject_type: SUBJECT_TYPE,
       }),
     })
     console.log('  done')
