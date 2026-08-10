@@ -37,7 +37,6 @@ const storedGrant = { accessToken: 'stored-token', expiresIn: 3600, scope: gis.D
 beforeEach(() => {
   vi.clearAllMocks()
   gis.resetForTests()
-  vi.stubEnv('VITE_GOOGLE_CLIENT_ID', 'client-abc.apps.googleusercontent.com')
   requestAccessToken.mockResolvedValue(storedGrant)
   clearConnection.mockResolvedValue(undefined)
 })

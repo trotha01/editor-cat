@@ -1,16 +1,22 @@
 /**
  * The way in.
  *
- * Three things have to be true before the editor opens: a session, permission to
- * write to the user's Drive, and a folder to write into. Only two of them are
- * screens. Auth0 asks Google for the account and the Drive scope in one consent,
- * so signing in grants both; the folder is a choice of our own, because an editor
- * that silently saves nowhere is worse than one more click.
+ * Three things have to be true before the editor opens, and each is a screen: a
+ * session, permission to write to the user's Drive, and a folder to write into.
+ * The folder is a choice of our own, because an editor that silently saves
+ * nowhere is worse than one more click.
  *
- * It was three screens under Netlify Identity, whose login could not carry a
- * Drive scope — the grant had a step of its own, asked again with the address as
- * a hint so Google did not also ask which account. Getting back to one consent is
- * most of why this app is on Auth0.
+ * The Drive permission is asked for separately from the sign-in, which is not
+ * where this started. Auth0 will happily carry the scope on the login — the
+ * consent screen shows the folder next to the account — but it files what comes
+ * back against the user's *identity*, and Token Vault, which is what the
+ * functions exchange against, reads `connected_accounts` instead. Only the
+ * connect flow writes that. So the scope has to be asked for as a connected
+ * account, after sign-in, or it lands somewhere nothing can spend it.
+ *
+ * It is still cheaper than the three screens Netlify Identity needed: the
+ * address is already known by the time the second one is asked, so `login_hint`
+ * turns it into a single approval rather than another choice of account.
  *
  * Only stands in the way when this build actually has a Supabase project behind
  * it (see `requiresSignIn`). Mock mode and an unconfigured checkout render the
@@ -82,10 +88,9 @@ export function SignInGate({ children }: { children: ReactNode }) {
   // Everything Google asks for is done; all that is left is where to put things.
   if (driveStatus === 'connected') return <ChooseFolderStep />
 
-  // Signed in, but Drive did not come with it — the scope was declined on the
-  // consent screen, or the grant was revoked from the Google account page since.
-  // There is no second consent to offer any more: the only way to get the scope
-  // is the sign-in that carries it.
+  // Signed in, and Drive not granted yet — a new account that has not been
+  // asked, one that declined, or a grant revoked from the Google account page
+  // since. All three are answered by the same second consent.
   return <GrantMissingStep reconnecting={driveStatus === 'needs-reconnect'} />
 }
 
@@ -311,12 +316,21 @@ function DriveProblem({ problem }: { problem: Exclude<DriveReadiness, 'ready' | 
 }
 
 /**
- * Signed in, but without the Drive permission that should have come with it.
+ * Signed in, and now asking for the folder.
  *
- * Not a second consent screen — there is no longer one to offer. The Drive scope
- * rides on the sign-in, so the only way to obtain it is to sign in again, and the
- * two ways to arrive here both end that way: unticking Drive on Google's consent
- * screen, and revoking it from the Google account page afterwards.
+ * The second screen, and it does not disturb the session: the account is already
+ * established, so this asks Google for the permission alone and comes straight
+ * back. `login_hint` carries the address, so it is a single approval rather than
+ * a fresh choice of account.
+ *
+ * It is a separate consent because of where Auth0 keeps things, not because a
+ * login could not carry the scope. A login files provider tokens against the
+ * user's identity; Token Vault reads `connected_accounts`, which only this flow
+ * writes. See lib/auth0/client.ts.
+ *
+ * Three ways to arrive here: a brand-new account that has signed in and not yet
+ * granted anything, a grant revoked from the Google account page afterwards, and
+ * Drive unticked on Google's own screen. All three end the same way.
  */
 function GrantMissingStep({ reconnecting }: { reconnecting: boolean }) {
   const account = useAuthStore((state) => state.account)
@@ -338,9 +352,12 @@ function GrantMissingStep({ reconnecting }: { reconnecting: boolean }) {
     }
   }, [])
 
+  // Not a sign-out any more. This used to drop the session and send the user
+  // back through the whole login, because the grant could only arrive attached
+  // to one; asking for the connected account directly leaves the session alone
+  // and costs one approval.
   const again = () => {
-    useDriveStore.getState().forget()
-    void useAuthStore.getState().signOut()
+    useDriveStore.getState().connect()
   }
 
   return (
@@ -349,7 +366,7 @@ function GrantMissingStep({ reconnecting }: { reconnecting: boolean }) {
       lead={
         reconnecting
           ? 'Your Google Drive access stopped working — revoked, or simply expired. The editor saves your media there, so it needs it back.'
-          : 'Signing in is meant to grant Drive at the same time, and this account did not. The editor saves your media to your own Drive, so it cannot open without it.'
+          : 'One more permission. The editor saves your media to a folder in your own Google Drive, so it needs your say-so before it can open.'
       }
     >
       {driveError ? (
@@ -364,7 +381,7 @@ function GrantMissingStep({ reconnecting }: { reconnecting: boolean }) {
         <DriveProblem problem={readiness} />
       ) : (
         <Button variant="primary" onClick={again}>
-          Sign in again
+          Allow Google Drive
         </Button>
       )}
 

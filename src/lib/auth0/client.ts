@@ -109,6 +109,17 @@ export function auth0(): Auth0Client {
     // short-lived, which is what makes storage an acceptable trade here.
     cacheLocation: 'localstorage',
     useRefreshTokens: true,
+    // One refresh token, two audiences: this app's API and Auth0's own
+    // My Account API, which is where a Drive grant is filed. Without it the
+    // silent exchange returns a token for the default audience and the connect
+    // call below is refused by an API it was never addressed to — silently, in
+    // the sense that the token looks perfectly valid. The tenant half is an MRRT
+    // policy; see scripts/auth0-connect-setup.mjs.
+    useMrrt: true,
+    // Not optional. The My Account API declines bearer tokens and wants a proof
+    // of possession bound to a key this browser generated, so a token lifted out
+    // of storage cannot be replayed elsewhere. The SDK does the whole dance.
+    useDpop: true,
   })
   return client
 }
@@ -130,12 +141,19 @@ function toAccount(user: User | undefined): Account | null {
 /**
  * Whether this load is Auth0 returning from Google.
  *
- * Both parameters, not either: `code` alone is what the Drive consent used to
- * come back with, and `state` alone appears on plenty of unrelated URLs.
+ * Two errands come back through here and the SDK tells them apart by which code
+ * is present: `code` is a sign-in, `connect_code` is a finished Drive grant.
+ * Both are handed to the same `handleRedirectCallback`, which is why this only
+ * has to recognise them, not sort them.
+ *
+ * Both parameters, not either: a code alone says nothing about who issued it,
+ * and `state` alone appears on plenty of unrelated URLs.
  */
 function isRedirectCallback(): boolean {
   const params = new URLSearchParams(window.location.search)
-  return (params.has('code') || params.has('error')) && params.has('state')
+  return (
+    (params.has('code') || params.has('connect_code') || params.has('error')) && params.has('state')
+  )
 }
 
 /**
@@ -205,27 +223,66 @@ export async function adoptRedirect(): Promise<Account | null> {
 /**
  * Sends the browser to Google, by way of Auth0. Nothing after this runs.
  *
- * `connection_scope` is what makes this one screen rather than two: Google is
- * asked for Drive at the same time it is asked who this is.
+ * Identity only. This asked for Drive too once, as a `connection_scope`, and the
+ * consent screen duly showed the folder alongside the account — which worked,
+ * and was useless, because of where Auth0 files what comes back.
  *
- * What is deliberately *not* here is anything forcing a fresh Google grant.
- * Google issues a refresh token only alongside one, so a returning user whose
- * consent it already holds leaves Token Vault with an access token and nothing
- * to renew it — the sign-in loop this app spent an afternoon in. The fix for
- * that is real, but it belongs to the connection rather than to the request:
- * `access_type` and `approval_prompt` are Google's parameters, and Auth0
- * forwards them only when they are configured as the connection's
- * `upstream_params`. Sent from here they are worse than useless — `access_type`
- * is rejected outright by `/authorize`, and `prompt` is a standard OIDC
- * parameter that Auth0 answers *itself*, putting its own consent screen in front
- * of the user instead of passing anything on. See the README.
+ * A login writes the provider's tokens to the user's *identity*. Token Vault
+ * does not read identities; it reads `connected_accounts`, and nothing fills
+ * that but the connect flow in `connectDrive` below. So a login carrying the
+ * Drive scope produced an account holding a perfectly good Google refresh token
+ * that the exchange could not see, and answered
+ * `federated_connection_refresh_token_not_found` — a sentence about a missing
+ * token, on behalf of a token that was right there.
+ *
+ * Asking here as well would therefore buy nothing and cost a screen: the user
+ * would approve Drive twice, once into a store nobody reads.
+ *
+ * What is still deliberately *not* here is anything forcing a fresh Google
+ * grant. `access_type` and `approval_prompt` are Google's parameters and Auth0
+ * forwards them only as the connection's `upstream_params` — sent from here they
+ * are worse than useless, because `access_type` is rejected outright by
+ * `/authorize` and `prompt` is a standard OIDC parameter that Auth0 answers
+ * itself, putting its own consent screen in front of the user rather than
+ * passing anything on. See the README.
  */
 export async function beginGoogleSignIn(): Promise<void> {
   await auth0().loginWithRedirect({
     authorizationParams: {
       connection: GOOGLE_CONNECTION,
-      connection_scope: DRIVE_SCOPES,
       redirect_uri: window.location.origin,
+    },
+  })
+}
+
+/**
+ * Asks Google for the Drive folder, on an account that is already signed in.
+ *
+ * The second screen, and the one that actually stocks Token Vault. Auth0 calls
+ * this a connected account: the browser asks the My Account API to open a
+ * consent, Google asks the user, and Auth0 keeps the refresh token that comes
+ * back somewhere the token exchange in netlify/lib/tokenVault.ts can reach it.
+ *
+ * `login_hint` is what keeps it to a single click. The account is already known
+ * by the time this runs, so Google is told which one rather than asked, and the
+ * user sees the permission on its own instead of picking their address again —
+ * the same trick the old Netlify Identity flow needed, for the same reason.
+ *
+ * Nothing after this runs: it navigates. The grant comes back as `connect_code`
+ * on the next load, which `adoptRedirect` hands to the SDK along with everything
+ * else.
+ */
+export async function connectDrive(loginHint?: string): Promise<void> {
+  await auth0().connectAccountWithRedirect({
+    connection: GOOGLE_CONNECTION,
+    // The scope the *vault* is stocked with, which is the one the functions will
+    // later spend. The connection carries the same list in the Auth0 dashboard;
+    // naming it here too is what keeps the ask visible in the code that depends
+    // on it.
+    scopes: [...DRIVE_SCOPE_LIST],
+    authorizationParams: {
+      redirect_uri: window.location.origin,
+      ...(loginHint ? { login_hint: loginHint } : {}),
     },
   })
 }
