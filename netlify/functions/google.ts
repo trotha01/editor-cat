@@ -175,11 +175,20 @@ export default async (request: Request): Promise<Response> => {
         // than anything that could be said from here.
         return unconnected(`no-grant: Token Vault holds no usable Google grant. ${error.message}`)
       }
+      // Naming the client that failed, because the commonest cause of a
+      // refusal here is that the credentials are not the ones the operator
+      // thinks they are: environment changes reach a Netlify function only on
+      // the next deploy, so a variable saved and not redeployed leaves the old
+      // client in place and every symptom identical. A client id is public by
+      // design — the browser sends one in every authorisation request — so
+      // enough of it to tell two apart costs nothing. The secret never appears.
       return json({
         durable: true,
         connected: false,
         problem: 'unreachable',
-        detail: `vault-unreachable: ${error instanceof Error ? error.message : String(error)}`,
+        detail:
+          `vault-unreachable: ${error instanceof Error ? error.message : String(error)} ` +
+          `(exchanged as client ${ready.vault.clientId.slice(0, 8)}…)`,
       })
     }
   }
