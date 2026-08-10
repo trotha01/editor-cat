@@ -1,109 +1,74 @@
 import type { Config } from '@netlify/functions'
-import { requireSession } from '../lib/auth'
 import { jsonError } from '../lib/proxy'
+import { auth0Config, auth0User, Auth0UnavailableError } from '../lib/auth0'
 import {
-  deleteConnection,
-  MissingTableError,
-  readConnection,
-  StoreError,
-  storeConfig,
-  writeConnection,
-  type StoreConfig,
-} from '../lib/googleConnections'
-import {
-  exchangeCode,
-  GoogleOauthError,
-  oauthConfig,
-  redirectUri,
-  refreshAccessToken,
-  revokeToken,
-  type OauthConfig,
-} from '../lib/googleOauth'
+  googleAccessToken,
+  TokenVaultError,
+  vaultConfig,
+  type VaultConfig,
+} from '../lib/tokenVault'
 
 /**
- * Keeps a Google Drive connection alive across reloads.
+ * A Google Drive access token, on the signed-in user's behalf.
  *
- * The editor used to hold a Drive access token in memory and nothing else, so
- * closing the tab ended the connection and Settings asked the user to reconnect
- * on every visit. This endpoint holds the refresh token instead — server-side,
- * where the client secret already lives — and mints a short-lived access token
- * whenever the browser asks for one.
+ *   GET  /api/google/status  -> is this deployment set up for Drive, and does
+ *                               this caller have a usable Google grant?
+ *   POST /api/google/token   -> a fresh Google access token
  *
- *   GET  /api/google/status      -> is this deployment set up, and is this user
- *                                   connected? Answered without touching Google.
- *   POST /api/google/connect     -> exchange the consent code for tokens, store
- *                                   the refresh token, return the access token
- *   POST /api/google/token       -> a fresh access token from the stored one
- *   POST /api/google/disconnect  -> revoke at Google and forget the token
+ * This used to be four routes and a table. The app ran Google's consent itself,
+ * exchanged the code here, and kept the refresh token in Postgres under a
+ * service-role key — all of it in service of holding one credential that had to
+ * outlive an hour.
  *
- * The refresh token never appears in a response body. What the browser gets is
- * the same hour-long access token it always had.
+ * Auth0's Token Vault holds it now. The user consents to Drive at sign-in, as
+ * part of the same screen that establishes who they are, and Auth0 keeps what
+ * comes back. There is nothing here to store, so `connect` and `disconnect` have
+ * no work left to do: the grant arrives with the account, and is withdrawn from
+ * the user's Google account page rather than from a button of ours.
  *
- * Storing anything needs a verified Supabase session, because the user id from
- * that session is the key the refresh token is filed under. That also means
- * anonymous local development (`FAL_PROXY_ALLOW_ANONYMOUS=1`) cannot use this
- * path at all — `status` says so plainly, and the app falls back to the
- * in-memory token flow it used before.
- *
- * `connect` is reached during sign-in as well as from Settings: signing in asks
- * Google for Drive at the same time, so the code that comes back is exchanged
- * the moment the new session exists.
+ * Authorised with the caller's Auth0 access token, which is now what every
+ * function here takes — this one was the exception while `/api/session` minted a
+ * Supabase session for the others to carry. It was the exception because the
+ * Auth0 token is the subject of the exchange: it is the thing that proves to
+ * Auth0 which account's Google grant is being asked for, so a token derived from
+ * it would have had to be traded back first. The reason has outlived the
+ * exception, and this endpoint did not have to change.
  */
 
 interface Setup {
-  oauth: OauthConfig
-  store: StoreConfig
+  vault: VaultConfig
+  audience: string
+  domain: string
 }
 
 /**
- * Why this deployment cannot keep Drive connected, when it cannot.
- *
- * Told to the browser because the sign-in screen has to say something true
- * about a site it is refusing to let anyone into, and one message covering
- * every cause is what sends an operator to re-check the half that was already
- * right. None of these names a value — only which step of the setup is
- * unfinished, which the README states publicly anyway.
- *
- * Mirrored by `StatusProblem` in src/lib/google/connection.ts.
+ * Both halves have to be configured. Verifying the caller needs the tenant and
+ * the audience; exchanging on their behalf needs the machine client's secret.
  */
-type StatusProblem =
-  /** The function environment is missing a secret it cannot work without. */
-  | 'not-configured'
-  /** Configured, but the migration that creates the table was never run. */
-  | 'no-table'
-  /** Configured and migrated; the store did not answer just now. */
-  | 'unreachable'
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-/** Both halves have to be configured; either one alone is not usable. */
 function setup(): Setup | null {
-  const oauth = oauthConfig()
-  const store = storeConfig()
-  if (!oauth || !store) return null
-  return { oauth, store }
+  const vault = vaultConfig()
+  const auth = auth0Config()
+  if (!vault || !auth) return null
+  return { vault, audience: auth.audience, domain: auth.domain }
 }
 
 /**
  * Says which half is missing, into the function log.
  *
  * The browser is told only that the site is not set up — naming environment
- * variables to anonymous callers tells them nothing they need and something
- * about how the site is built. But the operator who has to fix it needs the
- * specifics, and the function log is theirs alone. Without this, a site that
- * refuses every sign-in looks identical whichever variable is absent.
+ * variables to anonymous callers tells them nothing they can act on and
+ * something about how the site is built. The operator who has to fix it needs
+ * the specifics, and the function log is theirs alone.
  */
 function reportMissingSetup(): void {
   const missing = [
-    oauthConfig() ? null : 'GOOGLE_CLIENT_SECRET (and GOOGLE_CLIENT_ID, or VITE_GOOGLE_CLIENT_ID)',
-    storeConfig() ? null : 'SUPABASE_SERVICE_ROLE_KEY (and SUPABASE_URL, or VITE_SUPABASE_URL)',
+    vaultConfig() ? null : 'AUTH0_BACKEND_CLIENT_ID and AUTH0_BACKEND_CLIENT_SECRET',
+    auth0Config() ? null : 'AUTH0_DOMAIN and AUTH0_AUDIENCE (or their VITE_ forms)',
   ].filter((entry): entry is string => entry !== null)
 
   console.warn(
-    `[google] Sign-in is disabled: this deployment is missing ${missing.join(' and ')}. ` +
-      'Scope them to Functions, redeploy, and run supabase/migrations/0002_google_connections.sql.',
+    `[google] Drive is disabled: this deployment is missing ${missing.join(' and ')}. ` +
+      'Scope them to Functions and redeploy.',
   )
 }
 
@@ -120,44 +85,34 @@ function json(body: unknown, status = 200): Response {
 }
 
 const NOT_CONFIGURED_DETAIL =
-  'Set GOOGLE_CLIENT_SECRET and SUPABASE_SERVICE_ROLE_KEY in the site environment to keep Drive ' +
-  'connected between visits.'
+  'Set AUTH0_BACKEND_CLIENT_ID and AUTH0_BACKEND_CLIENT_SECRET in the site environment, and ' +
+  'turn on Connected Accounts for Token Vault on the Google connection.'
 
-/**
- * Reports a failed token request without leaking the parts that are ours.
- *
- * `invalid_grant` is the interesting one: it means the stored refresh token no
- * longer works — revoked from the user's account page, or expired after six
- * months unused — so the row is dropped and the browser is told to ask for
- * consent again rather than retrying forever against a dead credential.
- */
-async function handleOauthFailure(
-  error: unknown,
-  userId: string,
-  store: StoreConfig,
-): Promise<Response> {
-  if (error instanceof GoogleOauthError) {
-    if (error.code === 'invalid_grant') {
-      try {
-        await deleteConnection(userId, store)
-      } catch {
-        // The row will be overwritten by the next successful connect anyway.
-      }
-      return jsonError(409, 'Your Google connection expired. Connect Drive again in Settings.')
-    }
-    return jsonError(error.status, 'Google refused the request.', error.message)
-  }
-
-  return jsonError(502, 'Could not reach Google.', describe(error))
+function bearerToken(request: Request): string | null {
+  const match = /^Bearer\s+(.+)$/i.exec((request.headers.get('authorization') ?? '').trim())
+  return match?.[1]?.trim() || null
 }
 
-async function readCode(request: Request): Promise<string | null> {
-  try {
-    const body = (await request.json()) as { code?: unknown }
-    return typeof body.code === 'string' && body.code.trim() ? body.code.trim() : null
-  } catch {
-    return null
+/**
+ * Turns a failed exchange into something the browser can act on.
+ *
+ * `invalid_grant` is the interesting one: Auth0 has no usable Google grant for
+ * this account, because consent was withdrawn or never covered the scope being
+ * asked for. Signing in again is the cure, and is the only place this app asks
+ * Google for anything — so it is reported as a 409, distinct from an outage.
+ */
+function handleExchangeFailure(error: unknown): Response {
+  if (error instanceof TokenVaultError) {
+    if (error.code === 'invalid_grant') {
+      return jsonError(409, 'Your Google connection expired. Sign in again to restore it.')
+    }
+    return jsonError(error.status, 'Auth0 refused the Google token request.', error.message)
   }
+  return jsonError(
+    502,
+    'Could not reach Auth0.',
+    error instanceof Error ? error.message : String(error),
+  )
 }
 
 export default async (request: Request): Promise<Response> => {
@@ -166,157 +121,113 @@ export default async (request: Request): Promise<Response> => {
 
   const ready = setup()
 
-  // Deliberately answered before any session is required, and the only route
-  // that is. The sign-in screen asks this to decide whether it can request Drive
-  // alongside identity — which is precisely the moment before a session exists.
-  // All it discloses is whether the deployment is set up for that, which the
-  // README states publicly; anything about a *user* still needs their token.
+  // Answered before any token is required, and the only route that is. The gate
+  // asks it to decide whether to offer Drive at all, and all it discloses is
+  // whether the deployment is set up for it — which the README states publicly.
+  // Anything about a *user* still needs their token.
   if (route === 'status') {
-    const unusable = (problem: StatusProblem, detail?: string) =>
-      json({ durable: false, connected: false, problem, ...(detail ? { detail } : {}) })
-
     if (!ready) {
       reportMissingSetup()
-      return unusable('not-configured')
+      return json({ durable: false, connected: false, problem: 'not-configured' })
     }
 
-    const caller = await requireSession(request)
-    // Signed out, or an anonymous development build with no account to file a
-    // connection under. Either way there is nothing of theirs to report.
-    if (!caller.ok || !caller.userId) return json({ durable: true, connected: false })
+    // Every way of being unconnected says which one it was.
+    //
+    // They are otherwise indistinguishable — same JSON, same screen, and the
+    // function log is the only witness, which on a deploy preview is somewhere
+    // most people never think to look. And they are fixed in unrelated places:
+    // one is an audience that disagrees with the bundle, another is consent
+    // nobody has granted yet. `detail` says which, the browser prints it to the
+    // console, and nobody has to go and find a log.
+    //
+    // Safe to disclose. Each names a step of this deployment's own setup, which
+    // the README states publicly, and none of them says anything about a user.
+    const unconnected = (detail: string) => json({ durable: true, connected: false, detail })
 
+    const token = bearerToken(request)
+    if (!token) return unconnected('no-token: the browser sent no Auth0 token with this request.')
+
+    let caller
     try {
-      const stored = await readConnection(caller.userId, ready.store)
-      return json({ durable: true, connected: stored !== null })
+      caller = await auth0User(token, { domain: ready.domain, audience: ready.audience })
     } catch (error) {
-      // Answered 200, not 502, on purpose. The question asked was "can this
-      // deployment keep Drive connected", and "no, because the table is
-      // missing" is an answer to it. A 502 collapses the reason back into
-      // "something went wrong", which is then all the browser can show.
-      if (error instanceof MissingTableError) {
-        console.warn(
-          `[google] ${error.message} Run supabase/migrations/0002_google_connections.sql ` +
-            'against this project.',
-        )
-        return unusable('no-table')
-      }
-
-      console.warn(`[google] Could not reach the connection store: ${describe(error)}`)
-      // The database's own words, and only to a caller who is already signed in.
-      // Whoever is standing a deployment up is the first person to sign into it,
-      // and "permission denied for table google_connections" is the difference
-      // between fixing it now and going to look for a function log.
-      return unusable('unreachable', error instanceof StoreError ? error.summary : undefined)
+      // Auth0 did not answer. The question asked was whether this deployment can
+      // reach Drive, and an unanswerable check is not evidence that it cannot.
+      return unconnected(
+        `verify-unreachable: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
-  }
-
-  const session = await requireSession(request)
-  if (!session.ok) return session.response
-
-  if (!ready) {
-    reportMissingSetup()
-    return jsonError(503, 'This site does not keep Drive connected.', NOT_CONFIGURED_DETAIL)
-  }
-  if (!session.userId) {
-    return jsonError(
-      503,
-      'This site does not keep Drive connected.',
-      'Anonymous access cannot store a Google connection: there is no account to file it under.',
-    )
-  }
-  const userId = session.userId
-
-  if (route === 'connect') {
-    if (request.method !== 'POST') return jsonError(405, 'Use POST to connect Drive.')
-
-    const code = await readCode(request)
-    if (!code) return jsonError(400, 'That Google authorisation could not be read. Try again.')
-
-    let grant
-    try {
-      grant = await exchangeCode(code, ready.oauth, redirectUri(request.url))
-    } catch (error) {
-      return await handleOauthFailure(error, userId, ready.store)
-    }
-
-    // Google withholds the refresh token when it decides the existing grant
-    // still stands. The authorisation request asks for consent every time
-    // precisely to avoid that, but if it happens anyway the previous token is
-    // still the right one to keep — and when there is no previous token, the
-    // connection simply is not durable and the browser is told so rather than
-    // being left to discover it an hour later.
-    let durable = true
-    try {
-      if (grant.refreshToken) {
-        await writeConnection(
-          userId,
-          { refreshToken: grant.refreshToken, scope: grant.scope },
-          ready.store,
-        )
-      } else {
-        durable = (await readConnection(userId, ready.store)) !== null
-      }
-    } catch (error) {
-      return jsonError(
-        502,
-        'Connected to Google, but could not save the connection for next time.',
-        describe(error),
+    if (!caller) {
+      return unconnected(
+        'token-rejected: Auth0 did not accept that token. AUTH0_AUDIENCE or AUTH0_DOMAIN in the ' +
+          'function environment probably disagrees with the VITE_ pair the bundle was built with.',
       )
     }
 
-    return json({
-      access_token: grant.accessToken,
-      expires_in: grant.expiresIn,
-      scope: grant.scope,
-      durable,
-    })
-  }
-
-  if (route === 'token') {
-    if (request.method !== 'POST') return jsonError(405, 'Use POST to request a Drive token.')
-
-    let stored
     try {
-      stored = await readConnection(userId, ready.store)
+      await googleAccessToken(token, ready.vault)
+      return json({ durable: true, connected: true })
     } catch (error) {
-      return jsonError(502, 'Could not read your Google connection.', describe(error))
-    }
-
-    // Not an error worth alarming anyone with: this user has simply never
-    // connected Drive, and the browser treats it as "offer the button".
-    if (!stored) return jsonError(404, 'No Google Drive connection is saved for this account.')
-
-    try {
-      const grant = await refreshAccessToken(stored.refreshToken, ready.oauth)
+      // On the status the exchange decided, not on the code again. Auth0 says
+      // this in at least two vocabularies — `invalid_grant` and
+      // `federated_connection_refresh_token_not_found` — and re-testing the
+      // string here is how the two halves of one decision drifted apart, with
+      // tokenVault.ts calling it consent and this calling it an outage.
+      if (error instanceof TokenVaultError && error.status === 409) {
+        // Ordinary enough not to be an error — consent withdrawn, or a grant
+        // Google made without a refresh token, which is what happens when it
+        // decides an existing consent still stands and issues no refresh token
+        // at all. Auth0's own words come along, because they are more specific
+        // than anything that could be said from here.
+        return unconnected(`no-grant: Token Vault holds no usable Google grant. ${error.message}`)
+      }
+      // Naming the client that failed, because the commonest cause of a
+      // refusal here is that the credentials are not the ones the operator
+      // thinks they are: environment changes reach a Netlify function only on
+      // the next deploy, so a variable saved and not redeployed leaves the old
+      // client in place and every symptom identical. A client id is public by
+      // design — the browser sends one in every authorisation request — so
+      // enough of it to tell two apart costs nothing. The secret never appears.
       return json({
-        access_token: grant.accessToken,
-        expires_in: grant.expiresIn,
-        // A refresh response echoes the granted scopes; fall back to what was
-        // recorded at connect time for the rare response that omits them.
-        scope: grant.scope || stored.scope,
+        durable: true,
+        connected: false,
+        problem: 'unreachable',
+        detail:
+          `vault-unreachable: ${error instanceof Error ? error.message : String(error)} ` +
+          `(exchanged as client ${ready.vault.clientId.slice(0, 8)}…)`,
       })
-    } catch (error) {
-      return await handleOauthFailure(error, userId, ready.store)
     }
   }
 
-  if (route === 'disconnect') {
-    if (request.method !== 'POST') return jsonError(405, 'Use POST to disconnect Drive.')
+  if (route !== 'token') return jsonError(404, 'No such Drive endpoint.')
+  if (request.method !== 'POST') return jsonError(405, 'Use POST to get a Drive token.')
 
-    try {
-      const stored = await readConnection(userId, ready.store)
-      // Deleted first: if revocation hangs or fails, the connection is still
-      // gone from this site's point of view, which is what the user asked for.
-      await deleteConnection(userId, ready.store)
-      if (stored) await revokeToken(stored.refreshToken)
-    } catch (error) {
-      return jsonError(502, 'Could not disconnect Google Drive.', describe(error))
-    }
-
-    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  if (!ready) {
+    reportMissingSetup()
+    return jsonError(503, 'This site is not set up for Google Drive.', NOT_CONFIGURED_DETAIL)
   }
 
-  return jsonError(404, 'Unknown Google endpoint.')
+  const token = bearerToken(request)
+  if (!token) return jsonError(401, 'Sign in to continue.', 'No Auth0 token was sent.')
+
+  let caller
+  try {
+    caller = await auth0User(token, { domain: ready.domain, audience: ready.audience })
+  } catch (error) {
+    return jsonError(
+      502,
+      'Could not check who you are just now.',
+      error instanceof Auth0UnavailableError ? error.message : String(error),
+    )
+  }
+  if (!caller) return jsonError(401, 'Sign in to continue.', 'Auth0 did not accept that token.')
+
+  try {
+    const grant = await googleAccessToken(token, ready.vault)
+    return json({ accessToken: grant.accessToken, expiresIn: grant.expiresIn, scope: grant.scope })
+  } catch (error) {
+    return handleExchangeFailure(error)
+  }
 }
 
 export const config: Config = {

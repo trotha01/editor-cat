@@ -1,17 +1,22 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /**
+   * The Auth0 tenant this site signs in against, the SPA application's client
+   * id, and the API identifier its access tokens are minted for. All three are
+   * required for sign-in — and therefore for Drive, which rides on the same
+   * login. None is a secret: the domain is in every authorisation URL, the
+   * client id is public by design, and the audience is in every token.
+   */
+  readonly VITE_AUTH0_DOMAIN?: string
+  readonly VITE_AUTH0_CLIENT_ID?: string
+  readonly VITE_AUTH0_AUDIENCE?: string
   /** Set to "1" to fake every provider call locally. See src/lib/mock.ts. */
   readonly VITE_MOCK_PROVIDERS?: string
   /**
-   * Google OAuth client ID (a Web application client). Leave unset to build
-   * without sign-in or Drive at all.
-   */
-  readonly VITE_GOOGLE_CLIENT_ID?: string
-  /**
-   * Google API key, for the Google Picker. Public by design and restricted by
-   * HTTP referrer in the Cloud console, exactly as the client ID is restricted
-   * by origin.
+   * Google API key, for the Google Picker. Public by design, and restricted by
+   * HTTP referrer in the Cloud console — which is the one Google allowlist this
+   * app still keeps, since the Picker calls Google straight from the page.
    */
   readonly VITE_GOOGLE_API_KEY?: string
   /**
@@ -34,6 +39,13 @@ interface ImportMeta {
 
 /** Substituted by Vite at build time. See `define` in vite.config.ts. */
 declare const __BUILD__: import('./lib/version').Build
+
+/**
+ * The pull request this staging deploy is showing, substituted at build time
+ * alongside `__BUILD__` — and `null` in every build that is not a staging one,
+ * which is most of them. See src/lib/stagingBuild.ts.
+ */
+declare const __STAGING__: import('./lib/stagingBuild').StagingBuild | null
 
 interface Window {
   /**
