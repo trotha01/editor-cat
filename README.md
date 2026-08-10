@@ -302,7 +302,9 @@ only thing Google returns untouched.
 3. Restrict the API key by HTTP referrer to `https://*.staging.your.site/*`.
    Referrer restrictions _do_ take a wildcard, unlike redirect URIs — but only
    as a whole label, so `deploy-preview-*--sitename.netlify.app` is rejected.
-4. Set these for **all deploy contexts**, not production alone:
+4. Set these on **Deploy Previews and Branch deploys only** — Netlify's
+   environment variables take a different value per deploy context, and this is
+   what that is for:
 
 ```
 VITE_GOOGLE_CALLBACK_ORIGIN=https://staging.your.site
@@ -310,8 +312,23 @@ VITE_GOOGLE_CALLBACK_ALLOWED_SUFFIX=.staging.your.site
 GOOGLE_REDIRECT_URI=https://staging.your.site/oauth/google
 ```
 
-Scoped to production, a preview derives its own host for the exchange, and
-Google refuses it — after a consent screen that looked like it worked.
+**Leave all three unset on production**, which keeps its own
+`https://your.site/oauth/google` in the console and behaves exactly as it always
+did. Set there too, production would send its users' consent to the staging
+callback and then be refused on the way back — production is not under
+`.staging.your.site`, and widening the suffix until it is would put every
+production sign-in behind staging being deployed and healthy.
+
+`GOOGLE_REDIRECT_URI` belongs in the same contexts as
+`VITE_GOOGLE_CALLBACK_ORIGIN` and carries the same origin, because the exchange
+has to present the URI the browser asked with. In one but not the other, Google
+sees two different URIs and refuses — after a consent screen that looked like it
+worked.
+
+The suffix is read by whichever deploy _serves_ the callback rather than by the
+one that opened it. Setting it across both contexts covers that without anyone
+having to work out which: `staging.your.site` is a branch deploy, and on a
+preview the variable is simply never read.
 
 > **The suffix is a security boundary.** `state` arrives as a query parameter, so
 > the origin in it is whatever the URL that opened the callback window said it

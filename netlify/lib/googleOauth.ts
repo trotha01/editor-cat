@@ -69,10 +69,12 @@ export function oauthConfig(): OauthConfig | null {
  * src/lib/google/oauthPopup.ts) and Google compares this against that one, not
  * against the host this function happens to be answering on.
  *
- * Which makes it a per-deploy-context variable, not a production one. Set only
- * for production, a preview derives its own host here, Google sees two different
- * URIs and refuses the exchange — after a consent screen that looked like it
- * worked.
+ * Which makes it a per-deploy-context variable: it belongs in exactly the
+ * contexts that set a shared callback origin for the browser, and nowhere else.
+ * Production, whose URL is its own, wants it unset and derives the same answer
+ * here that the browser already asked with. In one place but not the other,
+ * Google sees two different URIs and refuses the exchange — after a consent
+ * screen that looked like it worked.
  */
 export function redirectUri(requestUrl: string): string {
   const override = (process.env.GOOGLE_REDIRECT_URI ?? '').trim()

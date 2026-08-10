@@ -21,10 +21,13 @@ interface ImportMetaEnv {
   readonly VITE_GOOGLE_PROJECT_NUMBER?: string
   /**
    * The one origin registered with Google as an authorised redirect URI, for
-   * sites whose deploys do not all share a URL. Every deploy sends its consent
+   * deploys whose URL is not known in advance. Such a deploy sends its consent
    * pop-up there and is handed the answer back, so a deploy preview needs no
-   * entry of its own in a console that accepts no wildcards. Leave it unset for
-   * a site with one URL, and for `netlify dev`.
+   * entry of its own in a console that accepts no wildcards.
+   *
+   * Per deploy context. Production registers its own URL and wants this unset —
+   * pointed at another deploy's callback it would be refused on the way back,
+   * for not being under the suffix below. Unset is also right for `netlify dev`.
    */
   readonly VITE_GOOGLE_CALLBACK_ORIGIN?: string
   /**
