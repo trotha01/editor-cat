@@ -3,9 +3,10 @@
  *
  * Auth0 holds the account and Google is the only connection configured for it,
  * so signing in is a redirect out to Google and back. What returns is an Auth0
- * session — carrying the Drive grant with it, which is why there is no second
- * consent step — and the Supabase session the editor actually runs on is minted
- * from it on demand (see lib/supabase/session.ts). Nothing here holds a token.
+ * session, and that session is now the whole of it: Supabase trusts Auth0
+ * directly as a third-party auth provider, so the editor runs on the Auth0 ID
+ * token rather than on anything this site signs (see lib/supabase/session.ts).
+ * Nothing here holds a token — auth0-spa-js is the only thing that does.
  *
  * Three ways the editor can be reachable, and the gate has to respect all of
  * them: a configured deployment requires a session; mock mode bypasses sign-in
@@ -15,11 +16,7 @@
  */
 import { create } from 'zustand'
 import { adoptRedirect, auth0SignOut, beginGoogleSignIn, type Account } from '../lib/auth0/client'
-import {
-  clearSupabaseSession,
-  SignInRequiredError,
-  supabaseAccessToken,
-} from '../lib/supabase/session'
+import { SignInRequiredError, supabaseAccessToken } from '../lib/supabase/session'
 import { isSupabaseConfigured } from '../lib/supabase/client'
 import { isMockEnabled } from '../lib/mock'
 import { toDisplayMessage } from '../lib/errors'
@@ -72,10 +69,13 @@ export const useAuthStore = create<AuthState>((set) => ({
       return
     }
 
-    // Minting here rather than lazily is what catches an Auth0 session whose
-    // refresh token has run out: it looks exactly like a valid stored session
-    // until something asks it for a token. Better to find out now than to open
-    // the editor and fail on the first save.
+    // Asking for the token here rather than lazily is what catches an Auth0
+    // session whose refresh token has run out: it looks exactly like a valid
+    // stored session until something asks it for one. Better to find out now
+    // than to open the editor and fail on the first save.
+    //
+    // It survived the end of the mint because that is not what it was for. The
+    // call is a silent refresh either way, and the refresh is what fails.
     try {
       await supabaseAccessToken()
     } catch (cause) {
@@ -83,9 +83,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         set({ status: 'signed-out', account: null })
         return
       }
-      // Anything else is about the deployment rather than this session — the
-      // signing secret is missing, or the function did not answer. Signing in
-      // again would not help, so say so and let the gate show what it knows.
+      // Nothing else is expected here now that no server has to answer for a
+      // token to exist. Kept anyway: an unforeseen failure should reach the gate
+      // as something it can show, not as an unhandled rejection.
       set({ status: 'signed-in', account, error: toDisplayMessage(cause) })
       return
     }
@@ -104,10 +104,12 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   signOut: async () => {
-    // Dropped first, and unconditionally: it is a live credential for this
-    // account's rows, and it must be gone whether or not the round trip to
-    // Netlify succeeds.
-    clearSupabaseSession()
+    // There is nothing to drop here any more. This used to clear the minted
+    // Supabase session first and unconditionally, because it was a live
+    // credential this module was the only holder of. The credential is now the
+    // Auth0 ID token, which auth0-spa-js keeps and `auth0SignOut` clears along
+    // with everything else in its cache — so a second seam here would only be
+    // able to go stale.
     try {
       // Navigates away to Auth0's logout endpoint and back, which is what ends
       // the session there as well as here.

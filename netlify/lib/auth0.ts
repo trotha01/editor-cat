@@ -9,9 +9,16 @@
  * triggers one refetch, which is how a rotated signing key is picked up without
  * a deploy.
  *
- * `/api/session` is still the only caller. It trades a verified Auth0 token for
- * the hour-long Supabase session that everything else carries, and auth.ts
- * verifies *that* — so the shape is unchanged, one hop cheaper.
+ * This is now the only verifier in the codebase. There used to be a second one:
+ * `/api/session` traded a token verified here for an hour-long Supabase session
+ * signed with the project's own secret, and auth.ts checked *that* instead.
+ * Supabase trusts the tenant directly now, so the mint is gone and both `auth.ts`
+ * (for `/api/fal/*`) and `functions/google.ts` come straight here.
+ *
+ * That makes the cache below load-bearing rather than an optimisation. One video
+ * generation polls `/api/fal/*` for minutes, and that endpoint is reachable by
+ * anyone who knows the URL — so both the TTL and the rate limit on forced
+ * refetches are what keep a per-request call to the tenant from existing.
  */
 
 export interface Auth0User {
@@ -66,9 +73,11 @@ export function auth0Config(): Auth0Config | null {
  * The claim an Auth0 Action may add to carry the address into the access token.
  *
  * Optional, and empty is a perfectly good answer: the browser reads the address
- * out of its own ID token, and nothing on this side does more than copy it into
- * the minted session for whoever reads claims later. Namespaced because Auth0
- * silently drops custom claims that are not.
+ * out of its own ID token, and nothing on this side needs it — the mint that
+ * used to copy it into a session claim is gone, and what is left reads it only
+ * for a log line. Namespaced because Auth0 silently drops custom claims from an
+ * access token when they are not, which is the same rule that puts the `role`
+ * claim Supabase needs on the ID token instead. See the README.
  */
 export const EMAIL_CLAIM = 'https://editor-cat/email'
 
@@ -85,17 +94,32 @@ interface Jwks {
   keys?: Jwk[]
 }
 
-function base64UrlToBytes(value: string): Uint8Array {
+/**
+ * Answers null on anything that is not base64url, rather than throwing.
+ *
+ * `atob` raises on a character outside the alphabet, and the signature segment
+ * is as attacker-controlled as the rest of the token. A throw from here would
+ * leave the module by way of `auth0User`, whose callers read a thrown error as
+ * "the tenant could not be reached" and answer 502 — telling someone to wait out
+ * an outage, over a token that is simply malformed and will never improve.
+ */
+function base64UrlToBytes(value: string): Uint8Array | null {
   const padded = value.replace(/-/g, '+').replace(/_/g, '/')
-  const binary = atob(padded.padEnd(padded.length + ((4 - (padded.length % 4)) % 4), '='))
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
-  return bytes
+  try {
+    const binary = atob(padded.padEnd(padded.length + ((4 - (padded.length % 4)) % 4), '='))
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+    return bytes
+  } catch {
+    return null
+  }
 }
 
 function decodeSegment(segment: string): unknown {
   try {
-    return JSON.parse(new TextDecoder().decode(base64UrlToBytes(segment)))
+    const bytes = base64UrlToBytes(segment)
+    if (!bytes) return null
+    return JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return null
   }
@@ -121,7 +145,26 @@ interface CachedJwks {
 /** An hour. Long enough that this is not a hot path, short enough to self-heal. */
 const JWKS_TTL_MS = 3_600_000
 
+/**
+ * The soonest an unrecognised `kid` may cause another fetch.
+ *
+ * Without this the forced refetch below is an amplifier, and it points at
+ * somebody else's rate limit. `kid` is read out of an unverified header on a
+ * request that need not carry a valid token at all, and `/api/fal/*` is
+ * reachable by anyone who knows the URL — so a loop of tokens naming a random
+ * key id would be a loop of requests to the tenant's JWKS endpoint. Auth0 would
+ * start answering 429, `fetchJwks` would raise, and the people with real tokens
+ * would get 502s from an endpoint that was working a minute ago.
+ *
+ * Five minutes bounds that to twelve fetches an hour however hard it is pushed,
+ * and costs a rotation nothing that matters: a genuinely new signing key is
+ * picked up within five minutes instead of instantly, and within the hour's TTL
+ * even if every forced attempt were refused.
+ */
+const FORCED_REFETCH_INTERVAL_MS = 300_000
+
 let cache: CachedJwks | null = null
+let lastForcedAt = 0
 
 async function fetchJwks(domain: string): Promise<Jwks> {
   const endpoint = `https://${domain}/.well-known/jwks.json`
@@ -149,11 +192,20 @@ async function fetchJwks(domain: string): Promise<Jwks> {
  *
  * `force` skips the cache, which is what an unrecognised `kid` asks for: Auth0
  * rotates signing keys, and the first token signed with a new one would
- * otherwise fail until the TTL expired.
+ * otherwise fail until the TTL expired. It is rate-limited rather than granted
+ * on demand, because the thing asking is an unverified header on a request that
+ * may have arrived from anyone — see FORCED_REFETCH_INTERVAL_MS. A forced fetch
+ * refused for being too soon falls back to the cache, so the caller sees a key
+ * set that does not contain the id and answers "not verified", which is the
+ * correct answer for an id that does not exist.
  */
 async function signingKeys(domain: string, force = false): Promise<Jwks> {
-  if (!force && cache && Date.now() - cache.fetchedAt < JWKS_TTL_MS) return cache.keys
+  const now = Date.now()
 
+  if (force && cache && now - lastForcedAt < FORCED_REFETCH_INTERVAL_MS) return cache.keys
+  if (!force && cache && now - cache.fetchedAt < JWKS_TTL_MS) return cache.keys
+
+  if (force) lastForcedAt = now
   const keys = await fetchJwks(domain)
   cache = { keys, fetchedAt: Date.now() }
   return keys
@@ -213,17 +265,19 @@ export async function auth0User(token: string, config: Auth0Config): Promise<Aut
   // both work.
   if (header.alg !== 'RS256') return null
 
+  // Decoded before any key is fetched. A signature that is not base64url cannot
+  // verify against anything, so finding out now costs nothing and keeps a
+  // malformed token from reaching the JWKS endpoint at all.
+  const signature = base64UrlToBytes(rawSignature)
+  if (!signature) return null
+
   const kid = typeof header.kid === 'string' ? header.kid : null
 
   let jwk = pickJwk(await signingKeys(config.domain), kid)
   if (!jwk) jwk = pickJwk(await signingKeys(config.domain, true), kid)
   if (!jwk) return null
 
-  const verified = await verifySignature(
-    jwk,
-    `${rawHeader}.${rawPayload}`,
-    base64UrlToBytes(rawSignature),
-  )
+  const verified = await verifySignature(jwk, `${rawHeader}.${rawPayload}`, signature)
   if (!verified) return null
 
   // Auth0's issuer always carries the trailing slash. Compared rather than
@@ -241,7 +295,8 @@ export async function auth0User(token: string, config: Auth0Config): Promise<Aut
   return { id: payload.sub, email: typeof email === 'string' ? email : '' }
 }
 
-/** Test seam: forget the cached signing keys. */
+/** Test seam: forget the cached signing keys, and the rate limit on refetching. */
 export function resetForTests(): void {
   cache = null
+  lastForcedAt = 0
 }

@@ -8,115 +8,42 @@
  * down. So the proxy verifies the session the editor already requires (see
  * src/components/SignInGate.tsx).
  *
- * The session it checks is the one `/api/session` mints: a Supabase-shaped JWT
- * signed with the project's own secret, carrying the Netlify Identity user id in
- * `sub`. Verification is therefore local — an HMAC over bytes we already have,
- * with no call to Netlify, Supabase, or anyone else. That matters because one
- * video generation polls for minutes, and a round trip per poll would be both
- * slow and rude to a service that is not being paid to answer them. It is also
- * the whole reason the Identity check happens once at the mint rather than here.
+ * The session it checks is the Auth0 access token itself. It used to be a
+ * Supabase-shaped JWT this site signed with the project's own secret, because
+ * Supabase would not accept an Auth0 token and something had to convert; with
+ * Auth0 registered on the project as a third-party auth provider there is
+ * nothing left to convert, and no second credential to check. So this asks
+ * auth0.ts, which is where verifying an Auth0 token already lived — one verifier
+ * rather than two, and the one that was already checking issuer and audience.
+ *
+ * Verification stays local, which is not a nicety. One video generation polls
+ * for minutes, and a round trip to Auth0 per poll would be both slow and rude to
+ * a service that is not being paid to answer them. What makes it local is the
+ * JWKS cache in auth0.ts: an hour's worth of signing keys held in the module,
+ * refetched once when a token names a key id it has not seen. The signature
+ * check itself is arithmetic over bytes already in hand. Nothing here may
+ * reintroduce a per-request call to the tenant.
+ *
+ * The browser sends the *access* token here, not the ID token Supabase gets:
+ * `aud` is checked against this site's API, and only the access token carries
+ * it. See src/lib/falClient.ts.
  *
  * Every *secret* here reads an unprefixed environment variable. A `VITE_` prefix
  * would inline the value into the browser bundle, which is exactly the mistake
- * this module exists to avoid.
+ * this module exists to avoid. Neither value this one reads is a secret — the
+ * tenant domain is in every authorisation URL and the audience is in every token
+ * — which is why both accept their `VITE_` forms.
  */
 import { jsonError } from './proxy'
-import { SESSION_ISSUER, supabaseJwtSecret } from './supabaseToken'
+import { Auth0UnavailableError, auth0Config, auth0User } from './auth0'
 
 /**
- * Escape hatch for `netlify dev` against a checkout with no Supabase project.
+ * Escape hatch for `netlify dev` against a checkout with no Auth0 tenant.
  * Deliberately opt-in: the default has to be "refuse" rather than "allow", or a
  * forgotten variable in production silently reopens the endpoint.
  */
 function allowAnonymous(): boolean {
   return process.env.FAL_PROXY_ALLOW_ANONYMOUS === '1'
-}
-
-export interface JwtClaims {
-  sub?: string
-  exp?: number
-  iss?: string
-}
-
-export interface DecodedJwt {
-  alg: string
-  claims: JwtClaims
-  /** The `<header>.<payload>` bytes the signature covers. */
-  signedData: Uint8Array<ArrayBuffer>
-  signature: Uint8Array<ArrayBuffer>
-}
-
-function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> | null {
-  const padded = value
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .padEnd(Math.ceil(value.length / 4) * 4, '=')
-  try {
-    const binary = atob(padded)
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0))
-  } catch {
-    return null
-  }
-}
-
-function decodeJsonSegment(segment: string): Record<string, unknown> | null {
-  const bytes = base64UrlToBytes(segment)
-  if (!bytes) return null
-  try {
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
-
-/** Splits a JWT into its parts without trusting any of them yet. */
-export function decodeJwt(token: string): DecodedJwt | null {
-  const parts = token.split('.')
-  if (parts.length !== 3) return null
-
-  const [rawHeader = '', rawPayload = '', rawSignature = ''] = parts
-  const header = decodeJsonSegment(rawHeader)
-  const claims = decodeJsonSegment(rawPayload)
-  const signature = base64UrlToBytes(rawSignature)
-
-  if (!header || !claims || !signature || typeof header.alg !== 'string') return null
-
-  return {
-    alg: header.alg,
-    claims: {
-      sub: typeof claims.sub === 'string' ? claims.sub : undefined,
-      exp: typeof claims.exp === 'number' ? claims.exp : undefined,
-      iss: typeof claims.iss === 'string' ? claims.iss : undefined,
-    },
-    signedData: new TextEncoder().encode(`${rawHeader}.${rawPayload}`),
-    signature,
-  }
-}
-
-/**
- * A minute of leeway absorbs clock skew between the minting function and the
- * one checking. A token with no `exp` at all counts as expired — an unbounded
- * session is not something to accept by omission.
- */
-export function isExpired(claims: JwtClaims, nowSeconds: number, leewaySeconds = 60): boolean {
-  if (typeof claims.exp !== 'number') return true
-  return nowSeconds > claims.exp + leewaySeconds
-}
-
-async function verifyHmac(jwt: DecodedJwt, secret: string): Promise<boolean> {
-  // Checked rather than assumed: without it `alg` would be attacker-controlled,
-  // and "none" or a downgrade to a family we do not verify would sail through.
-  if (jwt.alg !== 'HS256') return false
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify'],
-  )
-  return crypto.subtle.verify('HMAC', key, jwt.signature, jwt.signedData)
 }
 
 function bearerToken(request: Request): string | null {
@@ -140,17 +67,17 @@ export type SessionResult =
 export async function requireSession(request: Request): Promise<SessionResult> {
   if (allowAnonymous()) return { ok: true, userId: null }
 
-  const secret = supabaseJwtSecret()
+  const config = auth0Config()
 
-  if (!secret) {
+  if (!config) {
     // An operator misconfiguration, not something the visitor did wrong.
     return {
       ok: false,
       response: jsonError(
         503,
         'This site is not set up to authorise generation requests.',
-        'Set SUPABASE_JWT_SECRET — the same secret /api/session signs with — or ' +
-          'FAL_PROXY_ALLOW_ANONYMOUS=1 for local development.',
+        'Set AUTH0_DOMAIN and AUTH0_AUDIENCE — or their VITE_ forms, which are ' +
+          'the same tenant and API — or FAL_PROXY_ALLOW_ANONYMOUS=1 for local development.',
       ),
     }
   }
@@ -158,27 +85,28 @@ export async function requireSession(request: Request): Promise<SessionResult> {
   const token = bearerToken(request)
   if (!token) return { ok: false, response: unauthorised('No session token was sent.') }
 
-  const jwt = decodeJwt(token)
-  if (!jwt) return { ok: false, response: unauthorised('That session token is not readable.') }
-
-  if (isExpired(jwt.claims, Math.floor(Date.now() / 1000))) {
-    return { ok: false, response: unauthorised('That session has expired.') }
+  let user
+  try {
+    // Signature, issuer, audience and expiry, all of them in auth0.ts. Nothing
+    // is re-checked here: a second opinion about a token that has already been
+    // verified is how the two drift apart, and the looser one wins.
+    user = await auth0User(token, config)
+  } catch (error) {
+    // The tenant's signing keys could not be fetched. Not the visitor's fault
+    // and not fixed by signing in again, so it must not be reported as a
+    // rejected token — which is the difference between telling someone to wait
+    // and sending them round a login that was never the problem.
+    return {
+      ok: false,
+      response: jsonError(
+        502,
+        'Could not check who you are just now.',
+        error instanceof Auth0UnavailableError ? error.message : String(error),
+      ),
+    }
   }
 
-  // A token this site did not mint, however well signed. Checked before the
-  // signature so that a Supabase-issued token — same secret, same project,
-  // different issuer — is refused rather than quietly accepted as one of ours.
-  if (jwt.claims.iss !== SESSION_ISSUER) {
-    return { ok: false, response: unauthorised('That session was not issued by this site.') }
-  }
+  if (!user) return { ok: false, response: unauthorised('That session could not be verified.') }
 
-  // An unusable key is a failed verification, never a reason to let the request
-  // through — so the rejection becomes a `false` rather than a 500.
-  const verified = await verifyHmac(jwt, secret).catch(() => false)
-
-  if (!verified) {
-    return { ok: false, response: unauthorised('That session could not be verified.') }
-  }
-
-  return { ok: true, userId: jwt.claims.sub ?? null }
+  return { ok: true, userId: user.id }
 }

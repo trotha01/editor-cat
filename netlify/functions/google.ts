@@ -26,12 +26,13 @@ import {
  * no work left to do: the grant arrives with the account, and is withdrawn from
  * the user's Google account page rather than from a button of ours.
  *
- * Authorised with the caller's *Auth0* token rather than the minted Supabase
- * session, which every other function here checks. That is not an inconsistency:
- * the Auth0 token is the subject of the exchange — it is the thing that proves
- * to Auth0 which account's Google grant is being asked for — so a session minted
- * from it would have to be traded back before it could be used, and there is
- * nothing to gain by the round trip.
+ * Authorised with the caller's Auth0 access token, which is now what every
+ * function here takes — this one was the exception while `/api/session` minted a
+ * Supabase session for the others to carry. It was the exception because the
+ * Auth0 token is the subject of the exchange: it is the thing that proves to
+ * Auth0 which account's Google grant is being asked for, so a token derived from
+ * it would have had to be traded back first. The reason has outlived the
+ * exception, and this endpoint did not have to change.
  */
 
 interface Setup {

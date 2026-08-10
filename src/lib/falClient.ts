@@ -5,8 +5,8 @@
  * to fal. Two reasons, and the first is the stronger one: the fal key belongs
  * to the deployment and is attached on the way through, so it never exists in
  * the browser at all. The second is that we then do not depend on fal's browser
- * CORS policy. What this side sends instead is the user's session token, which
- * is what the function checks before spending the site's credits.
+ * CORS policy. What this side sends instead is the user's Auth0 access token,
+ * which is what the function verifies before spending the site's credits.
  *
  * The queue is used rather than the synchronous endpoint because a Netlify
  * function may only run for about ten seconds and video generation takes
@@ -16,7 +16,7 @@
  */
 import { ProviderError, providerErrorFrom } from './errors'
 import { isMockEnabled, mockFal } from './mock'
-import { supabaseAccessToken } from './supabase/session'
+import { auth0Token } from './auth0/client'
 
 const PROXY_BASE = '/api/fal'
 const QUEUE_ORIGIN = 'https://queue.fal.run'
@@ -64,17 +64,21 @@ export function toProxyPath(absoluteUrl: string): string {
 }
 
 async function falFetch(path: string, init?: RequestInit): Promise<Response> {
+  // The Auth0 access token, not the ID token Supabase gets: the function checks
+  // `aud` against this site's API, which only the access token carries.
+  //
   // Read per request rather than captured: a video job polls for minutes, and
   // the session is renewed underneath it. Reading it fresh each time is what
   // keeps a long job from failing halfway through on a token that was valid
   // when it started.
-  const token = await supabaseAccessToken()
+  const token = await auth0Token()
   const response = await fetch(path, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      // Absent on a build with no Supabase project behind it, where the
-      // function is expected to be running with anonymous access allowed.
+      // Absent when nobody is signed in — a checkout with no Auth0 tenant, or
+      // mock mode — where the function is expected to be running with anonymous
+      // access allowed.
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
   })

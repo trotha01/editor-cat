@@ -10,17 +10,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  * `adoptRedirect`. What is left to protect is the store's own contract, so the
  * client is mocked and the store is what gets exercised.
  *
- * The part worth guarding is the mint. `start` deliberately trades the Auth0
- * session for a Supabase one before reporting success, because a session whose
- * refresh token has run out looks exactly like a good one until something asks
- * it for a token — and the difference between the two must not be discovered by
- * the first save after the editor opens.
+ * The part worth guarding is that `start` asks for a token before reporting
+ * success. It used to be trading the Auth0 session for a minted Supabase one;
+ * with Supabase trusting Auth0 directly there is nothing to trade, but the call
+ * is still a silent refresh — and a session whose refresh token has run out
+ * looks exactly like a good one until something makes that call. The difference
+ * between the two must not be discovered by the first save after the editor
+ * opens.
  */
 const adoptRedirect = vi.fn()
 const beginGoogleSignIn = vi.fn()
 const auth0SignOut = vi.fn()
 const supabaseAccessToken = vi.fn()
-const clearSupabaseSession = vi.fn()
 
 vi.mock('../lib/auth0/client', () => ({
   adoptRedirect: () => adoptRedirect(),
@@ -37,7 +38,6 @@ vi.mock('../lib/supabase/session', async () => {
   return {
     ...actual,
     supabaseAccessToken: () => supabaseAccessToken(),
-    clearSupabaseSession: () => clearSupabaseSession(),
   }
 })
 
@@ -72,14 +72,14 @@ describe('start', () => {
     expect(adoptRedirect).toHaveBeenCalledOnce()
   })
 
-  it('mints the Supabase session before reporting success', async () => {
+  it('asks for the token before reporting success', async () => {
     await useAuthStore.getState().start()
     expect(supabaseAccessToken).toHaveBeenCalledOnce()
   })
 
-  it('treats a session that cannot mint as signed out', async () => {
+  it('treats a session that cannot produce a token as signed out', async () => {
     // An Auth0 session whose refresh token has run out looks valid until it is
-    // asked for a token. Finding out here is the whole point of minting eagerly.
+    // asked for one. Finding out here is the whole point of asking eagerly.
     supabaseAccessToken.mockRejectedValue(new SignInRequiredError())
 
     await useAuthStore.getState().start()
@@ -88,15 +88,17 @@ describe('start', () => {
     expect(useAuthStore.getState().account).toBeNull()
   })
 
-  it('keeps a good session when the deployment is the thing that is broken', async () => {
-    // A missing signing secret is not fixed by signing in again, so the gate is
-    // told what happened rather than being sent round the loop once more.
-    supabaseAccessToken.mockRejectedValue(new Error('SUPABASE_JWT_SECRET is not set'))
+  it('keeps a good session when the failure is not one signing in again fixes', async () => {
+    // Nothing is expected to land here now that no server has to answer for a
+    // token to exist. The branch stays because an unforeseen failure should
+    // reach the gate as something it can show, rather than sending someone back
+    // round a loop that was never the problem.
+    supabaseAccessToken.mockRejectedValue(new Error('something unforeseen'))
 
     await useAuthStore.getState().start()
 
     expect(useAuthStore.getState().status).toBe('signed-in')
-    expect(useAuthStore.getState().error).toMatch(/SUPABASE_JWT_SECRET/)
+    expect(useAuthStore.getState().error).toMatch(/something unforeseen/)
   })
 
   it('reports a refused consent rather than throwing out of the effect', async () => {
@@ -139,15 +141,17 @@ describe('signIn', () => {
 })
 
 describe('signOut', () => {
-  it('drops the Supabase session first, and unconditionally', async () => {
-    // It is a live credential for this account's rows, and it has to be gone
-    // whether or not the round trip to Auth0 succeeds.
+  it('ends the session locally even when Auth0 cannot be reached', async () => {
+    // There is no separate credential to drop here any more — the token is
+    // auth0-spa-js's, and `auth0SignOut` clears its cache. What still has to
+    // hold is that a failed round trip does not leave the store claiming
+    // somebody is signed in.
     auth0SignOut.mockRejectedValue(new Error('network'))
 
     await useAuthStore.getState().signOut()
 
-    expect(clearSupabaseSession).toHaveBeenCalledOnce()
     expect(useAuthStore.getState().status).toBe('signed-out')
     expect(useAuthStore.getState().account).toBeNull()
+    expect(useAuthStore.getState().error).toMatch(/network/)
   })
 })

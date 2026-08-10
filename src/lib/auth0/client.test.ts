@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  */
 const getUser = vi.fn()
 const getTokenSilently = vi.fn()
+const getIdTokenClaims = vi.fn()
 const handleRedirectCallback = vi.fn()
 const loginWithRedirect = vi.fn()
 const connectAccountWithRedirect = vi.fn()
@@ -21,6 +22,7 @@ vi.mock('@auth0/auth0-spa-js', () => ({
   Auth0Client: class {
     getUser = getUser
     getTokenSilently = getTokenSilently
+    getIdTokenClaims = getIdTokenClaims
     handleRedirectCallback = handleRedirectCallback
     loginWithRedirect = loginWithRedirect
     connectAccountWithRedirect = connectAccountWithRedirect
@@ -42,6 +44,7 @@ beforeEach(async () => {
 
   getUser.mockResolvedValue(USER)
   getTokenSilently.mockResolvedValue('auth0-token')
+  getIdTokenClaims.mockResolvedValue({ __raw: 'raw-id-token', sub: USER.sub })
   handleRedirectCallback.mockResolvedValue(undefined)
 
   vi.resetModules()
@@ -218,15 +221,61 @@ describe('adoptRedirect on a finished Drive grant', () => {
 })
 
 describe('auth0Token', () => {
-  it('answers null rather than minting when nobody is signed in', async () => {
+  it('answers null rather than asking when nobody is signed in', async () => {
     await expect(client.auth0Token()).resolves.toBeNull()
     expect(getTokenSilently).not.toHaveBeenCalled()
   })
 
-  it('mints once there is an account behind the page', async () => {
+  it('answers once there is an account behind the page', async () => {
     await client.adoptRedirect()
     getTokenSilently.mockClear()
 
     await expect(client.auth0Token()).resolves.toBe('auth0-token')
+  })
+})
+
+/**
+ * The token Supabase takes, which is not the one everything else takes.
+ *
+ * Two tokens, one session, and they are not interchangeable: PostgREST switches
+ * roles on an unnamespaced `role` claim, and Auth0 will only carry that on the
+ * ID token — it strips unnamespaced custom claims from access tokens. Handing
+ * over the wrong one does not fail loudly. It verifies, reads as `anon`, and
+ * returns an empty project list.
+ */
+describe('auth0IdToken', () => {
+  it('answers null rather than asking when nobody is signed in', async () => {
+    await expect(client.auth0IdToken()).resolves.toBeNull()
+    expect(getIdTokenClaims).not.toHaveBeenCalled()
+  })
+
+  it('hands back the raw ID token rather than its decoded claims', async () => {
+    // PostgREST verifies a signature over the encoded form; the parsed claims
+    // are not a credential.
+    await client.adoptRedirect()
+
+    await expect(client.auth0IdToken()).resolves.toBe('raw-id-token')
+  })
+
+  it('refreshes before reading, because the claims come from a cache', async () => {
+    // `getIdTokenClaims` is a synchronous cache read dressed as a promise. Auth0
+    // returns a fresh id_token alongside every refreshed access token, so the
+    // refresh is what puts a current one there — without it a long-open tab goes
+    // on presenting an expired credential to PostgREST.
+    await client.adoptRedirect()
+    getTokenSilently.mockClear()
+
+    await client.auth0IdToken()
+
+    expect(getTokenSilently).toHaveBeenCalled()
+  })
+
+  it('lets a refused refresh through, which is how an ended session reports itself', async () => {
+    // The caller turns this into "sign in again"; swallowing it here would hand
+    // supabase-js a stale token and turn a lapsed session into a query failure.
+    await client.adoptRedirect()
+    getTokenSilently.mockRejectedValue(new Error('login_required'))
+
+    await expect(client.auth0IdToken()).rejects.toThrow(/login_required/)
   })
 })

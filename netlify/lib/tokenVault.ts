@@ -125,10 +125,10 @@ export type Fetcher = typeof fetch
 /**
  * Trades the caller's Auth0 access token for a Google one.
  *
- * The subject token is the token the browser sent, already verified by
- * `/api/session`'s issuer before ever reaching here — Auth0 verifies it again on
- * its own account, which is what makes this safe to call with a value that
- * arrived over the wire.
+ * The subject token is the token the browser sent, already verified against the
+ * tenant's published keys before reaching here (see auth0.ts) — and Auth0
+ * verifies it again on its own account, which is what makes this safe to call
+ * with a value that arrived over the wire.
  */
 export async function googleAccessToken(
   subjectToken: string,

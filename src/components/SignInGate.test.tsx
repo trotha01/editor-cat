@@ -11,9 +11,9 @@ import { render, screen, waitFor } from '@testing-library/react'
  * mid-session, which would lose whatever they had open.
  *
  * The three are three separate screens because they come from three separate
- * places: Netlify Identity signs the user in, Google grants Drive afterwards,
- * and the folder is ours to ask about. The order matters — a Drive prompt in
- * front of someone with no session has no account to file the result under.
+ * places: Auth0 signs the user in, Google grants Drive afterwards, and the
+ * folder is ours to ask about. The order matters — a Drive prompt in front of
+ * someone with no session has no account to file the result under.
  */
 const authState = {
   status: 'checking' as string,
@@ -67,15 +67,10 @@ vi.mock('../lib/google/gis', () => ({
   loadConnectionStatus: () => loadConnectionStatus(),
 }))
 
-const sessionReadiness =
-  vi.fn<() => Promise<{ ready: boolean; problem?: 'not-configured' | 'unreachable' }>>()
+let auth0Configured = true
 
 vi.mock('../lib/auth0/client', () => ({
-  isAuth0Configured: () => driveConfigured,
-}))
-
-vi.mock('../lib/supabase/session', () => ({
-  sessionReadiness: () => sessionReadiness(),
+  isAuth0Configured: () => auth0Configured,
 }))
 
 const createFolder = vi.fn()
@@ -108,10 +103,10 @@ beforeEach(() => {
   driveState.folder = null
   pickerConfigured = true
   driveConfigured = true
+  auth0Configured = true
   createFolder.mockResolvedValue({ id: 'folder_new', name: 'editor-cat' })
   pickFolder.mockResolvedValue({ id: 'folder_chosen', name: 'Renders' })
   loadConnectionStatus.mockResolvedValue({ durable: true, connected: false })
-  sessionReadiness.mockResolvedValue({ ready: true })
 })
 
 afterEach(() => {
@@ -178,42 +173,47 @@ describe('the gate', () => {
   /**
    * What the sign-in screen says when it cannot offer a button.
    *
-   * Two unrelated halves have to be in place — Auth0 settings in the bundle, and
-   * a signing secret to turn an Auth0 login into a Supabase session — and
-   * a single "not set up" message covering both sends whoever deployed the site
-   * to re-check the half that was already right.
+   * This used to be a round trip. The half that could be missing was a signing
+   * secret only the functions could see, so the gate asked `GET /api/session`
+   * before drawing anything and had three answers to tell apart — configured,
+   * not configured, and no answer at all. Supabase validates the Auth0 token
+   * itself now, that endpoint is gone, and what is left is compiled into this
+   * bundle: one check, answered on the first render.
+   *
+   * The rule it enforces is unchanged and is the reason any of this exists. A
+   * deployment that cannot honour a sign-in must say so, rather than sending
+   * someone out through Google's consent screen to arrive back at nothing.
    */
   describe('what stops a sign-in', () => {
-    it('names Auth0 when the bundle has none, before blaming anything else', async () => {
-      // Checked first: without it there is nothing to sign in with, however well
-      // the Supabase half is configured.
-      driveConfigured = false
-      sessionReadiness.mockResolvedValue({ ready: false, problem: 'not-configured' })
+    it('refuses to offer a sign-in the deployment cannot honour', async () => {
+      auth0Configured = false
 
       mount()
 
       const callout = await screen.findByRole('alert')
       expect(callout).toHaveTextContent(/VITE_AUTH0_DOMAIN/i)
-      expect(callout).not.toHaveTextContent('SUPABASE_JWT_SECRET')
       expect(screen.queryByRole('button', { name: /google/i })).not.toBeInTheDocument()
     })
 
-    it('names the signing secret when that is the only thing missing', async () => {
-      sessionReadiness.mockResolvedValue({ ready: false, problem: 'not-configured' })
-
-      mount()
-
-      expect(await screen.findByRole('alert')).toHaveTextContent('SUPABASE_JWT_SECRET')
-    })
-
-    it('offers a reload for a server that did not answer, not a verdict on the setup', async () => {
-      sessionReadiness.mockResolvedValue({ ready: false, problem: 'unreachable' })
+    it('names nothing that is no longer part of the answer', async () => {
+      // The secret this used to blame does not exist any more, and neither does
+      // the endpoint that reported on it. A message naming either would send
+      // whoever deployed the site looking for something that is not there.
+      auth0Configured = false
 
       mount()
 
       const callout = await screen.findByRole('alert')
-      expect(callout).toHaveTextContent(/reload/i)
-      expect(callout).not.toHaveTextContent(/not set up/i)
+      expect(callout).not.toHaveTextContent('SUPABASE_JWT_SECRET')
+      expect(callout).not.toHaveTextContent('/api/session')
+    })
+
+    it('draws the button without waiting on anyone once the bundle has a tenant', () => {
+      // Synchronously, on the first render: there is nothing left to ask, and a
+      // spinner in front of a decision already made is a frame of nothing.
+      mount()
+
+      expect(screen.getByRole('button', { name: /sign in with google/i })).toBeInTheDocument()
     })
   })
 
