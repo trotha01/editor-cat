@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 /**
  * What the title in the header is for.
@@ -10,6 +10,13 @@ import { fireEvent, render, screen } from '@testing-library/react'
  * landed a caret and switching needed a separate arrow. The rules worth holding
  * down are that no click on the name puts it into an editable state, and that
  * the menu it opens still says where renaming went.
+ *
+ * The menu is also where projects are deleted, from a trash icon a few pixels
+ * from the row that switches to one — and what that destroys is hours of work
+ * this app cannot reconstruct: the media is recoverable from Drive, the
+ * arrangement of it is not. So the rule those tests hold is narrow and worth
+ * stating plainly: clicking the button must not delete anything. Only answering
+ * the question does.
  */
 
 const projectState = {
@@ -25,12 +32,15 @@ const PROJECTS = [
 const projectsState = {
   status: 'saved' as string,
   projects: PROJECTS,
+  archived: [] as { id: string; name: string; deletedAt: string }[],
   activeId: 'p1' as string | null,
   busy: false,
   listError: null as string | null,
   openProject: vi.fn(async () => {}),
   newProject: vi.fn(async () => {}),
-  removeProject: vi.fn(async () => {}),
+  archiveProject: vi.fn(async () => {}),
+  restoreProject: vi.fn(async () => {}),
+  loadArchived: vi.fn(async () => {}),
   reloadProjects: vi.fn(async () => {}),
 }
 
@@ -65,6 +75,7 @@ beforeEach(() => {
   projectState.project = { id: 'p1', name: 'Cat trailer' }
   projectsState.status = 'saved'
   projectsState.projects = PROJECTS
+  projectsState.archived = []
   projectsState.activeId = 'p1'
   projectsState.busy = false
   projectsState.listError = null
@@ -196,16 +207,88 @@ describe('when the list of projects could not be fetched', () => {
   })
 })
 
-describe('with no account behind the build', () => {
-  it('shows the name and nothing to press, there being nothing to switch to', () => {
-    // One project, held in IndexedDB. A menu here would open onto a list of
-    // itself, and renaming is in Settings the same as it is signed in.
-    projectsState.status = 'local'
+describe('deleting a project', () => {
+  it('asks before doing anything', () => {
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Cat trailer' }))
+
+    // The click that matters is the second one. This one only raises a question.
+    expect(projectsState.archiveProject).not.toHaveBeenCalled()
+    expect(screen.getByText(/delete this project\?/i)).toBeInTheDocument()
+  })
+
+  it('names the project, since the button that opened this is an icon in a list', () => {
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Beach reel' }))
+
+    expect(screen.getByText('Beach reel')).toBeInTheDocument()
+  })
+
+  it('says the project can be brought back, and for how long', () => {
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Cat trailer' }))
+
+    // The old wording was "this cannot be undone", which was true of a delete
+    // and would be a lie about ninety days of grace.
+    expect(screen.getByText(/restore it/i)).toHaveTextContent('90 days')
+    expect(screen.queryByText(/cannot be undone/i)).not.toBeInTheDocument()
+  })
+
+  it('deletes it when the question is answered', async () => {
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Cat trailer' }))
+    fireEvent.click(screen.getByRole('button', { name: /delete project/i }))
+
+    await waitFor(() => expect(projectsState.archiveProject).toHaveBeenCalledWith('p1'))
+  })
+
+  it('does nothing at all when it is declined', async () => {
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Cat trailer' }))
+    fireEvent.click(screen.getByRole('button', { name: /keep it/i }))
+
+    await waitFor(() =>
+      expect(screen.queryByText(/delete this project\?/i)).not.toBeInTheDocument(),
+    )
+    expect(projectsState.archiveProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('the deleted ones', () => {
+  it('offers nothing to restore when nothing has been deleted', () => {
+    mount()
+    fireEvent.click(title())
+
+    // A permanent empty section about something most people never do.
+    expect(screen.queryByText('Recently deleted')).not.toBeInTheDocument()
+  })
+
+  it('offers a deleted project back, with the time it has left', () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+    projectsState.archived = [{ id: 'p9', name: 'Otter b-roll', deletedAt: twoDaysAgo }]
 
     mount()
+    fireEvent.click(title())
 
-    expect(screen.getByText('Cat trailer')).toBeInTheDocument()
-    expect(screen.queryByRole('button')).not.toBeInTheDocument()
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.getByText('Otter b-roll')).toBeInTheDocument()
+    expect(screen.getByText(/88 days left to restore/i)).toBeInTheDocument()
+  })
+
+  it('puts one back when asked, without a second question', async () => {
+    projectsState.archived = [
+      { id: 'p9', name: 'Otter b-roll', deletedAt: new Date().toISOString() },
+    ]
+
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: /restore/i }))
+
+    // Nothing is lost by restoring, so nothing needs confirming.
+    await waitFor(() => expect(projectsState.restoreProject).toHaveBeenCalledWith('p9'))
   })
 })
