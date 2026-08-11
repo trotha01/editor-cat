@@ -336,6 +336,32 @@ export function clipForAsset(asset: Asset, id: string): Clip {
 }
 
 /**
+ * Where a clip added at `time` belongs in the run: straight after the clip the
+ * playhead is sitting over.
+ *
+ * The end of the track is the one place a new clip is rarely wanted once there
+ * is anything on the timeline — you park the playhead on the shot you are
+ * working on precisely because that is where the next thing goes — so the
+ * position is read off the playhead rather than off the length of the picture.
+ *
+ * Which clip that is comes from `clipAtTime`, so this agrees with what is on
+ * screen at that moment, and the rules it settles for the preview settle this
+ * too: a time exactly on a cut belongs to the clip beginning there, so the new
+ * clip lands after that one rather than in front of it, and a time inside a
+ * transition belongs to the outgoing clip, so the new clip arrives between the
+ * two being blended.
+ *
+ * Where there is no clip to be after — past the end of the picture, inside the
+ * lead-in, or on an empty timeline — it is the end of the run. The black in
+ * front of the first clip is not a position in the order: clips sit end to end,
+ * so a clip put *in* a lead-in could only close it.
+ */
+export function insertIndexAt(clips: readonly Clip[], time: number, leadIn = 0): number {
+  const under = clipAtTime(clips, time, leadIn)
+  return under ? under.index + 1 : clips.length
+}
+
+/**
  * How far each clip's start moved between two arrangements, keyed by clip id.
  *
  * Rearranging the picture leaves every clip pointing at the same source for the
