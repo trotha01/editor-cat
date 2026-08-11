@@ -1,56 +1,78 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { decodeJwt, isExpired, pickJwk, requireSession, resetJwksCacheForTests } from './auth'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { requireSession } from './auth'
+import { resetForTests } from './auth0'
 
-const SECRET = 'a-shared-signing-secret'
-const PROJECT = 'https://abcdefgh.supabase.co'
+/**
+ * What `/api/fal/*` will and will not spend the site's fal credits on.
+ *
+ * This used to check a token this repository also minted, so both halves of the
+ * argument lived here and the test could sign one. It now checks the Auth0
+ * access token the browser already holds, verified by auth0.ts against the
+ * tenant's published keys — so these sign real RS256 tokens with a real key
+ * pair and stub only the JWKS endpoint, exactly as auth0.test.ts does.
+ *
+ * The overlap with auth0.test.ts is deliberate rather than duplicated coverage.
+ * That file proves the verifier is correct; this one proves `requireSession`
+ * actually consults it and turns each answer into the right status code. A
+ * version of this module that decoded the claims and skipped the signature would
+ * pass every test in the other file.
+ */
+const DOMAIN = 'tenant.auth0.com'
+const AUDIENCE = 'https://editor-cat/api'
 
 const ENV_KEYS = [
-  'SUPABASE_URL',
-  'VITE_SUPABASE_URL',
-  'SUPABASE_JWT_SECRET',
+  'AUTH0_DOMAIN',
+  'AUTH0_AUDIENCE',
+  'VITE_AUTH0_DOMAIN',
+  'VITE_AUTH0_AUDIENCE',
   'FAL_PROXY_ALLOW_ANONYMOUS',
 ] as const
 
 let saved: Record<string, string | undefined> = {}
 
-beforeEach(() => {
-  // Vitest reuses worker processes, so environment changes have to be undone
-  // or they leak into whatever file runs next.
-  saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]))
-  for (const key of ENV_KEYS) delete process.env[key]
-  resetJwksCacheForTests()
-})
+let keyPair: CryptoKeyPair
+let publicJwk: JsonWebKey
 
-afterEach(() => {
-  for (const key of ENV_KEYS) {
-    const value = saved[key]
-    if (value === undefined) delete process.env[key]
-    else process.env[key] = value
-  }
-})
-
-const b64url = (value: string | Uint8Array) => Buffer.from(value).toString('base64url')
-
-async function signHs256(claims: Record<string, unknown>, secret = SECRET): Promise<string> {
-  const data = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(JSON.stringify(claims))}`
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  )
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data))
-  return `${data}.${b64url(new Uint8Array(signature))}`
+function base64Url(value: Uint8Array | string): string {
+  const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-function validClaims(overrides: Record<string, unknown> = {}) {
+/** Signs a token the way Auth0 would, so the real verifier sees the real thing. */
+async function sign(
+  claims: Record<string, unknown>,
+  header: Record<string, unknown> = {},
+  signingKey: CryptoKey = keyPair.privateKey,
+): Promise<string> {
+  const encoded = `${base64Url(
+    JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: 'key-1', ...header }),
+  )}.${base64Url(JSON.stringify(claims))}`
+  const signature = await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5',
+    signingKey,
+    new TextEncoder().encode(encoded),
+  )
+  return `${encoded}.${base64Url(new Uint8Array(signature))}`
+}
+
+function validClaims(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    sub: 'user-123',
-    iss: `${PROJECT}/auth/v1`,
+    sub: 'google-oauth2|104372',
+    iss: `https://${DOMAIN}/`,
+    aud: [AUDIENCE, `https://${DOMAIN}/userinfo`],
     exp: Math.floor(Date.now() / 1000) + 3600,
     ...overrides,
   }
+}
+
+function serveJwks(keys: unknown[] = [{ ...publicJwk, kid: 'key-1' }]) {
+  vi.stubGlobal('fetch', () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ keys }), { headers: { 'content-type': 'application/json' } }),
+    ),
+  )
 }
 
 function requestWith(token?: string): Request {
@@ -59,101 +81,73 @@ function requestWith(token?: string): Request {
   })
 }
 
-describe('decodeJwt', () => {
-  it('reads the header and claims without trusting them yet', async () => {
-    const token = await signHs256(validClaims())
-    const jwt = decodeJwt(token)
+async function newKeyPair(): Promise<CryptoKeyPair> {
+  return (await crypto.subtle.generateKey(
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: 'SHA-256',
+    },
+    true,
+    ['sign', 'verify'],
+  )) as CryptoKeyPair
+}
 
-    expect(jwt?.alg).toBe('HS256')
-    expect(jwt?.claims.sub).toBe('user-123')
-    expect(jwt?.claims.iss).toBe(`${PROJECT}/auth/v1`)
-  })
+beforeEach(async () => {
+  // Vitest reuses worker processes, so environment changes have to be undone
+  // or they leak into whatever file runs next.
+  saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]))
+  for (const key of ENV_KEYS) delete process.env[key]
 
-  it('refuses anything that is not three readable segments', () => {
-    expect(decodeJwt('')).toBeNull()
-    expect(decodeJwt('one.two')).toBeNull()
-    expect(decodeJwt('a.b.c.d')).toBeNull()
-    expect(decodeJwt('not!base64.at!all.nope')).toBeNull()
-    expect(decodeJwt(`${b64url('{"typ":"JWT"}')}.${b64url('{}')}.sig`)).toBeNull()
-  })
+  // The module-level JWKS cache outlives a single test, which is the point of
+  // it — but a key served in one test must not verify a token in the next.
+  resetForTests()
+
+  keyPair = await newKeyPair()
+  publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  serveJwks()
 })
 
-describe('isExpired', () => {
-  it('allows a minute of clock skew between Supabase and the function host', () => {
-    expect(isExpired({ exp: 1000 }, 1030)).toBe(false)
-    expect(isExpired({ exp: 1000 }, 1100)).toBe(true)
-  })
-
-  it('treats a token with no expiry as expired', () => {
-    // An unbounded session is not something to accept by omission.
-    expect(isExpired({}, 1000)).toBe(true)
-  })
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    const value = saved[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  vi.unstubAllGlobals()
 })
 
-describe('pickJwk', () => {
-  it('matches on kid, and accepts a lone key that names none', () => {
-    // `kid` is not part of TypeScript's JsonWebKey, though every real key set
-    // carries it — which is why pickJwk has to reach for it the same way.
-    const keys = [{ kid: 'a' }, { kid: 'b' }] as unknown as JsonWebKey[]
-    expect(pickJwk({ keys }, 'b')).toBe(keys[1])
-    expect(pickJwk({ keys }, 'missing')).toBeNull()
-    expect(pickJwk({ keys: [keys[0]!] }, null)).toBe(keys[0])
-  })
-
-  it('refuses to guess between several unnamed keys', () => {
-    expect(pickJwk({ keys: [{}, {}] as JsonWebKey[] }, null)).toBeNull()
-    expect(pickJwk({}, null)).toBeNull()
-  })
-})
+function configured() {
+  process.env.AUTH0_DOMAIN = DOMAIN
+  process.env.AUTH0_AUDIENCE = AUDIENCE
+}
 
 describe('requireSession', () => {
-  it('accepts a session signed with the project secret', async () => {
-    process.env.SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
+  it('accepts a token the tenant really signed, and reports whose it is', async () => {
+    configured()
 
-    const result = await requireSession(requestWith(await signHs256(validClaims())))
+    const result = await requireSession(requestWith(await sign(validClaims())))
 
     expect(result.ok).toBe(true)
-    if (result.ok) expect(result.userId).toBe('user-123')
-  })
-
-  it('counts a project named only by the build-time variable as configured', async () => {
-    // Operators set VITE_SUPABASE_URL because the browser bundle needs it. When
-    // this module insisted on the unprefixed name it called such a deployment
-    // unconfigured and answered 503 — after the sign-in screen, reading a
-    // different variable, had already let the user in and taken their consent.
-    process.env.VITE_SUPABASE_URL = PROJECT
-
-    const result = await requireSession(requestWith(await signHs256(validClaims())))
-
-    expect(result.ok).toBe(false)
-    // 401 "sign in", never 503 "this site is not set up": the token is the
-    // problem here, not the deployment.
-    if (!result.ok) expect(result.response.status).toBe(401)
-  })
-
-  it('verifies against a project named only by the build-time variable', async () => {
-    // The fallback widens where the URL is read from, never what it means — so
-    // the issuer it names still has to be the one that signed the session.
-    process.env.VITE_SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
-
-    const own = await requireSession(requestWith(await signHs256(validClaims())))
-    expect(own.ok).toBe(true)
-    if (own.ok) expect(own.userId).toBe('user-123')
-
-    const foreign = await signHs256(
-      validClaims({ iss: 'https://someone-else.supabase.co/auth/v1' }),
-    )
-    expect((await requireSession(requestWith(foreign))).ok).toBe(false)
+    // The Auth0 subject, which is what every row is filed under now — and not a
+    // UUID, which is the whole subject of migration 0006.
+    if (result.ok) expect(result.userId).toBe('google-oauth2|104372')
   })
 
   it('fails closed when the deployment is not configured at all', async () => {
     // The dangerous default would be to run open: this endpoint spends money.
-    const result = await requireSession(requestWith(await signHs256(validClaims())))
+    const result = await requireSession(requestWith(await sign(validClaims())))
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.response.status).toBe(503)
+  })
+
+  it('takes the build-time tenant settings, which name the same tenant', async () => {
+    process.env.VITE_AUTH0_DOMAIN = DOMAIN
+    process.env.VITE_AUTH0_AUDIENCE = AUDIENCE
+
+    expect((await requireSession(requestWith(await sign(validClaims())))).ok).toBe(true)
   })
 
   it('allows anonymous access only when explicitly opted in', async () => {
@@ -165,8 +159,7 @@ describe('requireSession', () => {
   })
 
   it('rejects a request with no token, or one that is not a bearer', async () => {
-    process.env.SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
+    configured()
 
     expect((await requireSession(requestWith())).ok).toBe(false)
 
@@ -178,42 +171,94 @@ describe('requireSession', () => {
     if (!result.ok) expect(result.response.status).toBe(401)
   })
 
-  it('rejects an expired session', async () => {
-    process.env.SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
+  it('rejects an expired token', async () => {
+    configured()
 
-    const stale = await signHs256(validClaims({ exp: Math.floor(Date.now() / 1000) - 3600 }))
-    expect((await requireSession(requestWith(stale))).ok).toBe(false)
+    const stale = await sign(validClaims({ exp: Math.floor(Date.now() / 1000) - 3600 }))
+    const result = await requireSession(requestWith(stale))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.response.status).toBe(401)
   })
 
-  it('rejects a session issued by a different Supabase project', async () => {
-    process.env.SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
+  it('rejects a token signed by someone else, however well-formed its claims', async () => {
+    // The whole point of the exercise: correct claims and the wrong key is
+    // exactly what an attacker can produce.
+    configured()
 
-    const foreign = await signHs256(
-      validClaims({ iss: 'https://someone-else.supabase.co/auth/v1' }),
-    )
-    expect((await requireSession(requestWith(foreign))).ok).toBe(false)
-  })
-
-  it('rejects a token signed with the wrong secret', async () => {
-    // The whole point: readable claims are not the same as a verified session.
-    process.env.SUPABASE_URL = PROJECT
-    process.env.SUPABASE_JWT_SECRET = SECRET
-
-    const forged = await signHs256(validClaims(), 'not-the-real-secret')
+    const forged = await sign(validClaims(), {}, (await newKeyPair()).privateKey)
     const result = await requireSession(requestWith(forged))
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.response.status).toBe(401)
   })
 
-  it('rejects an HS256 token when only asymmetric verification is configured', async () => {
-    // Otherwise "alg" would be attacker-controlled: anyone could downgrade to a
-    // secret we never set and have it accepted.
-    process.env.SUPABASE_URL = PROJECT
+  it('rejects an unsigned token', async () => {
+    // `alg: none` is the oldest trick there is, and it only works on a verifier
+    // that reads the algorithm out of the header instead of asserting it.
+    configured()
 
-    const result = await requireSession(requestWith(await signHs256(validClaims())))
+    const header = base64Url(JSON.stringify({ alg: 'none', typ: 'JWT' }))
+    const payload = base64Url(JSON.stringify(validClaims()))
+    const unsigned = `${header}.${payload}.`
+
+    expect((await requireSession(requestWith(unsigned))).ok).toBe(false)
+  })
+
+  it('rejects a token minted for a different audience', async () => {
+    // An access token for another API of the same tenant is signed by the same
+    // key and would otherwise sail through — and this is the check that makes
+    // the ID token, whose `aud` is the SPA's client id, unusable here.
+    configured()
+
+    const other = await sign(validClaims({ aud: 'https://someone-elses/api' }))
+    const result = await requireSession(requestWith(other))
+
     expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.response.status).toBe(401)
+  })
+
+  it('rejects a token from another tenant', async () => {
+    configured()
+
+    const foreign = await sign(validClaims({ iss: 'https://other.auth0.com/' }))
+    expect((await requireSession(requestWith(foreign))).ok).toBe(false)
+  })
+
+  it('says the tenant is unreachable rather than that the token is bad', async () => {
+    // Merging the two would tell someone to sign in again during an outage that
+    // signing in again cannot fix.
+    configured()
+    const token = await sign(validClaims())
+    resetForTests()
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')))
+
+    const result = await requireSession(requestWith(token))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.response.status).toBe(502)
+  })
+
+  it('verifies without a round trip per request, which a polling job depends on', async () => {
+    // One video generation polls for minutes. A fetch per poll would be slow
+    // here and rude to a tenant that is not being paid to answer them, so the
+    // JWKS cache in auth0.ts is load-bearing rather than an optimisation.
+    configured()
+
+    let fetches = 0
+    vi.stubGlobal('fetch', () => {
+      fetches += 1
+      return Promise.resolve(
+        new Response(JSON.stringify({ keys: [{ ...publicJwk, kid: 'key-1' }] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    })
+
+    for (let i = 0; i < 5; i += 1) {
+      expect((await requireSession(requestWith(await sign(validClaims())))).ok).toBe(true)
+    }
+
+    expect(fetches).toBe(1)
   })
 })

@@ -15,6 +15,7 @@ import { LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
 import { AccountSettings } from './AccountSettings'
 import { DriveSettings } from './DriveSettings'
+import { ProjectSettings } from './ProjectSettings'
 import { verifyKey } from '../lib/elevenlabs'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
@@ -80,6 +81,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             <code>VITE_MOCK_PROVIDERS</code> to use the real providers.
           </Callout>
         ) : null}
+
+        <ProjectSettings />
 
         <Callout tone="info" title="Your key stays yours">
           Your ElevenLabs key is held in this browser and attached to each request as it passes
