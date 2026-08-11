@@ -55,6 +55,7 @@ import {
   createVideoTrack,
   laneForClip,
   moveVideoClip,
+  moveVideoTrack,
   trimVideoClip,
   videoClipForAsset,
   videoClipsOf,
@@ -177,11 +178,17 @@ interface ProjectState {
   /** Adds an empty lane of picture on top of the others. */
   addVideoTrack: () => void
   updateVideoTrack: (id: string, patch: Partial<VideoTrack>) => void
+  /**
+   * Moves a lane one step up or down the stack, "up" being towards the front of
+   * the frame. A lane already at that end of the stack stays where it is.
+   */
+  moveVideoTrack: (id: string, direction: 'up' | 'down') => void
   removeVideoTrack: (id: string) => void
   /**
-   * Puts an asset on a video lane at `startTime`, making a lane if every
-   * existing one is busy then. Returns the clip's id, or null when the project
-   * has no lanes at all and none could be made.
+   * Puts an asset on a video lane at `startTime`, as high in the stack as it
+   * will fit and never below the selected layer, making a lane on top if every
+   * candidate is busy then. Returns the clip's id, or null when an explicitly
+   * named lane has no room.
    */
   addVideoClip: (asset: Asset, startTime: number, trackId?: string) => string | null
   /** Moves a layer along its lane or to another, refusing an overlap. */
@@ -570,6 +577,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ),
       })),
 
+    moveVideoTrack: (id, direction) =>
+      mutate((project) => ({
+        ...project,
+        videoTracks: moveVideoTrack(videoTracksOf(project), id, direction),
+      })),
+
     removeVideoTrack: (id) => {
       mutate((project) => ({
         ...project,
@@ -589,7 +602,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     addVideoClip: (asset, startTime, trackId) => {
-      const { project } = get()
+      const { project, selectedVideoClipId } = get()
       const tracks = videoTracksOf(project)
       const clips = videoClipsOf(project)
       const draft = videoClipForAsset(asset, newId('vclip'), '', startTime)
@@ -607,13 +620,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         return draft.id
       }
 
-      const lane = laneForClip(tracks, clips, draft)
+      // Nothing may land under the layer that is selected: picking a layer and
+      // then adding one is how you say "over this", and the selection is the
+      // only thing on screen saying which layer that is.
+      const floorTrackId = clips.find((clip) => clip.id === selectedVideoClipId)?.trackId
+      const lane = laneForClip(tracks, clips, draft, floorTrackId)
       const laneId = lane?.id ?? newId('vtrack')
       mutate((current) => ({
         ...current,
         videoTracks: lane
           ? videoTracksOf(current)
           : [
+              // Appended, so a lane made because every candidate was busy is on
+              // top of the stack. It exists only because there was nowhere high
+              // enough to put this layer, so putting the lane anywhere lower
+              // would give back exactly the placement it was made to avoid.
               ...videoTracksOf(current),
               { ...createVideoTrack(laneId, videoTracksOf(current)), id: laneId },
             ],

@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyProject, useProjectStore } from './useProjectStore'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
-import type { Project } from '../lib/types'
+import type { Asset, Project } from '../lib/types'
 
 const saveProject = vi.fn<(project: Project) => Promise<void>>()
 
@@ -490,5 +490,138 @@ describe('transitions reach storage, and carry the timeline with them', () => {
     useProjectStore.getState().setTransition('clip-2', { kind: 'dissolve', duration: 0.5 })
 
     expect(stored().audioClips[0]?.startTime).toBeCloseTo(5.5)
+  })
+})
+
+/**
+ * The video lane stack: which lane a new layer lands on, and moving lanes along
+ * the order afterwards.
+ *
+ * The order of `videoTracks` is the only record of what covers what — nothing on
+ * a lane says where it sits — so an action that restacks without going through
+ * `mutate` would look right until the project was reloaded and then quietly draw
+ * the frame the other way up. That is why the order is read back out of storage
+ * here rather than off the live store.
+ */
+describe('the video lane stack', () => {
+  const still: Asset = {
+    id: 'a-still',
+    kind: 'image',
+    blobKey: 'b',
+    mimeType: 'image/png',
+    name: 'logo.png',
+    createdAt: 0,
+  }
+
+  /** A project with `count` empty lanes, bottom of the stack first. */
+  const withLanes = (count: number) => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        videoTracks: Array.from({ length: count }, (_unused, index) => ({
+          id: `v${index + 1}`,
+          name: `Video ${index + 1}`,
+          hidden: false,
+          opacity: 1,
+        })),
+        videoClips: [],
+      },
+      selectedVideoClipId: null,
+    })
+  }
+
+  const laneIds = () => (stored().videoTracks ?? []).map((track) => track.id)
+
+  it('moves a lane up the stack and writes the new order down', () => {
+    withLanes(3)
+    useProjectStore.getState().moveVideoTrack('v1', 'up')
+
+    expect(laneIds()).toEqual(['v2', 'v1', 'v3'])
+  })
+
+  it('moves one back down again', () => {
+    withLanes(3)
+    useProjectStore.getState().moveVideoTrack('v3', 'down')
+
+    expect(laneIds()).toEqual(['v1', 'v3', 'v2'])
+  })
+
+  it('leaves the top of the stack alone when it is pushed further up', () => {
+    withLanes(2)
+    useProjectStore.getState().moveVideoTrack('v2', 'up')
+
+    expect(laneIds()).toEqual(['v1', 'v2'])
+  })
+
+  it('leaves every layer on the lane it was on', () => {
+    // Restacking moves lanes, not their contents. A clip that changed lanes
+    // would be a layer that moved in time as well as in depth.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+    const before = (stored().videoClips ?? []).map((clip) => [clip.id, clip.trackId])
+
+    useProjectStore.getState().moveVideoTrack('v1', 'up')
+
+    expect((stored().videoClips ?? []).map((clip) => [clip.id, clip.trackId])).toEqual(before)
+  })
+
+  it('puts a new layer on the highest lane with room, not the lowest', () => {
+    // The bug this fixes: the lane search ran up the array, which is up from
+    // the bottom of the stack, so a new layer landed under everything.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+
+    expect(stored().videoClips?.[0]?.trackId).toBe('v2')
+  })
+
+  it('makes a lane on top of the stack when every candidate is busy', () => {
+    withLanes(1)
+    useProjectStore.getState().addVideoClip(still, 0)
+    useProjectStore.setState({ selectedVideoClipId: null })
+    useProjectStore.getState().addVideoClip(still, 0)
+
+    const lanes = laneIds()
+    expect(lanes).toHaveLength(2)
+    // The lane was made because there was nowhere high enough to put the layer,
+    // so it has to be the last of them — anything else hands back the placement
+    // it was made to avoid.
+    expect(stored().videoClips?.[1]?.trackId).toBe(lanes[1])
+  })
+
+  it('never puts a layer under the one that is selected', () => {
+    // The lower lane is free at that moment and the selected layer's lane is
+    // not, so first-fit would slide the new layer in underneath it. Picking a
+    // layer and then adding one means "over this".
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+    expect(useProjectStore.getState().selectedVideoClipId).toBe(stored().videoClips?.[0]?.id)
+
+    useProjectStore.getState().addVideoClip(still, 1)
+
+    const lanes = laneIds()
+    expect(lanes.indexOf(stored().videoClips?.[1]?.trackId ?? '')).toBeGreaterThan(
+      lanes.indexOf('v2'),
+    )
+  })
+
+  it('keeps using the selected layer’s own lane where there is room on it', () => {
+    // Dropping a layer selects it, so without this every drop after the first
+    // would spawn a lane and a row of stills would be a staircase of lanes.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+    useProjectStore.getState().addVideoClip(still, 10)
+
+    expect(laneIds()).toEqual(['v1', 'v2'])
+    expect(stored().videoClips?.map((clip) => clip.trackId)).toEqual(['v2', 'v2'])
+  })
+
+  it('still refuses an explicitly named lane that has no room', () => {
+    // A drop onto a lane is a request, not a suggestion, and the search that
+    // now prefers the top of the stack must not start quietly answering it.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0, 'v1')
+
+    expect(useProjectStore.getState().addVideoClip(still, 0, 'v1')).toBeNull()
+    expect(stored().videoClips).toHaveLength(1)
   })
 })

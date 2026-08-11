@@ -117,7 +117,11 @@ export interface Clip {
  * over black as happily as over a clip.
  *
  * Later tracks draw over earlier ones, which is the only stacking rule there
- * is: the order in this array is the order up the screen.
+ * is: the order in this array is the order up the screen. Nothing on the track
+ * itself records where it sits, so restacking the picture is only ever moving a
+ * lane along this array — and everything that draws the lanes reverses it, so
+ * that the last entry, the top of the stack, is the one nearest the top of the
+ * screen.
  */
 export interface VideoTrack {
   id: string

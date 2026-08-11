@@ -679,6 +679,12 @@ export function Timeline({
           style={{ width: TRACK_GUTTER_WIDTH }}
         >
           <div className="mb-2 h-6" aria-hidden />
+
+          {/* Video lanes lay over the picture, so their headers sit over the
+              picture's own in the gutter too — the stacking order the lanes
+              draw in, read top to bottom. */}
+          <VideoTrackHeaders />
+
           {/* The picture track's own controls, in the same gutter the audio
               tracks keep theirs in. Lead-in lives here because it is a property
               of the track rather than of any one clip — and because at zero
@@ -715,8 +721,6 @@ export function Timeline({
             </div>
           ) : null}
 
-          <VideoTrackHeaders />
-
           <AudioTrackHeaders />
 
           <CaptionTrackHeaders />
@@ -744,6 +748,10 @@ export function Timeline({
                 </span>
               ))}
             </div>
+
+            {/* Above the picture it is laid over, matching the headers in the
+                gutter: the lanes read up the screen in the order they stack in. */}
+            <VideoTrackLanes zoom={zoom} />
 
             <div className="relative">
               <DndContext
@@ -844,10 +852,6 @@ export function Timeline({
             </div>
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
-
-            {/* Directly under the picture it is laid over, and above the sound:
-                the lanes read up the screen in the order they stack in. */}
-            <VideoTrackLanes zoom={zoom} />
 
             <AudioTrackLanes zoom={zoom} targets={targets} />
 

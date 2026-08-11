@@ -7,6 +7,7 @@ import {
   layerGain,
   layersAt,
   moveVideoClip,
+  moveVideoTrack,
   nextVideoTrackName,
   opacityFor,
   trimVideoClip,
@@ -95,10 +96,40 @@ describe('adding a lane', () => {
 })
 
 describe('placing a clip on a lane', () => {
-  it('takes the first lane with room at that moment', () => {
+  it('takes the highest lane with room, so the layer lands over what is there', () => {
+    // Both lanes are free at that moment. Searching in array order would take
+    // v1, the bottom of the stack, and put the new layer under everything.
     const tracks = [track('v1'), track('v2')]
-    const clips = [clip('a', 'v1', 0, 5)]
+    expect(laneForClip(tracks, [], { startTime: 0, duration: 1 })?.id).toBe('v2')
+  })
+
+  it('drops down the stack past a lane that is busy then', () => {
+    const tracks = [track('v1'), track('v2'), track('v3')]
+    const clips = [clip('a', 'v3', 0, 5)]
     expect(laneForClip(tracks, clips, { startTime: 1, duration: 1 })?.id).toBe('v2')
+  })
+
+  it('never lands under the selected layer', () => {
+    // v1 is free and the selected layer's own lane is not, so the only lane
+    // with room is below the selection — which is the one placement that
+    // picking a layer and then adding one cannot have meant.
+    const tracks = [track('v1'), track('v2')]
+    const clips = [clip('a', 'v2', 0, 5)]
+    expect(laneForClip(tracks, clips, { startTime: 1, duration: 1 }, 'v2')).toBeNull()
+  })
+
+  it('still uses the selected layer’s own lane when it has room', () => {
+    // Dropping a clip selects it, so the selected lane is usually the one just
+    // used. Ruling it out as well would spawn a lane on every single drop.
+    const tracks = [track('v1'), track('v2')]
+    const clips = [clip('a', 'v1', 0, 5), clip('b', 'v2', 0, 10)]
+    expect(laneForClip(tracks, clips, { startTime: 6, duration: 1 }, 'v1')?.id).toBe('v1')
+  })
+
+  it('ignores a floor naming a lane that has been deleted', () => {
+    // Otherwise a stale selection would read as a floor nobody set.
+    const tracks = [track('v1'), track('v2')]
+    expect(laneForClip(tracks, [], { startTime: 0, duration: 1 }, 'gone')?.id).toBe('v2')
   })
 
   it('finds nowhere when every lane is busy, so the caller makes one', () => {
@@ -114,6 +145,51 @@ describe('placing a clip on a lane', () => {
 
   it('never starts a clip before the timeline does', () => {
     expect(videoClipForAsset(video, 'c', 'v1', -5).startTime).toBe(0)
+  })
+})
+
+describe('restacking the lanes', () => {
+  const ids = (tracks: readonly VideoTrack[]) => tracks.map((entry) => entry.id)
+  const stack = [track('v1'), track('v2'), track('v3')]
+
+  it('moves a lane up the stack, which is later in the array', () => {
+    // The direction is the whole of this: the timeline draws the array reversed
+    // so the top of the stack is at the top of the screen, and a lane moved up
+    // on screen has to end up later in the array or it goes the other way.
+    expect(ids(moveVideoTrack(stack, 'v1', 'up'))).toEqual(['v2', 'v1', 'v3'])
+  })
+
+  it('moves one down again, which is earlier', () => {
+    expect(ids(moveVideoTrack(stack, 'v3', 'down'))).toEqual(['v1', 'v3', 'v2'])
+  })
+
+  it('takes a lane over the one it passes, rather than swapping two others', () => {
+    const there = moveVideoTrack(stack, 'v2', 'up')
+    expect(ids(there)).toEqual(['v1', 'v3', 'v2'])
+    expect(ids(moveVideoTrack(there, 'v2', 'down'))).toEqual(ids(stack))
+  })
+
+  it('leaves the top of the stack alone when it is pushed further up', () => {
+    expect(ids(moveVideoTrack(stack, 'v3', 'up'))).toEqual(ids(stack))
+  })
+
+  it('leaves the bottom alone when it is pushed further down', () => {
+    expect(ids(moveVideoTrack(stack, 'v1', 'down'))).toEqual(ids(stack))
+  })
+
+  it('ignores a lane that is not there', () => {
+    expect(ids(moveVideoTrack(stack, 'gone', 'up'))).toEqual(ids(stack))
+  })
+
+  it('changes the order and nothing else about a lane', () => {
+    const named = [track('v1', { name: 'Titles', opacity: 0.4, hidden: true }), track('v2')]
+    expect(moveVideoTrack(named, 'v1', 'up')[1]).toEqual(named[0])
+  })
+
+  it('does not mutate the array it was given', () => {
+    const original = [track('v1'), track('v2')]
+    moveVideoTrack(original, 'v1', 'up')
+    expect(ids(original)).toEqual(['v1', 'v2'])
   })
 })
 
