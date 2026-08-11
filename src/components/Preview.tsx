@@ -298,6 +298,13 @@ function AudioLayer({
 }) {
   const url = useAssetUrl(asset)
   const audioRef = useRef<HTMLAudioElement>(null)
+  // A play() call already in flight. Chrome throws "interrupted by a call to
+  // pause()" when pause() lands on top of a pending play() — and with up to a
+  // dozen-plus of these elements toggling every frame around a clip boundary
+  // or a loop restart, that race is easy to hit. Waiting for it to settle
+  // before pausing keeps the element out of the stuck-refusing-to-play state
+  // that caused, avoiding silence that never recovers.
+  const pendingPlay = useRef<Promise<void> | null>(null)
 
   const active = currentTime >= clip.startTime && currentTime < clip.startTime + clip.duration
 
@@ -308,7 +315,10 @@ function AudioLayer({
     element.volume = Math.max(0, Math.min(1, gain))
 
     if (!active || !playing || gain <= 0) {
-      if (!element.paused) element.pause()
+      if (!element.paused) {
+        if (pendingPlay.current) void pendingPlay.current.then(() => element.pause())
+        else element.pause()
+      }
       return
     }
 
@@ -317,7 +327,13 @@ function AudioLayer({
     if (Math.abs(element.currentTime - target) > SEEK_TOLERANCE) {
       element.currentTime = Math.max(0, target)
     }
-    if (element.paused) void element.play().catch(() => undefined)
+    if (element.paused && !pendingPlay.current) {
+      const request = element.play().catch(() => undefined)
+      pendingPlay.current = request
+      void request.then(() => {
+        if (pendingPlay.current === request) pendingPlay.current = null
+      })
+    }
   }, [active, clip.inPoint, clip.startTime, currentTime, gain, playing])
 
   if (!url) return null

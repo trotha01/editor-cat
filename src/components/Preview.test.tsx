@@ -324,3 +324,73 @@ describe('the F key', () => {
     expect(requestFullscreen).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * Chrome throws "The play() request was interrupted by a call to pause()"
+ * when pause() lands on top of a play() that has not yet settled — easy to
+ * hit here, since every audio element is re-evaluated every frame. Left
+ * unguarded, that race is what silenced a clip: the element ends up out of
+ * sync with the paused flag the code relies on to decide whether to retry.
+ */
+describe('audio playback races', () => {
+  const withVoiceover = {
+    ...project,
+    // No picture, so the only element racing play() and pause() is the audio
+    // one — the picture clip has its own play/pause effect that would
+    // otherwise call the same mocked methods and confuse the assertions.
+    clips: [],
+    audioClips: [
+      {
+        id: 'audio_1',
+        trackId: 'track_1',
+        assetId: 'asset_1',
+        useConverted: false,
+        startTime: 0,
+        inPoint: 0,
+        duration: 4,
+      },
+    ],
+  }
+
+  it('waits for a pending play() to settle before pausing', async () => {
+    projectState.project = withVoiceover
+
+    let pausedState = true
+    let resolvePlay: () => void = () => {}
+    const playPromise = new Promise<void>((resolve) => {
+      resolvePlay = resolve
+    })
+    vi.spyOn(HTMLMediaElement.prototype, 'paused', 'get').mockImplementation(() => pausedState)
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      pausedState = false
+      return playPromise
+    })
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      pausedState = true
+    })
+
+    const view = render(
+      <Preview currentTime={0} playing={true}>
+        <button type="button">Play</button>
+      </Preview>,
+    )
+
+    expect(play).toHaveBeenCalledTimes(1)
+
+    // The clip is told to stop while that play() request is still pending.
+    view.rerender(
+      <Preview currentTime={0} playing={false}>
+        <button type="button">Play</button>
+      </Preview>,
+    )
+
+    expect(pause).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolvePlay()
+      await playPromise
+    })
+
+    expect(pause).toHaveBeenCalledTimes(1)
+  })
+})
