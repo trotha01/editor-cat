@@ -97,6 +97,14 @@ through **Auth0** — and then keeps your timelines in your account: a
 project switcher in the header, auto-save about two seconds after you stop
 editing, and projects that open on any machine you sign in from.
 
+**The project name in the header is the switcher.** Clicking it opens the list
+of your projects, with a new one and a delete beside each. It is not a text
+field: switching is what anyone clicking a title in a header is after, and the
+name is renamed in **Settings → Project name**, which the menu itself points at.
+Signed out, or with no Supabase project configured, there is one project and
+nothing to switch between, so the name is plain text there and Settings is still
+where it is renamed.
+
 **Getting in is three steps, and each asks for one thing.** Sign in with Google;
 grant permission to write to your Drive; pick the folder your media goes into.
 Then the editor. The second step is asked with the first one's email as a hint,
@@ -245,6 +253,18 @@ Each project row carries a version. A write only lands if the version still
 matches what this session last saw, so editing the same project in two tabs
 shows "Changed elsewhere" rather than one tab silently overwriting the other.
 Resolution is a reload — merging two timelines has no sensible automatic answer.
+
+### When the project list does not load
+
+Said out loud, in two places, because this failure is otherwise invisible. When
+the list cannot be fetched nothing gets opened, so the editor comes up on a
+blank document that is indistinguishable from a new project, and the switcher
+opens onto an empty menu that is indistinguishable from a new account. A banner
+under the header names the error and says the plain consequence — nothing
+changed in that blank project is reaching your account — and the switcher menu
+repeats it for anyone who went looking for their projects first. Both offer a
+retry, which fetches the list again and opens a project without disturbing
+whatever is already on screen.
 
 ## Saving to your own Google Drive (optional)
 
@@ -463,6 +483,24 @@ instead.
 > that can carry it, and `src/lib/auth0/client.ts` has one accessor for each:
 > `auth0IdToken()` for Supabase, `auth0Token()` for this site's own functions.
 > Checked against Supabase's documentation on 2026-08-10.
+
+> **Two tokens means two clocks, and auth0-spa-js only watches one of them.** If
+> the site works after a sign-in and then answers `PGRST303` — `"JWT expired"` —
+> on every query some hours later, with the session otherwise intact, this is
+> it. `getTokenSilently()` renews on the _access_ token's expiry: the SDK
+> stores a cache entry as `now + expires_in` from the token response and never
+> reads the ID token's own `exp`, and the ID token it returns sits in a separate
+> per-client cache entry that carries no expiry at all. Auth0's defaults are ten
+> hours on an ID token (Applications → your app → Settings → **ID Token
+> Expiration**) and twenty-four on an API access token (APIs → your API →
+> **Token Expiration**), so for the fourteen hours in between the SDK sees a
+> current cache, refreshes nothing, and hands PostgREST a token that died hours
+> ago. `auth0IdToken()` checks `exp` on the token it is about to send and renews
+> a stale one with `cacheMode: 'off'`, which is the only way to make the SDK
+> spend the refresh token when its own bookkeeping sees nothing wrong. Setting
+> the ID token's lifetime to match the API's would close the window too, but it
+> is a dashboard setting rather than a property of the deployment, so the code
+> does not rely on it.
 
 **3. Make sure the access token's `aud` includes `VITE_AUTH0_AUDIENCE`.** This is
 the API identifier from Auth0 → **Applications → APIs**, and the SPA already asks
