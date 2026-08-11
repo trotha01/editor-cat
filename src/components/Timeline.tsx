@@ -63,6 +63,7 @@ import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './Cl
 import { useAssetStore } from '../state/useAssetStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
+import { useProjectsStore } from '../state/useProjectsStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
 /**
@@ -114,6 +115,7 @@ function frameGrid(pixels: number, overMedia: boolean): string {
 function ClipCard({
   entry,
   asset,
+  mediaLoading,
   zoom,
   width,
   pull,
@@ -130,6 +132,12 @@ function ClipCard({
 }: {
   entry: PositionedClip
   asset: Asset | undefined
+  /**
+   * True while this project's media is still being restored from Drive, so an
+   * asset that has not shown up in the library yet is still on its way rather
+   * than gone.
+   */
+  mediaLoading: boolean
   zoom: number
   /** Drawn width, which has a floor so a very short clip stays clickable. */
   width: number
@@ -265,6 +273,10 @@ function ClipCard({
       >
         {asset ? (
           <AssetThumb asset={asset} className="size-full rounded-none border-0" />
+        ) : mediaLoading ? (
+          <span className="flex size-full items-center justify-center text-xs text-ink-dim">
+            media loading
+          </span>
         ) : (
           <span className="flex size-full items-center justify-center text-xs text-red-700">
             media missing
@@ -459,6 +471,13 @@ export function Timeline({
   const setTransition = useProjectStore((state) => state.setTransition)
   const setAllTransitions = useProjectStore((state) => state.setAllTransitions)
   const assets = useAssetStore((state) => state.assets)
+  const assetsLoading = useAssetStore((state) => state.loading)
+  const hydrating = useProjectsStore((state) => state.hydration !== null)
+  // While either of these is true, a clip whose asset has not shown up yet is
+  // still on its way rather than actually gone — the library's own first load
+  // and a project's media coming back from Drive both leave a gap here before
+  // the asset appears.
+  const mediaLoading = assetsLoading || hydrating
 
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
 
@@ -847,6 +866,7 @@ export function Timeline({
                           key={entry.clip.id}
                           entry={entry}
                           asset={assetById.get(entry.clip.assetId)}
+                          mediaLoading={mediaLoading}
                           zoom={zoom}
                           width={width}
                           pull={pull}
