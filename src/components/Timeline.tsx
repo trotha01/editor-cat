@@ -581,16 +581,38 @@ export function Timeline({
     [project.clips, moveClip],
   )
 
-  const scrub = (event: React.MouseEvent<HTMLDivElement>) => {
-    const ruler = trackRef.current
-    if (!ruler) return
-    // The ruler moves with the scroll container, so its own bounding box
-    // already accounts for the scroll offset.
-    const rect = ruler.getBoundingClientRect()
-    // Snapped, so the playhead parks on a frame line rather than a pixel — the
-    // cut is going to land on one of those anyway, and it should land on the
-    // one you clicked.
-    onSeek(snapToFrame((event.clientX - rect.left) / zoom, project.fps))
+  const scrubAt = useCallback(
+    (clientX: number) => {
+      const ruler = trackRef.current
+      if (!ruler) return
+      // The ruler moves with the scroll container, so its own bounding box
+      // already accounts for the scroll offset.
+      const rect = ruler.getBoundingClientRect()
+      // Snapped, so the playhead parks on a frame line rather than a pixel — the
+      // cut is going to land on one of those anyway, and it should land on the
+      // one you clicked.
+      onSeek(snapToFrame((clientX - rect.left) / zoom, project.fps))
+    },
+    [onSeek, zoom, project.fps],
+  )
+
+  // Pointer capture, same as the trim handles above, so the drag keeps
+  // tracking the playhead even once the cursor has left the thin ruler strip
+  // — which it will, the moment you drag down towards the clips.
+  const beginScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    scrubAt(event.clientX)
+  }
+
+  const moveScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    scrubAt(event.clientX)
+  }
+
+  const endScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.currentTarget
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
   }
 
   const playheadX = currentTime * zoom
@@ -733,7 +755,10 @@ export function Timeline({
                 playhead can be parked on the frame you mean to cut. */}
             <div
               ref={trackRef}
-              onClick={scrub}
+              onPointerDown={beginScrub}
+              onPointerMove={moveScrub}
+              onPointerUp={endScrub}
+              onPointerCancel={endScrub}
               className="relative mb-2 h-6 cursor-pointer rounded bg-surface-2"
               style={frameLines ? { backgroundImage: frameGrid(framePx, false) } : undefined}
               role="presentation"
