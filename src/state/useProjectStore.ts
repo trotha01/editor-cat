@@ -125,12 +125,26 @@ interface ProjectState {
   selectedCaption: CaptionSelection | null
   loaded: boolean
 
+  /**
+   * Projects this edit undid, most recent last, so `undo` and `redo` never
+   * disagree about which one comes back next.
+   */
+  past: Project[]
+  /** Projects an `undo` can restore with `redo`, cleared by the next edit. */
+  future: Project[]
+
   /** Opens the local project. Used when signed out or running unconfigured. */
   load: () => Promise<void>
   /** Replaces the open project wholesale, e.g. with one fetched from Supabase. */
   adopt: (project: Project) => void
   /** Opens a project from the local cache by id. */
   open: (id: string) => Promise<void>
+  /** Steps the timeline back to the project before the last edit, if any. */
+  undo: () => void
+  /** Steps the timeline forward to the edit an `undo` just backed out of. */
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
   rename: (name: string) => void
   setResolution: (width: number, height: number) => void
   /**
@@ -257,12 +271,47 @@ function persist(project: Project): void {
   })
 }
 
+/** How many edits back `undo` can reach before the oldest ones fall off. */
+const MAX_HISTORY = 100
+
+/**
+ * Drops a selection that no longer points at anything, the way jumping to a
+ * project of a project store already does elsewhere in this file. An undo can
+ * bring back a clip that still has today's id but not today's neighbours, so
+ * checking existence — not just id equality — is what keeps a stale selection
+ * from driving a panel that has nothing left to show.
+ */
+function prunedSelection(project: Project, state: ProjectState) {
+  return {
+    selectedClipId: project.clips.some((clip) => clip.id === state.selectedClipId)
+      ? state.selectedClipId
+      : null,
+    selectedAudioClipId: project.audioClips.some((clip) => clip.id === state.selectedAudioClipId)
+      ? state.selectedAudioClipId
+      : null,
+    selectedVideoClipId: videoClipsOf(project).some((clip) => clip.id === state.selectedVideoClipId)
+      ? state.selectedVideoClipId
+      : null,
+    selectedCaption: captionCuesOf(project).some((cue) => cue.id === state.selectedCaption?.cueId)
+      ? state.selectedCaption
+      : null,
+  }
+}
+
 export const useProjectStore = create<ProjectState>((set, get) => {
   const mutate = (fn: (project: Project) => Project) => {
     set((state) => {
       const next = fn(state.project)
       persist(next)
-      return { project: next }
+      // A refused edit (a trim with no room, a move that would overlap) hands
+      // the same project back unchanged. Recording that as a step would give
+      // undo a no-op to walk through for every click that did nothing.
+      if (next === state.project) return { project: next }
+      return {
+        project: next,
+        past: [...state.past, state.project].slice(-MAX_HISTORY),
+        future: [],
+      }
     })
   }
 
@@ -311,6 +360,8 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     selectedVideoClipId: null,
     selectedCaption: null,
     loaded: false,
+    past: [],
+    future: [],
 
     load: async () => {
       await get().open(LOCAL_PROJECT_ID)
@@ -330,9 +381,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           selectedAudioClipId: null,
           selectedVideoClipId: null,
           selectedCaption: null,
+          // A different project has nothing to do with the one just left, so
+          // an undo here must not reach back into it.
+          past: [],
+          future: [],
         })
       } catch {
-        set({ project: emptyProject(id), loaded: true })
+        set({ project: emptyProject(id), loaded: true, past: [], future: [] })
       }
     },
 
@@ -345,8 +400,41 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedAudioClipId: null,
         selectedVideoClipId: null,
         selectedCaption: null,
+        past: [],
+        future: [],
       })
     },
+
+    undo: () => {
+      set((state) => {
+        const previous = state.past.at(-1)
+        if (!previous) return {}
+        persist(previous)
+        return {
+          project: previous,
+          past: state.past.slice(0, -1),
+          future: [state.project, ...state.future],
+          ...prunedSelection(previous, state),
+        }
+      })
+    },
+
+    redo: () => {
+      set((state) => {
+        const next = state.future[0]
+        if (!next) return {}
+        persist(next)
+        return {
+          project: next,
+          past: [...state.past, state.project],
+          future: state.future.slice(1),
+          ...prunedSelection(next, state),
+        }
+      })
+    },
+
+    canUndo: () => get().past.length > 0,
+    canRedo: () => get().future.length > 0,
 
     rename: (name) => mutate((project) => ({ ...project, name })),
 
