@@ -202,7 +202,7 @@ function ClipChip({
 
   const items: ClipMenuItem[] = [
     ...(target ? [captionClipItem(target, () => onCaption(target))] : []),
-    { icon: '🗑', label: `Delete ${label}`, onSelect: onRemove, danger: true },
+    { icon: '🗑', label: `Delete ${label}`, note: 'Delete', onSelect: onRemove, danger: true },
   ]
 
   return (

@@ -256,7 +256,13 @@ function LayerChip({
                   onSelect: onToggleMute,
                 },
               ]),
-          { icon: '🗑', label: `Remove ${label} from this lane`, onSelect: onRemove, danger: true },
+          {
+            icon: '🗑',
+            label: `Remove ${label} from this lane`,
+            note: 'Delete',
+            onSelect: onRemove,
+            danger: true,
+          },
         ]}
         className="ml-auto size-4 shrink-0 opacity-70 transition hover:opacity-100"
       />

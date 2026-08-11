@@ -232,7 +232,13 @@ function ClipCard({
           },
         ]
       : []),
-    { icon: '🗑', label: 'Remove clip from the timeline', onSelect: onRemove, danger: true },
+    {
+      icon: '🗑',
+      label: 'Remove clip from the timeline',
+      note: 'Delete',
+      onSelect: onRemove,
+      danger: true,
+    },
   ]
 
   return (
@@ -465,6 +471,12 @@ export function Timeline({
   const selectClip = useProjectStore((state) => state.selectClip)
   const moveClip = useProjectStore((state) => state.moveClip)
   const removeClip = useProjectStore((state) => state.removeClip)
+  // Read alongside the picture track's own selection so one Delete-key
+  // handler below can cover every lane, not just this one.
+  const selectedVideoClipId = useProjectStore((state) => state.selectedVideoClipId)
+  const removeVideoClip = useProjectStore((state) => state.removeVideoClip)
+  const selectedAudioClipId = useProjectStore((state) => state.selectedAudioClipId)
+  const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
   const trim = useProjectStore((state) => state.trim)
   const cutAt = useProjectStore((state) => state.cutAt)
   const removeCut = useProjectStore((state) => state.removeCut)
@@ -579,6 +591,37 @@ export function Timeline({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [cutAt])
+
+  // Picture, overlay video and audio clips each keep their own selection, so
+  // this checks all three rather than just the picture track's — Delete is
+  // expected to work on whichever clip is currently highlighted, wherever it
+  // lives on the timeline.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (isTypingTarget(event.target)) return
+      if (selectedClipId) {
+        event.preventDefault()
+        removeClip(selectedClipId)
+      } else if (selectedVideoClipId) {
+        event.preventDefault()
+        removeVideoClip(selectedVideoClipId)
+      } else if (selectedAudioClipId) {
+        event.preventDefault()
+        removeAudioClip(selectedAudioClipId)
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [
+    selectedClipId,
+    removeClip,
+    selectedVideoClipId,
+    removeVideoClip,
+    selectedAudioClipId,
+    removeAudioClip,
+  ])
 
   const framePx = framePixels(zoom, project.fps)
   const frameLines = framePx >= MIN_FRAME_LINE_PX
@@ -1052,7 +1095,12 @@ function SelectedClipControls() {
         </div>
       ) : null}
 
-      <Button variant="danger" className="ml-auto" onClick={() => removeClip(clip.id)}>
+      <Button
+        variant="danger"
+        className="ml-auto"
+        onClick={() => removeClip(clip.id)}
+        title="Remove clip from the timeline (Delete)"
+      >
         Remove clip
       </Button>
     </div>

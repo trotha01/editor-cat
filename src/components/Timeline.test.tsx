@@ -102,3 +102,119 @@ describe('a clip whose asset is not in the library', () => {
     expect(screen.queryByText('media loading')).not.toBeInTheDocument()
   })
 })
+
+/**
+ * Picture, overlay video and audio clips each carry their own selection, so
+ * the Delete key has to check all three rather than only the picture track —
+ * this covers each lane once, plus the two ways it must stay out of the way.
+ */
+describe('the Delete key', () => {
+  it('removes the selected picture-track clip', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }],
+      },
+      selectedClipId: 'c1',
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+  })
+
+  it('answers to Backspace too', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }],
+      },
+      selectedClipId: 'c1',
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    fireEvent.keyDown(document.body, { key: 'Backspace' })
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+  })
+
+  it('removes the selected overlay video clip', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        videoTracks: [{ id: 'vt1', name: 'Layer 1', hidden: false, opacity: 1 }],
+        videoClips: [
+          { id: 'v1', trackId: 'vt1', assetId: 'a1', startTime: 0, inPoint: 0, duration: 4 },
+        ],
+      },
+      selectedVideoClipId: 'v1',
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    expect(useProjectStore.getState().project.videoClips).toHaveLength(0)
+  })
+
+  it('removes the selected audio clip', () => {
+    const project = emptyProject()
+    useProjectStore.setState({
+      project: {
+        ...project,
+        audioClips: [
+          {
+            id: 'ac1',
+            trackId: project.audioTracks[0]!.id,
+            assetId: 'a1',
+            useConverted: false,
+            startTime: 0,
+            inPoint: 0,
+            duration: 4,
+          },
+        ],
+      },
+      selectedAudioClipId: 'ac1',
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(0)
+  })
+
+  it('stays out of the way of someone typing', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }],
+      },
+      selectedClipId: 'c1',
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+    const field = document.createElement('input')
+    document.body.append(field)
+
+    fireEvent.keyDown(field, { key: 'Delete' })
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    field.remove()
+  })
+
+  it('does nothing when no clip is selected', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }],
+      },
+      selectedClipId: null,
+      selectedVideoClipId: null,
+      selectedAudioClipId: null,
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+  })
+})
