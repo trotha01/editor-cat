@@ -20,6 +20,7 @@ import { SyncStatus } from './components/SyncStatus'
 import { Button } from './components/ui'
 import { usePersistedState } from './hooks/usePersistedState'
 import { usePlayback } from './hooks/usePlayback'
+import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
 import { useAssetStore } from './state/useAssetStore'
 import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
@@ -61,8 +62,11 @@ export default function App() {
   const duration = useProjectStore((state) => state.duration())
   const fps = useProjectStore((state) => state.project.fps)
   const clipCount = useProjectStore((state) => state.project.clips.length)
+  const canUndo = useProjectStore((state) => state.canUndo())
+  const canRedo = useProjectStore((state) => state.canRedo())
 
   const playback = usePlayback(duration)
+  useUndoRedoShortcut()
 
   useEffect(() => {
     void loadAssets()
@@ -101,6 +105,23 @@ export default function App() {
             mock mode
           </span>
         ) : null}
+
+        <Button
+          onClick={() => useProjectStore.getState().undo()}
+          disabled={!canUndo}
+          title="Undo (Ctrl/Cmd+Z)"
+          aria-label="Undo"
+        >
+          <span aria-hidden>↶</span>
+        </Button>
+        <Button
+          onClick={() => useProjectStore.getState().redo()}
+          disabled={!canRedo}
+          title="Redo (Ctrl/Cmd+Shift+Z)"
+          aria-label="Redo"
+        >
+          <span aria-hidden>↷</span>
+        </Button>
 
         <Button onClick={() => setSettingsOpen(true)}>
           <span aria-hidden>⚙️</span> Settings

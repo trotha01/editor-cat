@@ -45,7 +45,7 @@ function withCaptions(): { trackId: string } {
 beforeEach(() => {
   saveProject.mockClear()
   saveProject.mockResolvedValue(undefined)
-  useProjectStore.setState({ project: emptyProject(), selectedCaption: null })
+  useProjectStore.setState({ project: emptyProject(), selectedCaption: null, past: [], future: [] })
 })
 
 describe('captions reach storage', () => {
@@ -743,5 +743,102 @@ describe('the video lane stack', () => {
 
     expect(useProjectStore.getState().addVideoClip(still, 0, 'v1')).toBeNull()
     expect(stored().videoClips).toHaveLength(1)
+  })
+})
+
+describe('undo and redo', () => {
+  const asset: Asset = {
+    id: 'a-clip',
+    kind: 'video',
+    blobKey: 'b',
+    mimeType: 'video/webm',
+    name: 'take.webm',
+    createdAt: 0,
+  }
+
+  it('is a no-op with nothing to undo or redo', () => {
+    const before = useProjectStore.getState().project
+    useProjectStore.getState().undo()
+    useProjectStore.getState().redo()
+    expect(useProjectStore.getState().project).toBe(before)
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('steps an edit back and forward again', () => {
+    useProjectStore.getState().addClip(asset)
+    const withOneClip = useProjectStore.getState().project
+    useProjectStore.getState().addClip(asset)
+    const withTwoClips = useProjectStore.getState().project
+
+    expect(useProjectStore.getState().canUndo()).toBe(true)
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project).toBe(withOneClip)
+    expect(useProjectStore.getState().canRedo()).toBe(true)
+
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project.clips).toEqual([])
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+
+    useProjectStore.getState().redo()
+    expect(useProjectStore.getState().project).toBe(withOneClip)
+    useProjectStore.getState().redo()
+    expect(useProjectStore.getState().project).toBe(withTwoClips)
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('saves the project an undo restores, so a reload does not resurrect the edit', () => {
+    useProjectStore.getState().addClip(asset)
+    saveProject.mockClear()
+
+    useProjectStore.getState().undo()
+
+    expect(stored().clips).toEqual([])
+  })
+
+  it('drops the redo branch once a fresh edit is made', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().canRedo()).toBe(true)
+
+    useProjectStore.getState().addClip(asset)
+
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('does not record a step for an edit that hands back the same project', () => {
+    useProjectStore.getState().addClip(asset)
+    const before = useProjectStore.getState().past.length
+
+    // No video clip has this id, so the trim is refused and the project
+    // handed back by `mutate`'s callback is the very one it was given.
+    useProjectStore.getState().trimVideoClipEdge('missing-id', undefined, 'start', 1)
+
+    expect(useProjectStore.getState().past.length).toBe(before)
+  })
+
+  it('clears history when a different project is opened', async () => {
+    useProjectStore.getState().addClip(asset)
+    expect(useProjectStore.getState().canUndo()).toBe(true)
+
+    await useProjectStore.getState().open('another-project')
+
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('drops a selection an undo brings back to nothing', () => {
+    useProjectStore.getState().addClip(asset)
+    const clipId = useProjectStore.getState().project.clips[0]!.id
+    useProjectStore.getState().selectClip(clipId)
+    useProjectStore.getState().removeClip(clipId)
+    expect(useProjectStore.getState().selectedClipId).toBeNull()
+
+    // Undoing the removal brings the clip back, but the selection was cleared
+    // when it vanished and an undo does not go rummaging for it again.
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().selectedClipId).toBeNull()
   })
 })
