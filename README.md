@@ -22,7 +22,7 @@ account, so visitors need **no key** for any of them. Voice conversion uses
 | **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                             |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ## What you need
@@ -653,6 +653,77 @@ inside a folder you pick — only to the folder itself, and to files the app
 created or you selected. So import always goes through the Picker, and there is
 no way to enumerate a folder behind your back.
 
+## Publishing to Mintspace (optional)
+
+[Mintspace](https://github.com/trotha01/mintspace) is a vertical video feed —
+open the site, a video plays, scroll for the next one. With one configured, the
+export dialog offers it as a destination alongside the download: pick **Publish
+to Mintspace**, write a caption, and the export goes into the feed.
+
+The render is unchanged and still runs in this tab. Your source media — the
+generations, the recordings, the takes you did not use — never leaves the
+machine. What is uploaded is the finished MP4 and a thumbnail taken from it, to
+a bucket anyone can read, because that is what being in a feed means.
+
+### Two accounts, and why
+
+**Signing in to Mintspace is a separate act from signing in here.** This app's
+identity is Auth0; Mintspace's row level security is built on Supabase Auth,
+where `auth.uid()` casts the token's subject to a uuid — and an Auth0 subject
+(`google-oauth2|104372…`) does not survive that cast. So the export dialog asks
+for a Mintspace account of its own, and remembers it. It can make you one
+without leaving the page.
+
+Everything is written straight from the browser under Mintspace's own rules:
+uploads land in `mintspace-videos/<your-uid>/…`, the row carries
+`user_id = auth.uid()`, and anything else is refused by their database rather
+than by us. There is no endpoint here, no service key, and nothing server-side
+to configure — which also means a deployment cannot post as anybody.
+
+### Setting it up
+
+Point the site at Mintspace's Supabase project:
+
+```
+VITE_MINTSPACE_SUPABASE_URL=https://xxxxxxxx.supabase.co
+VITE_MINTSPACE_SUPABASE_ANON_KEY=eyJhbGciOi...
+VITE_MINTSPACE_URL=https://your-mintspace-site   # optional, for the "open it" link
+```
+
+Leave the first two unset and the export dialog never mentions Mintspace; it
+only downloads.
+
+That project may be the **same one** this app saves projects to, or a different
+one. Mintspace namespaces everything it owns — tables under a `mintspace`
+Postgres schema, storage under a bucket of the same name — so sharing a project
+is supported by design, and the two sign-ins stay independent either way (the
+Mintspace session gets a storage key of its own, so neither can clobber the
+other).
+
+On the Mintspace side it needs its `supabase/schema.sql` run, and `mintspace`
+added under **Project Settings → API → Exposed schemas**. Both are steps in its
+own README; getting either wrong is reported here as the specific thing that is
+missing rather than as a failed upload.
+
+### Worth knowing
+
+- **Mintspace plays vertical.** A 16:9 project publishes fine but sits in a
+  letterbox, so the dialog says so before you spend the render. The Orientation
+  toggle above the preview is what changes it.
+- **The bucket caps uploads at 100 MB** by default. A long project at 1080p can
+  pass that; the failure says so and suggests the setting to change.
+- **Rendering once covers both.** Download an export to check it and then
+  publish it, and the file that goes up is the one you checked — not a second
+  render at the same settings. Change the resolution or the quality and it is
+  encoded again, because then it genuinely is a different file.
+- **The thumbnail is best-effort.** It is grabbed from the finished MP4, just
+  inside the picture so a lead-in of black is not what represents the video in a
+  feed. If it cannot be drawn or the bucket will not take it, the video is
+  published without one and Mintspace falls back to the first decoded frame.
+
+The code is `src/lib/mintspace/` (the client and the publish flow) and
+`src/components/MintspacePublish.tsx` (the panel in the export dialog).
+
 ## Deploying to Netlify
 
 The repo is deploy-ready; `netlify.toml` already declares the build command,
@@ -716,11 +787,13 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Drive     — media in your own Drive                through Token Vault for a Google one
   Preview   — custom player over <video>           /api/github/*     → api.github.com
   Export    — ffmpeg.wasm → MP4, captions burnt in   files what the report form collected,
-  Report    — bug reports, filed as issues            attributed to the verified session
+  Publish   — that same MP4, into Mintspace           attributed to the verified session
+  Report    — bug reports, filed as issues
 
-                                                 Supabase and Drive themselves talk to the
+                                                 Supabase, Drive and Mintspace all talk to the
                                                  browser directly, not through us — Supabase
-                                                 trusts the Auth0 token on its own.
+                                                 trusts the Auth0 token on its own, and
+                                                 Mintspace is signed in to separately.
 ```
 
 A few decisions worth knowing about:
@@ -1296,6 +1369,12 @@ If your CI image ships its own browser, point the test at it with
 - **Export uses the single-threaded ffmpeg build**, so a short project takes
   roughly 30–90 seconds. The multithreaded build needs cross-origin isolation
   (COOP/COEP), which would block loading provider media in the page.
+- **Publishing to Mintspace only goes one way.** The editor posts; it cannot
+  list, edit or delete what it has posted, and it does not remember which of
+  your exports went up. Publishing twice publishes twice. Managing what is in
+  the feed is Mintspace's own business, and taking something down means doing it
+  there. The success message links the feed rather than the post, because
+  Mintspace has no per-video route to link to.
 - **A transition is capped at two seconds, and at the shorter of its clips.**
   Both of them give up that much material, so a boundary can only hold what its
   neighbours can spare — and a clip caught between two transitions has to cover

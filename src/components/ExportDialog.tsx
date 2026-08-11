@@ -1,20 +1,11 @@
-/** Renders the timeline to an MP4 in the browser. */
+/** Renders the timeline to an MP4 in the browser, then downloads or publishes it. */
 import { useRef, useState } from 'react'
 import { Button, Callout, Field, Modal, Select, Spinner } from './ui'
-import {
-  renderProject,
-  type ExportAsset,
-  type RenderProgress,
-  type RenderRequest,
-} from '../lib/export/render'
-import { getBlob } from '../lib/db'
+import { MintspacePublish } from './MintspacePublish'
+import { exportPlan, renderTimeline } from '../lib/export/timelineRender'
+import type { RenderProgress } from '../lib/export/render'
 import { downloadBlob } from '../lib/media'
-import { clipGain, formatTime, layoutClips, leadInOf } from '../lib/timeline'
-import { audioEnd, gainFor } from '../lib/audioTracks'
-import { layerGain, opacityFor, videoClipsOf, videoTracksOf } from '../lib/videoTracks'
-import { captionCuesOf, captionTracksOf } from '../lib/captions'
-import { buildAssFile } from '../lib/export/assCaptions'
-import { captionFonts } from '../lib/export/captionFonts'
+import { formatTime } from '../lib/timeline'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { exportPresetsFor, orientationOf, type ExportPreset } from '../lib/orientation'
@@ -26,6 +17,13 @@ const QUALITY = [
   { crf: 23, label: 'Balanced' },
   { crf: 18, label: 'Best quality' },
 ]
+
+const DESTINATIONS = [
+  { id: 'download', label: 'Download an MP4' },
+  { id: 'mintspace', label: 'Publish to Mintspace' },
+] as const
+
+type Destination = (typeof DESTINATIONS)[number]['id']
 
 /**
  * The presets offered follow the project's orientation, so only three of the
@@ -43,190 +41,113 @@ function resolutionOptions(width: number, height: number): ExportPreset[] {
   ]
 }
 
+/** A finished render, stamped with the settings that produced it. */
+interface RenderedFile {
+  blob: Blob
+  crf: number
+  width: number
+  height: number
+}
+
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const project = useProjectStore((state) => state.project)
   const setResolution = useProjectStore((state) => state.setResolution)
   const assets = useAssetStore((state) => state.assets)
 
+  const [destination, setDestination] = useState<Destination>('download')
   const [crf, setCrf] = useState(23)
   const [progress, setProgress] = useState<RenderProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<Blob | null>(null)
+  const [rendered, setRendered] = useState<RenderedFile | null>(null)
+  const [downloaded, setDownloaded] = useState<Blob | null>(null)
+  const [publishing, setPublishing] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   const resolutions = resolutionOptions(project.width, project.height)
-  const leadIn = leadInOf(project)
-  // Positions already carry the lead-in, so the last clip's end is where the
-  // picture really finishes rather than how long it runs for.
-  const positioned = layoutClips(project.clips, leadIn)
-  const visualDuration = positioned.at(-1)?.end ?? 0
-  const outputDuration = Math.max(visualDuration, audioEnd(project.audioClips))
+  const vertical = orientationOf(project.width, project.height) === 'vertical'
+  const plan = exportPlan(project, assets)
 
-  // Muted tracks are dropped rather than exported at zero gain: encoding
-  // silence costs time and gains nothing.
-  const audibleClips = project.audioClips.filter((clip) => gainFor(project.audioTracks, clip) > 0)
-  const mutedCount = project.audioClips.length - audibleClips.length
-
-  // Whether each clip's own sound is kept is decided here; whether it has any
-  // is decided by the renderer, which probes the files.
-  const videoClips = project.clips.filter(
-    (clip) => assets.find((entry) => entry.id === clip.assetId)?.kind === 'video',
-  )
-  const silencedClips = videoClips.filter((clip) => clipGain(clip) <= 0).length
-
-  // Worth counting: transitions are what makes an export shorter than the clips
-  // add up to, and they are the part of the edit least visible from a clip list.
-  const transitions = positioned.filter((entry) => entry.transition).length
+  /**
+   * The render on hand, but only while the settings above still describe it.
+   *
+   * Stamped and compared rather than thrown away when a Select changes, so that
+   * nothing downstream can offer a file the dialog is no longer describing —
+   * and so that changing your mind twice costs nothing, since a render that
+   * matches again is a render that is still correct.
+   */
+  const current =
+    rendered &&
+    rendered.crf === crf &&
+    rendered.width === project.width &&
+    rendered.height === project.height
+      ? rendered
+      : null
 
   // Built as parts rather than one sentence, so a project with only clip sound
   // does not read "no audio · video clips keep their own sound".
   const sound: string[] = []
-  if (audibleClips.length > 0) {
-    const trackTotal = new Set(audibleClips.map((clip) => clip.trackId)).size
+  if (plan.audibleClips.length > 0) {
+    const trackTotal = new Set(plan.audibleClips.map((clip) => clip.trackId)).size
     sound.push(
-      `${audibleClips.length} audio clip${audibleClips.length === 1 ? '' : 's'} across ` +
+      `${plan.audibleClips.length} audio clip${plan.audibleClips.length === 1 ? '' : 's'} across ` +
         `${trackTotal} track${trackTotal === 1 ? '' : 's'}` +
-        (mutedCount > 0 ? ` · ${mutedCount} muted, not exported` : ''),
+        (plan.mutedCount > 0 ? ` · ${plan.mutedCount} muted, not exported` : ''),
     )
   }
-  if (videoClips.length > silencedClips) {
+  if (plan.videoClips.length > plan.silencedClips) {
     sound.push(
-      silencedClips > 0
-        ? `video clips keep their own sound, except ${silencedClips} you silenced`
+      plan.silencedClips > 0
+        ? `video clips keep their own sound, except ${plan.silencedClips} you silenced`
         : 'video clips keep their own sound',
     )
-  } else if (silencedClips > 0) {
+  } else if (plan.silencedClips > 0) {
     sound.push(`video clip sound silenced`)
   }
   if (sound.length === 0) sound.push('no audio')
 
-  // Only visible tracks are burnt in, matching the preview: hiding a caption
-  // track is how you export a version without them without deleting the words.
-  const visibleCaptionTracks = captionTracksOf(project).filter((track) => !track.hidden)
-  const burntInCues = captionCuesOf(project).filter((cue) =>
-    visibleCaptionTracks.some((track) => track.id === cue.trackId),
-  )
+  /**
+   * The MP4 itself, encoded if it has not been already.
+   *
+   * Handed to the Mintspace panel as well as used below, so that rendering,
+   * downloading to check it, and then publishing the file you just checked
+   * costs one encode rather than two — and publishes the very bytes that were
+   * checked rather than an identically-configured second render of them.
+   */
+  const render = async (): Promise<Blob> => {
+    if (current) return current.blob
 
-  const run = async () => {
-    setError(null)
-    setResult(null)
     const controller = new AbortController()
     abortRef.current = controller
-
     try {
-      // Gather every blob the render needs up front, so a missing asset fails
-      // before the encoder has spent a minute of the user's time.
-      const needed = new Map<string, ExportAsset>()
-      const collect = async (assetId: string) => {
-        if (needed.has(assetId)) return
-        const asset = assets.find((entry) => entry.id === assetId)
-        if (!asset) throw new Error('One of the clips refers to media that is no longer available.')
-        const blob = await getBlob(asset.blobKey)
-        if (!blob) {
-          throw new Error(
-            `"${asset.name}" is no longer stored locally, so it cannot be included in the export.`,
-          )
-        }
-        needed.set(assetId, { id: assetId, blob, mimeType: asset.mimeType })
-      }
-
-      for (const clip of project.clips) await collect(clip.assetId)
-
-      const audio: RenderRequest['audio'] = []
-      for (const clip of audibleClips) {
-        const assetId =
-          clip.useConverted && clip.convertedAssetId ? clip.convertedAssetId : clip.assetId
-        await collect(assetId)
-        audio.push({
-          assetId,
-          startTime: clip.startTime,
-          inPoint: clip.inPoint,
-          duration: clip.duration,
-          volume: gainFor(project.audioTracks, clip),
-        })
-      }
-
-      // Layers, in track order, which is the order they stack in. A hidden lane
-      // is left out entirely rather than encoded at zero opacity: it would cost
-      // an input and a filter chain to change not one pixel of the output.
-      const overlays: NonNullable<RenderRequest['overlays']> = []
-      for (const track of videoTracksOf(project)) {
-        if (track.hidden) continue
-        for (const clip of videoClipsOf(project)) {
-          if (clip.trackId !== track.id || clip.duration <= 0) continue
-          await collect(clip.assetId)
-          const asset = assets.find((entry) => entry.id === clip.assetId)
-          overlays.push({
-            assetId: clip.assetId,
-            kind: asset?.kind === 'video' ? 'video' : 'image',
-            startTime: clip.startTime,
-            inPoint: clip.inPoint,
-            duration: clip.duration,
-            opacity: opacityFor(videoTracksOf(project), clip),
-            volume: layerGain(videoTracksOf(project), clip),
-          })
-        }
-      }
-
-      // Built from the layout rather than from the clips, so the transitions
-      // that go to the encoder are the fitted ones the timeline has been showing
-      // all along — not a stored wish that two short clips cannot cover.
-      const clips = positioned.map(({ clip, duration, transition }) => {
-        const asset = assets.find((entry) => entry.id === clip.assetId)
-        return {
-          assetId: clip.assetId,
-          kind: (asset?.kind === 'video' ? 'video' : 'image') as 'video' | 'image',
-          inPoint: clip.inPoint,
-          duration,
-          transition,
-          volume: clipGain(clip),
-        }
+      const blob = await renderTimeline({
+        project,
+        assets,
+        crf,
+        onProgress: setProgress,
+        signal: controller.signal,
       })
-
-      // Captions are authored against the export size, so this is built here
-      // rather than kept on the project: changing the resolution above changes
-      // the file, and the fonts are only fetched when there is something to
-      // draw with them.
-      const captions =
-        burntInCues.length > 0
-          ? {
-              ass: buildAssFile({
-                tracks: visibleCaptionTracks,
-                cues: burntInCues,
-                width: project.width,
-                height: project.height,
-              }),
-              fonts: await captionFonts(),
-            }
-          : undefined
-
-      const { blob } = await renderProject(
-        {
-          clips,
-          overlays,
-          audio,
-          assets: needed,
-          width: project.width,
-          height: project.height,
-          fps: project.fps,
-          leadIn,
-          ...(captions ? { captions } : {}),
-          crf,
-        },
-        { onProgress: setProgress, signal: controller.signal },
-      )
-
-      setResult(blob)
-      downloadBlob(blob, `${project.name.replace(/[^\w -]/g, '') || 'export'}.mp4`)
-    } catch (cause) {
-      setError(toDisplayMessage(cause))
+      setRendered({ blob, crf, width: project.width, height: project.height })
+      return blob
     } finally {
       setProgress(null)
       abortRef.current = null
     }
   }
 
-  const busy = progress !== null
+  const runDownload = async () => {
+    setError(null)
+    setDownloaded(null)
+
+    try {
+      const blob = await render()
+      downloadBlob(blob, `${project.name.replace(/[^\w -]/g, '') || 'export'}.mp4`)
+      setDownloaded(blob)
+    } catch (cause) {
+      setError(toDisplayMessage(cause))
+    }
+  }
+
+  const busy = progress !== null || publishing
 
   return (
     <Modal open={open} onClose={onClose} title="Export video" wide>
@@ -235,12 +156,32 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           <Callout tone="warn">Add at least one clip to the timeline before exporting.</Callout>
         ) : null}
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="Export to" htmlFor="export-destination">
+            <Select
+              id="export-destination"
+              value={destination}
+              disabled={busy}
+              onChange={(event) => {
+                setDestination(event.target.value as Destination)
+                setError(null)
+              }}
+            >
+              {DESTINATIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
           <Field
             label="Resolution"
+            htmlFor="export-resolution"
             hint="Sizes follow the project's orientation — change it above the preview."
           >
             <Select
+              id="export-resolution"
               value={`${project.width}x${project.height}`}
               disabled={busy}
               onChange={(event) => {
@@ -258,8 +199,9 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             </Select>
           </Field>
 
-          <Field label="Quality">
+          <Field label="Quality" htmlFor="export-quality">
             <Select
+              id="export-quality"
               value={crf}
               disabled={busy}
               onChange={(event) => setCrf(Number(event.target.value))}
@@ -273,26 +215,34 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           </Field>
         </div>
 
-        <Callout tone="info" title="Everything happens on your machine">
-          Rendering runs in this tab with ffmpeg compiled to WebAssembly — your media is never
-          uploaded. That also means it uses your CPU: expect roughly a minute for a short project,
-          and keep this tab in the foreground.
-        </Callout>
+        {destination === 'download' ? (
+          <Callout tone="info" title="Everything happens on your machine">
+            Rendering runs in this tab with ffmpeg compiled to WebAssembly — your media is never
+            uploaded. That also means it uses your CPU: expect roughly a minute for a short project,
+            and keep this tab in the foreground.
+          </Callout>
+        ) : (
+          <Callout tone="info" title="Rendered here, then uploaded">
+            The render still runs in this tab with ffmpeg compiled to WebAssembly, so your source
+            media never leaves the machine — expect roughly a minute for a short project. Only the
+            finished MP4 and a thumbnail go to Mintspace, where anyone can watch them.
+          </Callout>
+        )}
 
         <p className="text-sm text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
-          {formatTime(outputDuration)}
+          {formatTime(plan.outputDuration)}
           {/* Worth saying outright: it explains an export that is longer than
               the clips add up to, and confirms the count-in has room. */}
-          {leadIn > 0 ? ` · ${formatTime(leadIn)} of black before the picture` : ''}
-          {transitions > 0
-            ? ` · ${transitions} transition${transitions === 1 ? '' : 's'}, which overlap the clips they join`
+          {plan.leadIn > 0 ? ` · ${formatTime(plan.leadIn)} of black before the picture` : ''}
+          {plan.transitions > 0
+            ? ` · ${plan.transitions} transition${plan.transitions === 1 ? '' : 's'}, which overlap the clips they join`
             : ''}{' '}
           · {sound.join(' · ')}
           {/* Burnt in, not a sidecar track — so it is worth saying so before a
               render that cannot be undone without doing it again. */}
-          {burntInCues.length > 0
-            ? ` · ${burntInCues.length} caption${burntInCues.length === 1 ? '' : 's'} burnt in`
+          {plan.burntInCues.length > 0
+            ? ` · ${plan.burntInCues.length} caption${plan.burntInCues.length === 1 ? '' : 's'} burnt in`
             : ''}
         </p>
 
@@ -316,9 +266,21 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               Cancel export
             </Button>
           </div>
-        ) : (
+        ) : null}
+
+        {destination === 'mintspace' ? (
+          <MintspacePublish
+            render={render}
+            posterAt={plan.posterTime}
+            empty={project.clips.length === 0}
+            vertical={vertical}
+            busy={progress !== null}
+            onBusyChange={setPublishing}
+            onClose={onClose}
+          />
+        ) : busy ? null : (
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" onClick={run} disabled={project.clips.length === 0}>
+            <Button variant="primary" onClick={runDownload} disabled={project.clips.length === 0}>
               <span aria-hidden>⬇️</span> Render and download MP4
             </Button>
             <Button variant="ghost" onClick={onClose}>
@@ -333,14 +295,16 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           </Callout>
         ) : null}
 
-        {result ? (
+        {/* Only while it is still the file the settings above describe: change
+            one of them and this is about a render nobody can now produce. */}
+        {downloaded && downloaded === current?.blob ? (
           <Callout tone="success" title="Done">
-            Exported {formatBytes(result.size)}. The download should have started — if your browser
-            blocked it,{' '}
+            Exported {formatBytes(downloaded.size)}. The download should have started — if your
+            browser blocked it,{' '}
             <button
               type="button"
               className="underline underline-offset-2"
-              onClick={() => downloadBlob(result, `${project.name || 'export'}.mp4`)}
+              onClick={() => downloadBlob(downloaded, `${project.name || 'export'}.mp4`)}
             >
               save it again
             </button>
