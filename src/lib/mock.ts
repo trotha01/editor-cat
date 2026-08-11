@@ -242,6 +242,33 @@ function mockLlm(input: Record<string, unknown>): { output: string } {
   }
 }
 
+const IDEA_TEMPLATES: ((word: string) => string)[] = [
+  (w) => `A raccoon files a noise complaint against the moon for being too "${w}." "Take it up with the tide," the moon says.`,
+  (w) => `A vending machine and a fire hydrant split the last ${w} between them. "Fair is fair," the hydrant hisses.`,
+  (w) => `Two houseplants stage a coup over the sunny windowsill and a ${w}. "It's mine by right," one snaps.`,
+  (w) => `A ghost tries to return a ${w} it stole in 1987. "Keep the receipt," the shopkeeper deadpans.`,
+  (w) => `A traffic cone directs a marching band made of nothing but ${w}. "Left, then ${w}!" it barks.`,
+  (w) => `An umbrella refuses to open until someone apologises for the ${w}. "Say sorry first," it insists.`,
+  (w) => `A toaster interviews a loaf of bread for the job of "${w}." "You're overqualified," it says.`,
+  (w) => `A cloud sues a lawnmower over a stolen ${w}. "The evidence is in the grass," the cloud rumbles.`,
+  (w) => `A mailbox falls for a passing ${w}. "Write back," it whispers.`,
+  (w) => `A stapler goes on strike until the office admits the ${w} was rigged. "Never again," it clicks.`,
+]
+
+/**
+ * Twenty mock scene ideas, shaped like `ideaGenerator.ts`'s JSON contract so
+ * the "Idea" tab is exercisable offline too. Cycled from a fixed template list
+ * rather than duplicating `IDEA_COUNT` here, which would need importing
+ * `ideaGenerator.ts` and create a module cycle back through `falClient.ts`.
+ */
+function mockIdeas(word: string): string[] {
+  const trimmed = word.trim() || 'thing'
+  return Array.from(
+    { length: 20 },
+    (_, i) => `${IDEA_TEMPLATES[i % IDEA_TEMPLATES.length]!(trimmed)} [mock idea — no LLM was called]`,
+  )
+}
+
 /** Routes a mock request by model ID, mimicking the real client's contract. */
 export async function mockFal<T>(
   modelId: string,
@@ -253,6 +280,13 @@ export async function mockFal<T>(
 
   if (modelId.includes('any-llm')) {
     await new Promise((resolve) => setTimeout(resolve, 400))
+
+    // The idea generator's system prompt is the only "any-llm" caller that asks
+    // for a JSON array, so it doubles as the mock's routing key without this
+    // file needing to import `ideaGenerator.ts` directly.
+    if (String(input.system_prompt ?? '').includes('JSON array')) {
+      return { output: JSON.stringify(mockIdeas(String(input.prompt ?? ''))) } as T
+    }
     return mockLlm(input) as T
   }
 
