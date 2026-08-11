@@ -381,6 +381,19 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
+/**
+ * Next zoom for one wheel tick of a trackpad pinch — or an actual Ctrl+wheel,
+ * which the browser reports the same way and this treats the same. Scales the
+ * current zoom rather than adding to it, so a pinch feels the same size at any
+ * zoom level instead of crawling near `min` and leaping near `max`.
+ */
+export function zoomFromPinch(zoom: number, deltaY: number, min: number, max: number): number {
+  // A real mouse wheel under Ctrl sends a much bigger deltaY per notch than a
+  // trackpad ever does; clamped first so one click can't jump the whole range.
+  const delta = clamp(deltaY, -50, 50)
+  return clamp(zoom * Math.exp(-delta * 0.01), min, max)
+}
+
 /** Formats a length of time as m:ss.d, for clip labels and durations. */
 export function formatTime(seconds: number): string {
   const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
