@@ -1,13 +1,19 @@
 /**
  * API keys and storage.
  *
- * One key is entered here, and it belongs to the user: ElevenLabs. It is sent
- * per request to our own proxy function, forwarded once to the provider, and
- * never written to a server. The copy in this browser is the only copy, which
- * is why "remember" is a choice rather than a default.
+ * There is one key field left, and on a properly configured deployment nobody
+ * needs it: images, video and captions run on the site's fal.ai account and the
+ * voice features on its ElevenLabs one. What it is for is using *your own*
+ * ElevenLabs account instead — your quota, your voices, your saved clones —
+ * which is a real thing to want and a strange thing to demand.
  *
- * Image and video generation used to need a second key. It now runs on a
- * fal.ai account belonging to this deployment, so there is nothing here for it.
+ * Which of those two the panel is describing is the only thing `siteElevenLabs`
+ * changes here, and it changes every sentence: a key that is required and a key
+ * that is an alternative are not the same field with a different tone.
+ *
+ * A key entered here is sent per request to our own proxy function, forwarded
+ * once to the provider, and never written to a server. The copy in this browser
+ * is the only copy, which is why "remember" is a choice rather than a default.
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout, Field, Modal, Spinner, TextInput } from './ui'
@@ -28,6 +34,10 @@ type TestState = 'idle' | 'testing' | 'ok' | 'fail'
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useSettingsStore()
+  // Whether this deployment pays for the voice features. It decides what this
+  // whole panel is *for*: a key that is required, or one that is an alternative
+  // to the site's own.
+  const siteEleven = settings.siteElevenLabs
   const loadAssets = useAssetStore((state) => state.load)
 
   const [elevenTest, setElevenTest] = useState<TestState>('idle')
@@ -84,19 +94,34 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
 
         <ProjectSettings />
 
-        <Callout tone="info" title="Your key stays yours">
-          Your ElevenLabs key is held in this browser and attached to each request as it passes
-          through this site&apos;s proxy on its way to the provider. It is never stored on a server.
-          Image and video generation and caption transcription need no key from you — they run on
-          this site&apos;s own fal.ai account.
+        <Callout tone="info" title={siteEleven ? 'No key needed' : 'Your key stays yours'}>
+          {siteEleven ? (
+            <>
+              Everything here runs on this site&apos;s own accounts: images, video and captions on
+              its fal.ai account, and the voice features — changing a recorded voice, and fixing a
+              clip that mispronounces its line — on its ElevenLabs one. The field below is optional,
+              and only for using your own account instead.
+            </>
+          ) : (
+            <>
+              This deployment provides no ElevenLabs key of its own, so the voice features need one
+              from you. It is held in this browser and attached to each request as it passes through
+              this site&apos;s proxy on its way to the provider — never stored on a server. Image
+              and video generation and caption transcription need no key either way; they run on
+              this site&apos;s own fal.ai account.
+            </>
+          )}
         </Callout>
 
         <Field
-          label="ElevenLabs API key"
+          label={siteEleven ? 'ElevenLabs API key (optional)' : 'ElevenLabs API key'}
           hint={
             <>
-              Used only to change your recorded voice into another one. Create one at{' '}
-              <span className="text-ink">elevenlabs.io</span> under Profile → API keys.
+              {siteEleven
+                ? 'Use your own ElevenLabs account rather than this site’s: your quota, your voices. '
+                : 'Used to change a recorded voice into another one, and to fix a clip that says its line wrong. '}
+              Create one at <span className="text-ink">elevenlabs.io</span> under Profile → API
+              keys.
             </>
           }
           htmlFor="eleven-key"

@@ -22,9 +22,8 @@ import { listVoices, VOICE_LANGUAGES, type Voice } from '../lib/elevenlabs'
 import { CLONE_SAMPLE_SECONDS, type FixTarget } from '../lib/clipAudioFix'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
-import { hasAccess } from '../lib/mock'
 import { useAudioFixStore } from '../state/useAudioFixStore'
-import { useSettingsStore } from '../state/useSettingsStore'
+import { canUseElevenLabs, useSettingsStore } from '../state/useSettingsStore'
 
 /** The voice option that copies the clip's own, rather than naming one. */
 const CLONE_VOICE = ''
@@ -38,16 +37,15 @@ export function FixAudioDialog({
   onClose: () => void
 }) {
   const elevenKey = useSettingsStore((state) => state.elevenlabs)
+  const available = useSettingsStore(canUseElevenLabs)
   const [voices, setVoices] = useState<Voice[] | null>(null)
   const [voiceError, setVoiceError] = useState<string | null>(null)
-
-  const hasKey = hasAccess(elevenKey)
 
   // Loaded out here rather than in the form, which is remounted per clip: the
   // list belongs to the account, not to the clip, and fetching it again every
   // time a different clip's menu is used would be a request per opening.
   useEffect(() => {
-    if (!target || !hasKey || voices) return
+    if (!target || !available || voices) return
     let cancelled = false
     listVoices(elevenKey)
       .then((list) => {
@@ -61,7 +59,7 @@ export function FixAudioDialog({
     return () => {
       cancelled = true
     }
-  }, [target, hasKey, elevenKey, voices])
+  }, [target, available, elevenKey, voices])
 
   return (
     <Modal
@@ -76,7 +74,7 @@ export function FixAudioDialog({
         <FixAudioForm
           key={target.clipId}
           target={target}
-          hasKey={hasKey}
+          available={available}
           voices={voices}
           voiceError={voiceError}
           onClose={onClose}
@@ -88,13 +86,14 @@ export function FixAudioDialog({
 
 function FixAudioForm({
   target,
-  hasKey,
+  available,
   voices,
   voiceError,
   onClose,
 }: {
   target: FixTarget
-  hasKey: boolean
+  /** False only on a deployment with no key of its own and none entered. */
+  available: boolean
   voices: Voice[] | null
   voiceError: string | null
   onClose: () => void
@@ -171,8 +170,8 @@ function FixAudioForm({
             ? `Copied from the first ${Math.min(
                 CLONE_SAMPLE_SECONDS,
                 Math.max(1, Math.round(target.duration)),
-              )}s of this clip, used once, then deleted from your ElevenLabs account. Cloning needs a paid plan — if yours refuses, pick one of your own voices instead.`
-            : 'One of the voices in your ElevenLabs account. It will not sound like the clip.'
+              )}s of this clip, used once, then deleted again. If cloning is refused, pick a ready-made voice below instead.`
+            : 'A ready-made voice. It will not sound like the clip.'
         }
         htmlFor="fix-audio-voice"
       >
@@ -197,22 +196,29 @@ function FixAudioForm({
         </Callout>
       ) : null}
 
-      {hasKey ? null : (
+      {available ? null : (
         <Callout tone="warn">
-          Add your ElevenLabs key in Settings to fix a clip’s audio. It is the only thing this
-          needs, and it stays in your browser.
+          This site is not set up for voice generation, so nothing can be said here yet. Whoever
+          deployed it needs to set <code>ELEVENLABS_API_KEY</code> — or you can put a key of your
+          own in Settings and use your own account.
         </Callout>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" onClick={submit} disabled={!hasKey || !text.trim()}>
+        <Button variant="primary" onClick={submit} disabled={!available || !text.trim()}>
           <span aria-hidden>🗣</span>{' '}
           {target.fixedAudioClipId ? 'Fix it again' : 'Fix this clip’s audio'}
         </Button>
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <span className="ml-auto text-xs text-ink-dim">{formatTime(target.duration)} clip</span>
+        {/* What this will spend, in the unit ElevenLabs actually charges in.
+            The bill lands on whoever deployed the site, like generation and
+            captions, so the number is on screen before the press — and unlike
+            those, it depends on what is typed rather than on the clip. */}
+        <span className="ml-auto text-xs text-ink-dim">
+          {formatTime(target.duration)} clip · {text.trim().length} characters
+        </span>
       </div>
     </div>
   )

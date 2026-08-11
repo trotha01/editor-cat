@@ -1,19 +1,28 @@
 /**
  * ElevenLabs: the voice changer, and the voice that says a line properly.
  *
- * Two jobs, both paid for with the user's own key. The voice changer takes a
- * microphone recording and re-performs it in a different voice, keeping the
- * timing and delivery of the original. Speaking is the other direction — text
- * in, audio out — and it is what fixes a clip whose generated dialogue says the
- * words with the wrong sounds: nothing can correct a pronunciation that has
- * already been performed, so the line is said again from the text.
+ * Two jobs. The voice changer takes a microphone recording and re-performs it in
+ * a different voice, keeping the timing and delivery of the original. Speaking is
+ * the other direction — text in, audio out — and it is what fixes a clip whose
+ * generated dialogue says the words with the wrong sounds: nothing can correct a
+ * pronunciation that has already been performed, so the line is said again from
+ * the text.
  *
- * Captions used to call ElevenLabs directly too, and now reach the same
- * company's Scribe through fal, on this deployment's account. See `scribe.ts`.
+ * Both are paid for by the deployment, like image and video generation and like
+ * captions, which reach the same company's Scribe through fal (see `scribe.ts`).
+ * Nothing here asks the visitor for a key: the site's own is attached by the
+ * proxy, which is also why these requests carry the Auth0 session — that is what
+ * the function checks before spending it.
+ *
+ * A key the user *has* entered still wins, and is forwarded once and forgotten,
+ * for anyone who would rather use their own quota and their own voice library.
+ * `key` is therefore an ordinary empty string most of the time, and the header
+ * is simply left off.
  *
  * All traffic goes through /api/elevenlabs so we do not depend on ElevenLabs'
  * browser CORS policy.
  */
+import { auth0Token } from './auth0/client'
 import { providerErrorFrom, ProviderError } from './errors'
 import { isMockEnabled, mockClonedVoiceId, mockConvert, mockSpeech, mockVoices } from './mock'
 
@@ -41,12 +50,44 @@ interface ModelsResponse {
 }
 
 async function elevenFetch(path: string, key: string, init?: RequestInit): Promise<Response> {
+  // Sent when there is one, which is what the proxy reads to decide whose
+  // account this is. Without it the site's key pays, and the session below is
+  // what says the caller may spend it.
+  const token = await auth0Token().catch(() => null)
+
   const response = await fetch(`${PROXY_BASE}${path}`, {
     ...init,
-    headers: { ...(init?.headers ?? {}), 'xi-api-key': key },
+    headers: {
+      ...(init?.headers ?? {}),
+      ...(key.trim() ? { 'xi-api-key': key.trim() } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
   })
   if (!response.ok) throw await providerErrorFrom('ElevenLabs', response)
   return response
+}
+
+/**
+ * Whether this deployment provides a key of its own.
+ *
+ * Asked once and remembered: it is a property of the build on the other end of
+ * the wire, not of the moment, and every voice control on screen reads it to
+ * decide whether to work or to ask for a key. A checkout served by plain
+ * `vite dev` has no /api routes at all, so this throws rather than 404s — and
+ * the answer is the same either way, which is "not from here".
+ */
+let sitePromise: Promise<boolean> | null = null
+
+export function siteProvidesKey(): Promise<boolean> {
+  if (isMockEnabled()) return Promise.resolve(true)
+  sitePromise ??= fetch(`${PROXY_BASE}/status`)
+    .then(async (response) => {
+      if (!response.ok) return false
+      const body = (await response.json()) as { configured?: unknown }
+      return body.configured === true
+    })
+    .catch(() => false)
+  return sitePromise
 }
 
 export async function listVoices(key: string, signal?: AbortSignal): Promise<Voice[]> {

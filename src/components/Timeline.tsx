@@ -57,7 +57,6 @@ import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
 import { fixTargets, type FixTarget } from '../lib/clipAudioFix'
-import { hasAccess } from '../lib/mock'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
@@ -69,7 +68,7 @@ import { useAudioFixStore } from '../state/useAudioFixStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useProjectsStore } from '../state/useProjectsStore'
-import { useSettingsStore } from '../state/useSettingsStore'
+import { canUseElevenLabs, useSettingsStore } from '../state/useSettingsStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
 /**
@@ -129,7 +128,7 @@ function ClipCard({
   cutAtStart,
   target,
   fixTarget,
-  hasVoiceKey,
+  canFixAudio,
   captioning,
   fixing,
   onSelect,
@@ -160,8 +159,8 @@ function ClipCard({
   target: CaptionTarget | undefined
   /** Set when this clip carries sound that could be said again. */
   fixTarget: FixTarget | undefined
-  /** Whether ElevenLabs can be reached at all, which is the user's own key. */
-  hasVoiceKey: boolean
+  /** Whether the voice features can run: this site's key, or the user's own. */
+  canFixAudio: boolean
   captioning: boolean
   /** True while this clip's line is being said again. */
   fixing: boolean
@@ -229,7 +228,7 @@ function ClipCard({
     // Under the caption row on purpose: the captions are where the words come
     // from, so "read what it said, then fix how it said it" reads down the menu
     // in the order it is done.
-    ...(fixTarget ? [fixAudioItem(fixTarget, hasVoiceKey, () => onFixAudio(fixTarget))] : []),
+    ...(fixTarget ? [fixAudioItem(fixTarget, canFixAudio, () => onFixAudio(fixTarget))] : []),
     ...(isImage
       ? []
       : [
@@ -522,7 +521,7 @@ export function Timeline({
   const captioningClipId = useCaptionJobStore((state) => state.clipId)
 
   const fixingClipId = useAudioFixStore((state) => state.clipId)
-  const hasVoiceKey = useSettingsStore((state) => hasAccess(state.elevenlabs))
+  const canFixAudio = useSettingsStore(canUseElevenLabs)
   // Which clip the fix dialog is about. Held here rather than in the dialog
   // because the menu that opens it is inside a card that re-renders constantly,
   // and the dialog outlives the menu — the menu closes on the click.
@@ -951,7 +950,7 @@ export function Timeline({
                           cutAtStart={cutBefore(positioned, entry.index)}
                           target={targets.get(entry.clip.id)}
                           fixTarget={fixable.get(entry.clip.id)}
-                          hasVoiceKey={hasVoiceKey}
+                          canFixAudio={canFixAudio}
                           captioning={captioningClipId === entry.clip.id}
                           fixing={fixingClipId === entry.clip.id}
                           onSelect={() => selectClip(entry.clip.id)}

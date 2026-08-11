@@ -6,10 +6,9 @@ Write a prompt → get images → animate one into a clip → arrange clips on a
 timeline → dissolve between them → layer voiceovers and music → swap your voice
 for another one → caption it karaoke-style → export an MP4.
 
-Images, video and caption transcription all run on the deployment's own fal.ai
-account, so visitors need **no key** for any of them. Voice conversion, and
-saying a mispronounced line again properly, use **your own ElevenLabs key**,
-held in your browser.
+Images, video and caption transcription run on the deployment's own fal.ai
+account, and the voice features on its own ElevenLabs one, so visitors need
+**no key at all**. Bring one only if you would rather spend your own quota.
 
 ---
 
@@ -28,19 +27,24 @@ held in your browser.
 
 ## What you need
 
-**As a visitor:** nothing. Image and video generation and caption transcription
-all run on the site's own fal.ai account. A key buys you voice conversion, and
-fixing a clip that pronounces its line wrong.
+**As a visitor:** nothing at all. Every provider call — images, video, captions,
+changing a recorded voice, and [fixing a clip that pronounces its line
+wrong](#fixing-a-clip-that-says-it-wrong) — runs on the site's own accounts.
 
-- **[ElevenLabs](https://elevenlabs.io)** — entered in **Settings**. Needed for changing your recorded voice and for [fixing a clip's pronunciation](#fixing-a-clip-that-says-it-wrong), and for nothing else. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, and is never written to a server or a log.
+- **[ElevenLabs](https://elevenlabs.io)**, optionally, entered in **Settings**. Only for using your own account rather than the site's: your quota, your voices, your saved clones. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, takes precedence over the site's own key, and is never written to a server or a log.
 
 **As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key set as
-`FAL_KEY` in the site environment. See [Deploying to Netlify](#deploying-to-netlify).
+`FAL_KEY`, and an [ElevenLabs](https://elevenlabs.io) key set as
+`ELEVENLABS_API_KEY`, both in the site environment. Without the second one the
+voice features ask each visitor for a key instead of working. See
+[Deploying to Netlify](#deploying-to-netlify).
 
 **Costs are real, and they land on the deployment.** Images are roughly
 $0.003–$0.04 each; video is roughly $0.04 per second at 480p on the default
 model, rising to $0.40 on the most expensive one in the picker. Captions are
-$0.008 per minute of audio transcribed. The app shows an estimate before every
+$0.008 per minute of audio transcribed. Fixing a clip's audio is billed by the
+character — around $0.10 per 1,000, so about 2 cents for a ten-second line — and
+the dialog counts the characters before the press. The app shows an estimate before every
 button that spends money, because a mis-click on a video model is expensive —
 and because pressing **Add captions** again transcribes the whole timeline
 afresh. When one clip is the problem, redo that clip from its **⋯ menu on the
@@ -79,9 +83,14 @@ So the line is said again. **⋯ menu on the clip → Fix this clip's audio**, a
    line is in it and you want it enforced.
 3. **Voice** defaults to _copy this clip's own voice_. ElevenLabs is handed up to
    30 seconds of the clip's own audio, copies the voice from it, says your line
-   in that copy, and the copy is deleted from your account again on the way out.
-   Pick one of your own voices instead if you would rather, or if your plan does
-   not include cloning.
+   in that copy, and the copy is deleted again on the way out. Pick a ready-made
+   voice instead if you would rather, or if the account's plan does not include
+   cloning.
+
+None of this asks the visitor for anything: it runs on the key the deployment
+sets as `ELEVENLABS_API_KEY`, the same arrangement image and video generation
+already have with fal. Anyone who would rather use their own account can put a
+key in Settings, and theirs is used instead.
 
 What comes back is laid on a **voice track under the clip** and the clip's own
 sound is **muted** — as one edit, so a single undo puts both back. The audio is
@@ -710,14 +719,22 @@ If you are using the Drive integration, set the `VITE_AUTH0_*` variables in the
 site's environment variables and add the deployed origin to the Auth0
 application's allowed callback, logout and web-origin lists.
 
-### The one secret this needs
+### The two secrets this needs
 
-Set **`FAL_KEY`** in the site's environment variables, for **all deploy
-contexts** — scoped to production only, every deploy preview answers 503. No
-`VITE_` prefix: that would inline it into the browser bundle and publish it.
+Set **`FAL_KEY`** and **`ELEVENLABS_API_KEY`** in the site's environment
+variables, for **all deploy contexts** — scoped to production only, every deploy
+preview answers 503. No `VITE_` prefix on either: that would inline them into the
+browser bundle and publish them.
 
-Then decide who is allowed to spend it. `/api/fal/*` generates video on your
-account, so it verifies the caller's Auth0 access token before attaching the key:
+The first pays for images, video and captions; the second for the voice
+features — changing a recorded voice, and [fixing a clip that says its line
+wrong](#fixing-a-clip-that-says-it-wrong). Only `FAL_KEY` is required for the
+editor to work at all: without the ElevenLabs one, everything else is unchanged
+and the voice controls ask each visitor for a key of their own instead.
+
+Then decide who is allowed to spend them. `/api/fal/*` and `/api/elevenlabs/*`
+both generate on your accounts, so both verify the caller's Auth0 access token
+before attaching a key:
 
 - **`AUTH0_DOMAIN` and `AUTH0_AUDIENCE`** are what it verifies against — the
   tenant whose published keys must have signed the token, and the API identifier
@@ -729,6 +746,12 @@ account, so it verifies the caller's Auth0 access token before attaching the key
   it on a deployed site hands your fal credits to anyone who finds the URL.
   Netlify's own password protection or access controls are worth adding on top
   if the site is not meant to be public at all.
+- **The ElevenLabs proxy is narrower than the fal one**, because a key that can
+  speak can also read the account and empty its voice library. On the site's own
+  key it forwards only the handful of endpoints this editor calls, refuses to
+  delete any voice this app did not create, and sweeps away its own abandoned
+  clones when the library fills up. Each rule and the reason for it is in
+  `netlify/lib/elevenlabs.ts`, where they are also tested.
 
 The `VITE_AUTH0_*` and `VITE_SUPABASE_*` variables are build-time
 and not secret — the anon key is protected by row-level security, and the client
@@ -751,7 +774,8 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Generate  — images, then image → video             Auth0 token verified locally,
   Library   — blobs in IndexedDB                     site's key attached
   Timeline  — picture + audio + caption lanes      /api/elevenlabs/* → api.elevenlabs.io
-  Captions  — words with their own timings           the caller's own key, forwarded once
+  Captions  — words with their own timings           site's key on a verified session,
+                                                       or the caller's own if they have one
   Speech    — audio decoded here, Scribe there     /api/media        → streams provider media
   Sign-in   — Auth0 (auth0-spa-js)                 /api/google/*     → oauth2.googleapis.com
   Projects  — timelines in Supabase (no media)       exchanges the caller's Auth0 token
@@ -767,12 +791,14 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
 
 A few decisions worth knowing about:
 
-**Why proxy at all?** For fal, secrecy: the key belongs to the deployment and is
-attached on the way through, so it never exists in the browser. For ElevenLabs,
-reliability — browser-direct calls depend on each provider's CORS policy, which
+**Why proxy at all?** Secrecy first: both keys belong to the deployment and are
+attached on the way through, so neither exists in the browser. Reliability
+second — browser-direct calls depend on each provider's CORS policy, which
 changes without notice, and going through our own origin makes it deterministic.
-Both share a second payoff: provider media arrives same-origin, so it never
-taints the canvas during export.
+And a third payoff they share: provider media arrives same-origin, so it never
+taints the canvas during export. The ElevenLabs proxy carries one job the fal
+one does not — deciding what a visitor may do with the operator's voice library,
+which is why it has an allowlist rather than being a pass-through.
 
 **Why the queue API, not the simple one?** A Netlify function may run for about
 ten seconds; video generation takes minutes. So the browser drives the job —
@@ -976,10 +1002,12 @@ obvious. A cheaper model without that property would not be a cheaper
 alternative, it would be a different feature.
 
 Through fal rather than through ElevenLabs directly because that is where this
-app's other model calls already go, and the difference is who pays: the fal key
-belongs to the deployment and is attached inside the proxy, so captions need no
-key from the user and work on a first visit with nothing entered. The user's own
-ElevenLabs key is now only the voice changer.
+app's other model calls already go, and at the time it was also the difference
+between needing a key from the visitor and not. Both keys belong to the
+deployment now, so that half no longer separates them — what does is that fal
+already had the queue, the proxy and the spend controls this app drives
+everything else through, and one transcript is not a reason to have two ways of
+asking the same company for the same thing.
 
 **What is sent is the audio, not the video.** The browser decodes each source and
 re-encodes exactly the stretch a clip actually uses as mono 16kHz WAV, which is
@@ -1332,11 +1360,14 @@ If your CI image ships its own browser, point the test at it with
   comes back longer than the clip it belongs to, it runs on over the next shot
   until you trim it, hold the clip longer, or say less.
 - **Copying a clip's voice needs an ElevenLabs plan that allows cloning.** An
-  account that refuses says so, and the answer is to pick one of your own voices
-  in the same dialog — a stranger's voice under the clip, but the right words in
-  it. The copy is made in your account and deleted again as the run ends,
-  including when it fails; only a browser closed mid-run can leave one behind,
-  and it is named after the clip it came from so it can be recognised.
+  account that refuses says so, and the answer is to pick a ready-made voice in
+  the same dialog — a stranger's voice under the clip, but the right words in it.
+  The copy is deleted as the run ends, including when it fails; a browser closed
+  mid-run can still leave one behind, which matters more on a shared deployment
+  than it would on your own account because voice slots are finite. Those
+  leftovers are named after the clip they came from, and the proxy sweeps the
+  abandoned ones the first time a new clone is refused for want of a slot, so
+  the feature repairs itself rather than quietly stopping.
 - **Only the picture track's clips can be fixed.** Clips on a video lane are
   layered over the picture rather than into it; mute one and lay a voiceover
   under it by hand if its dialogue is wrong.

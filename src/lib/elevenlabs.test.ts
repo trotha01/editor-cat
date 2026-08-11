@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cloneVoice, deleteVoice, findSpeechModel, speak } from './elevenlabs'
+import { cloneVoice, deleteVoice, findSpeechModel, speak, siteProvidesKey } from './elevenlabs'
+
+vi.mock('./auth0/client', () => ({ auth0Token: () => Promise.resolve('session-token') }))
 
 /**
  * The provider calls behind fixing a clip's pronunciation.
@@ -35,6 +37,46 @@ const MODELS = [
     languages: [{ language_id: 'it' }, { language_id: 'es' }],
   },
 ]
+
+describe('who pays', () => {
+  it('sends no key at all when the site is providing one', async () => {
+    fetchMock.mockResolvedValue(json({ voices: [] }))
+
+    await deleteVoice('', 'cloned')
+
+    const headers = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers)
+    expect(headers.has('xi-api-key')).toBe(false)
+    // What the proxy checks before it spends the site's key on anybody.
+    expect(headers.get('authorization')).toBe('Bearer session-token')
+  })
+
+  it('forwards a key the user entered, which is what makes it theirs', async () => {
+    fetchMock.mockResolvedValue(json({ voices: [] }))
+
+    await deleteVoice('  their-own-key  ', 'cloned')
+
+    const headers = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers)
+    expect(headers.get('xi-api-key')).toBe('their-own-key')
+  })
+
+  it('reads the deployment’s answer once and remembers it', async () => {
+    fetchMock.mockResolvedValue(json({ configured: true }))
+
+    expect(await siteProvidesKey()).toBe(true)
+    expect(await siteProvidesKey()).toBe(true)
+    // A property of the build on the other end, not of the moment.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/elevenlabs/status')
+  })
+
+  it('says no rather than throwing where there are no functions at all', async () => {
+    // Plain `vite dev` serves no /api routes, so this rejects rather than 404s.
+    vi.resetModules()
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    const fresh = await import('./elevenlabs')
+    expect(await fresh.siteProvidesKey()).toBe(false)
+  })
+})
 
 describe('findSpeechModel', () => {
   it('picks a model that can be told which language to speak, when one was chosen', async () => {

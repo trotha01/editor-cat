@@ -123,7 +123,7 @@ describe('fixing a clip’s audio', () => {
   }
   const still: Asset = { ...video, id: 'a2', kind: 'image', name: 'still.png' }
 
-  function timelineWith(assets: Asset[], key: string) {
+  function timelineWith(assets: Asset[], key: string, siteElevenLabs = false) {
     useProjectStore.setState({
       project: {
         ...emptyProject(),
@@ -136,7 +136,7 @@ describe('fixing a clip’s audio', () => {
       },
     })
     useAssetStore.setState({ assets, loading: false })
-    useSettingsStore.setState({ elevenlabs: key })
+    useSettingsStore.setState({ elevenlabs: key, siteElevenLabs })
     render(<Timeline currentTime={0} onSeek={vi.fn()} />)
   }
 
@@ -153,7 +153,16 @@ describe('fixing a clip’s audio', () => {
     expect(screen.getByLabelText('What this clip should say')).toBeInTheDocument()
   })
 
-  it('greys the item out without a key rather than hiding it', () => {
+  it('needs no key from the visitor when the deployment provides one', () => {
+    // The normal case: nobody is asked for anything, because the site pays.
+    timelineWith([video], '', true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
+
+    expect(screen.getByRole('menuitem', { name: /Fix this clip’s audio/ })).toBeEnabled()
+  })
+
+  it('greys the item out where neither the site nor the visitor has a key', () => {
     timelineWith([video], '')
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))

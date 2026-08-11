@@ -1,6 +1,8 @@
 /** API keys and model preferences. */
 import { create } from 'zustand'
 import { clearKeys, loadKeys, saveKeys, type KeyState } from '../lib/keys'
+import { siteProvidesKey } from '../lib/elevenlabs'
+import { hasAccess } from '../lib/mock'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
@@ -106,17 +108,43 @@ function persistPrefs(prefs: Prefs): void {
   }
 }
 
-interface SettingsState extends KeyState, Prefs {
+export interface SettingsState extends KeyState, Prefs {
+  /**
+   * Whether this deployment provides an ElevenLabs key of its own, so nobody
+   * has to bring one.
+   *
+   * Starts false and is corrected by `loadElevenLabsSupport` on the first
+   * render. False is the safe direction to be wrong in for the moment it lasts:
+   * the voice controls are briefly offered as needing a key, rather than
+   * briefly promising to work on a deployment where they cannot.
+   */
+  siteElevenLabs: boolean
   setElevenLabsKey: (value: string) => void
   setRemember: (remember: boolean) => void
   setPref: <K extends keyof Prefs>(key: K, value: Prefs[K]) => void
   forgetKeys: () => void
   hasElevenLabs: () => boolean
+  /** Asks the proxy who is paying. Called once, at startup. */
+  loadElevenLabsSupport: () => Promise<void>
+}
+
+/**
+ * Whether the voice features can run at all, whoever is paying.
+ *
+ * The one question every voice control on screen actually has — the clip menu,
+ * the fix dialog, the take cards — so it is answered in one place rather than
+ * three subtly different ones. A key the user entered still counts, and in mock
+ * mode everything counts, which is what keeps the whole flow walkable with no
+ * provider at all.
+ */
+export function canUseElevenLabs(state: SettingsState): boolean {
+  return state.siteElevenLabs || hasAccess(state.elevenlabs)
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   ...loadKeys(),
   ...loadPrefs(),
+  siteElevenLabs: false,
 
   setElevenLabsKey: (value) => {
     set((state) => {
@@ -144,4 +172,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   hasElevenLabs: () => get().elevenlabs.trim().length > 0,
+
+  loadElevenLabsSupport: async () => {
+    set({ siteElevenLabs: await siteProvidesKey() })
+  },
 }))

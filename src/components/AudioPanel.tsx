@@ -33,8 +33,7 @@ import {
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
-import { useSettingsStore } from '../state/useSettingsStore'
-import { hasAccess } from '../lib/mock'
+import { canUseElevenLabs, useSettingsStore } from '../state/useSettingsStore'
 import type { AudioClip } from '../lib/types'
 
 const COUNT_IN_SECONDS = countdownSeconds()
@@ -327,6 +326,7 @@ export function AudioPanel({
 
 function TakeCard({ clip }: { clip: AudioClip }) {
   const elevenKey = useSettingsStore((state) => state.elevenlabs)
+  const canConvert = useSettingsStore(canUseElevenLabs)
   const updateAudioClip = useProjectStore((state) => state.updateAudioClip)
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
   const trackName = useProjectStore(
@@ -340,10 +340,8 @@ function TakeCard({ clip }: { clip: AudioClip }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const hasKey = hasAccess(elevenKey)
-
   useEffect(() => {
-    if (!hasKey || voices) return
+    if (!canConvert || voices) return
     let cancelled = false
     listVoices(elevenKey)
       .then((list) => {
@@ -357,7 +355,7 @@ function TakeCard({ clip }: { clip: AudioClip }) {
     return () => {
       cancelled = true
     }
-  }, [hasKey, elevenKey, voices])
+  }, [canConvert, elevenKey, voices])
 
   const convert = async () => {
     const source = assets.find((asset) => asset.id === clip.assetId)
@@ -431,9 +429,10 @@ function TakeCard({ clip }: { clip: AudioClip }) {
         </div>
       ) : null}
 
-      {!hasKey ? (
+      {!canConvert ? (
         <Callout tone="warn">
-          Add your ElevenLabs key in Settings to change this into another voice.
+          This site is not set up for voice conversion. Whoever deployed it needs to set
+          ELEVENLABS_API_KEY, or you can use your own key from Settings.
         </Callout>
       ) : (
         <div className="flex flex-wrap items-end gap-2">

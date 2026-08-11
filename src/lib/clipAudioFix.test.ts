@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { cloneNameFor, fixClipAudio, fixTargets } from './clipAudioFix'
+import { isAppClone } from '../../netlify/lib/elevenlabs'
 import type { Asset, AudioClip, CaptionCue, Clip, Project } from './types'
 
 const cloneVoice = vi.fn<(options: { name: string; sample: Blob }) => Promise<string>>()
@@ -170,6 +171,16 @@ describe('cloneNameFor', () => {
   it('names the clip it copied, and stays inside ElevenLabs’ name limit', () => {
     expect(cloneNameFor('lighthouse.mp4')).toContain('lighthouse.mp4')
     expect(cloneNameFor('x'.repeat(300)).length).toBeLessThanOrEqual(100)
+  })
+
+  it('is a name the proxy will recognise as this app’s own', () => {
+    // The two ends of this string live in directories that cannot both be
+    // compiled together — the functions build has no `src` in it — so this is
+    // the one place both halves are imported and checked against each other.
+    // The day they disagree is the day the proxy starts refusing to delete the
+    // app's own leftover clones, and voice slots quietly fill up.
+    expect(isAppClone(cloneNameFor('lighthouse.mp4'))).toBe(true)
+    expect(isAppClone(cloneNameFor('x'.repeat(300)))).toBe(true)
   })
 })
 
