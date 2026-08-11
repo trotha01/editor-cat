@@ -61,11 +61,23 @@ function unauthorised(detail: string): Response {
 }
 
 export type SessionResult =
-  /** `userId` is null only in the anonymous local-development case. */
-  { ok: true; userId: string | null } | { ok: false; response: Response }
+  | {
+      ok: true
+      /** Null only in the anonymous local-development case. */
+      userId: string | null
+      /**
+       * The signed-in address, when the tenant puts one in the access token —
+       * see `EMAIL_CLAIM` in auth0.ts, which an Action has to add. Null
+       * otherwise, and callers must cope: this is the only place an address
+       * can be had that the browser did not simply claim, which is why
+       * /api/github attaches this one to a report and never one it was sent.
+       */
+      email: string | null
+    }
+  | { ok: false; response: Response }
 
 export async function requireSession(request: Request): Promise<SessionResult> {
-  if (allowAnonymous()) return { ok: true, userId: null }
+  if (allowAnonymous()) return { ok: true, userId: null, email: null }
 
   const config = auth0Config()
 
@@ -108,5 +120,5 @@ export async function requireSession(request: Request): Promise<SessionResult> {
 
   if (!user) return { ok: false, response: unauthorised('That session could not be verified.') }
 
-  return { ok: true, userId: user.id }
+  return { ok: true, userId: user.id, email: user.email || null }
 }

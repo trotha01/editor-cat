@@ -11,6 +11,7 @@ import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { SettingsDialog } from './components/SettingsDialog'
 import { ExportDialog } from './components/ExportDialog'
+import { FeedbackBubble } from './components/FeedbackBubble'
 import { DriveUploads } from './components/DriveUploads'
 import { HydrationStatus } from './components/HydrationStatus'
 import { ProjectPicker } from './components/ProjectPicker'
@@ -231,6 +232,10 @@ export default function App() {
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
+
+      {/* Fixed to the corner of the window rather than placed in the layout, so
+          it is reachable from every step without taking room from any of them. */}
+      <FeedbackBubble />
     </div>
   )
 }
