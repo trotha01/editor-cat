@@ -17,17 +17,21 @@ const projectState = {
   rename: vi.fn(),
 }
 
+const PROJECTS = [
+  { id: 'p1', name: 'Cat trailer', updatedAt: '2026-08-09T12:00:00.000Z', version: 3 },
+  { id: 'p2', name: 'Beach reel', updatedAt: '2026-08-01T12:00:00.000Z', version: 1 },
+]
+
 const projectsState = {
   status: 'saved' as string,
-  projects: [
-    { id: 'p1', name: 'Cat trailer', updatedAt: '2026-08-09T12:00:00.000Z', version: 3 },
-    { id: 'p2', name: 'Beach reel', updatedAt: '2026-08-01T12:00:00.000Z', version: 1 },
-  ],
+  projects: PROJECTS,
   activeId: 'p1' as string | null,
   busy: false,
+  listError: null as string | null,
   openProject: vi.fn(async () => {}),
   newProject: vi.fn(async () => {}),
   removeProject: vi.fn(async () => {}),
+  reloadProjects: vi.fn(async () => {}),
 }
 
 vi.mock('../state/useProjectStore', () => ({
@@ -60,8 +64,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   projectState.project = { id: 'p1', name: 'Cat trailer' }
   projectsState.status = 'saved'
+  projectsState.projects = PROJECTS
   projectsState.activeId = 'p1'
   projectsState.busy = false
+  projectsState.listError = null
 })
 
 describe('the project title', () => {
@@ -128,6 +134,65 @@ describe('the project title', () => {
     mount()
 
     expect(screen.getByRole('button', { name: 'Untitled project' })).toBeInTheDocument()
+  })
+})
+
+describe('when the list of projects could not be fetched', () => {
+  beforeEach(() => {
+    projectsState.listError = 'JWT expired'
+    projectsState.projects = []
+  })
+
+  it('says so, instead of opening onto what looks like an empty account', () => {
+    // A failed fetch and a brand new account produce the same empty menu, and
+    // they could not be further apart: one of them means every project the user
+    // has is still there and simply was not asked for successfully.
+    mount()
+    fireEvent.click(title())
+
+    expect(screen.getByText('There was an error getting the projects.')).toBeInTheDocument()
+  })
+
+  it('passes on what actually failed, rather than only that something did', () => {
+    mount()
+    fireEvent.click(title())
+
+    expect(screen.getByText(/JWT expired/)).toBeInTheDocument()
+  })
+
+  it('offers the retry from where the failure is read', () => {
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }))
+
+    expect(projectsState.reloadProjects).toHaveBeenCalled()
+  })
+
+  it('keeps the menu open across the retry, so the result lands in view', () => {
+    // The retry is inside the menu, so the dismiss-on-click-away handler leaves
+    // it alone — closing here would hide both the spinner and whatever the
+    // second attempt has to say.
+    mount()
+    fireEvent.click(title())
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }))
+
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('announces itself, having appeared after the screen settled', () => {
+    mount()
+    fireEvent.click(title())
+
+    expect(screen.getByRole('alert')).toHaveTextContent('There was an error getting the projects.')
+  })
+
+  it('says nothing when the list arrived', () => {
+    projectsState.listError = null
+
+    mount()
+    fireEvent.click(title())
+
+    expect(screen.queryByText(/error getting the projects/i)).not.toBeInTheDocument()
   })
 })
 

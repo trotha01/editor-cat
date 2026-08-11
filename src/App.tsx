@@ -14,6 +14,7 @@ import { ExportDialog } from './components/ExportDialog'
 import { DriveUploads } from './components/DriveUploads'
 import { HydrationStatus } from './components/HydrationStatus'
 import { ProjectPicker } from './components/ProjectPicker'
+import { ProjectsError } from './components/ProjectsError'
 import { SyncStatus } from './components/SyncStatus'
 import { Button } from './components/ui'
 import { usePersistedState } from './hooks/usePersistedState'
@@ -107,6 +108,11 @@ export default function App() {
           <span aria-hidden>⬇️</span> Export
         </Button>
       </header>
+
+      {/* Outside the sidebar and above the tabs: a project list that never
+          arrived is not about whichever panel happens to be open, and the
+          sidebar can be collapsed. */}
+      <ProjectsError />
 
       {/* Stacked, this scrolls as one column. Side by side it must not: the two
           columns are then as tall as the window, and each scrolls on its own —
