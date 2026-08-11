@@ -8,6 +8,7 @@
  */
 import { formatCost, speechCost } from '../lib/models'
 import type { CaptionTarget } from '../lib/captionSources'
+import type { FixTarget } from '../lib/clipAudioFix'
 
 export interface ClipMenuItem {
   label: string
@@ -38,6 +39,33 @@ export function captionClipItem(target: CaptionTarget, onSelect: () => void): Cl
     icon: '💬',
     label: captions > 0 ? 'Redo captions for this clip' : 'Generate captions for this clip',
     note: formatCost(speechCost(source.duration)),
+    onSelect,
+  }
+}
+
+/**
+ * "Fix this clip's audio", which says its line again properly.
+ *
+ * No price on this one, and its absence is the point: every other paid item in
+ * this menu spends the deployment's money, and this spends the user's own
+ * ElevenLabs credit, which nothing here can count. Without a key it is shown
+ * greyed rather than left out, for the same reason a muted clip still offers
+ * captioning it cannot do — "why is this not here" has an answer nowhere else.
+ *
+ * "Redo" rather than "fix" once there is already a corrected line under the
+ * clip, because that line is what a second run replaces.
+ */
+export function fixAudioItem(
+  target: FixTarget,
+  hasKey: boolean,
+  onSelect: () => void,
+): ClipMenuItem {
+  return {
+    icon: '🗣',
+    label: target.fixedAudioClipId
+      ? 'Redo this clip’s fixed audio'
+      : 'Fix this clip’s audio (pronunciation)',
+    ...(hasKey ? {} : { note: 'needs your ElevenLabs key', disabled: true }),
     onSelect,
   }
 }

@@ -29,10 +29,12 @@ import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dn
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
+import { AudioFixStatus } from './AudioFixStatus'
 import { CaptionJobStatus } from './CaptionJobStatus'
 import { ClipMenu } from './ClipMenu'
 import { ClipReadinessBar } from './ClipReadinessBar'
-import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
+import { FixAudioDialog } from './FixAudioDialog'
+import { captionClipItem, fixAudioItem, type ClipMenuItem } from './clipMenuItems'
 import {
   MAX_LEAD_IN,
   MIN_CLIP_DURATION,
@@ -54,6 +56,8 @@ import { transitionRoomAt } from '../lib/transitions'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
+import { fixTargets, type FixTarget } from '../lib/clipAudioFix'
+import { hasAccess } from '../lib/mock'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
@@ -61,9 +65,11 @@ import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
 import { TransitionMarker } from './TransitionMarker'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
+import { useAudioFixStore } from '../state/useAudioFixStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useProjectsStore } from '../state/useProjectsStore'
+import { useSettingsStore } from '../state/useSettingsStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
 /**
@@ -122,12 +128,16 @@ function ClipCard({
   selected,
   cutAtStart,
   target,
+  fixTarget,
+  hasVoiceKey,
   captioning,
+  fixing,
   onSelect,
   onTrim,
   onRemove,
   onJoin,
   onCaption,
+  onFixAudio,
   onToggleMute,
 }: {
   entry: PositionedClip
@@ -148,12 +158,19 @@ function ClipCard({
   cutAtStart: boolean
   /** Set when this clip has speech worth transcribing. Absent for a still. */
   target: CaptionTarget | undefined
+  /** Set when this clip carries sound that could be said again. */
+  fixTarget: FixTarget | undefined
+  /** Whether ElevenLabs can be reached at all, which is the user's own key. */
+  hasVoiceKey: boolean
   captioning: boolean
+  /** True while this clip's line is being said again. */
+  fixing: boolean
   onSelect: () => void
   onTrim: (edge: 'start' | 'end', seconds: number) => void
   onRemove: () => void
   onJoin: () => void
   onCaption: (target: CaptionTarget) => void
+  onFixAudio: (target: FixTarget) => void
   onToggleMute: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -209,6 +226,10 @@ function ClipCard({
           },
         ]
       : []),
+    // Under the caption row on purpose: the captions are where the words come
+    // from, so "read what it said, then fix how it said it" reads down the menu
+    // in the order it is done.
+    ...(fixTarget ? [fixAudioItem(fixTarget, hasVoiceKey, () => onFixAudio(fixTarget))] : []),
     ...(isImage
       ? []
       : [
@@ -352,7 +373,7 @@ function ClipCard({
       <ClipMenu
         label={name}
         items={items}
-        busy={captioning}
+        busy={captioning || fixing}
         className="absolute top-1 right-1 size-5 bg-black/70 text-xs text-white opacity-80 transition hover:opacity-100"
       />
 
@@ -500,6 +521,13 @@ export function Timeline({
   const captionClip = useCaptionJobStore((state) => state.captionClip)
   const captioningClipId = useCaptionJobStore((state) => state.clipId)
 
+  const fixingClipId = useAudioFixStore((state) => state.clipId)
+  const hasVoiceKey = useSettingsStore((state) => hasAccess(state.elevenlabs))
+  // Which clip the fix dialog is about. Held here rather than in the dialog
+  // because the menu that opens it is inside a card that re-renders constantly,
+  // and the dialog outlives the menu — the menu closes on the click.
+  const [fixingTarget, setFixingTarget] = useState<FixTarget | null>(null)
+
   const [zoom, setZoom] = useState(40)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -559,6 +587,12 @@ export function Timeline({
   // tracks, the picture track and every cue, and both lanes ask the same
   // question of it.
   const targets = useMemo(() => captionTargets(project, assets), [project, assets])
+
+  // The same question for the other thing a clip's sound can have done to it.
+  // A separate join because it answers differently: a clip that has already been
+  // silenced is out of the captioning list and still very much in this one —
+  // silencing it is what fixing it did.
+  const fixable = useMemo(() => fixTargets(project, assets), [project, assets])
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
@@ -916,7 +950,10 @@ export function Timeline({
                           selected={entry.clip.id === selectedClipId}
                           cutAtStart={cutBefore(positioned, entry.index)}
                           target={targets.get(entry.clip.id)}
+                          fixTarget={fixable.get(entry.clip.id)}
+                          hasVoiceKey={hasVoiceKey}
                           captioning={captioningClipId === entry.clip.id}
+                          fixing={fixingClipId === entry.clip.id}
                           onSelect={() => selectClip(entry.clip.id)}
                           onTrim={(edge, seconds) =>
                             trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
@@ -924,6 +961,7 @@ export function Timeline({
                           onRemove={() => removeClip(entry.clip.id)}
                           onJoin={() => removeCut(entry.clip.id)}
                           onCaption={(target) => void captionClip(target.source)}
+                          onFixAudio={setFixingTarget}
                           onToggleMute={() =>
                             setClipAudio(entry.clip.id, { muted: !entry.clip.muted })
                           }
@@ -1005,9 +1043,14 @@ export function Timeline({
           banner's Cancel and Dismiss buttons — this is the bottom-right of the
           screen in the normal full-height layout. Nothing else in the editor
           puts a control there. */}
-      <div className="pr-12">
+      <div className="flex flex-col gap-2 pr-12">
         <CaptionJobStatus />
+        {/* Fixing a clip's audio is started from the same menu and reports the
+            same way, for the same reason. */}
+        <AudioFixStatus />
       </div>
+
+      <FixAudioDialog target={fixingTarget} onClose={() => setFixingTarget(null)} />
 
       <SelectedClipControls />
     </section>

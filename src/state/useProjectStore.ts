@@ -190,6 +190,23 @@ interface ProjectState {
 
   /** Places audio, adding a track only if every existing one is busy there. */
   addAudioClip: (kind: AudioTrackKind, clip: Omit<AudioClip, 'id' | 'trackId'>) => PlacementOutcome
+  /**
+   * Lays generated speech under a picture clip and silences that clip's own
+   * sound, as one edit.
+   *
+   * One edit because it is one act: a corrected line playing over the wrong one
+   * is not a state anybody wants to pass through, and an undo should put the
+   * clip back exactly as it was rather than leaving it mute with the correction
+   * gone — or the other way about.
+   *
+   * Audio a previous fix left under the same clip is removed rather than
+   * layered under the new one. Fixing twice is how a spelling gets corrected,
+   * and two takes of the same line playing together is nobody's second go.
+   */
+  replaceClipAudio: (
+    clipId: string,
+    clip: Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>,
+  ) => PlacementOutcome
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -604,6 +621,40 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ...current,
         audioTracks: result.tracks,
         audioClips: result.clips,
+      }))
+      set({ selectedAudioClipId: id })
+
+      const track = result.tracks.find((entry) => entry.id === result.trackId)
+      return {
+        trackId: result.trackId,
+        trackName: track?.name ?? 'Track',
+        createdTrack: result.createdTrack,
+      }
+    },
+
+    replaceClipAudio: (clipId, clip) => {
+      const id = newId('aclip')
+      const { project } = get()
+
+      // Anchored to the clip explicitly rather than by where it starts: this
+      // audio *is* that clip's sound, so it follows the shot wherever the shot
+      // goes, even if a transition has pulled the two starts apart.
+      const kept = project.audioClips.filter(
+        (entry) => !(entry.speechFix && entry.anchorClipId === clipId),
+      )
+      const result = placeAudioClip(project.audioTracks, kept, {
+        kind: 'voice',
+        newTrackId: newId('track'),
+        clip: { ...clip, id, anchorClipId: clipId },
+      })
+
+      mutate((current) => ({
+        ...current,
+        audioTracks: result.tracks,
+        audioClips: result.clips,
+        clips: current.clips.map((entry) =>
+          entry.id === clipId ? { ...entry, muted: true } : entry,
+        ),
       }))
       set({ selectedAudioClipId: id })
 

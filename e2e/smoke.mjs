@@ -558,6 +558,61 @@ try {
   // look away from, and the count is the only confirmation the words changed.
   await page.getByRole('button', { name: /^Dismiss the captioning result/ }).click()
 
+  // --- Fixing what a clip says, from the same menu -------------------------
+  // A generated clip that says a foreign word with an English mouth cannot be
+  // repaired by a voice changer: the delivery is the part that is wrong. So the
+  // line is said again from text and laid under the clip, and the clip goes
+  // quiet. Reached from here because the box opens with this clip's captions in
+  // it — that hand-off between the two menu items is half of what makes the
+  // feature usable, and it only exists once something has been transcribed.
+  const fixItem = page.getByRole('menuitem', { name: /Fix this clip’s audio/ })
+  let fixedClip = ''
+  for (const [index, name] of menuNames.entries()) {
+    await menus.nth(index).click()
+    if ((await fixItem.count()) > 0) {
+      // Nothing here is gated on a key: mock mode has none, and a greyed-out
+      // item would mean the whole flow below is unreachable in this build.
+      if (await fixItem.isDisabled()) fail(`${name} offers the fix but will not run it`)
+      fixedClip = /^Actions for (.+)$/.exec(name)?.[1] ?? ''
+      break
+    }
+    await page.keyboard.press('Escape')
+  }
+  if (!fixedClip) fail(`no clip offered to fix its audio, out of ${menuNames.length}`)
+
+  const mutedBefore = await page.locator('[aria-label="sound muted"]').count()
+  await fixItem.click()
+  await page.waitForSelector('text=Fix the audio on', { timeout: 20000 })
+  const prefilled = await page.inputValue('#fix-audio-text')
+  if (!prefilled.trim()) fail('the fix dialog should open with the clip’s captions already in it')
+  step(`fix dialog opens for ${fixedClip}, pre-filled from its captions`)
+
+  await page.selectOption('#fix-audio-language', 'it')
+  await page.fill('#fix-audio-text', 'Buongiorno. Come stai?')
+  await page.getByRole('button', { name: /Fix this clip’s audio/ }).click()
+  await page.waitForSelector('text=/now says your line in/', { timeout: 120000 })
+
+  const laid = page.locator('[role="group"][aria-label^="Fixed: "]')
+  if ((await laid.count()) !== 1) fail('the corrected line did not land on an audio lane')
+  const laidLabel = await laid.first().getAttribute('aria-label')
+  if (!/on Voice /.test(laidLabel ?? '')) fail(`the fix landed off the voice lanes: "${laidLabel}"`)
+  const mutedAfter = await page.locator('[aria-label="sound muted"]').count()
+  if (mutedAfter !== mutedBefore + 1) {
+    fail(`the fixed clip should be muted: ${mutedBefore} silent clips before, ${mutedAfter} after`)
+  }
+  step(`corrected line laid under ${fixedClip} and the clip muted ("${laidLabel}")`)
+
+  // Both halves are one edit, so one undo has to put both back — and it leaves
+  // the timeline as the rest of this walk-through expects to find it.
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await page.waitForTimeout(200)
+  if ((await laid.count()) !== 0) fail('undo left the corrected line on the timeline')
+  if ((await page.locator('[aria-label="sound muted"]').count()) !== mutedBefore) {
+    fail('undo left the clip silent after taking its replacement away')
+  }
+  await page.getByRole('button', { name: /^Dismiss the audio fix result/ }).click()
+  step('one undo takes the correction away and gives the clip its own sound back')
+
   // Retiming one word is the other half of the job, and the part that makes this
   // karaoke rather than subtitles. Asking for an absurd time is deliberate: a
   // word must move, and must stop short of overtaking the one after it, so this

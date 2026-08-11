@@ -494,6 +494,113 @@ describe('transitions reach storage, and carry the timeline with them', () => {
 })
 
 /**
+ * Laying a corrected line under a clip.
+ *
+ * The two halves of a fix — the new audio arriving and the clip's own sound
+ * going quiet — have to be one edit. Both playing together is the wrong line
+ * under the right one, which is worse than either failure on its own, and an
+ * undo that unpicked only half of it would leave a clip silent with nothing to
+ * replace what it used to say.
+ */
+describe('fixed clip audio', () => {
+  const twoClips = () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+  }
+
+  const speech = (assetId: string, text: string) => ({
+    assetId,
+    useConverted: false,
+    startTime: 3,
+    inPoint: 0,
+    duration: 2.5,
+    label: 'Fixed: b.mp4',
+    speechFix: { text, language: 'es' },
+  })
+
+  it('places the speech, mutes the clip, and anchors the two together', () => {
+    twoClips()
+    const placement = useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+
+    const laid = stored().audioClips
+    expect(laid).toHaveLength(1)
+    expect(laid[0]).toMatchObject({
+      assetId: 'fix-1',
+      anchorClipId: 'clip-2',
+      startTime: 3,
+      speechFix: { text: 'Hola', language: 'es' },
+    })
+    // On a voice lane, which is what the mixer treats as narration.
+    const track = stored().audioTracks.find((entry) => entry.id === laid[0]?.trackId)
+    expect(track?.kind).toBe('voice')
+    expect(placement.trackName).toBe(track?.name)
+    // And the clip it stands in for is silent, or both would play at once.
+    expect(stored().clips.find((clip) => clip.id === 'clip-2')?.muted).toBe(true)
+    expect(stored().clips.find((clip) => clip.id === 'clip-1')?.muted).toBeUndefined()
+  })
+
+  it('is one step, so a single undo puts the clip’s own sound back', () => {
+    twoClips()
+    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.audioClips).toEqual([])
+    expect(
+      useProjectStore.getState().project.clips.find((clip) => clip.id === 'clip-2')?.muted,
+    ).toBeUndefined()
+  })
+
+  it('replaces the last correction rather than playing over it', () => {
+    twoClips()
+    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-2', 'Buenos días'))
+
+    expect(stored().audioClips.map((clip) => clip.assetId)).toEqual(['fix-2'])
+    // One lane, too: the replaced clip freed the room, so a second go does not
+    // stack up voice tracks nobody asked for.
+    expect(stored().audioTracks.filter((track) => track.kind === 'voice')).toHaveLength(1)
+  })
+
+  it('leaves a take that happens to be anchored to the same clip alone', () => {
+    twoClips()
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'recording',
+      useConverted: false,
+      startTime: 4,
+      inPoint: 0,
+      duration: 1,
+    })
+    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-2', 'Buenos días'))
+
+    // Somebody's recording is not a previous fix, however close it is sitting.
+    expect(
+      stored()
+        .audioClips.map((clip) => clip.assetId)
+        .sort(),
+    ).toEqual(['fix-2', 'recording'])
+  })
+
+  it('carries the correction with the clip when the picture is rearranged', () => {
+    twoClips()
+    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+
+    // clip-2 now plays first, so its line has to move with it.
+    useProjectStore.getState().moveClip(1, 0)
+
+    expect(stored().audioClips[0]?.startTime).toBeCloseTo(0)
+  })
+})
+
+/**
  * Where a clip added from the library lands, and what has to come with it.
  *
  * Inserting into the middle of the run is the one clip edit that makes the

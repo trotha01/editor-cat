@@ -1,17 +1,21 @@
 /**
- * ElevenLabs: the voice changer.
+ * ElevenLabs: the voice changer, and the voice that says a line properly.
  *
- * Takes a microphone recording and re-performs it in a different voice, keeping
- * the timing and delivery of the original. This is the one thing the user's own
- * key pays for, which is why it is the only thing left here — captions used to
- * call ElevenLabs directly too, and now reach the same company's Scribe through
- * fal, on this deployment's account. See `scribe.ts`.
+ * Two jobs, both paid for with the user's own key. The voice changer takes a
+ * microphone recording and re-performs it in a different voice, keeping the
+ * timing and delivery of the original. Speaking is the other direction — text
+ * in, audio out — and it is what fixes a clip whose generated dialogue says the
+ * words with the wrong sounds: nothing can correct a pronunciation that has
+ * already been performed, so the line is said again from the text.
+ *
+ * Captions used to call ElevenLabs directly too, and now reach the same
+ * company's Scribe through fal, on this deployment's account. See `scribe.ts`.
  *
  * All traffic goes through /api/elevenlabs so we do not depend on ElevenLabs'
  * browser CORS policy.
  */
-import { providerErrorFrom } from './errors'
-import { isMockEnabled, mockConvert, mockVoices } from './mock'
+import { providerErrorFrom, ProviderError } from './errors'
+import { isMockEnabled, mockClonedVoiceId, mockConvert, mockSpeech, mockVoices } from './mock'
 
 const PROXY_BASE = '/api/elevenlabs'
 
@@ -31,6 +35,9 @@ interface ModelsResponse {
   model_id: string
   name?: string
   can_do_voice_conversion?: boolean
+  can_do_text_to_speech?: boolean
+  /** What the model can speak. `language_id` is ISO-639-1, e.g. `es`. */
+  languages?: { language_id?: string; name?: string }[]
 }
 
 async function elevenFetch(path: string, key: string, init?: RequestInit): Promise<Response> {
@@ -109,6 +116,198 @@ export async function convertVoice({
   })
 
   return await response.blob()
+}
+
+/**
+ * The languages the fix-audio dialog offers, in ElevenLabs' own vocabulary.
+ *
+ * ISO-639-1 here, where `scribe.ts` lists ISO-639-3: the same languages spelled
+ * the way each provider spells them, rather than one list and a translation
+ * table that would have to be right in both directions.
+ *
+ * Empty is the default and it means *do not name one*. A clip that says a line
+ * in English and then again in Spanish is two languages in one breath, and
+ * naming either of them makes the model read the other one with the wrong
+ * mouth — which is the exact fault this feature exists to remove.
+ */
+export const VOICE_LANGUAGES = [
+  { code: '', label: 'Detect from the text' },
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'fr', label: 'French' },
+  { code: 'de', label: 'German' },
+  { code: 'it', label: 'Italian' },
+  { code: 'hi', label: 'Hindi' },
+  { code: 'ja', label: 'Japanese' },
+  { code: 'ko', label: 'Korean' },
+  { code: 'zh', label: 'Mandarin Chinese' },
+] as const
+
+/**
+ * Models that accept `language_code`, best first.
+ *
+ * ElevenLabs answers a language on a model that cannot enforce one with a 422
+ * rather than by ignoring it, so this cannot be a preference — it is the set of
+ * models that may be used at all once a language has been named.
+ */
+const ENFORCING_MODELS = ['eleven_turbo_v2_5', 'eleven_flash_v2_5']
+
+/**
+ * Models used when no language is named, best first.
+ *
+ * Multilingual v2 leads because it reads mixed text as it is written: an
+ * English sentence followed by an Italian one comes out with two accents, which
+ * is what the clips this exists for are actually saying.
+ */
+const DETECTING_MODELS = ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5']
+
+/**
+ * Picks a model that can speak, and can speak the language asked for.
+ *
+ * Asked of the API rather than hardcoded, for the reason `findConversionModel`
+ * gives: model IDs come and go, and an account's plan decides which of them it
+ * may use. The list is also the only place that knows whether a model has the
+ * language at all, which is worth catching here — before a request is spent
+ * finding out.
+ */
+export async function findSpeechModel(
+  key: string,
+  languageCode?: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const wanted = languageCode ? ENFORCING_MODELS : DETECTING_MODELS
+  if (isMockEnabled()) return wanted[0] as string
+
+  try {
+    const response = await elevenFetch('/v1/models', key, { signal })
+    const models = (await response.json()) as ModelsResponse[]
+    const speaks = (model: ModelsResponse) =>
+      model.can_do_text_to_speech !== false &&
+      (!languageCode ||
+        // A model with no language list is taken at its word rather than ruled
+        // out: the field is informational, and an empty one is far more likely
+        // to mean the response has changed shape than that the model is mute.
+        !model.languages?.length ||
+        model.languages.some((entry) => entry.language_id === languageCode))
+
+    const capable = wanted.find((id) =>
+      models.some((model) => model.model_id === id && speaks(model)),
+    )
+    if (capable) return capable
+  } catch {
+    // Fall through to the documented default rather than failing the whole run
+    // just because the model list could not be read.
+  }
+  return wanted[0] as string
+}
+
+export interface SpeakOptions {
+  key: string
+  /** Whose voice says it. A cloned voice is just another id here. */
+  voiceId: string
+  text: string
+  modelId?: string
+  /** ISO-639-1. Leave unset to let the model read the language off the text. */
+  languageCode?: string
+  signal?: AbortSignal
+}
+
+/**
+ * Says a line, returning the audio.
+ *
+ * MP3 at 44.1kHz: the timeline mixes and exports it like any other audio, and
+ * this is the format every browser this app runs in can decode without help.
+ */
+export async function speak({
+  key,
+  voiceId,
+  text,
+  modelId,
+  languageCode,
+  signal,
+}: SpeakOptions): Promise<Blob> {
+  if (isMockEnabled()) return mockSpeech(text)
+
+  const model = modelId ?? (await findSpeechModel(key, languageCode, signal))
+
+  const response = await elevenFetch(
+    `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
+    key,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        text,
+        model_id: model,
+        ...(languageCode ? { language_code: languageCode } : {}),
+      }),
+      headers: { 'content-type': 'application/json', accept: 'audio/mpeg' },
+      signal,
+    },
+  )
+
+  return await response.blob()
+}
+
+export interface CloneOptions {
+  key: string
+  /** What the voice is called in the user's account while it exists. */
+  name: string
+  /** Audio of the voice to copy. */
+  sample: Blob
+  signal?: AbortSignal
+}
+
+/**
+ * The current path for instant cloning, and the one it replaced.
+ *
+ * Tried in this order because the newer endpoint is the documented one and the
+ * older one is still answering for accounts and proxies that have not caught up.
+ * Only a "no such endpoint" answer moves on to the next: a rejected key or a
+ * plan without cloning is a settled answer, and asking a second URL the same
+ * question would only bury it behind a second error.
+ */
+const CLONE_PATHS = ['/v1/voices/ivc/create', '/v1/voices/add']
+
+/**
+ * Copies a voice from a sample, returning the new voice's id.
+ *
+ * Instant cloning, which is what makes a fixed line sound like the clip it is
+ * standing in for rather than like a stranger dubbed over it. The voice is
+ * created in the user's own ElevenLabs account, so whoever asks for one is
+ * expected to `deleteVoice` it again — see `clipAudioFix.ts`, which does.
+ */
+export async function cloneVoice({ key, name, sample, signal }: CloneOptions): Promise<string> {
+  if (isMockEnabled()) return mockClonedVoiceId()
+
+  const form = new FormData()
+  form.append('name', name)
+  // The extension matters here for the same reason it does in conversion:
+  // ElevenLabs sniffs the container from the filename as well as the bytes.
+  form.append('files', sample, filenameFor(sample.type))
+  form.append('remove_background_noise', 'true')
+
+  let lastError: unknown
+  for (const path of CLONE_PATHS) {
+    try {
+      const response = await elevenFetch(path, key, { method: 'POST', body: form, signal })
+      const body = (await response.json()) as { voice_id?: string }
+      if (!body.voice_id) throw new Error('ElevenLabs cloned the voice but did not name it.')
+      return body.voice_id
+    } catch (cause) {
+      lastError = cause
+      const missing =
+        cause instanceof ProviderError && (cause.status === 404 || cause.status === 405)
+      if (!missing) throw cause
+    }
+  }
+  throw lastError
+}
+
+/** Removes a voice from the user's account. Used to clean up a clone. */
+export async function deleteVoice(key: string, voiceId: string): Promise<void> {
+  if (isMockEnabled()) return
+  await elevenFetch(`/v1/voices/${encodeURIComponent(voiceId)}`, key, { method: 'DELETE' })
 }
 
 function filenameFor(mimeType: string): string {

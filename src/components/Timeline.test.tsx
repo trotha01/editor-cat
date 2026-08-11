@@ -4,6 +4,8 @@ import { Timeline } from './Timeline'
 import { emptyProject, useProjectStore } from '../state/useProjectStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectsStore } from '../state/useProjectsStore'
+import { useSettingsStore } from '../state/useSettingsStore'
+import type { Asset } from '../lib/types'
 
 /**
  * The ruler doubles as the scrub bar: it is the only way to move the playhead
@@ -100,6 +102,88 @@ describe('a clip whose asset is not in the library', () => {
 
     expect(screen.getByText('media missing')).toBeInTheDocument()
     expect(screen.queryByText('media loading')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Fixing a clip's pronunciation starts in the clip's own ⋯ menu, and everything
+ * about it that can be got wrong is in the wiring: whether the item is there at
+ * all, whether it can be pressed without a key, and whether pressing it opens
+ * the form for *that* clip. The run itself is covered in `clipAudioFix.test.ts`.
+ */
+describe('fixing a clip’s audio', () => {
+  const video: Asset = {
+    id: 'a1',
+    kind: 'video',
+    blobKey: 'b1',
+    mimeType: 'video/mp4',
+    name: 'lighthouse.mp4',
+    duration: 4,
+    createdAt: 0,
+  }
+  const still: Asset = { ...video, id: 'a2', kind: 'image', name: 'still.png' }
+
+  function timelineWith(assets: Asset[], key: string) {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: assets.map((asset, index) => ({
+          id: `c${index + 1}`,
+          assetId: asset.id,
+          inPoint: 0,
+          outPoint: 4,
+        })),
+      },
+    })
+    useAssetStore.setState({ assets, loading: false })
+    useSettingsStore.setState({ elevenlabs: key })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+  }
+
+  it('offers the fix on a clip with sound, and opens the form for that clip', () => {
+    timelineWith([video], 'a-key')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
+    const item = screen.getByRole('menuitem', { name: /Fix this clip’s audio/ })
+    expect(item).toBeEnabled()
+
+    fireEvent.click(item)
+
+    expect(screen.getByText('Fix the audio on lighthouse.mp4')).toBeInTheDocument()
+    expect(screen.getByLabelText('What this clip should say')).toBeInTheDocument()
+  })
+
+  it('greys the item out without a key rather than hiding it', () => {
+    timelineWith([video], '')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
+
+    expect(screen.getByRole('menuitem', { name: /Fix this clip’s audio/ })).toBeDisabled()
+  })
+
+  it('says nothing about it on a still, which has no sound to be wrong', () => {
+    timelineWith([still], 'a-key')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for still.png' }))
+
+    expect(screen.queryByRole('menuitem', { name: /audio/ })).not.toBeInTheDocument()
+  })
+
+  it('calls it a redo once there is a corrected line under the clip already', () => {
+    timelineWith([video], 'a-key')
+    useProjectStore.getState().replaceClipAudio('c1', {
+      assetId: 'fixed-1',
+      useConverted: false,
+      startTime: 0,
+      inPoint: 0,
+      duration: 3,
+      label: 'Fixed: lighthouse.mp4',
+      speechFix: { text: 'Buongiorno' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
+
+    expect(screen.getByRole('menuitem', { name: /Redo this clip’s fixed audio/ })).toBeEnabled()
   })
 })
 
