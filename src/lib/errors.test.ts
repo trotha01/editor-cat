@@ -67,6 +67,16 @@ describe('isRetryable', () => {
     expect(isRetryable(new ProviderError('fal.ai', 502, 'Boom.'))).toBe(true)
   })
 
+  it('does not ask again about a request that ran out of time', () => {
+    // The exception among the 5xx. A retry is the same request — the same bytes
+    // uploaded, the same work asked for — so where the slowness is the payload
+    // it can only fail the same way, later and heavier. It is also what `run`
+    // raises when a job outlives its own timeout, and three of those in a row is
+    // three quarters of an hour.
+    expect(isRetryable(new ProviderError('fal.ai', 504, 'Generation timed out.'))).toBe(false)
+    expect(explainStatus('fal.ai', 504)).not.toMatch(/try again/i)
+  })
+
   it('does not ask again about a decision the provider has already made', () => {
     // A rejected session is still rejected in two seconds and a refused input
     // is still refused, so three goes only make the same failure slower.

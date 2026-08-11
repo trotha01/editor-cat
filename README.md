@@ -1154,7 +1154,9 @@ If your CI image ships its own browser, point the test at it with
   before the one that did not. Every other source is unaffected, and pressing
   the button again re-transcribes all of them. Answers the provider has already
   made up its mind about — a lapsed sign-in, a refused input — are not retried
-  at all, since they do not change in three seconds.
+  at all, since they do not change in three seconds; nor is a request that ran
+  out of time, which would only be sent again at the same size and take just as
+  long.
 - **The free transcriber is slower and less accurate**, which is the trade. It
   downloads the model the first time — 80MB or several times that, depending on
   which format your browser will actually run — then runs on your CPU at roughly
