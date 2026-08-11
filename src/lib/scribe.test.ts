@@ -1,7 +1,34 @@
-import { describe, expect, it } from 'vitest'
-import { scribeInput, wordsFromScribe, type ScribeOutput } from './scribe'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  scribeInput,
+  transcribeStretch,
+  wordsFromScribe,
+  TRANSCRIBE_ATTEMPTS,
+  type ScribeOutput,
+  type TranscribeProgress,
+} from './scribe'
 import { cuesFromWords, wordsOntoTimeline } from './captions'
+import { ProviderError, RetriedError } from './errors'
+import { run } from './falClient'
 import { SPEECH_TO_TEXT_MODEL } from './models'
+
+/**
+ * Only the two calls that leave the browser are stood in for. `chunkRanges` and
+ * everything else in `speechAudio` stays real, because the chunking is half of
+ * what the retry has to get right — a chunk asked for twice must still be put
+ * back on the source file's own clock exactly once.
+ */
+vi.mock('./falClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./falClient')>()),
+  run: vi.fn(),
+}))
+
+vi.mock('./speechAudio', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./speechAudio')>()),
+  speechChunkWav: vi.fn(
+    async () => new Blob([new Uint8Array([0, 1, 2, 3])], { type: 'audio/wav' }),
+  ),
+}))
 
 /**
  * A real Scribe v2 response, trimmed to the first few entries.
@@ -115,6 +142,153 @@ describe('scribeInput', () => {
     expect(scribeInput('data:audio/wav;base64,AAAA', 'spa').language_code).toBe('spa')
     expect(scribeInput('data:audio/wav;base64,AAAA')).not.toHaveProperty('language_code')
     expect(scribeInput('data:audio/wav;base64,AAAA', '')).not.toHaveProperty('language_code')
+  })
+})
+
+/**
+ * The retry, which is the only part of this file that can waste the user's
+ * money or their afternoon.
+ *
+ * Driven on fake timers throughout: the backoff is seconds long by design, and
+ * a suite that actually slept through it would be paying the cost the feature
+ * exists to make bearable. `Date.now()` is faked along with the timers, so the
+ * schedule is asserted by stamping the clock inside the stand-in for `run` —
+ * which is exact, and does not depend on how many ticks it takes the rest of
+ * the machinery to settle.
+ */
+describe('a chunk that fails', () => {
+  const asked = vi.mocked(run)
+
+  /** Never touched: `speechChunkWav` is the thing that reads it, and it is mocked. */
+  const buffer = {} as AudioBuffer
+
+  const HELLO: ScribeOutput = {
+    words: [{ text: 'hello', start: 0.1, end: 0.4, type: 'word' }],
+    language_code: 'eng',
+  }
+
+  const rateLimited = () =>
+    new ProviderError('fal.ai', 429, 'fal.ai is rate limiting you.', 'Too many requests')
+
+  /** One short source, so `chunkRanges` gives exactly one chunk to retry. */
+  const transcribe = (options: Partial<Parameters<typeof transcribeStretch>[0]> = {}) =>
+    transcribeStretch({ buffer, from: 0, to: 4, ...options })
+
+  /** Whatever it settles as, without an unhandled rejection while timers run. */
+  const outcome = (promise: Promise<unknown>) =>
+    promise.then(
+      (value) => value,
+      (cause) => cause,
+    )
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    asked.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('asks again, and one bad answer costs nothing but the wait', async () => {
+    asked.mockRejectedValueOnce(rateLimited()).mockResolvedValueOnce(HELLO)
+
+    const seen: TranscribeProgress[] = []
+    const running = transcribe({ onProgress: (progress) => seen.push(progress) })
+    await vi.runAllTimersAsync()
+
+    const result = await running
+    expect(result.words.map((word) => word.text)).toEqual(['hello'])
+    expect(result.languageCode).toBe('eng')
+    expect(asked).toHaveBeenCalledTimes(2)
+    // Said while it is happening, not afterwards. The wait is the part with
+    // nothing in it, and a line that goes quiet and then carries on is what a
+    // hang looks like.
+    expect(seen.some((progress) => progress.attempt === 2)).toBe(true)
+  })
+
+  it('waits a second, then two, rather than asking straight back', async () => {
+    const at: number[] = []
+    asked.mockImplementation(async () => {
+      at.push(Date.now())
+      if (at.length < 3) throw rateLimited()
+      return HELLO
+    })
+
+    const running = transcribe()
+    await vi.runAllTimersAsync()
+    await running
+
+    const start = at[0] ?? 0
+    expect(at.map((time) => time - start)).toEqual([0, 1000, 3000])
+  })
+
+  it('gives up after three goes, and the failure says it had three', async () => {
+    asked.mockRejectedValue(rateLimited())
+
+    const running = outcome(transcribe())
+    await vi.runAllTimersAsync()
+    const cause = await running
+
+    expect(asked).toHaveBeenCalledTimes(TRANSCRIBE_ATTEMPTS)
+    expect(cause).toBeInstanceOf(RetriedError)
+    expect((cause as RetriedError).attempts).toBe(TRANSCRIBE_ATTEMPTS)
+    // Wrapped, not replaced: the provider's own advice is still what the user
+    // reads, and the original is still reachable underneath it.
+    expect((cause as RetriedError).message).toContain('rate limiting')
+    expect((cause as RetriedError).cause).toBeInstanceOf(ProviderError)
+  })
+
+  it('does not ask twice about an answer the provider has already settled', async () => {
+    // A rejected session and a refused input are both decisions, not weather.
+    // Asking again makes the same failure arrive three seconds later.
+    for (const status of [401, 422]) {
+      asked.mockReset()
+      asked.mockRejectedValue(new ProviderError('fal.ai', status, 'No.'))
+
+      const running = outcome(transcribe())
+      await vi.runAllTimersAsync()
+      const cause = await running
+
+      expect(asked).toHaveBeenCalledTimes(1)
+      // Not wrapped either: one go is not something to report as persistence.
+      expect(cause).toBeInstanceOf(ProviderError)
+      expect(cause).not.toBeInstanceOf(RetriedError)
+    }
+  })
+
+  it('never asks again once the run has been cancelled', async () => {
+    const controller = new AbortController()
+    asked.mockImplementation(async () => {
+      controller.abort()
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    const running = outcome(transcribe({ signal: controller.signal }))
+    await vi.runAllTimersAsync()
+    const cause = await running
+
+    expect(asked).toHaveBeenCalledTimes(1)
+    // As itself, not wrapped: every layer above tells a cancellation from a
+    // failure by its type, and one dressed as a `RetriedError` would be
+    // collected and shown to a user who had just pressed Cancel.
+    expect(cause).toBeInstanceOf(DOMException)
+    expect((cause as DOMException).name).toBe('AbortError')
+  })
+
+  it('stops in the middle of the backoff when Cancel is pressed', async () => {
+    const controller = new AbortController()
+    asked.mockRejectedValue(rateLimited())
+
+    const running = outcome(transcribe({ signal: controller.signal }))
+    // Far enough in to be waiting for the second go, nowhere near making it.
+    await vi.advanceTimersByTimeAsync(500)
+    controller.abort()
+    await vi.runAllTimersAsync()
+    const cause = await running
+
+    expect(asked).toHaveBeenCalledTimes(1)
+    expect((cause as DOMException).name).toBe('AbortError')
   })
 })
 

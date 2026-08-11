@@ -8,12 +8,40 @@
 import { supabase } from './client'
 import { SCHEMA_VERSION, type Project, type ProjectDoc } from '../types'
 
+/**
+ * How long a deleted project can still be brought back.
+ *
+ * Stated here as well as in the database because the menu says how many days a
+ * project has left without asking anyone. `purge_expired_projects` in
+ * supabase/migrations/0008_project_archive.sql is the one that decides; this
+ * describes it, and the two have to agree.
+ */
+export const RETENTION_DAYS = 90
+
 /** Enough to render the project list without fetching every timeline. */
 export interface ProjectSummary {
   id: string
   name: string
   updatedAt: string
   version: number
+}
+
+/** A deleted project, and how long is left to change your mind. */
+export interface ArchivedProject extends ProjectSummary {
+  deletedAt: string
+}
+
+/**
+ * Whole days left before a deleted project is gone for good.
+ *
+ * Rounded up, so a project deleted a minute ago has the full ninety rather than
+ * eighty-nine and a bit, and never reads as 0 while it can still be restored.
+ * Clamped at the bottom because a purge only runs when a session starts: a row
+ * can outlive its window and should say so as "today", not "-3 days".
+ */
+export function daysLeft(deletedAt: string, now = Date.now()): number {
+  const expiry = Date.parse(deletedAt) + RETENTION_DAYS * 24 * 60 * 60 * 1000
+  return Math.max(0, Math.ceil((expiry - now) / (24 * 60 * 60 * 1000)))
 }
 
 /** A project as it exists on the server: the document plus its sync metadata. */
@@ -69,21 +97,45 @@ function toStored(row: ProjectRow): StoredProject {
   }
 }
 
+interface SummaryRow {
+  id: string
+  name: string
+  updated_at: string
+  version: number
+}
+
+function toSummary(row: SummaryRow): ProjectSummary {
+  return { id: row.id, name: row.name, updatedAt: row.updated_at, version: row.version }
+}
+
+/** The projects that have not been deleted, newest edit first. */
 export async function listProjects(): Promise<ProjectSummary[]> {
   const { data, error } = await supabase()
     .from('projects')
     .select('id,name,updated_at,version')
+    // A deleted project is still a row, and still readable — it has to be, or it
+    // could not be restored. It is this filter, not its absence from the table,
+    // that keeps it out of the menu.
+    .is('deleted_at', null)
     .order('updated_at', { ascending: false })
 
   if (error) throw new Error(error.message)
-  return (data ?? []).map(
-    (row: { id: string; name: string; updated_at: string; version: number }) => ({
-      id: row.id,
-      name: row.name,
-      updatedAt: row.updated_at,
-      version: row.version,
-    }),
-  )
+  return (data ?? []).map((row: SummaryRow) => toSummary(row))
+}
+
+/** The deleted ones, most recently deleted first. */
+export async function listArchivedProjects(): Promise<ArchivedProject[]> {
+  const { data, error } = await supabase()
+    .from('projects')
+    .select('id,name,updated_at,version,deleted_at')
+    .not('deleted_at', 'is', null)
+    .order('deleted_at', { ascending: false })
+
+  if (error) throw new Error(error.message)
+  return (data ?? []).map((row: SummaryRow & { deleted_at: string }) => ({
+    ...toSummary(row),
+    deletedAt: row.deleted_at,
+  }))
 }
 
 export async function getProject(id: string): Promise<StoredProject | null> {
@@ -150,7 +202,64 @@ export async function updateProject(
   return toStored(data as ProjectRow)
 }
 
-export async function deleteProject(id: string): Promise<void> {
-  const { error } = await supabase().from('projects').delete().eq('id', id)
+/** Raised when a project is not there to be archived, restored or opened. */
+export class ProjectMissingError extends Error {
+  constructor() {
+    super('That project no longer exists.')
+    this.name = 'ProjectMissingError'
+  }
+}
+
+/**
+ * Deletes a project, reversibly, and says when the clock started.
+ *
+ * Through a function because the stamp has to be the server's: see
+ * supabase/migrations/0008_project_archive.sql. It is the moment the ninety days
+ * are counted from, and a browser with a wrong clock would be counting from
+ * somewhere else entirely.
+ */
+export async function archiveProject(id: string): Promise<string> {
+  const { data, error } = await supabase().rpc('archive_project', { project_id: id })
+
   if (error) throw new Error(error.message)
+  // Null means the policy matched nothing: already deleted, or never theirs.
+  if (typeof data !== 'string') throw new ProjectMissingError()
+  return data
+}
+
+/** Puts a deleted project back in the list. */
+export async function restoreProject(id: string): Promise<ProjectSummary> {
+  const { data, error } = await supabase()
+    .from('projects')
+    .update({ deleted_at: null })
+    .eq('id', id)
+    .select('id,name,updated_at,version')
+    .maybeSingle()
+
+  if (error) throw new Error(error.message)
+  // Gone in the meantime — most plausibly purged, on a window that had run out
+  // while this menu was open.
+  if (!data) throw new ProjectMissingError()
+  return toSummary(data as SummaryRow)
+}
+
+/**
+ * Clears out projects whose ninety days have run out, ignoring failures.
+ *
+ * Called when a session starts, which is the only clock this app has: there is
+ * no scheduler behind it, so a project is purged the next time its owner comes
+ * back rather than the day it expires. Row-level security keeps the sweep to the
+ * caller's own projects. See the migration for the pg_cron version, which does
+ * not depend on anyone signing in.
+ */
+export async function purgeExpiredProjects(): Promise<void> {
+  try {
+    // The result is deliberately not inspected. A deployment that has not run
+    // 0008 answers "function not found" every time, and neither the person in
+    // front of it nor this code can do anything about that.
+    await supabase().rpc('purge_expired_projects')
+  } catch {
+    // Nothing here is worth interrupting a sign-in over, and the next session
+    // tries again.
+  }
 }

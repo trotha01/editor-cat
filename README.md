@@ -23,6 +23,7 @@ account, so visitors need **no key** for any of them. Voice conversion uses
 | **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                              |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## What you need
 
@@ -51,6 +52,71 @@ preview switches the whole pipeline at once — the shape of generated images, t
 aspect ratio sent to the video model, and the export frame — because a clip
 generated one way up and exported the other just gets black bars. Existing
 projects keep the orientation they were made with until you change it.
+
+## Reporting bugs from inside the app
+
+There is a **💬 bubble in the bottom-right corner** of the editor. It opens a
+short form — what kind of thing this is, a title, the details — and files it as
+an issue on the project's tracker. No GitHub account is needed at either end:
+the token belongs to the deployment, which is the point, because most people who
+hit a bug have no intention of getting an account to tell you about it.
+
+**Everything the issue will carry is on the form before anything is posted**,
+behind a **What gets attached** disclosure:
+
+- **The reporter's email address**, from their Google sign-in. It is read from
+  the verified session by the function, never from the request body, so nobody
+  can file under somebody else's name. The form shows the exact address the
+  server will attach, which is why it asks the server rather than assuming.
+- The build SHA, branch and deploy context, the page origin, the user agent, and
+  the window and screen size.
+- The shape of the open project: how many clips, how long, how many audio clips
+  and captions, which way up.
+
+Note that the tracker is public, so the address is published with the report.
+That is deliberate — it is how anyone answers a reporter who is not watching the
+thread — but it does mean an address that scrapers can find. If that trade is
+wrong for your deployment, the address is attached in one place
+(`reporterLine` in `netlify/lib/github.ts`).
+
+### Letting a deployment file issues
+
+Two environment variables, both server-side:
+
+- **`GITHUB_TOKEN`** — a **fine-grained personal access token** scoped to the one
+  repository, with **Issues: read and write** and nothing else. That is the whole
+  permission it needs: so scoped, a leak cannot read code, push, or touch another
+  repository. No `VITE_` prefix, or it would be inlined into the browser bundle
+  and published.
+- **`GITHUB_REPO`** — `owner/repo`, the tracker reports go to.
+
+Without both, `/api/github/status` answers `configured: false` and the bubble
+says reporting is not set up here rather than taking a report to nowhere.
+
+**For the address to be an address**, the Auth0 tenant has to put one in its
+_access_ tokens — a Login Action adding the namespaced claim
+`https://editor-cat/email`, alongside the `role: authenticated` one Supabase
+already needs. Auth0 silently drops un-namespaced custom claims from an access
+token, which is why the claim looks like a URL. Without it the report still says
+who filed it, but as the Auth0 account id, which you can look up in the
+dashboard.
+
+Filing is deliberately narrow, because it writes to a public place under the
+deployment's own account:
+
+- **Signed in only.** `/api/github/issues` verifies the caller's Auth0 token, the
+  same check `/api/fal/*` makes.
+- **Five reports per account per ten minutes**, best-effort: functions scale out,
+  so the counter is per instance. It exists to stop a stuck retry loop, not to
+  stand in for the session check.
+- **Titles and bodies are capped** server-side, and truncated rather than
+  refused — losing five minutes of somebody's writing to a limit nobody showed
+  them is worse than filing a report that says it was cut short.
+- **`@mentions` and `#123` references are neutralised** with a zero-width space,
+  so a report cannot be used to notify a stranger or cross-link an unrelated
+  issue. The collected details go in a fenced block, which renders nothing — the
+  address included, so GitHub does not turn it into a `mailto:` link.
+- Issues arrive labelled `from-app` alongside `bug`, `enhancement` or `question`.
 
 ## Running it locally
 
@@ -111,6 +177,14 @@ Then the editor. The second step is asked with the first one's email as a hint,
 so Google does not make you choose an account twice. Settings keeps the folder
 and the sign-out, and nothing else about Google.
 
+**Three steps once, one step after that.** Both answers are kept against the
+account rather than in the browser that gave them — the Drive grant by Auth0's
+Token Vault, the folder by a table of this app's own — so every later sign-in is
+a single click, on a new machine as much as on the same one. The folder used to
+live in localStorage alone, which signing out clears (it is an id in one
+account's Drive, and the next person at that keyboard must not inherit it), so
+every login was asked where its media should go all over again.
+
 It was briefly two, because Auth0 will carry a Drive scope through its login and
 the consent screen duly shows the folder next to the account. That grant lands
 against the user's _identity_, and Token Vault — which is what the functions
@@ -121,7 +195,8 @@ See [what sign-in needs](#what-sign-in-needs).
 
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
 placement, resolution, and the captions with every word timing in them — plus a
-catalogue of asset metadata. It never holds media bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
+catalogue of asset metadata and the Drive folder each account writes into. It
+never holds media bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
 Opening a project on a new machine restores the timeline from metadata
 immediately, so you can rearrange it while the media is still coming down from
 Drive behind you.
@@ -129,6 +204,20 @@ Drive behind you.
 **Media that predates Drive cannot be recovered on another machine.** An asset
 with no `driveFileId` only ever existed in the browser that made it; those clips
 open with their timing intact and report as unrecoverable.
+
+**Deleting a project asks first, and keeps it for 90 days.** The confirmation
+names the project — the button is a small icon in a list of near-identical rows —
+and what follows is a `deleted_at` stamp rather than a `delete`. It leaves the
+project menu, reappears at the bottom of it under **Recently deleted** with the
+days it has left, and one click puts it back. After 90 days it is destroyed for
+real. Your Drive is not touched either way: deleting a project deletes an
+arrangement of media, never the media.
+
+The purge runs when a session starts, which is the only scheduler this app has,
+so it sweeps an account the next time its owner signs in rather than the day a
+project expires. The 90 days are a promise about the earliest something can stop
+being restorable, not the latest it can survive — there is a `pg_cron` version in
+`supabase/migrations/0008_project_archive.sql` for a deployment that wants both.
 
 Leave `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` unset and the app behaves
 exactly as it did before: one project, IndexedDB, no sign-in.
@@ -146,6 +235,10 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    fails on a constraint. `0006` changes `user_id` from `uuid` to `text` and
    moves the policies onto `auth.jwt() ->> 'sub'`, because Auth0 subjects are not
    UUIDs — see [migrating an existing project](#migrating-an-existing-project).
+   `0007` adds the one-row-per-user table holding the Drive folder each account
+   writes into, so a sign-in restores it instead of asking for it again. `0008`
+   makes deleting a project reversible: a `deleted_at` column, plus the two
+   functions that stamp it and sweep up after 90 days.
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
    What Supabase needs instead is Auth0 registered as a third-party auth
    provider, and one Auth0 Action. Both are dashboard work, neither can be done
@@ -499,12 +592,13 @@ AUTH0_BACKEND_CLIENT_SECRET=     # the API's Custom API Client
 Run the files in `supabase/migrations/` in order, but check which have actually
 been applied first — this project's history is not a clean run. On the live
 project (`dxfxvvrbltjckstlnhup`) only `0005_project_drive_folder.sql` has been
-applied; **`0003`, `0004` and `0006` are outstanding**. All three need running.
-The order between them does not matter: `0004` only drops a table, and `0006`
-repeats `0003`'s two `drop constraint if exists` statements rather than assuming
-`0003` has run — it has to, because `alter column ... type` rebuilds any foreign
-key on the column, and a text column referencing `auth.users (id)` cannot be
-rebuilt at all.
+applied; **`0003`, `0004`, `0006`, `0007` and `0008` are outstanding**. All five
+need running, and the order between them does not matter: `0004` only drops a
+table, `0007` only creates one, `0008` adds a column and two functions to a table
+whose type change it does not depend on, and `0006` repeats `0003`'s two
+`drop constraint if exists` statements rather than assuming `0003` has run — it
+has to, because `alter column ... type` rebuilds any foreign key on the column,
+and a text column referencing `auth.users (id)` cannot be rebuilt at all.
 
 `0006_auth0_subject_ids.sql` is numbered around `0005` deliberately: `0005`
 belongs to an open pull request that adds a `drive_folder_id` column and was
@@ -602,6 +696,11 @@ ID by origin allowlisting.
 able to sign in and save, alongside the dashboard steps in [what sign-in
 needs](#what-sign-in-needs).
 
+**`GITHUB_TOKEN` and `GITHUB_REPO`** are optional, and only decide whether the
+report bubble can file anything. Without them the editor is unchanged and the
+bubble says reporting is not set up. See [letting a deployment file
+issues](#letting-a-deployment-file-issues).
+
 ## How it fits together
 
 ```
@@ -615,8 +714,9 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Sign-in   — Auth0 (auth0-spa-js)                 /api/google/*     → oauth2.googleapis.com
   Projects  — timelines in Supabase (no media)       exchanges the caller's Auth0 token
   Drive     — media in your own Drive                through Token Vault for a Google one
-  Preview   — custom player over <video>
-  Export    — ffmpeg.wasm → MP4, captions burnt in
+  Preview   — custom player over <video>           /api/github/*     → api.github.com
+  Export    — ffmpeg.wasm → MP4, captions burnt in   files what the report form collected,
+  Report    — bug reports, filed as issues            attributed to the verified session
 
                                                  Supabase and Drive themselves talk to the
                                                  browser directly, not through us — Supabase
@@ -1054,7 +1154,8 @@ npm test          # unit tests — timeline maths, caption grouping and retiming
                   # the karaoke subtitle file, reading Scribe's word list, ffmpeg
                   # argv, SSRF guard, session
                   # verification and persistence, the Drive connection flow, the
-                  # video request body, orientation, key storage
+                  # video request body, orientation, key storage, and what the
+                  # report bubble will and will not file
 npm run lint
 npm run build
 
@@ -1098,6 +1199,14 @@ request. And `src/components/SignInGate.test.tsx` holds the gate rules that
 decide whether anyone can use the app — no entry without Drive, no Drive prompt
 before there is an account to file it under, and no ejection once inside.
 
+`src/components/FeedbackBubble.test.tsx` is there for the same kind of reason. It
+holds the rule that nothing reaches GitHub until Post is pressed, and that what
+the issue will publish — the reporter's own address included — is on screen
+first. `netlify/lib/github.test.ts` covers what is written once it has been: the
+caps, the neutralising that stops a report notifying a stranger, and that the
+address on an issue can only come from the verified session and never from the
+request body.
+
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track, cutting a clip and
 reloading the page to see the cut come back, putting a count-in in front of the
@@ -1116,6 +1225,10 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
+- **A filed report is one-way.** The issue carries the reporter's address so
+  they can be answered, but nothing comes back into the editor — there is no
+  inbox in the app, and someone who files a bug and closes the tab will only
+  hear about it by email or by opening the issue themselves.
 - **Getting in costs two trips to Google.** One signs you in, the other grants
   Drive. Not a limit of the login — Auth0 will carry the scope through it — but
   of where the result lands: a login files Google's tokens against the user's
@@ -1143,6 +1256,20 @@ If your CI image ships its own browser, point the test at it with
   and the sound video clips carry are transcribed; music and count-in lanes are
   not, and a muted track is skipped, because its words are not in the finished
   video either.
+- **A source is captioned whole or not at all.** Captioning a timeline is a
+  queue of requests rather than one, so the failure that actually happens is one
+  of them coming back rate limited while the rest are fine. Each is asked for up
+  to three times, a second's wait and then two seconds between goes, and the
+  progress line says which go it is on so a quiet moment reads as a wait rather
+  than a hang. What survives that is settled rather than unlucky: the source is
+  named in the warning list with the reason and how many tries it had, and none
+  of its words reach the timeline — not even the chunks that came back fine
+  before the one that did not. Every other source is unaffected, and pressing
+  the button again re-transcribes all of them. Answers the provider has already
+  made up its mind about — a lapsed sign-in, a refused input — are not retried
+  at all, since they do not change in three seconds; nor is a request that ran
+  out of time, which would only be sent again at the same size and take just as
+  long.
 - **The free transcriber is slower and less accurate**, which is the trade. It
   downloads the model the first time — 80MB or several times that, depending on
   which format your browser will actually run — then runs on your CPU at roughly

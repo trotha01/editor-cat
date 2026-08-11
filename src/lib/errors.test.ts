@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { ProviderError, explainStatus, extractMessage, toDisplayMessage } from './errors'
+import {
+  ProviderError,
+  RetriedError,
+  explainStatus,
+  extractMessage,
+  isAbort,
+  isRetryable,
+  toDisplayMessage,
+} from './errors'
 
 describe('extractMessage', () => {
   it('reads a plain error field', () => {
@@ -47,6 +55,71 @@ describe('explainStatus', () => {
     }
     expect(explainStatus('fal.ai', 401)).toMatch(/sign in/i)
     expect(explainStatus('fal.ai', 503)).toMatch(/deployed/i)
+  })
+})
+
+describe('isRetryable', () => {
+  it('asks again when the answer was about the moment rather than the request', () => {
+    // The two that a queue of caption chunks actually runs into: a service
+    // metering a burst, and a service having a bad minute.
+    expect(isRetryable(new ProviderError('fal.ai', 429, 'Slow down.'))).toBe(true)
+    expect(isRetryable(new ProviderError('fal.ai', 500, 'Boom.'))).toBe(true)
+    expect(isRetryable(new ProviderError('fal.ai', 502, 'Boom.'))).toBe(true)
+  })
+
+  it('does not ask again about a request that ran out of time', () => {
+    // The exception among the 5xx. A retry is the same request — the same bytes
+    // uploaded, the same work asked for — so where the slowness is the payload
+    // it can only fail the same way, later and heavier. It is also what `run`
+    // raises when a job outlives its own timeout, and three of those in a row is
+    // three quarters of an hour.
+    expect(isRetryable(new ProviderError('fal.ai', 504, 'Generation timed out.'))).toBe(false)
+    expect(explainStatus('fal.ai', 504)).not.toMatch(/try again/i)
+  })
+
+  it('does not ask again about a decision the provider has already made', () => {
+    // A rejected session is still rejected in two seconds and a refused input
+    // is still refused, so three goes only make the same failure slower.
+    expect(isRetryable(new ProviderError('fal.ai', 401, 'Sign in.'))).toBe(false)
+    expect(isRetryable(new ProviderError('fal.ai', 422, 'Rejected.'))).toBe(false)
+    expect(isRetryable(new ProviderError('fal.ai', 404, 'No such model.'))).toBe(false)
+    expect(isRetryable(new ProviderError('fal.ai', 402, 'No credit.'))).toBe(false)
+  })
+
+  it('asks again when the request never got an answer at all', () => {
+    // `fetch` rejects with a TypeError when the connection drops rather than
+    // giving a status, and that is the most transient failure of the lot.
+    expect(isRetryable(new TypeError('Failed to fetch'))).toBe(true)
+  })
+
+  it('never asks again after a cancellation, which is not a fault to work around', () => {
+    expect(isRetryable(new DOMException('Aborted', 'AbortError'))).toBe(false)
+  })
+
+  it('leaves anything it cannot recognise alone', () => {
+    expect(isRetryable(new Error('something went wrong'))).toBe(false)
+    expect(isRetryable('a string')).toBe(false)
+  })
+})
+
+describe('isAbort', () => {
+  it('tells a cancellation from a failure', () => {
+    expect(isAbort(new DOMException('Aborted', 'AbortError'))).toBe(true)
+    expect(isAbort(new DOMException('Nope', 'NotSupportedError'))).toBe(false)
+    expect(isAbort(new Error('AbortError'))).toBe(false)
+  })
+})
+
+describe('RetriedError', () => {
+  it('borrows the wording of what actually failed', () => {
+    // So nothing downstream has to know this class exists to render it: the
+    // provider's own advice is still the sentence the user reads.
+    const cause = new ProviderError('fal.ai', 429, 'fal.ai is rate limiting you.', 'Slow down')
+    const retried = new RetriedError(cause, 3)
+
+    expect(toDisplayMessage(retried)).toBe('fal.ai is rate limiting you. — Slow down')
+    expect(retried.attempts).toBe(3)
+    expect(retried.cause).toBe(cause)
   })
 })
 
