@@ -23,6 +23,7 @@ import {
   splitClipAt,
   totalDuration,
   trimClip,
+  zoomFromPinch,
 } from './timeline'
 import { withTransition } from './transitions'
 import type { Asset, Clip, Project, Transition } from './types'
@@ -693,5 +694,30 @@ describe('stepFrames', () => {
   it('steps a second at a time when asked for a rate’s worth', () => {
     expect(stepFrames(2, 30, 30)).toBeCloseTo(3, 10)
     expect(stepFrames(2, -24, 24)).toBeCloseTo(1, 10)
+  })
+})
+
+describe('zoomFromPinch', () => {
+  it('zooms in on a negative deltaY — fingers spreading apart', () => {
+    expect(zoomFromPinch(40, -10, 8, 480)).toBeGreaterThan(40)
+  })
+
+  it('zooms out on a positive deltaY — fingers pinching together', () => {
+    expect(zoomFromPinch(40, 10, 8, 480)).toBeLessThan(40)
+  })
+
+  it('holds still on a flat gesture', () => {
+    expect(zoomFromPinch(40, 0, 8, 480)).toBe(40)
+  })
+
+  it('clamps to the given range', () => {
+    expect(zoomFromPinch(479, -50, 8, 480)).toBe(480)
+    expect(zoomFromPinch(9, 50, 8, 480)).toBe(8)
+  })
+
+  it('caps a single tick, so a mouse wheel’s much bigger deltaY cannot jump the whole range in one notch', () => {
+    // An actual Ctrl+wheel click can report a deltaY in the hundreds, where a
+    // trackpad pinch reports single digits per event.
+    expect(zoomFromPinch(40, -1000, 8, 480)).toBe(zoomFromPinch(40, -50, 8, 480))
   })
 })

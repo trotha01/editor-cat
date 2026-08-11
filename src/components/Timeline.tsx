@@ -15,7 +15,7 @@
  * Widths are proportional to duration, with a pixels-per-second zoom, so what
  * you see matches what you get.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   PointerSensor,
@@ -47,6 +47,7 @@ import {
   leadInOf,
   snapToFrame,
   totalDuration,
+  zoomFromPinch,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { transitionRoomAt } from '../lib/transitions'
@@ -581,6 +582,41 @@ export function Timeline({
     [project.clips, moveClip],
   )
 
+  // Where to re-anchor the scroll position once a pinch changes the zoom,
+  // filled in by onWheelZoom and consumed by the layout effect below. It has
+  // to wait for that effect because the scrollable content is only as wide as
+  // the zoom that is about to replace this one — setting scrollLeft before the
+  // resize lands just gets clamped back by the browser.
+  const pinchAnchor = useRef<{ pointerX: number; secondsAtPointer: number } | null>(null)
+
+  useLayoutEffect(() => {
+    const anchor = pinchAnchor.current
+    const container = scrollRef.current
+    if (!anchor || !container) return
+    pinchAnchor.current = null
+    container.scrollLeft = anchor.secondsAtPointer * zoom - anchor.pointerX
+  }, [zoom])
+
+  // A trackpad pinch has no event of its own on the web — browsers report it as
+  // a wheel event with ctrlKey set, which is also what an actual Ctrl+wheel
+  // looks like, so this catches both for free. preventDefault stops it from
+  // also zooming the whole page.
+  const onWheelZoom = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey) return
+    event.preventDefault()
+    const container = scrollRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const pointerX = event.clientX - rect.left
+    // The instant under the cursor, so it is what stays under the cursor once
+    // the zoom changes — without this a pinch in the middle of a long timeline
+    // sends the picture sliding out from under your fingers.
+    pinchAnchor.current = { pointerX, secondsAtPointer: (container.scrollLeft + pointerX) / zoom }
+    // Pinch deltaY is negative when spreading fingers apart, same sign as
+    // scrolling up, so this reads as zoom in.
+    setZoom(zoomFromPinch(zoom, event.deltaY, MIN_ZOOM, MAX_ZOOM))
+  }
+
   const scrub = (event: React.MouseEvent<HTMLDivElement>) => {
     const ruler = trackRef.current
     if (!ruler) return
@@ -726,7 +762,11 @@ export function Timeline({
           <CaptionTrackHeaders />
         </div>
 
-        <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto p-3 pl-2">
+        <div
+          ref={scrollRef}
+          onWheel={onWheelZoom}
+          className="min-w-0 flex-1 overflow-x-auto p-3 pl-2"
+        >
           <div className="relative min-w-full" style={{ width: Math.max(contentWidth, 320) }}>
             {/* Ruler doubles as the scrub bar, and carries the frame grid: the
                 lines run straight down into the picture track below, so the
