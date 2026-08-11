@@ -1,18 +1,26 @@
 /**
  * The project name, and the menu for switching between projects.
  *
+ * The name *is* the button. It used to be a text field, which put the two things
+ * anyone does with a title — read which project this is, and go to another one —
+ * behind an affordance that offered neither: a click landed a caret, and the way
+ * to switch was a separate arrow beside it. Renaming is the rarer of the two by
+ * a wide margin and has a natural home in Settings, so the header keeps the
+ * common one and points at where the other went.
+ *
  * Signed out (or with no Supabase project configured) there is exactly one
- * project and nothing to switch between, so this collapses to the plain
- * renameable title it was before.
+ * project and nothing to switch between, so this collapses to the plain title it
+ * is the rest of the time, without a menu behind it.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Button, Spinner } from './ui'
 import { useProjectStore } from '../state/useProjectStore'
 import { useProjectsStore } from '../state/useProjectsStore'
 
-export function ProjectPicker() {
+const UNTITLED = 'Untitled project'
+
+export function ProjectPicker({ onOpenSettings }: { onOpenSettings: () => void }) {
   const name = useProjectStore((state) => state.project.name)
-  const rename = useProjectStore((state) => state.rename)
 
   const status = useProjectsStore((state) => state.status)
   const projects = useProjectsStore((state) => state.projects)
@@ -24,6 +32,7 @@ export function ProjectPicker() {
 
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
 
   // A menu that stays open after clicking away feels broken, and this one sits
   // over the timeline where stray clicks are constant.
@@ -33,7 +42,11 @@ export function ProjectPicker() {
       if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      // Dismissing with the keyboard has to leave focus somewhere deliberate,
+      // and the control that opened the menu is the only place that is.
+      triggerRef.current?.focus()
     }
     document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
@@ -43,30 +56,32 @@ export function ProjectPicker() {
     }
   }, [open])
 
-  const title = (
-    <input
-      value={name}
-      onChange={(event) => rename(event.target.value)}
-      aria-label="Project name"
-      className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm hover:border-line focus:border-accent focus:outline-none"
-    />
-  )
+  const label = name || UNTITLED
 
-  if (status === 'local') return title
+  if (status === 'local') {
+    return <span className="min-w-0 flex-1 truncate px-2 py-1 text-sm">{label}</span>
+  }
 
   return (
-    <div className="relative flex min-w-0 flex-1 items-center gap-1" ref={menuRef}>
-      {title}
-
-      <Button
+    <div className="relative flex min-w-0 flex-1 items-center" ref={menuRef}>
+      <button
+        type="button"
+        ref={triggerRef}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-haspopup="menu"
         title="Switch project"
-        className="shrink-0"
+        className="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-transparent px-2 py-1 text-sm transition hover:border-line focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        {busy ? <Spinner /> : <span aria-hidden>▾</span>}
-      </Button>
+        <span className="truncate">{label}</span>
+        {busy ? (
+          <Spinner className="shrink-0" />
+        ) : (
+          <span aria-hidden className="shrink-0 text-ink-dim">
+            ▾
+          </span>
+        )}
+      </button>
 
       {open ? (
         <div
@@ -86,7 +101,7 @@ export function ProjectPicker() {
                   entry.id === activeId ? 'font-medium text-ink' : 'text-ink-dim'
                 }`}
               >
-                <span className="block truncate">{entry.name || 'Untitled project'}</span>
+                <span className="block truncate">{entry.name || UNTITLED}</span>
                 <span className="block text-xs text-ink-dim">
                   {new Date(entry.updatedAt).toLocaleDateString()}
                 </span>
@@ -116,6 +131,19 @@ export function ProjectPicker() {
               className="w-full rounded-md px-2.5 py-2 text-left text-sm hover:bg-surface-2"
             >
               <span aria-hidden>＋</span> New project
+            </button>
+            {/* Renaming moved out of the header when the title became this
+                button, so the menu that replaced it says where it went. */}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                onOpenSettings()
+              }}
+              className="w-full rounded-md px-2.5 py-2 text-left text-sm text-ink-dim hover:bg-surface-2 hover:text-ink"
+            >
+              <span aria-hidden>✎</span> Rename in Settings
             </button>
           </div>
         </div>

@@ -97,6 +97,14 @@ through **Auth0** — and then keeps your timelines in your account: a
 project switcher in the header, auto-save about two seconds after you stop
 editing, and projects that open on any machine you sign in from.
 
+**The project name in the header is the switcher.** Clicking it opens the list
+of your projects, with a new one and a delete beside each. It is not a text
+field: switching is what anyone clicking a title in a header is after, and the
+name is renamed in **Settings → Project name**, which the menu itself points at.
+Signed out, or with no Supabase project configured, there is one project and
+nothing to switch between, so the name is plain text there and Settings is still
+where it is renamed.
+
 **Getting in is three steps, and each asks for one thing.** Sign in with Google;
 grant permission to write to your Drive; pick the folder your media goes into.
 Then the editor. The second step is asked with the first one's email as a hint,
