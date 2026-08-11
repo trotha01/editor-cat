@@ -16,8 +16,8 @@ import {
 } from './github'
 
 /**
- * What stands between "someone typed something into a chat bubble" and "a
- * public issue exists under the operator's name".
+ * What stands between "someone typed something into a form" and "a public issue
+ * exists under the operator's name".
  */
 
 const DRAFT = {
@@ -124,7 +124,52 @@ describe('issueBody', () => {
   })
 
   it('says where it came from', () => {
-    expect(issueBody(DRAFT)).toContain('in-app assistant')
+    expect(issueBody(DRAFT)).toContain('Filed from inside editor-cat')
+  })
+
+  it('attributes the report to the signed-in address', () => {
+    const body = issueBody(DRAFT, { email: 'someone@example.com', userId: 'auth0|42' })
+
+    expect(body).toContain('Reported by: someone@example.com')
+    expect(body).toContain('by someone@example.com')
+  })
+
+  it('keeps the address out of a mailto link', () => {
+    // Inside the fenced block it is plain text. Left in the prose, GitHub would
+    // linkify it, which is a click away from mailing a stranger by accident.
+    const body = issueBody(DRAFT, { email: 'someone@example.com', userId: 'auth0|42' })
+    const fenced = body.split('```')[1] ?? ''
+
+    expect(fenced).toContain('someone@example.com')
+  })
+
+  it('falls back to the account id where the tenant sends no address', () => {
+    // Better than an anonymous report: it is what an operator looks the person
+    // up by in Auth0.
+    const body = issueBody(DRAFT, { email: null, userId: 'google-oauth2|104372' })
+
+    expect(body).toContain('Reported by: google-oauth2|104372')
+    expect(body).toContain("no address in this tenant's tokens")
+  })
+
+  it('says nothing about anybody when there is nobody', () => {
+    expect(issueBody(DRAFT)).not.toContain('Reported by')
+  })
+})
+
+describe('who a report is attributed to', () => {
+  it('cannot be set by whoever posted it', () => {
+    // The address on the issue comes from the verified session. A payload that
+    // names somebody else must lose that field entirely rather than have it
+    // carried through — this is a public tracker, and the line reads as though
+    // the site is vouching for it.
+    const result = parseDraft({ ...DRAFT, reporter: 'ceo@example.com', email: 'ceo@example.com' })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(JSON.stringify(result.draft)).not.toContain('ceo@example.com')
+      expect(issueBody(result.draft)).not.toContain('ceo@example.com')
+    }
   })
 })
 

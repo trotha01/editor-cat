@@ -1,11 +1,11 @@
 /**
- * Filing what someone tells the in-app assistant as a GitHub issue.
+ * Filing what someone typed into the report form as a GitHub issue.
  *
  * The handler that uses this is netlify/functions/github.ts; everything worth
  * testing lives here, because Netlify turns every file in the functions
  * directory into a deployable endpoint (see functionNames.test.ts).
  *
- * Three things shape this module, and all three are about the same fact: the
+ * Four things shape this module, and all four are about the same fact: the
  * issue tracker is public and the token belongs to the deployment, so anything
  * that reaches here is written to a public place under the operator's name.
  *
@@ -18,6 +18,9 @@
  *    `#123` references before it is posted, so a report cannot be used to ping a
  *    person or spray cross-links across unrelated issues. See
  *    {@link neutraliseReferences}.
+ *  - Nobody else's name on it. The address in the footer is the one the session
+ *    proved, never one the browser sent — see {@link Reporter}. `parseDraft`
+ *    reads four fields and drops everything else for that reason.
  */
 
 export const ISSUE_KINDS = ['bug', 'feature', 'question'] as const
@@ -39,6 +42,21 @@ export interface IssueDraft {
   body: string
   /** Build and browser details the app collected, shown to the user first. */
   context?: string
+}
+
+/**
+ * Who filed it, for the footer.
+ *
+ * Never read off the request. It comes from the verified access token in
+ * `requireSession`, because an address the browser merely claimed would let
+ * anyone with an account file a report under somebody else's name, on a public
+ * tracker, in a form that reads as authoritative. Null where the tenant does not
+ * put an address in the token at all.
+ */
+export interface Reporter {
+  email: string | null
+  /** The Auth0 subject, which exists whenever anyone is signed in. */
+  userId: string | null
 }
 
 export type ParseResult = { ok: true; draft: IssueDraft } | { ok: false; reason: string }
@@ -156,30 +174,50 @@ function fenceable(value: string): string {
  * The issue as it will be read by whoever triages it.
  *
  * The reporter's own words come first and unaltered (bar the reference
- * neutralising), because that is the part with the information in it. The
- * collected build and browser details go in a fenced block — which is both how
- * you want to read a user agent string and a second guarantee that nothing in
- * there renders as a link, a mention or an image.
+ * neutralising), because that is the part with the information in it. Then the
+ * collected details, in a fenced block — which is both how you want to read a
+ * user agent string and a second guarantee that nothing in there renders as a
+ * link, a mention or an image. The address goes in that same block, and so
+ * arrives as plain text rather than as a `mailto:` GitHub has linkified.
  *
  * The footer is not decoration. An issue that arrives through a button in a web
- * app was written by someone who cannot be replied to in the thread unless they
- * come back to it, and a maintainer who does not know that will wait for an
- * answer that is not coming.
+ * app was written by someone who is not watching the thread, so the address is
+ * how anyone reaches them — and a maintainer who does not know that will wait
+ * for an answer that is not coming.
  */
-export function issueBody(draft: IssueDraft): string {
+export function issueBody(draft: IssueDraft, reporter: Reporter = NOBODY): string {
   const parts = [neutraliseReferences(draft.body)]
 
-  if (draft.context) {
-    parts.push(['<!-- collected by the app -->', '```', fenceable(draft.context), '```'].join('\n'))
+  const collected = [reporterLine(reporter), draft.context].filter(Boolean).join('\n')
+  if (collected) {
+    parts.push(['<!-- collected by the app -->', '```', fenceable(collected), '```'].join('\n'))
   }
 
   parts.push(
     '---\n' +
-      '_Filed from the in-app assistant in editor-cat. The reporter may not be ' +
-      'watching this thread — there is no notification back into the app._',
+      `_Filed from inside editor-cat${
+        reporter.email ? ` by ${reporter.email}` : ''
+      }. The reporter is not watching this thread — there is no notification back into the app._`,
   )
 
   return parts.join('\n\n')
+}
+
+const NOBODY: Reporter = { email: null, userId: null }
+
+/**
+ * Who to answer, in the words the operator can act on.
+ *
+ * The account id is the fallback rather than nothing at all: it is what an
+ * operator looks the person up by in the Auth0 dashboard, and a report from a
+ * deployment whose tenant does not put the address in its access tokens should
+ * still say who filed it. See `EMAIL_CLAIM` in auth0.ts for what turns the first
+ * line into an address.
+ */
+function reporterLine(reporter: Reporter): string {
+  if (reporter.email) return `Reported by: ${reporter.email}`
+  if (reporter.userId) return `Reported by: ${reporter.userId} (no address in this tenant's tokens)`
+  return ''
 }
 
 export interface RepoTarget {

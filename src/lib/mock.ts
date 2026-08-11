@@ -11,7 +11,6 @@
  * and bytes, and the export path gets a real workout.
  */
 import type { GenerationProgress } from './falClient'
-import { ASSISTANT_MARKER } from './support/knowledge'
 
 export function isMockEnabled(): boolean {
   return import.meta.env.VITE_MOCK_PROVIDERS === '1'
@@ -232,13 +231,6 @@ async function mockVideo(
 function mockLlm(input: Record<string, unknown>): { output: string } {
   const prompt = String(input.prompt ?? '')
 
-  // The same endpoint serves the "Improve with AI" buttons and the help chat,
-  // and a chat answered with an improved image prompt is confusing rather than
-  // merely fake. The system prompt is what tells them apart.
-  if (String(input.system_prompt ?? '').includes(ASSISTANT_MARKER)) {
-    return { output: mockAssistant(prompt) }
-  }
-
   // Echo back something clearly shaped like an enhanced prompt so the diff UI
   // has real content to show, while staying obviously fake.
   const subject = prompt.split('\n').at(-1)?.slice(0, 200) ?? prompt
@@ -248,41 +240,6 @@ function mockLlm(input: Record<string, unknown>): { output: string } {
       `shallow 35mm perspective, rich colour grading, fine surface detail, composed on the thirds. ` +
       `[mock enhancement — no LLM was called]`,
   }
-}
-
-/**
- * A canned help reply, and — where the last thing said sounds like a complaint
- * — a canned report to go with it.
- *
- * Drafting one matters more than the prose does: the draft card, the edit boxes
- * and the post button are the part of this feature worth being able to walk
- * through with no keys and no network, and none of them appear without a block
- * to parse.
- */
-function mockAssistant(prompt: string): string {
-  const lastTurn = prompt
-    .split(/\n\s*\n/)
-    .filter((turn) => turn.startsWith('User:'))
-    .at(-1)
-  const said = (lastTurn ?? prompt).replace(/^User:\s*/, '').trim()
-
-  const reporting =
-    /\b(bug|broken|broke|crash|fail|wrong|should|wish|feature|cannot|can't)\b/i.test(said)
-
-  if (!reporting) {
-    return `[mock mode — no LLM was called] I would normally answer that from what I know about the editor. The panels run left to right: image, video, library, audio, captions.`
-  }
-
-  const title = said.slice(0, 60) || 'Something went wrong'
-  const body = `Reported from the app in mock mode.\n\nWhat happened: ${said}`
-
-  return [
-    '[mock mode — no LLM was called] That sounds worth reporting. I have drafted it below — check it over and post it if it looks right.',
-    '',
-    '```report',
-    JSON.stringify({ kind: 'bug', title, body }),
-    '```',
-  ].join('\n')
 }
 
 /** Routes a mock request by model ID, mimicking the real client's contract. */

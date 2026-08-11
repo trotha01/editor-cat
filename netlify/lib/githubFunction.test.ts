@@ -37,8 +37,10 @@ function post(route: string, payload: unknown = ISSUE): Request {
   })
 }
 
-function get(route: string): Request {
-  return new Request(`https://site.example/api/github/${route}`)
+function get(route: string, token?: string): Request {
+  return new Request(`https://site.example/api/github/${route}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  })
 }
 
 /** What GitHub answers when it has created one. */
@@ -56,7 +58,11 @@ beforeEach(() => {
   resetRateLimit()
   process.env.GITHUB_TOKEN = 'ghp_test'
   process.env.GITHUB_REPO = 'owner/repo'
-  requireSession.mockResolvedValue({ ok: true, userId: 'auth0|42' })
+  requireSession.mockResolvedValue({
+    ok: true,
+    userId: 'auth0|42',
+    email: 'someone@example.com',
+  })
   // A fresh Response per call: a body can only be read once, so a shared one
   // fails every request after the first for a reason that has nothing to do
   // with what is being tested.
@@ -76,23 +82,52 @@ describe('status', () => {
     const response = await handler(get('status'))
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toEqual({ configured: true, repo: 'owner/repo' })
+    await expect(response.json()).resolves.toMatchObject({
+      configured: true,
+      repo: 'owner/repo',
+    })
   })
 
-  it('answers without a session, because the UI asks before offering to file', async () => {
-    await handler(get('status'))
+  it('answers without a session, because the form asks before offering to file', async () => {
+    const response = await handler(get('status'))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ reporter: null })
+    // Asking who somebody is when they have not said is a round trip for an
+    // answer nobody can use.
     expect(requireSession).not.toHaveBeenCalled()
+  })
+
+  it('tells a signed-in caller which address a report of theirs would carry', async () => {
+    // The form shows this before anything is posted. It has to be the value the
+    // *server* will attach, or the preview is a guess about someone's own email
+    // on a public issue.
+    await expect((await handler(get('status', 'auth0-token'))).json()).resolves.toMatchObject({
+      reporter: 'someone@example.com',
+    })
+  })
+
+  it('says nothing about a caller whose token does not hold up', async () => {
+    // And does not fail: a signed-out browser asking whether reporting works
+    // must be told that it does, not that something is broken.
+    requireSession.mockResolvedValue({ ok: false, response: new Response('no', { status: 401 }) })
+
+    const response = await handler(get('status', 'stale-token'))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ configured: true, reporter: null })
   })
 
   it('reports a deployment with no token as simply unavailable', async () => {
     delete process.env.GITHUB_TOKEN
 
     // Not an error: a checkout without a token is a perfectly good editor that
-    // cannot file issues, and the chat drops the offer rather than failing at
-    // the end of a report someone has just written.
+    // cannot file issues, and the form says so rather than taking a report
+    // someone has just written to nowhere.
     await expect((await handler(get('status'))).json()).resolves.toEqual({
       configured: false,
       repo: null,
+      reporter: null,
     })
   })
 
@@ -130,6 +165,25 @@ describe('filing', () => {
     // Composition is github.test.ts's job; that it is applied at all is this
     // handler's, and posting a raw body would notify a stranger.
     expect(body.body).not.toContain('@octocat')
+  })
+
+  it('attributes the issue to the session, not to the request body', async () => {
+    await handler(post('issues', { ...ISSUE, reporter: 'ceo@example.com' }))
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)
+    expect(body.body).toContain('someone@example.com')
+    // Anyone with an account could otherwise file under somebody else's name,
+    // publicly, in a line that reads as though this site checked it.
+    expect(body.body).not.toContain('ceo@example.com')
+  })
+
+  it('still files for a tenant that puts no address in its tokens', async () => {
+    requireSession.mockResolvedValue({ ok: true, userId: 'auth0|42', email: null })
+
+    expect((await handler(post('issues'))).status).toBe(201)
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)
+    expect(body.body).toContain('auth0|42')
   })
 
   it('refuses a caller with no session', async () => {

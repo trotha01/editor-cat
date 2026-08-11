@@ -941,7 +941,7 @@ try {
       `video+audio, faststart`,
   )
 
-  // --- The help bubble -----------------------------------------------------
+  // --- The report bubble ---------------------------------------------------
   // Last, and deliberately so: it is the one thing here that floats over the
   // editor, and a 48px button in the corner is exactly the sort of thing that
   // starts intercepting clicks meant for the timeline. Everything above has
@@ -951,28 +951,26 @@ try {
   // everything behind it inert — including the bubble.
   await page.getByRole('dialog').getByLabel('Close').click()
 
-  await page.getByRole('button', { name: 'Open help and feedback' }).click()
-  await page.getByRole('dialog', { name: 'Help and feedback' }).waitFor()
-  step('help bubble opens')
+  await page.getByRole('button', { name: 'Report a problem or suggest a feature' }).click()
+  await page.getByRole('dialog', { name: 'Report a problem' }).waitFor()
+  step('report bubble opens')
 
-  await page.getByRole('textbox', { name: 'Message' }).fill('The export is broken at 40%')
-  await page.getByRole('button', { name: 'Send' }).click()
+  await page.getByRole('textbox', { name: 'Title' }).fill('The export stops at 40%')
+  await page.getByRole('textbox', { name: 'Details' }).fill('It hangs there every time.')
 
-  // The mock assistant drafts a report from a complaint, which is the part
-  // worth walking: parsing the model's block, and the card it turns into.
-  const draftTitle = page.getByRole('textbox', { name: 'Report title' })
-  await draftTitle.waitFor({ timeout: 30000 })
-  if (!(await draftTitle.inputValue())) fail('the drafted report has no title')
-
+  // What the issue will carry has to be visible before it is posted — the
+  // reporter's own address included, since this goes to a public tracker.
   await page.getByText('What gets attached').click()
   const attached = await page.locator('.fixed pre').first().innerText()
-  if (!attached.includes('Build:')) {
-    fail(`the draft does not show what will be attached: ${attached}`)
+  for (const expected of ['Reported by:', 'Build:', 'Project:']) {
+    if (!attached.includes(expected)) {
+      fail(`the preview does not show "${expected}": ${attached}`)
+    }
   }
-  step('a complaint comes back as a draft report, showing what it would attach')
+  step('the form shows what filing would publish, address included')
 
   await page.getByRole('button', { name: /^Post/ }).click()
-  await page.getByText(/nothing was posted/).waitFor({ timeout: 15000 })
+  await page.getByText(/Nothing was posted/).waitFor({ timeout: 15000 })
   step('posting in mock mode files nothing and says so')
 
   if (pageErrors.length) fail(`console errors during the run:\n    ${pageErrors.join('\n    ')}`)

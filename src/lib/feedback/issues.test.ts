@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 /**
  * The browser's half of filing a report.
  *
- * Two things are worth holding down. A deployment that cannot file must say so
- * *before* anyone is invited to write a report, however it fails to answer —
- * including the checkout where /api does not exist at all. And a failure at the
- * end must come back as a sentence rather than a status code, because it lands
- * on someone who has just written the thing.
+ * Three things are worth holding down. A deployment that cannot file must say
+ * so *before* anyone is invited to write a report, however it fails to answer —
+ * including the checkout where /api does not exist at all. A failure at the end
+ * must come back as a sentence rather than a status code, because it lands on
+ * someone who has just written the thing. And the address shown in the form has
+ * to be the one the server derived from the session, not one this side made up:
+ * it is what the public issue will carry.
  */
 const mocked = { enabled: false }
 
@@ -40,14 +42,35 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe('loadIssueSupport', () => {
-  it('reports a deployment that can file, and where to', async () => {
-    fetchMock.mockResolvedValue(json({ configured: true, repo: 'owner/repo' }))
+  it('reports a deployment that can file, where to, and as whom', async () => {
+    fetchMock.mockResolvedValue(
+      json({ configured: true, repo: 'owner/repo', reporter: 'someone@example.com' }),
+    )
 
     await expect(loadIssueSupport()).resolves.toEqual({
       configured: true,
       repo: 'owner/repo',
+      reporter: 'someone@example.com',
       mocked: false,
     })
+  })
+
+  it('asks as the signed-in user, since the answer is about them', async () => {
+    fetchMock.mockResolvedValue(json({ configured: true, repo: 'owner/repo' }))
+
+    await loadIssueSupport()
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/github/status')
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer auth0-token')
+  })
+
+  it('copes with a deployment whose tokens carry no address', async () => {
+    // The tenant has to add a claim for this to be answerable; without it the
+    // form says an account id will go on the issue instead of an address.
+    fetchMock.mockResolvedValue(json({ configured: true, repo: 'owner/repo', reporter: '' }))
+
+    await expect(loadIssueSupport()).resolves.toMatchObject({ reporter: null })
   })
 
   it('reports a deployment that cannot', async () => {
@@ -78,7 +101,7 @@ describe('loadIssueSupport', () => {
   })
 })
 
-const UNAVAILABLE = { configured: false, repo: null, mocked: false }
+const UNAVAILABLE = { configured: false, repo: null, reporter: null, mocked: false }
 
 describe('fileIssue', () => {
   const REPORT = { kind: 'bug', title: 'Captions drift', body: 'By a second.' }
@@ -134,10 +157,10 @@ describe('supportContext', () => {
     expect(context).toContain('Browser:')
   })
 
-  it('carries nothing identifying', () => {
-    // What goes in here ends up in a public issue under someone's own report.
-    // A user agent and a window size are what every web server already logs;
-    // an account, an email or a prompt would be a different thing entirely.
+  it('does not collect the address itself', () => {
+    // The reporter's address goes on the issue, but it is attached by the
+    // function from the verified session — never assembled here, where it would
+    // be whatever the browser felt like claiming.
     const context = supportContext(BUILD).toLowerCase()
 
     expect(context).not.toContain('@')

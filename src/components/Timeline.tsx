@@ -868,8 +868,8 @@ export function Timeline({
       {/* Captioning one clip is started from that clip's own menu, so it reports
           here rather than four panels away in the Captions step.
 
-          The padding is for the help bubble, which is fixed to that corner of
-          the window (see HelpChat.tsx) and otherwise lands squarely on this
+          The padding is for the report bubble, which is fixed to that corner of
+          the window (see FeedbackBubble.tsx) and otherwise lands squarely on this
           banner's Cancel and Dismiss buttons — this is the bottom-right of the
           screen in the normal full-height layout. Nothing else in the editor
           puts a control there. */}
