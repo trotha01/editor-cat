@@ -16,7 +16,8 @@ describe('parseIdeas', () => {
   })
 
   it('falls back to a numbered list when the model ignores the JSON instruction', () => {
-    const text = '1. A raccoon files a noise complaint.\n2. A toaster interviews for a job.\n3. Done.'
+    const text =
+      '1. A raccoon files a noise complaint.\n2. A toaster interviews for a job.\n3. Done.'
     expect(parseIdeas(text)).toEqual([
       'A raccoon files a noise complaint.',
       'A toaster interviews for a job.',
