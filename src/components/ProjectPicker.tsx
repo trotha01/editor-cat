@@ -13,7 +13,7 @@
  * is the rest of the time, without a menu behind it.
  */
 import { useEffect, useRef, useState } from 'react'
-import { Button, Spinner } from './ui'
+import { Button, Callout, Spinner } from './ui'
 import { useProjectStore } from '../state/useProjectStore'
 import { useProjectsStore } from '../state/useProjectsStore'
 
@@ -26,9 +26,11 @@ export function ProjectPicker({ onOpenSettings }: { onOpenSettings: () => void }
   const projects = useProjectsStore((state) => state.projects)
   const activeId = useProjectsStore((state) => state.activeId)
   const busy = useProjectsStore((state) => state.busy)
+  const listError = useProjectsStore((state) => state.listError)
   const openProject = useProjectsStore((state) => state.openProject)
   const newProject = useProjectsStore((state) => state.newProject)
   const removeProject = useProjectsStore((state) => state.removeProject)
+  const reloadProjects = useProjectsStore((state) => state.reloadProjects)
 
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -88,6 +90,26 @@ export function ProjectPicker({ onOpenSettings }: { onOpenSettings: () => void }
           role="menu"
           className="absolute top-full left-0 z-20 mt-1 max-h-80 w-72 overflow-y-auto rounded-xl border border-line bg-surface p-1 shadow-xl"
         >
+          {/* Without this the menu opens onto nothing and reads as an account
+              with no projects in it, which is the one thing it is certainly
+              not: the list never arrived, so what is here is unknown rather
+              than empty. */}
+          {listError ? (
+            <div className="mb-1">
+              <Callout tone="error" title="There was an error getting the projects.">
+                {listError}
+                <Button
+                  variant="ghost"
+                  className="mt-1.5 px-1.5 py-0.5 text-xs text-red-800 underline hover:text-red-900"
+                  disabled={busy}
+                  onClick={() => void reloadProjects()}
+                >
+                  Try again
+                </Button>
+              </Callout>
+            </div>
+          ) : null}
+
           {projects.map((entry) => (
             <div key={entry.id} className="flex items-center gap-1">
               <button

@@ -258,10 +258,10 @@ describe('auth0IdToken', () => {
   })
 
   it('refreshes before reading, because the claims come from a cache', async () => {
-    // `getIdTokenClaims` is a synchronous cache read dressed as a promise. Auth0
-    // returns a fresh id_token alongside every refreshed access token, so the
-    // refresh is what puts a current one there — without it a long-open tab goes
-    // on presenting an expired credential to PostgREST.
+    // `getIdTokenClaims` is a synchronous cache read dressed as a promise, so
+    // something has to have warmed it. This call is what covers the two cases
+    // the expiry check below cannot: a cache with nothing in it at all, and a
+    // refresh token that has run out.
     await client.adoptRedirect()
     getTokenSilently.mockClear()
 
@@ -277,5 +277,92 @@ describe('auth0IdToken', () => {
     getTokenSilently.mockRejectedValue(new Error('login_required'))
 
     await expect(client.auth0IdToken()).rejects.toThrow(/login_required/)
+  })
+})
+
+/**
+ * The gap between Auth0's two clocks, which is where "JWT expired" came from.
+ *
+ * `getTokenSilently` renews on the *access* token's expiry alone: auth0-spa-js
+ * records a cache entry as `now + expires_in` and never looks at the ID token's
+ * own `exp`, and the ID token it returns lives in a separate per-client entry
+ * with no expiry on it whatsoever. Auth0's defaults are ten hours for an ID
+ * token and twenty-four for an API access token, so for the fourteen hours
+ * between them the SDK sees a perfectly current cache, refreshes nothing, and
+ * hands over an ID token that died hours ago. PostgREST calls that `PGRST303`
+ * and the project list — every query, in fact — fails on a live session.
+ */
+describe('auth0IdToken when the ID token has outlived its access token', () => {
+  const seconds = () => Math.floor(Date.now() / 1000)
+
+  /** Claims as the SDK's cache would hand them back. */
+  const claims = (exp: number, raw = 'raw-id-token') => ({ __raw: raw, sub: USER.sub, exp })
+
+  beforeEach(() => {
+    // These cases queue two reads apiece and the number consumed is exactly
+    // what is under test, so an unspent `…Once` would otherwise carry into the
+    // next case — which `clearAllMocks` does not touch.
+    getIdTokenClaims.mockReset()
+    getIdTokenClaims.mockResolvedValue(claims(seconds() + 36000))
+  })
+
+  it('renews it rather than sending it, and sends what came back', async () => {
+    await client.adoptRedirect()
+    getTokenSilently.mockClear()
+    getIdTokenClaims
+      .mockResolvedValueOnce(claims(seconds() - 3600, 'stale-id-token'))
+      .mockResolvedValueOnce(claims(seconds() + 36000, 'fresh-id-token'))
+
+    await expect(client.auth0IdToken()).resolves.toBe('fresh-id-token')
+
+    // `cacheMode: 'off'` is the whole fix. Asking again without it returns the
+    // same cached access token and leaves the dead ID token exactly where it is.
+    expect(getTokenSilently).toHaveBeenCalledWith({ cacheMode: 'off' })
+  })
+
+  it('renews one that is seconds from expiring, before the round trip spends them', async () => {
+    // PostgREST reads `exp` when the request arrives, not when it left.
+    await client.adoptRedirect()
+    getTokenSilently.mockClear()
+    getIdTokenClaims
+      .mockResolvedValueOnce(claims(seconds() + 5, 'nearly-stale'))
+      .mockResolvedValueOnce(claims(seconds() + 36000, 'fresh-id-token'))
+
+    await expect(client.auth0IdToken()).resolves.toBe('fresh-id-token')
+    expect(getTokenSilently).toHaveBeenCalledWith({ cacheMode: 'off' })
+  })
+
+  it('spends no refresh on a token with hours left on it', async () => {
+    // The common case by a wide margin, and supabase-js calls this on every
+    // single request — a forced network round trip here would be one per query.
+    await client.adoptRedirect()
+    getTokenSilently.mockClear()
+    getIdTokenClaims.mockResolvedValue(claims(seconds() + 36000))
+
+    await expect(client.auth0IdToken()).resolves.toBe('raw-id-token')
+
+    expect(getTokenSilently).toHaveBeenCalledOnce()
+    expect(getTokenSilently).not.toHaveBeenCalledWith({ cacheMode: 'off' })
+  })
+
+  it('sends a freshly minted token that is shorter-lived than the renewal margin', async () => {
+    // A tenant whose ID tokens expire inside the margin would otherwise be
+    // refused a session that works: this is the token Auth0 just issued, and
+    // only a genuinely dead one is worth withholding.
+    await client.adoptRedirect()
+    getIdTokenClaims
+      .mockResolvedValueOnce(claims(seconds() - 60, 'stale-id-token'))
+      .mockResolvedValueOnce(claims(seconds() + 30, 'short-lived'))
+
+    await expect(client.auth0IdToken()).resolves.toBe('short-lived')
+  })
+
+  it('reports an ended session when the renewed token is expired as well', async () => {
+    // Sending it would buy a round trip and a message about a database. The
+    // caller turns this into "sign in again", which is the only thing left.
+    await client.adoptRedirect()
+    getIdTokenClaims.mockResolvedValue(claims(seconds() - 3600, 'stale-id-token'))
+
+    await expect(client.auth0IdToken()).rejects.toThrow(client.Auth0IdTokenExpiredError)
   })
 })
