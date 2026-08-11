@@ -131,6 +131,20 @@ Drive behind you.
 with no `driveFileId` only ever existed in the browser that made it; those clips
 open with their timing intact and report as unrecoverable.
 
+**Deleting a project asks first, and keeps it for 90 days.** The confirmation
+names the project — the button is a small icon in a list of near-identical rows —
+and what follows is a `deleted_at` stamp rather than a `delete`. It leaves the
+project menu, reappears at the bottom of it under **Recently deleted** with the
+days it has left, and one click puts it back. After 90 days it is destroyed for
+real. Your Drive is not touched either way: deleting a project deletes an
+arrangement of media, never the media.
+
+The purge runs when a session starts, which is the only scheduler this app has,
+so it sweeps an account the next time its owner signs in rather than the day a
+project expires. The 90 days are a promise about the earliest something can stop
+being restorable, not the latest it can survive — there is a `pg_cron` version in
+`supabase/migrations/0008_project_archive.sql` for a deployment that wants both.
+
 Leave `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` unset and the app behaves
 exactly as it did before: one project, IndexedDB, no sign-in.
 
@@ -148,7 +162,9 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    moves the policies onto `auth.jwt() ->> 'sub'`, because Auth0 subjects are not
    UUIDs — see [migrating an existing project](#migrating-an-existing-project).
    `0007` adds the one-row-per-user table holding the Drive folder each account
-   writes into, so a sign-in restores it instead of asking for it again.
+   writes into, so a sign-in restores it instead of asking for it again. `0008`
+   makes deleting a project reversible: a `deleted_at` column, plus the two
+   functions that stamp it and sweep up after 90 days.
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
    What Supabase needs instead is Auth0 registered as a third-party auth
    provider, and one Auth0 Action. Both are dashboard work, neither can be done
@@ -472,9 +488,10 @@ AUTH0_BACKEND_CLIENT_SECRET=     # the API's Custom API Client
 Run the files in `supabase/migrations/` in order, but check which have actually
 been applied first — this project's history is not a clean run. On the live
 project (`dxfxvvrbltjckstlnhup`) only `0005_project_drive_folder.sql` has been
-applied; **`0003`, `0004`, `0006` and `0007` are outstanding**. All four need
-running, and the order between them does not matter: `0004` only drops a table,
-`0007` only creates one, and `0006` repeats `0003`'s two
+applied; **`0003`, `0004`, `0006`, `0007` and `0008` are outstanding**. All five
+need running, and the order between them does not matter: `0004` only drops a
+table, `0007` only creates one, `0008` adds a column and two functions to a table
+whose type change it does not depend on, and `0006` repeats `0003`'s two
 `drop constraint if exists` statements rather than assuming `0003` has run — it
 has to, because `alter column ... type` rebuilds any foreign key on the column,
 and a text column referencing `auth.users (id)` cannot be rebuilt at all.
