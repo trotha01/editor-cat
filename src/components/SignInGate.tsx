@@ -1,25 +1,34 @@
 /**
- * The way in, and the only place this app asks anyone for Google.
+ * The way in.
  *
- * Three things have to be true before the editor opens, and the gate holds all
- * of them: a session, permission to write to the user's Drive, and a folder to
- * write into. The first two come from one Google consent screen; the third is a
- * step of our own, because an editor that silently saves nowhere is worse than
- * one more click.
+ * Three things have to be true before the editor opens, and each is a screen: a
+ * session, permission to write to the user's Drive, and a folder to write into.
+ * The folder is a choice of our own, because an editor that silently saves
+ * nowhere is worse than one more click.
+ *
+ * The Drive permission is asked for separately from the sign-in, which is not
+ * where this started. Auth0 will happily carry the scope on the login — the
+ * consent screen shows the folder next to the account — but it files what comes
+ * back against the user's *identity*, and Token Vault, which is what the
+ * functions exchange against, reads `connected_accounts` instead. Only the
+ * connect flow writes that. So the scope has to be asked for as a connected
+ * account, after sign-in, or it lands somewhere nothing can spend it.
+ *
+ * It is still cheaper than the three screens Netlify Identity needed: the
+ * address is already known by the time the second one is asked, so `login_hint`
+ * turns it into a single approval rather than another choice of account.
  *
  * Only stands in the way when this build actually has a Supabase project behind
  * it (see `requiresSignIn`). Mock mode and an unconfigured checkout render the
  * editor directly, which is what keeps the end-to-end test and a fresh clone
  * working with no account at all.
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Callout, Spinner } from './ui'
-import { createNonce, requestSignIn, type Nonce } from '../lib/google/identity'
-import { ConsentDeclinedError } from '../lib/google/oauthPopup'
-import { isDriveConfigured, loadConnectionStatus } from '../lib/google/gis'
-import type { StatusProblem } from '../lib/google/connection'
+import { loadConnectionStatus } from '../lib/google/gis'
 import { createFolder } from '../lib/google/drive'
 import { isPickerConfigured, pickFolder } from '../lib/google/picker'
+import { isAuth0Configured } from '../lib/auth0/client'
 import { toDisplayMessage } from '../lib/errors'
 import { requiresSignIn, useAuthStore } from '../state/useAuthStore'
 import { useDriveStore } from '../state/useDriveStore'
@@ -28,25 +37,11 @@ export function SignInGate({ children }: { children: ReactNode }) {
   const status = useAuthStore((state) => state.status)
   const start = useAuthStore((state) => state.start)
   const driveStatus = useDriveStore((state) => state.status)
+  const driveDurable = useDriveStore((state) => state.durable)
   const folder = useDriveStore((state) => state.folder)
 
   useEffect(() => {
-    // `start` resolves after the effect may already have been torn down —
-    // StrictMode mounts twice in development — so the unsubscribe has to be
-    // callable late. Without the flag the first subscription is never dropped
-    // and every auth change is handled twice.
-    let cancelled = false
-    let dispose: (() => void) | undefined
-
-    void start().then((unsubscribe) => {
-      if (cancelled) unsubscribe()
-      else dispose = unsubscribe
-    })
-
-    return () => {
-      cancelled = true
-      dispose?.()
-    }
+    void start()
   }, [start])
 
   // Restoring Drive belongs here rather than in the editor: the editor does not
@@ -72,21 +67,38 @@ export function SignInGate({ children }: { children: ReactNode }) {
 
   if (!requiresSignIn() || entered) return <>{children}</>
 
-  // 'checking' is the stored session being read back; 'connecting' is its Drive
-  // connection being resumed. Neither should flash a screen at someone who is
-  // about to be let straight through.
-  if (status === 'checking' || driveStatus === 'connecting') {
-    return (
-      <div className="flex h-full items-center justify-center bg-canvas text-ink">
-        <Spinner />
-      </div>
-    )
+  // 'checking' is the stored session being read back and 'signing-in' is the
+  // browser on its way to Google. Neither should flash a screen at someone who
+  // is about to be let straight through, or who is already leaving.
+  if (status === 'checking' || status === 'signing-in') return <Loading />
+  if (status !== 'signed-in') return <SignInScreen />
+
+  // The Drive connection being resumed from the account, which most returning
+  // visits do without asking for anything.
+  //
+  // `durable` is still null before the account has been asked, and `restore`
+  // runs from an effect — a paint later than this. Without waiting for the
+  // answer, a returning visitor whose connection is about to come back is shown
+  // a screen asking them to grant it again, for exactly one frame.
+  if (driveStatus === 'connecting' || (driveStatus === 'disconnected' && driveDurable === null)) {
+    return <Loading />
   }
 
   // Everything Google asks for is done; all that is left is where to put things.
   if (driveStatus === 'connected') return <ChooseFolderStep />
 
-  return <SignInScreen busy={status === 'signing-in'} hasSession={status === 'signed-in'} />
+  // Signed in, and Drive not granted yet — a new account that has not been
+  // asked, one that declined, or a grant revoked from the Google account page
+  // since. All three are answered by the same second consent.
+  return <GrantMissingStep reconnecting={driveStatus === 'needs-reconnect'} />
+}
+
+function Loading() {
+  return (
+    <div className="flex h-full items-center justify-center bg-canvas text-ink">
+      <Spinner />
+    </div>
+  )
 }
 
 /** The name given to the folder this app offers to make for you. */
@@ -179,161 +191,46 @@ function Panel({ title, lead, children }: { title: string; lead: string; childre
 }
 
 /**
- * What this deployment can offer. `null` until the config check answers.
+ * Why this deployment cannot sign anyone in.
  *
- * `no-client-id` is this side's own contribution: the function can be perfectly
- * configured while the bundle was built without a Google client to sign in
- * against, and only the bundle knows that.
- */
-type Readiness = 'ready' | 'no-client-id' | StatusProblem | null
-
-/**
- * What to say about a deployment that cannot sign anyone in.
+ * This used to be a question for the server, asked over `GET /api/session`
+ * before the button was drawn, because the half that could be missing was a
+ * signing secret only the functions could see. There is no such secret now —
+ * Supabase validates the Auth0 token itself — and with it went the only reason
+ * to ask anyone anything. What is left is `VITE_AUTH0_*`, which is compiled into
+ * this bundle, so the check is a function call and the answer is available on
+ * the first render rather than a round trip later.
  *
- * These four causes shared one message once, naming two environment variables
- * and a migration. Whoever read it could not tell which of the three was
- * actually missing, and the two it named first were usually the ones already
- * set — so the message sent people to re-check correct configuration while the
- * real gap went unmentioned.
+ * The Supabase half needs no check here at all: `requiresSignIn` is what puts
+ * this screen on the page, and it is false without a project URL and anon key.
+ * A deployment missing those does not show a broken sign-in, it opens the editor
+ * in local-only mode, which is a different screen and the right one.
+ *
+ * What genuinely cannot be checked from here is whether the Supabase project has
+ * Auth0 registered as a third-party auth provider, and whether the tenant's
+ * Login Action sets `role: authenticated`. Both live in dashboards, neither is
+ * visible to a browser before a token exists, and getting either wrong shows up
+ * as an empty project list rather than a refused sign-in. The README says so
+ * next to the steps.
  */
-function SetupProblem({
-  problem,
-  detail,
-}: {
-  problem: Exclude<Readiness, 'ready' | null>
-  detail?: string
-}) {
-  if (problem === 'unreachable') {
-    return (
-      <Callout tone="error" title="Cannot reach this site's server">
-        {detail ? (
-          <>
-            The place it keeps Drive connections answered: <code>{detail}</code>. If that is a
-            permission or credential complaint, <code>SUPABASE_SERVICE_ROLE_KEY</code> is the thing
-            to check — otherwise it is usually temporary, and reloading will do.
-          </>
-        ) : (
-          'Signing in needs an answer from it, and it did not give one. This is usually temporary — reload to try again.'
-        )}
-      </Callout>
-    )
-  }
-
-  if (problem === 'no-table') {
-    return (
-      <Callout tone="error" title="This site is not finished being set up">
-        Its database has no <code>google_connections</code> table, so there is nowhere to keep the
-        Drive connection. Whoever deployed it needs to run{' '}
-        <code>supabase/migrations/0002_google_connections.sql</code>. Nothing you can fix from here.
-      </Callout>
-    )
-  }
-
-  if (problem === 'no-client-id') {
-    return (
-      <Callout tone="error" title="This site is not set up for sign-in">
-        It was built without <code>VITE_GOOGLE_CLIENT_ID</code>, so there is no Google client to
-        sign in against. Nothing you can fix from here.
-      </Callout>
-    )
-  }
-
+function SignInProblem() {
   return (
     <Callout tone="error" title="This site is not set up for sign-in">
-      Whoever deployed it needs to set <code>GOOGLE_CLIENT_SECRET</code> and{' '}
-      <code>SUPABASE_SERVICE_ROLE_KEY</code> in the site environment. Nothing you can fix from here.
+      It was built without <code>VITE_AUTH0_DOMAIN</code>, <code>VITE_AUTH0_CLIENT_ID</code> and{' '}
+      <code>VITE_AUTH0_AUDIENCE</code>, so there is no tenant to sign in against. Nothing you can
+      fix from here.
     </Callout>
   )
 }
 
-function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean }) {
+function SignInScreen() {
   const signIn = useAuthStore((state) => state.signIn)
   const error = useAuthStore((state) => state.error)
-  const setError = useAuthStore((state) => state.setError)
-  const driveError = useDriveStore((state) => state.error)
-
-  const [nonce, setNonce] = useState<Nonce | null>(null)
-  const [readiness, setReadiness] = useState<Readiness>(null)
-  const [readinessDetail, setReadinessDetail] = useState<string>()
-  const [opening, setOpening] = useState(false)
-
-  // One nonce per mounted screen: Google signs its hash into the token and
-  // Supabase re-hashes the raw value to match, so a token cannot be replayed.
-  useEffect(() => {
-    let cancelled = false
-    createNonce().then(
-      (value) => {
-        if (!cancelled) setNonce(value)
-      },
-      () => {
-        if (!cancelled) setError('This browser cannot generate a secure sign-in token.')
-      },
-    )
-    return () => {
-      cancelled = true
-    }
-  }, [setError])
-
-  // Sign-in hands its consent code to a function that needs a client secret to
-  // exchange it, so a deployment missing that cannot sign anyone in. Settled
-  // before the button is drawn: better to say so than to send someone through
-  // Google's consent screen and fail afterwards.
-  useEffect(() => {
-    let cancelled = false
-    void loadConnectionStatus().then(({ durable, problem, detail }) => {
-      if (cancelled) return
-      // Checked first: without a client id there is nothing to sign in against,
-      // however well the server half is configured.
-      if (!isDriveConfigured()) setReadiness('no-client-id')
-      else setReadiness(durable ? 'ready' : (problem ?? 'not-configured'))
-      setReadinessDetail(detail)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const start = useCallback(async () => {
-    if (!nonce) return
-    setError(null)
-    setOpening(true)
-    try {
-      const { idToken, code } = await requestSignIn(nonce)
-      // Claimed before the session exists, so the `restore` that runs the moment
-      // there is one leaves this connection alone.
-      useDriveStore.getState().setConnecting(true)
-
-      // `signIn` reports its own failure rather than throwing, and a code cannot
-      // be filed under an account that was never created — so the claim is
-      // released rather than left hanging on a sign-in that did not happen.
-      await signIn(idToken, nonce.raw)
-      if (useAuthStore.getState().status !== 'signed-in') {
-        useDriveStore.getState().setConnecting(false)
-        return
-      }
-
-      await useDriveStore.getState().adopt(code)
-    } catch (cause) {
-      useDriveStore.getState().setConnecting(false)
-      // Closing the window is a decision, not a failure — no error banner for it.
-      if (!(cause instanceof ConsentDeclinedError)) setError(toDisplayMessage(cause))
-    } finally {
-      setOpening(false)
-    }
-  }, [nonce, signIn, setError])
-
-  // A session with no Drive behind it: the permission was unticked on Google's
-  // screen, or this account signed in before the app started asking for both.
-  const needsDrive = hasSession && readiness === 'ready'
 
   return (
     <Panel
       title="editor-cat"
-      lead={
-        needsDrive
-          ? 'Almost there — the editor saves your media to your own Google Drive, so it needs your permission to write there.'
-          : 'Sign in to keep your projects. Your timelines are saved to your account, and your media to a folder in your own Google Drive.'
-      }
+      lead="Sign in to keep your projects. Your timelines are saved to your account, and your media to a folder in your own Google Drive."
     >
       {error ? (
         <Callout tone="error" title="Sign-in failed">
@@ -341,46 +238,125 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
         </Callout>
       ) : null}
 
-      {needsDrive && driveError ? (
+      {isAuth0Configured() ? (
+        <GoogleButton onClick={signIn} label="Sign in with Google" />
+      ) : (
+        <SignInProblem />
+      )}
+
+      <p className="text-xs leading-relaxed text-ink-dim">
+        Signing in tells us who you are. Saving your media needs one more permission after it, for a
+        folder in your own Google Drive — this site only ever sees that folder and the files it puts
+        there. Your API keys stay in this browser and are never part of your account.
+      </p>
+    </Panel>
+  )
+}
+
+/** What Drive needs from this deployment. `null` until the check answers. */
+type DriveReadiness = 'ready' | 'not-configured' | 'unreachable' | null
+
+/**
+ * What to say about a deployment that cannot reach Drive.
+ *
+ * These causes shared one message once, naming two environment variables and a
+ * migration. Whoever read it could not tell which was actually missing, and the
+ * ones it named first were usually already set — so the message sent people to
+ * re-check correct configuration while the real gap went unmentioned.
+ */
+function DriveProblem({ problem }: { problem: Exclude<DriveReadiness, 'ready' | null> }) {
+  if (problem === 'unreachable') {
+    return (
+      <Callout tone="error" title="Cannot reach this site's server">
+        Reaching your Drive needs an answer from it, and it did not give one. This is usually
+        temporary — reload to try again.
+      </Callout>
+    )
+  }
+
+  return (
+    <Callout tone="error" title="This site is not set up for Google Drive">
+      Whoever deployed it needs to set <code>AUTH0_BACKEND_CLIENT_ID</code> and{' '}
+      <code>AUTH0_BACKEND_CLIENT_SECRET</code> in the site environment, and turn on Token Vault for
+      the Google connection in Auth0. Nothing you can fix from here.
+    </Callout>
+  )
+}
+
+/**
+ * Signed in, and now asking for the folder.
+ *
+ * The second screen, and it does not disturb the session: the account is already
+ * established, so this asks Google for the permission alone and comes straight
+ * back. `login_hint` carries the address, so it is a single approval rather than
+ * a fresh choice of account.
+ *
+ * It is a separate consent because of where Auth0 keeps things, not because a
+ * login could not carry the scope. A login files provider tokens against the
+ * user's identity; Token Vault reads `connected_accounts`, which only this flow
+ * writes. See lib/auth0/client.ts.
+ *
+ * Three ways to arrive here: a brand-new account that has signed in and not yet
+ * granted anything, a grant revoked from the Google account page afterwards, and
+ * Drive unticked on Google's own screen. All three end the same way.
+ */
+function GrantMissingStep({ reconnecting }: { reconnecting: boolean }) {
+  const account = useAuthStore((state) => state.account)
+  const driveError = useDriveStore((state) => state.error)
+
+  const [readiness, setReadiness] = useState<DriveReadiness>(null)
+
+  // Settled before the button is drawn, for the same reason as on the sign-in
+  // screen: better to say a site cannot reach Drive than to send someone back
+  // through Google and fail them on the way in.
+  useEffect(() => {
+    let cancelled = false
+    void loadConnectionStatus().then(({ durable, problem }) => {
+      if (cancelled) return
+      setReadiness(durable ? 'ready' : (problem ?? 'not-configured'))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Not a sign-out any more. This used to drop the session and send the user
+  // back through the whole login, because the grant could only arrive attached
+  // to one; asking for the connected account directly leaves the session alone
+  // and costs one approval.
+  const again = () => {
+    useDriveStore.getState().connect()
+  }
+
+  return (
+    <Panel
+      title={reconnecting ? 'Reconnect Google Drive' : 'Google Drive permission is missing'}
+      lead={
+        reconnecting
+          ? 'Your Google Drive access stopped working — revoked, or simply expired. The editor saves your media there, so it needs it back.'
+          : 'One more permission. The editor saves your media to a folder in your own Google Drive, so it needs your say-so before it can open.'
+      }
+    >
+      {driveError ? (
         <Callout tone="error" title="Google Drive access is needed">
           {driveError}
         </Callout>
       ) : null}
 
-      {readiness !== null && readiness !== 'ready' ? (
-        <SetupProblem problem={readiness} detail={readinessDetail} />
-      ) : busy || opening ? (
-        <span className="flex items-center gap-2 text-sm text-ink-dim">
-          <Spinner /> Signing in…
-        </span>
-      ) : readiness === 'ready' ? (
-        <GoogleButton
-          onClick={() => void start()}
-          disabled={!nonce}
-          label={needsDrive ? 'Allow Google Drive' : 'Sign in with Google'}
-        />
-      ) : (
+      {readiness === null ? (
         <Spinner />
+      ) : readiness !== 'ready' ? (
+        <DriveProblem problem={readiness} />
+      ) : (
+        <Button variant="primary" onClick={again}>
+          Allow Google Drive
+        </Button>
       )}
 
-      {needsDrive && !busy && !opening ? (
-        // Without this, unticking Drive strands a perfectly good session on a
-        // screen whose only button will not help.
-        <button
-          type="button"
-          onClick={() => {
-            useDriveStore.getState().forget()
-            void useAuthStore.getState().signOut()
-          }}
-          className="text-xs text-ink-dim underline"
-        >
-          Use a different account
-        </button>
-      ) : null}
-
       <p className="text-xs leading-relaxed text-ink-dim">
-        One permission covers both: it signs you in, and it lets the editor save your media to a
-        folder you pick. Your API keys stay in this browser and are never part of your account.
+        {account?.email ? `Signed in as ${account.email}. ` : ''}
+        Leave “See, edit, create and delete only the files you use with this app” ticked on Google’s
+        screen. This site only ever sees the folder you point it at and the files it puts there.
       </p>
     </Panel>
   )
@@ -395,20 +371,11 @@ function SignInScreen({ busy, hasSession }: { busy: boolean; hasSession: boolean
  * The literal colours are Google's light-theme values, which their terms fix —
  * they are not ours to pull from the theme.
  */
-function GoogleButton({
-  onClick,
-  disabled,
-  label,
-}: {
-  onClick: () => void
-  disabled: boolean
-  label: string
-}) {
+function GoogleButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
       className="flex h-10 items-center gap-3 rounded-full border border-[#747775] bg-white pl-3 pr-4 text-sm font-medium text-[#1f1f1f] transition hover:bg-[#f2f2f2] disabled:opacity-50"
     >
       <GoogleMark />

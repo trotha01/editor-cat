@@ -1,9 +1,9 @@
 /**
  * Reading and writing projects.
  *
- * `user_id` is never sent: the column defaults to `auth.uid()` and row-level
- * security checks it, so a client cannot write a row onto someone else's
- * account even by trying.
+ * `user_id` is never sent: the column defaults to `auth.jwt() ->> 'sub'` and
+ * row-level security checks the same claim, so a client cannot write a row onto
+ * someone else's account even by trying.
  */
 import { supabase } from './client'
 import { SCHEMA_VERSION, type Project, type ProjectDoc } from '../types'
