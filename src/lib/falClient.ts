@@ -124,8 +124,26 @@ function delayForAttempt(attempt: number): number {
   return 3000
 }
 
-const sleep = (ms: number, signal?: AbortSignal) =>
+/**
+ * A wait that Cancel can cut short.
+ *
+ * Exported because it is the primitive every deliberate pause in this app is
+ * built on — the poll interval below, and the backoff between transcription
+ * attempts in `scribe.ts` — and all of them have the same requirement: pressing
+ * Cancel during the wait has to end the job then, not when the timer happens to
+ * come round. A bare `setTimeout` would leave the user watching a button they
+ * had already pressed.
+ *
+ * The already-aborted case is checked first rather than left to the listener:
+ * `abort` has fired by then and will not fire again, so a signal that arrived
+ * spent would be waited out in full and only noticed afterwards.
+ */
+export const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'))
+      return
+    }
     const timer = setTimeout(resolve, ms)
     signal?.addEventListener(
       'abort',
