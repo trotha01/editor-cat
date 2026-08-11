@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { VideoTrackHeaders } from './VideoTrackLanes'
+import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
 import { emptyProject, useProjectStore } from '../state/useProjectStore'
+import { useAssetStore } from '../state/useAssetStore'
+import { useProjectsStore } from '../state/useProjectsStore'
 import { videoTracksOf } from '../lib/videoTracks'
 
 /**
@@ -35,6 +37,8 @@ const inArray = () => videoTracksOf(useProjectStore.getState().project).map((tra
 
 beforeEach(() => {
   useProjectStore.setState({ project: { ...emptyProject(), videoTracks: lanes, videoClips: [] } })
+  useAssetStore.setState({ assets: [], loading: false })
+  useProjectsStore.setState({ hydration: null })
 })
 
 describe('the lane headers', () => {
@@ -74,5 +78,49 @@ describe('the lane headers', () => {
     expect(screen.getByRole('button', { name: 'Move Video 1 down' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Move Video 1 up' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Move Video 3 down' })).toBeEnabled()
+  })
+})
+
+/**
+ * Same distinction as the picture track: a layer whose asset is not in the
+ * library yet is either still coming down from Drive or actually gone, and a
+ * hydration in flight is what tells those two apart.
+ */
+describe('a layer whose asset is not in the library', () => {
+  function projectWithOneLayer() {
+    return {
+      ...emptyProject(),
+      videoTracks: lanes.slice(0, 1),
+      videoClips: [
+        {
+          id: 'vc1',
+          trackId: 'v1',
+          assetId: 'not-yet-known',
+          startTime: 0,
+          inPoint: 0,
+          duration: 4,
+        },
+      ],
+    }
+  }
+
+  it('says the layer is loading while this project is still being restored from Drive', () => {
+    useProjectStore.setState({ project: projectWithOneLayer() })
+    useProjectsStore.setState({ hydration: { done: 1, total: 3, failures: [] } })
+
+    render(<VideoTrackLanes zoom={40} />)
+
+    expect(screen.getByText('media loading')).toBeInTheDocument()
+    expect(screen.queryByText('missing media')).not.toBeInTheDocument()
+  })
+
+  it('says the layer is missing once nothing is left restoring', () => {
+    useProjectStore.setState({ project: projectWithOneLayer() })
+    useProjectsStore.setState({ hydration: null })
+
+    render(<VideoTrackLanes zoom={40} />)
+
+    expect(screen.getByText('missing media')).toBeInTheDocument()
+    expect(screen.queryByText('media loading')).not.toBeInTheDocument()
   })
 })

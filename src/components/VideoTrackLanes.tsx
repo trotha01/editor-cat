@@ -20,6 +20,7 @@ import { formatTime } from '../lib/timeline'
 import { MIN_OVERLAY_DURATION } from '../lib/videoTracks'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
+import { useProjectsStore } from '../state/useProjectsStore'
 import { videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import type { Asset, VideoClip, VideoTrack } from '../lib/types'
 
@@ -45,6 +46,11 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
   const tracks = useProjectStore((state) => videoTracksOf(state.project))
   const clips = useProjectStore((state) => videoClipsOf(state.project))
   const assets = useAssetStore((state) => state.assets)
+  const assetsLoading = useAssetStore((state) => state.loading)
+  const hydrating = useProjectsStore((state) => state.hydration !== null)
+  // Mirrors the picture track: an asset absent from the library during either
+  // of these is still on its way, not gone.
+  const mediaLoading = assetsLoading || hydrating
   const moveVideoClipTo = useProjectStore((state) => state.moveVideoClipTo)
   const trimVideoClipEdge = useProjectStore((state) => state.trimVideoClipEdge)
   const removeVideoClip = useProjectStore((state) => state.removeVideoClip)
@@ -128,6 +134,7 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
                 clip={clip}
                 track={track}
                 asset={assetById.get(clip.assetId)}
+                mediaLoading={mediaLoading}
                 zoom={zoom}
                 selected={clip.id === selectedId}
                 blocked={blockedClipId === clip.id}
@@ -151,6 +158,7 @@ function LayerChip({
   clip,
   track,
   asset,
+  mediaLoading,
   zoom,
   selected,
   blocked,
@@ -164,6 +172,8 @@ function LayerChip({
   clip: VideoClip
   track: VideoTrack
   asset: Asset | undefined
+  /** True while an asset absent from the library might still be on its way. */
+  mediaLoading: boolean
   zoom: number
   selected: boolean
   blocked: boolean
@@ -175,7 +185,7 @@ function LayerChip({
   onToggleMute: () => void
 }) {
   const trimRef = useRef<{ edge: 'start' | 'end'; startX: number; origin: number } | null>(null)
-  const label = asset?.name ?? 'missing media'
+  const label = asset?.name ?? (mediaLoading ? 'media loading' : 'missing media')
   const isImage = asset?.kind === 'image'
 
   const beginTrim = (event: React.PointerEvent, edge: 'start' | 'end') => {
