@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fromStored, toDoc } from './projects'
+import { daysLeft, fromStored, RETENTION_DAYS, toDoc } from './projects'
 import { defaultCaptionStyle } from '../captions'
 import type { CaptionCue, CaptionTrack, Project } from '../types'
 
@@ -109,5 +109,39 @@ describe('a project through a save and an open', () => {
   it('loses nothing from a project that never had captions', () => {
     const source = project()
     expect(roundTrip(source)).toEqual(source)
+  })
+})
+
+/**
+ * How long a deleted project has left.
+ *
+ * Shown in the menu next to the way back, so it is a promise: whatever it says
+ * is left has to still be restorable. The number is the client's own arithmetic
+ * — the server decides the actual purge — so the rounding leans towards saying
+ * less time than there is rather than more.
+ */
+describe('daysLeft', () => {
+  const deletedAt = '2026-08-11T09:00:00Z'
+  const at = (iso: string) => Date.parse(iso)
+
+  it('gives the full window to something just deleted', () => {
+    expect(daysLeft(deletedAt, at('2026-08-11T09:00:00Z'))).toBe(RETENTION_DAYS)
+  })
+
+  it('rounds a part day up, so a project never reads as gone while it is not', () => {
+    // Eighty-nine days and an hour in. Saying "0 days left" next to a working
+    // Restore button is the one answer that would be a lie.
+    expect(daysLeft(deletedAt, at('2026-11-08T10:00:00Z'))).toBe(1)
+  })
+
+  it('counts down a day at a time', () => {
+    expect(daysLeft(deletedAt, at('2026-08-12T09:00:00Z'))).toBe(89)
+    expect(daysLeft(deletedAt, at('2026-09-10T09:00:00Z'))).toBe(60)
+  })
+
+  it('never goes negative for a row the purge has not caught up with', () => {
+    // The sweep runs when a session starts, so a project can outlive its window
+    // by however long its owner stays away.
+    expect(daysLeft(deletedAt, at('2027-02-01T09:00:00Z'))).toBe(0)
   })
 })

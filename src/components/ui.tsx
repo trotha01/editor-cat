@@ -3,10 +3,9 @@ import {
   useEffect,
   useRef,
   type ButtonHTMLAttributes,
-  type InputHTMLAttributes,
+  type ComponentPropsWithRef,
   type ReactNode,
   type SelectHTMLAttributes,
-  type TextareaHTMLAttributes,
 } from 'react'
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
@@ -59,14 +58,16 @@ export function Field({
 const CONTROL =
   'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-dim/75 focus:border-accent focus:outline-none disabled:opacity-50'
 
-export function TextInput({ className = '', ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export function TextInput({ className = '', ...props }: ComponentPropsWithRef<'input'>) {
   return <input {...props} className={`${CONTROL} ${className}`} />
 }
 
-export function TextArea({
-  className = '',
-  ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+/**
+ * Both of these take a `ref` — an ordinary prop in React 19, so nothing has to
+ * be forwarded — because a text box something else wants to focus is a real
+ * case: the report bubble focuses its title field as it opens.
+ */
+export function TextArea({ className = '', ...props }: ComponentPropsWithRef<'textarea'>) {
   return <textarea {...props} className={`${CONTROL} resize-y leading-relaxed ${className}`} />
 }
 

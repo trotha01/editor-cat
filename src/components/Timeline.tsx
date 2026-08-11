@@ -581,16 +581,38 @@ export function Timeline({
     [project.clips, moveClip],
   )
 
-  const scrub = (event: React.MouseEvent<HTMLDivElement>) => {
-    const ruler = trackRef.current
-    if (!ruler) return
-    // The ruler moves with the scroll container, so its own bounding box
-    // already accounts for the scroll offset.
-    const rect = ruler.getBoundingClientRect()
-    // Snapped, so the playhead parks on a frame line rather than a pixel — the
-    // cut is going to land on one of those anyway, and it should land on the
-    // one you clicked.
-    onSeek(snapToFrame((event.clientX - rect.left) / zoom, project.fps))
+  const scrubAt = useCallback(
+    (clientX: number) => {
+      const ruler = trackRef.current
+      if (!ruler) return
+      // The ruler moves with the scroll container, so its own bounding box
+      // already accounts for the scroll offset.
+      const rect = ruler.getBoundingClientRect()
+      // Snapped, so the playhead parks on a frame line rather than a pixel — the
+      // cut is going to land on one of those anyway, and it should land on the
+      // one you clicked.
+      onSeek(snapToFrame((clientX - rect.left) / zoom, project.fps))
+    },
+    [onSeek, zoom, project.fps],
+  )
+
+  // Pointer capture, same as the trim handles above, so the drag keeps
+  // tracking the playhead even once the cursor has left the thin ruler strip
+  // — which it will, the moment you drag down towards the clips.
+  const beginScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    scrubAt(event.clientX)
+  }
+
+  const moveScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    scrubAt(event.clientX)
+  }
+
+  const endScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.currentTarget
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
   }
 
   const playheadX = currentTime * zoom
@@ -679,6 +701,12 @@ export function Timeline({
           style={{ width: TRACK_GUTTER_WIDTH }}
         >
           <div className="mb-2 h-6" aria-hidden />
+
+          {/* Video lanes lay over the picture, so their headers sit over the
+              picture's own in the gutter too — the stacking order the lanes
+              draw in, read top to bottom. */}
+          <VideoTrackHeaders />
+
           {/* The picture track's own controls, in the same gutter the audio
               tracks keep theirs in. Lead-in lives here because it is a property
               of the track rather than of any one clip — and because at zero
@@ -715,8 +743,6 @@ export function Timeline({
             </div>
           ) : null}
 
-          <VideoTrackHeaders />
-
           <AudioTrackHeaders />
 
           <CaptionTrackHeaders />
@@ -729,7 +755,10 @@ export function Timeline({
                 playhead can be parked on the frame you mean to cut. */}
             <div
               ref={trackRef}
-              onClick={scrub}
+              onPointerDown={beginScrub}
+              onPointerMove={moveScrub}
+              onPointerUp={endScrub}
+              onPointerCancel={endScrub}
               className="relative mb-2 h-6 cursor-pointer rounded bg-surface-2"
               style={frameLines ? { backgroundImage: frameGrid(framePx, false) } : undefined}
               role="presentation"
@@ -744,6 +773,10 @@ export function Timeline({
                 </span>
               ))}
             </div>
+
+            {/* Above the picture it is laid over, matching the headers in the
+                gutter: the lanes read up the screen in the order they stack in. */}
+            <VideoTrackLanes zoom={zoom} />
 
             <div className="relative">
               <DndContext
@@ -845,10 +878,6 @@ export function Timeline({
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
 
-            {/* Directly under the picture it is laid over, and above the sound:
-                the lanes read up the screen in the order they stack in. */}
-            <VideoTrackLanes zoom={zoom} />
-
             <AudioTrackLanes zoom={zoom} targets={targets} />
 
             {/* Captions last, under the audio they were transcribed from. */}
@@ -866,8 +895,16 @@ export function Timeline({
       </div>
 
       {/* Captioning one clip is started from that clip's own menu, so it reports
-          here rather than four panels away in the Captions step. */}
-      <CaptionJobStatus />
+          here rather than four panels away in the Captions step.
+
+          The padding is for the report bubble, which is fixed to that corner of
+          the window (see FeedbackBubble.tsx) and otherwise lands squarely on this
+          banner's Cancel and Dismiss buttons — this is the bottom-right of the
+          screen in the normal full-height layout. Nothing else in the editor
+          puts a control there. */}
+      <div className="pr-12">
+        <CaptionJobStatus />
+      </div>
 
       <SelectedClipControls />
     </section>

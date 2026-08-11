@@ -96,15 +96,71 @@ export function videoClipForAsset(
 }
 
 /**
- * Where a new clip should go: the first lane with room at that moment, or none
- * when they are all busy and the caller has to make one.
+ * Where a new clip should go: the highest lane with room at that moment, or
+ * none when every candidate is busy and the caller has to make a lane instead.
+ *
+ * The search runs from the top of the stack downwards, which is backwards
+ * through the array, because later tracks draw over earlier ones. Taking the
+ * first lane with room in array order — which is what this used to do — put a
+ * new layer on the *lowest* free lane, underneath everything already on screen.
+ * That is the one placement nobody ever asks for, since being over something is
+ * the whole of what a layer is.
+ *
+ * `floorTrackId` is the selected layer's lane, and it is exactly that: a floor.
+ * Nothing lands below the layer you had just pointed at, so adding picture while
+ * a shot is selected stacks over that shot rather than behind it. The floor lane
+ * itself stays in the running rather than only the lanes above it — dropping a
+ * clip selects it, so ruling its lane out would make every drop after the first
+ * spawn a lane of its own, and a montage of stills would end up ten lanes tall.
+ * A floor naming a lane that has since been deleted is ignored rather than
+ * treated as the bottom, which would be a floor nobody set.
+ *
+ * The reversal is done here rather than in `laneWithRoom` because the audio
+ * lanes want the opposite and are right to: a voice take belongs on the first
+ * free voice lane, not on whichever one happens to be highest.
  */
 export function laneForClip(
   tracks: readonly VideoTrack[],
   clips: readonly VideoClip[],
   range: { startTime: number; duration: number },
+  floorTrackId?: string,
 ): VideoTrack | null {
-  return laneWithRoom(tracks, clips, range)
+  const floor = floorTrackId ? tracks.findIndex((track) => track.id === floorTrackId) : -1
+  const candidates = floor === -1 ? tracks : tracks.slice(floor)
+  return laneWithRoom([...candidates].reverse(), clips, range)
+}
+
+/**
+ * Moves a lane one step up or down the stack.
+ *
+ * "Up" is later in the array, because later tracks draw over earlier ones. That
+ * is the one thing to keep hold of here: the timeline draws this array reversed
+ * so that the top of the stack is at the top of the screen, so a control that
+ * moves a lane up the screen has to move it up the stack — later — and reading
+ * the reversed list as though it were the array gets it backwards silently.
+ *
+ * Nothing but the order changes. The clips stay on their lanes, and a lane's
+ * opacity and its hidden flag mean exactly what they meant before, because
+ * restacking is a change to what covers what and to nothing else.
+ *
+ * A lane already at the end it is being pushed towards comes back unchanged, as
+ * does one that is not in the list at all, so a control left enabled at the top
+ * of the stack is a no-op rather than a way to lose a lane.
+ */
+export function moveVideoTrack(
+  tracks: readonly VideoTrack[],
+  trackId: string,
+  direction: 'up' | 'down',
+): VideoTrack[] {
+  const index = tracks.findIndex((track) => track.id === trackId)
+  const target = index + (direction === 'up' ? 1 : -1)
+  if (index === -1 || target < 0 || target >= tracks.length) return [...tracks]
+
+  const next = [...tracks]
+  const [moved] = next.splice(index, 1)
+  if (!moved) return [...tracks]
+  next.splice(target, 0, moved)
+  return next
 }
 
 export function videoTrackHasRoom(

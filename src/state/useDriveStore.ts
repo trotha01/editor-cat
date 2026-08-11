@@ -9,8 +9,11 @@
  * which is why `restore` asks our own server what this account has rather than
  * asking Google, and a browser that has never seen them still picks it up.
  *
- * The chosen folder is the one thing kept locally. It is not a credential; it is
- * a preference about where new media goes.
+ * The chosen folder belongs to the account too, for the same reason and by the
+ * same route: it is a preference rather than a credential, but a preference
+ * stored in one browser is one the next sign-in has to ask for again. It lives
+ * in a table of its own (lib/supabase/driveFolder.ts), with localStorage kept as
+ * a cache for the moment the account cannot be reached.
  */
 import { create } from 'zustand'
 import {
@@ -22,6 +25,8 @@ import {
 } from '../lib/google/gis'
 import { currentUser, DriveError, uploadFile, type DriveFolder } from '../lib/google/drive'
 import { connectDrive } from '../lib/auth0/client'
+import { clearDriveFolder, getDriveFolder, saveDriveFolder } from '../lib/supabase/driveFolder'
+import { isSupabaseConfigured } from '../lib/supabase/client'
 import { useAuthStore } from './useAuthStore'
 import { toDisplayMessage } from '../lib/errors'
 import { recordAsset } from '../lib/sync/assetSync'
@@ -70,10 +75,18 @@ interface DriveState {
    */
   connect: () => void
   /**
-   * Drops this browser's Drive state on sign-out, leaving the grant itself
-   * alone — it belongs to the account, and signing back in resumes it.
+   * Drops this browser's Drive state on sign-out, leaving the grant and the
+   * chosen folder alone — both belong to the account, and signing back in
+   * resumes them.
    */
   forget: () => void
+  /**
+   * Records where new media goes, on the account as well as in this browser.
+   *
+   * Null is an unsetting rather than a forgetting: it clears the account's
+   * record too, so the next sign-in is asked. Signing out does not go through
+   * here, for exactly that reason.
+   */
   setFolder: (folder: DriveFolder | null) => void
   clearError: () => void
 
@@ -87,31 +100,123 @@ function isExpiredSession(cause: unknown): boolean {
   return cause instanceof DriveError && cause.status === 401
 }
 
-function loadFolder(): DriveFolder | null {
+/** This browser's copy of the choice, and which account made it. */
+interface CachedFolder {
+  folder: DriveFolder
+  /**
+   * The Auth0 subject that chose it, or null in a record written before the
+   * folder became an account setting.
+   */
+  account: string | null
+}
+
+function loadFolder(): CachedFolder | null {
   try {
     const raw = window.localStorage.getItem(FOLDER_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<DriveFolder>
+    const parsed = JSON.parse(raw) as Partial<DriveFolder> & { account?: unknown }
     if (typeof parsed.id !== 'string' || typeof parsed.name !== 'string') return null
-    return { id: parsed.id, name: parsed.name }
+    return {
+      folder: { id: parsed.id, name: parsed.name },
+      account: typeof parsed.account === 'string' ? parsed.account : null,
+    }
   } catch {
     return null
   }
 }
 
-function persistFolder(folder: DriveFolder | null): void {
+function persistFolder(folder: DriveFolder | null, account: string | null): void {
   try {
-    if (folder) window.localStorage.setItem(FOLDER_KEY, JSON.stringify(folder))
-    else window.localStorage.removeItem(FOLDER_KEY)
+    // The account is only recorded when there is one, so a local-only build
+    // writes exactly the two keys it always did.
+    if (folder) {
+      window.localStorage.setItem(
+        FOLDER_KEY,
+        JSON.stringify({ ...folder, ...(account ? { account } : {}) }),
+      )
+    } else window.localStorage.removeItem(FOLDER_KEY)
   } catch {
     // Private browsing can refuse storage. The folder still works this session.
+  }
+}
+
+/** The signed-in subject, which is what the folder is filed under. */
+function currentSubject(): string | null {
+  return useAuthStore.getState().account?.id ?? null
+}
+
+/** Whether there is an account to keep the folder against right now. */
+function canReachAccount(): boolean {
+  return isSupabaseConfigured() && currentSubject() !== null
+}
+
+/**
+ * Writes the choice to the account, ignoring failures.
+ *
+ * Best-effort on purpose: the folder already works for this session, and a
+ * failed write costs the question being asked once more rather than an edit
+ * interrupted by a dialog about a preference.
+ */
+async function recordFolder(folder: DriveFolder | null): Promise<void> {
+  if (!canReachAccount()) return
+  try {
+    if (folder) await saveDriveFolder(folder)
+    else await clearDriveFolder()
+  } catch {
+    // Deliberately swallowed — see above.
+  }
+}
+
+/**
+ * Which folder this account writes into, settled before the editor opens.
+ *
+ * The account is the authority; this browser's copy is a cache, and is only
+ * consulted for an account that cannot be asked. Never throws: a folder that
+ * could not be established is `null`, which is the folder step, not an error.
+ */
+async function settleFolder(): Promise<DriveFolder | null> {
+  const subject = currentSubject()
+  const cached = loadFolder()
+
+  // A cached folder counts only if it is this account's. Somebody else's is an
+  // id in a Drive this user cannot reach, so inheriting it would open the editor
+  // onto uploads that fail. An unstamped record predates this being recorded at
+  // all, and belongs to the last person signed in on this browser — which,
+  // because signing out clears it, is this one.
+  const mine =
+    cached && (cached.account === null || cached.account === subject) ? cached.folder : null
+
+  if (!canReachAccount()) return mine
+
+  try {
+    const stored = await getDriveFolder()
+    if (stored) {
+      // Whatever this browser thought, the account has the answer — including
+      // when the folder was changed on another machine.
+      persistFolder(stored, subject)
+      return stored
+    }
+
+    // Nothing recorded yet: a first visit, or a choice made on this browser
+    // before the account started keeping it. Adopting the cached one costs a
+    // single write and saves asking a question that already has an answer.
+    if (mine) void recordFolder(mine)
+    return mine
+  } catch {
+    // The account could not be asked. The cache is a better guess than none:
+    // clearing it here would put the folder step in front of someone whose
+    // answer is sitting in a table nobody could reach this minute.
+    return mine
   }
 }
 
 export const useDriveStore = create<DriveState>((set, get) => ({
   status: isDriveConfigured() ? 'disconnected' : 'unconfigured',
   account: null,
-  folder: loadFolder(),
+  // The cached copy, unverified: `restore` replaces it with the account's own
+  // answer before the gate lets anyone in. It is here so a local-only build,
+  // which never calls `restore`, still keeps the folder across reloads.
+  folder: loadFolder()?.folder ?? null,
   error: null,
   uploads: [],
   durable: null,
@@ -138,7 +243,12 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     set({ status: 'connecting', error: null })
     try {
       await accessToken()
-      set({ status: 'connected', account: await currentUser() })
+      // The folder is settled before the status moves, not after it. The gate
+      // draws the folder step the moment it sees `connected`, so a folder that
+      // arrives a paint later is the question asked and answered in front of
+      // someone who had already answered it.
+      const [account, folder] = await Promise.all([currentUser(), settleFolder()])
+      set({ status: 'connected', account, folder })
     } catch (cause) {
       // A stored connection that has stopped working is the normal path for a
       // revoked grant, so it is not surfaced as an error — just as a prompt to
@@ -166,7 +276,11 @@ export const useDriveStore = create<DriveState>((set, get) => ({
     invalidateToken()
     // The folder goes with it for the same reason: it is an id in someone
     // else's Drive, and uploading into it would fail in a way nobody could read.
-    persistFolder(null)
+    //
+    // This browser's copy only. The account's record is deliberately left
+    // standing — it is what lets the same person sign back in without being
+    // asked where their media goes for a second time.
+    persistFolder(null, null)
     set({
       status: isDriveConfigured() ? 'disconnected' : 'unconfigured',
       account: null,
@@ -178,8 +292,12 @@ export const useDriveStore = create<DriveState>((set, get) => ({
   },
 
   setFolder: (folder) => {
-    persistFolder(folder)
+    persistFolder(folder, currentSubject())
     set({ folder })
+    // Where it actually has to land. The local copy makes this reload cheap;
+    // the account is what makes the next sign-in — here or on another machine —
+    // skip the question entirely.
+    void recordFolder(folder)
   },
 
   clearError: () => set({ error: null }),

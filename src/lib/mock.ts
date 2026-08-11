@@ -230,6 +230,7 @@ async function mockVideo(
 
 function mockLlm(input: Record<string, unknown>): { output: string } {
   const prompt = String(input.prompt ?? '')
+
   // Echo back something clearly shaped like an enhanced prompt so the diff UI
   // has real content to show, while staying obviously fake.
   const subject = prompt.split('\n').at(-1)?.slice(0, 200) ?? prompt
