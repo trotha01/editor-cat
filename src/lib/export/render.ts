@@ -19,6 +19,7 @@ import {
   type ExportOverlayClip,
 } from './buildGraph'
 import { hasAudioStream } from './probe'
+import type { ExportRange } from './range'
 import { xfadeNameOf } from '../transitions'
 import type { Transition } from '../types'
 
@@ -71,6 +72,8 @@ export interface RenderRequest {
    * Absent means no captions and no font is fetched at all.
    */
   captions?: { ass: string; fonts: readonly CaptionFont[] }
+  /** The stretch of the timeline to keep. Absent is all of it. */
+  range?: ExportRange
   crf?: number
 }
 
@@ -269,6 +272,7 @@ export async function renderProject(
     outputFile,
     ...(request.leadIn ? { leadIn: request.leadIn } : {}),
     ...(request.captions ? { captions: { file: CAPTIONS_FILE, fontsDir: FONTS_DIR } } : {}),
+    ...(request.range ? { range: request.range } : {}),
     ...(request.crf !== undefined ? { crf: request.crf } : {}),
   })
 

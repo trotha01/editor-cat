@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Callout, Field, Spinner, TextArea, TextInput } from './ui'
 import { isAbort } from '../lib/errors'
+import type { ExportRange } from '../lib/export/range'
 import { sha256Hex } from '../lib/digest'
 import { isMintspaceConfigured, mintspaceSiteUrl } from '../lib/mintspace/client'
 import {
@@ -42,7 +43,12 @@ export interface MintspacePublishProps {
   project: Project
   /** The quality setting, which with the timeline decides what comes out. */
   crf: number
-  /** True when there is nothing on the timeline to publish. */
+  /** The stretch being exported, if it is not the whole timeline. */
+  range?: ExportRange
+  /**
+   * True when the export would be nothing at all — an empty timeline, or a
+   * start and end that name no video.
+   */
   empty: boolean
   /** False for a 16:9 project, which the feed will letterbox. */
   vertical: boolean
@@ -55,7 +61,7 @@ export interface MintspacePublishProps {
 }
 
 export function MintspacePublish(props: MintspacePublishProps) {
-  const { render, project, crf, empty, vertical, busy, onBusyChange, onClose } = props
+  const { render, project, crf, range, empty, vertical, busy, onBusyChange, onClose } = props
   const { onPublished, onForget } = props
 
   const configured = isMintspaceConfigured()
@@ -122,13 +128,13 @@ export function MintspacePublish(props: MintspacePublishProps) {
   // dialog is open.
   useEffect(() => {
     let cancelled = false
-    void sourceKeyOf(project, { crf }).then((key) => {
+    void sourceKeyOf(project, { crf, range }).then((key) => {
       if (!cancelled) setSourceKey(key)
     })
     return () => {
       cancelled = true
     }
-  }, [project, crf])
+  }, [project, crf, range])
 
   const publish = async () => {
     setError(null)

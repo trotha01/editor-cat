@@ -101,6 +101,29 @@ describe('sourceKeyOf', () => {
     expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(await sourceKeyOf(bigger, { crf: 23 }))
   })
 
+  it('differs once part of the timeline is exported rather than all of it', async () => {
+    expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(
+      await sourceKeyOf(base, { crf: 23, range: { start: 2, end: 6 } }),
+    )
+  })
+
+  it('tells one range from another', async () => {
+    expect(await sourceKeyOf(base, { crf: 23, range: { start: 2, end: 6 } })).not.toBe(
+      await sourceKeyOf(base, { crf: 23, range: { start: 2, end: 7 } }),
+    )
+  })
+
+  it('is unchanged for a whole export, so nothing published stops matching', async () => {
+    // The literal is the key this project hashed to before an export could be
+    // trimmed at all, and it is pinned rather than derived on purpose: every
+    // record already written carries a key like it, and an untrimmed export
+    // that hashed to anything else would quietly make "already in the feed"
+    // false for all of them.
+    expect(await sourceKeyOf(base, { crf: 23 })).toBe(
+      '857e31d5e929a604861937f43eb4003082659df44cf5e957f65fb3a80e47f77f',
+    )
+  })
+
   it('survives a rename, which does not change a single frame', async () => {
     const renamed: Project = { ...base, name: 'Something else' }
 
