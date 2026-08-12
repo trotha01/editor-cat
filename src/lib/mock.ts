@@ -303,7 +303,7 @@ export async function mockConvert(audio: Blob): Promise<Blob> {
 interface MockDub {
   seconds: number
   segments: Map<string, { start: number; end: number; text: string }>
-  renders: Set<string>
+  revision: number
   next: number
 }
 
@@ -315,7 +315,7 @@ const MOCK_SEGMENT_COUNT = 3
 export function mockDubbingCreate(seconds: number): string {
   const id = `mock-dub-${mockDubs.size + 1}`
   const span = Math.max(0.2, seconds / MOCK_SEGMENT_COUNT)
-  const dub: MockDub = { seconds, segments: new Map(), renders: new Set(), next: 0 }
+  const dub: MockDub = { seconds, segments: new Map(), revision: 0, next: 0 }
   for (let index = 0; index < MOCK_SEGMENT_COUNT; index += 1) {
     dub.segments.set(`mock-seg-${(dub.next += 1)}`, {
       start: index * span,
@@ -333,25 +333,23 @@ function mockDub(id: string): MockDub {
   return dub
 }
 
-export function mockDubbingResource(id: string) {
+export function mockDubbingTranscript(id: string) {
   const dub = mockDub(id)
   return {
-    id,
+    revision: dub.revision,
     segments: [...dub.segments]
-      .map(([segmentId, segment]) => ({ id: segmentId, ...segment }))
+      .map(([segmentId, segment]) => ({ id: segmentId, speakerId: 'mock-speaker', ...segment }))
       .sort((a, b) => a.start - b.start),
-    speakers: [{ id: 'mock-speaker', segments: [...dub.segments.keys()] }],
-    renders: Object.fromEntries([...dub.renders].map((render) => [render, { status: 'complete' }])),
-    sourceLanguage: 'en',
   }
 }
 
-export function mockDubbingUpdateSegment(
+export function mockDubbingUpdateSegments(
   id: string,
-  segmentId: string,
-  edit: { start: number; end: number; text: string },
+  edits: Readonly<Record<string, { start: number; end: number; text: string }>>,
 ): void {
-  mockDub(id).segments.set(segmentId, edit)
+  const dub = mockDub(id)
+  for (const [segmentId, edit] of Object.entries(edits)) dub.segments.set(segmentId, edit)
+  dub.revision += 1
 }
 
 export function mockDubbingCreateSegment(
@@ -361,18 +359,18 @@ export function mockDubbingCreateSegment(
   const dub = mockDub(id)
   const segmentId = `mock-seg-${(dub.next += 1)}`
   dub.segments.set(segmentId, edit)
+  dub.revision += 1
   return segmentId
 }
 
 export function mockDubbingDeleteSegment(id: string, segmentId: string): void {
-  mockDub(id).segments.delete(segmentId)
+  const dub = mockDub(id)
+  dub.segments.delete(segmentId)
+  dub.revision += 1
 }
 
-export function mockDubbingRender(id: string): string {
-  const dub = mockDub(id)
-  const renderId = `mock-render-${dub.renders.size + 1}`
-  dub.renders.add(renderId)
-  return renderId
+export function mockDubbingLanguage(id: string): string {
+  return `mock-language-${mockDub(id).revision}`
 }
 
 export function mockDubbingDelete(id: string): void {

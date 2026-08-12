@@ -4,34 +4,55 @@
  * The other way to fix a clip that says the words with the wrong sounds. Where
  * text-to-speech says each line and leaves the placing to us, dubbing is handed
  * the clip's own audio and hands back one finished track — and in between, the
- * thing worth having: **segments**. A dubbing studio resource is a list of
- * timed, editable spans, and a span's duration is held constant while the
- * speech inside it is sped or slowed to fit. Nothing in text-to-speech can be
- * told when to finish; a segment is nothing but a thing that finishes on time.
+ * thing worth having: a **transcript of timed segments that can be edited**. A
+ * segment's span is held while the speech inside it is fitted to it. Nothing in
+ * text-to-speech can be told when to finish; a segment is nothing but a thing
+ * that finishes on time.
  *
- * So the shape of this file is: put the clip's audio up, take the segments
- * back, overwrite them with the captions and the captions' own marks, re-dub,
- * render, download. `clipAudioFix.ts` is where that sequence lives and where
- * the reasoning for each step is; here is only the wire.
+ * So the shape of this file is: put the clip's audio up, take the transcript
+ * back, overwrite its segments with the captions and the captions' own marks,
+ * add a language target, wait for it, download. `clipAudioFix.ts` is where that
+ * sequence lives and where the reasoning for each step is; here is only the wire.
+ *
+ * ## Which dubbing API
+ *
+ * The **project** API (`/v1/dubbing/project/…`), not the older dubbing
+ * **resource** API (`/v1/dubbing/resource/…`). This was built against the
+ * resource one first, and a run against a deploy preview answered
+ * `401 no_dubbing_api_access` — "This API is in closed-beta and is only
+ * available to workspaces that are granted access" — after the job had already
+ * been created and reported itself as `editable`. The project API is the
+ * documented, current one and models the same thing better: segment edits are
+ * bulk in one request, and creating a language target does the dubbing and the
+ * mixing in one step rather than needing a separate dub and render.
  *
  * Two things follow from the segments being ours to set:
  *
- *  - **Nothing is ever translated.** `source_lang` and `target_lang` are the
- *    same language, and `/translate` is never called. The captions are the
- *    script, so a translation step would be the provider replacing the user's
- *    words with its own — see `clipAudioFix.ts`.
+ *  - **Nothing is ever translated.** The language target is created in the same
+ *    language the source was transcribed in, and the target transcript's
+ *    translations are never asked for or used. The captions are the script, so
+ *    a translation step would be the provider replacing the user's words with
+ *    its own — see `clipAudioFix.ts`.
  *  - **The transcription barely matters.** Dubbing transcribes the clip to find
  *    its segments, and every one of those texts is overwritten before a word is
- *    re-said. What the transcription buys is the *count* and the speaker, not
- *    the words.
+ *    re-said. What the transcription buys is the *count*, the speaker ids and
+ *    the fact that there is something to edit — not the words.
+ *
+ * The order matters and is easy to get wrong: the language target is created
+ * **after** the segments have been rewritten, never at the same time as the
+ * project. Creating a project with `target_language` set queues the dub to start
+ * the moment transcription finishes, which is before the captions have been
+ * written in — so it would dub the transcriber's words and then go `stale`.
  *
  * No key appears anywhere in this file, exactly as in `elevenlabs.ts`: every
  * call goes through /api/elevenlabs carrying the user's Auth0 session, and the
  * deployment's key is attached inside the function. The paths below are on that
  * proxy's allowlist — see `netlify/lib/elevenlabs.ts`, which is where a new one
- * has to be added before it will reach ElevenLabs at all.
+ * has to be added before it will reach ElevenLabs at all. The one exception is
+ * the finished audio, which arrives as a signed URL and is fetched directly;
+ * see `dubbedAudio`.
  *
- * A render takes far longer than a Netlify function may run, so the job is held
+ * A dub takes far longer than a Netlify function may run, so the job is held
  * here and polled, following `falClient.ts`: submit, back off, honour the
  * signal, report progress. Every poll is its own authenticated request.
  */
@@ -46,15 +67,15 @@ import {
   mockDubbingCreateSegment,
   mockDubbingDelete,
   mockDubbingDeleteSegment,
-  mockDubbingRender,
-  mockDubbingResource,
-  mockDubbingUpdateSegment,
+  mockDubbingLanguage,
+  mockDubbingTranscript,
+  mockDubbingUpdateSegments,
 } from './mock'
 
 /* --- What comes back ------------------------------------------------------ */
 
 /**
- * One span of the resource: when it is said, and what is said in it.
+ * One segment of the source transcript: when it is said, and what is said.
  *
  * Times are seconds into the media that was uploaded, which here is the clip
  * itself — so a segment's clock and a caption's clock differ by exactly where
@@ -62,67 +83,71 @@ import {
  */
 export interface DubbingSegment {
   id: string
+  text: string
+  /** Which speaker owns it. A new segment has to name one of these. */
+  speakerId: string
   start: number
   end: number
-  text: string
 }
 
-/** A speaker the dub found, and the segments it owns. */
-export interface DubbingSpeaker {
-  id: string
-  segments: string[]
-}
-
-/** How a render is getting on. Read by polling the resource it belongs to. */
-export type RenderStatus = 'complete' | 'processing' | 'failed'
-
-export interface DubbingResource {
-  id: string
-  /** In time order, which is the order the captions are in too. */
+export interface DubbingTranscript {
+  /** In playback order, which is the order the captions are in too. */
   segments: DubbingSegment[]
-  speakers: DubbingSpeaker[]
-  renders: Record<string, { status: RenderStatus }>
-  /** What ElevenLabs decided the clip was in, once it has decided. */
-  sourceLanguage?: string
+  /** Bumped by every segment edit. Read back to tell a stale dub from a fresh one. */
+  revision: number
 }
 
 /* --- Wire shapes ---------------------------------------------------------- */
 
 interface WireSegment {
   id?: string
-  start_time?: number
-  end_time?: number
   text?: string
+  speaker_id?: string
+  start_s?: number
+  end_s?: number
 }
 
-interface WireResource {
-  id?: string
-  source_language?: string
-  speaker_tracks?: Record<string, { id?: string; segments?: string[] }>
-  speaker_segments?: Record<string, WireSegment>
-  renders?: Record<string, { status?: string }>
+interface WireTranscript {
+  segments?: WireSegment[]
+  revision?: number
 }
 
-interface WireMetadata {
-  dubbing_id?: string
+interface WireProject {
+  project_id?: string
   status?: string
-  error?: string
+  revision?: number
+  error?: { message?: string; code?: string } | null
 }
 
-/* --- Creating the job ----------------------------------------------------- */
+interface WireLanguage {
+  language_id?: string
+  status?: string
+  outputs?: { lossless_audio?: string } | null
+  revision?: number
+  output_revision?: number | null
+  error?: { message?: string; code?: string } | null
+}
 
-export interface CreateDubOptions {
+/* --- Creating the project ------------------------------------------------- */
+
+export interface CreateProjectOptions {
   /** The clip's own audio. Sized by the caller — see `dubbableSeconds`. */
   audio: Blob
-  /** What the project is called in the account until it is deleted again. */
-  name: string
   /**
-   * ISO-639-1, and it is both ends of the pair.
+   * What the project is called in the account until it is deleted again.
    *
-   * Required, unlike the text-to-speech path's optional language. A dubbing job
-   * has exactly one target language and everything in it is re-said in that
-   * language, so there is no "read it as it is written" to fall back on. The
-   * dialog is what makes the user choose; see `FixAudioDialog.tsx`.
+   * The API's `reference` field — "free-form to identify the project on your
+   * end" — which is exactly what this is for. The proxy reads it back before it
+   * will delete anything; see `netlify/lib/elevenlabs.ts`.
+   */
+  reference: string
+  /**
+   * BCP-47, and it is both ends of the pair.
+   *
+   * Required, unlike the text-to-speech path's optional language. A dubbing
+   * project transcribes in one language and each target re-says everything in
+   * one language, so there is no "read it as it is written" to fall back on.
+   * The dialog is what makes the user choose; see `FixAudioDialog.tsx`.
    */
   language: string
   /**
@@ -130,7 +155,7 @@ export interface CreateDubOptions {
    *
    * The provider reads it off the media and never sees this. Mock mode has no
    * media to read, and the length is the one property of a dub that everything
-   * downstream depends on — where the segments go, how long the rendered track
+   * downstream depends on — where the segments go, how long the finished track
    * is — so it is passed rather than guessed back out of the WAV's byte count.
    */
   seconds: number
@@ -138,169 +163,126 @@ export interface CreateDubOptions {
 }
 
 /**
- * Starts a dubbing studio job over a clip's audio and returns its id.
+ * Starts a dubbing project over a clip's audio and returns its id.
  *
- * `dubbing_studio` is the whole point: without it the job is one-shot and
- * produces audio that cannot be edited, and the segments — the only reason to
- * be here rather than in text-to-speech — never exist.
+ * `target_language` is deliberately **not** sent. It is offered as a shortcut
+ * that also creates a language target, queued to start the moment transcription
+ * finishes — which is before this app has written the captions into the
+ * transcript. That would dub the transcriber's words, and then go stale the
+ * instant the first segment was corrected. The target is created afterwards, by
+ * `createLanguageTarget`, once the script is in place.
  *
- * `num_speakers: 1` because a clip is one shot of one person talking. Left to
- * detect, a bilingual line said with two different mouths is a plausible two
- * speakers, and the second one would be re-voiced by a different clone.
- *
- * The background is deliberately kept. Dubbing separates speech from everything
- * behind it and mixes them back together on render, and the clip's own sound is
- * about to be muted — so anything dropped here is lost from the finished video
- * rather than merely from the speech.
+ * `model_id` is left to the system default rather than pinned: a dubbing model
+ * id is a fact about ElevenLabs on a given day, and this app has no reason to
+ * prefer one, exactly as `findConversionModel` reasons about voice models.
  */
-export async function createDub({
+export async function createDubbingProject({
   audio,
-  name,
+  reference,
   language,
   seconds,
   signal,
-}: CreateDubOptions): Promise<string> {
+}: CreateProjectOptions): Promise<string> {
   if (isMockEnabled()) return mockDubbingCreate(seconds)
 
   const form = new FormData()
   // The extension matters here as it does everywhere else in this API:
   // ElevenLabs sniffs the container from the filename as well as the bytes.
   form.append('file', audio, 'clip.wav')
-  form.append('name', name)
-  form.append('source_lang', language)
-  form.append('target_lang', language)
-  form.append('num_speakers', '1')
-  form.append('dubbing_studio', 'true')
-  // Watermarking applies to video output; this renders audio, and asking for a
-  // watermark on a track that cannot carry one is a way to be refused.
-  form.append('watermark', 'false')
+  form.append('reference', reference)
+  // Named rather than auto-detected. The clips this exists for say their line
+  // twice, in two languages, and letting the transcriber pick means it picks
+  // one of them — see the live run in the PR, where a half-Latin clip came back
+  // detected as English.
+  form.append('source_language', language)
 
-  const response = await elevenFetch('/v1/dubbing', { method: 'POST', body: form, signal })
-  const body = (await response.json()) as { dubbing_id?: string }
-  if (!body.dubbing_id) throw new Error('ElevenLabs started a dub but did not name it.')
-  return body.dubbing_id
+  const response = await elevenFetch('/v1/dubbing/project', {
+    method: 'POST',
+    body: form,
+    signal,
+  })
+  const body = (await response.json()) as WireProject
+  if (!body.project_id) throw new Error('ElevenLabs started a dub but did not name it.')
+  return body.project_id
 }
 
 /* --- Reading it ----------------------------------------------------------- */
 
-/** Statuses that mean the first pass is still running. */
-const RUNNING = new Set(['dubbing', 'pending', 'queued', 'processing', 'in_progress'])
+/** Project statuses that mean transcription is still running. */
+const PREPARING = new Set(['queued', 'preparing', 'processing'])
 
-async function metadata(dubbingId: string, signal?: AbortSignal): Promise<WireMetadata> {
-  if (isMockEnabled()) return { dubbing_id: dubbingId, status: 'dubbed' }
+async function project(projectId: string, signal?: AbortSignal): Promise<WireProject> {
+  if (isMockEnabled()) return { project_id: projectId, status: 'ready' }
 
-  const response = await elevenFetch(`/v1/dubbing/${encodeURIComponent(dubbingId)}`, { signal })
-  return (await response.json()) as WireMetadata
-}
-
-/**
- * Whether ElevenLabs refused because this workspace is not in the beta.
- *
- * Worth naming rather than passing on as another authorization error, because
- * it is the one failure on this path that no amount of retrying, re-signing-in
- * or key-checking will move — and because it is invisible until this exact
- * call. Creating the job succeeds, the metadata comes back saying
- * `editable: true`, and only reading the resource says the editing API is not
- * available at all. Confirmed against the live API on a deploy preview:
- * `POST /v1/dubbing` answered 200 and `GET /v1/dubbing/resource/{id}` answered
- * 401 `no_dubbing_api_access`.
- */
-function isClosedBeta(error: unknown): boolean {
-  return (
-    error instanceof ProviderError &&
-    /no_dubbing_api_access|closed[- ]beta/i.test(error.detail ?? '')
-  )
-}
-
-/** The editable resource: the segments, the speakers, and any renders so far. */
-export async function dubbingResource(
-  dubbingId: string,
-  signal?: AbortSignal,
-): Promise<DubbingResource> {
-  if (isMockEnabled()) return mockDubbingResource(dubbingId) as DubbingResource
-
-  const response = await elevenFetch(`/v1/dubbing/resource/${encodeURIComponent(dubbingId)}`, {
+  const response = await elevenFetch(`/v1/dubbing/project/${encodeURIComponent(projectId)}`, {
     signal,
-  }).catch((cause: unknown) => {
-    if (!isClosedBeta(cause)) throw cause
-    throw new ProviderError(
-      'ElevenLabs',
-      403,
-      'This site’s ElevenLabs workspace has not been given access to the Dubbing Studio API.',
-      'Fixing a clip’s audio is built on editing a dub’s segments, and that API is in closed ' +
-        'beta — the job itself was created and has been deleted again, but its segments cannot ' +
-        'be read. Whoever deployed this site needs to ask ElevenLabs for dubbing API access. ' +
-        'Nothing you can fix from here.',
-    )
-  })
-  const body = (await response.json()) as WireResource
+  }).catch(refuseClosedBeta)
+  return (await response.json()) as WireProject
+}
 
-  const segments = Object.values(body.speaker_segments ?? {})
-    .flatMap((segment) =>
+/** The source transcript: the segments as the transcriber found them. */
+export async function dubbingTranscript(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<DubbingTranscript> {
+  if (isMockEnabled()) return mockDubbingTranscript(projectId)
+
+  const response = await elevenFetch(
+    `/v1/dubbing/project/${encodeURIComponent(projectId)}/transcript`,
+    { signal },
+  ).catch(refuseClosedBeta)
+  const body = (await response.json()) as WireTranscript
+
+  return {
+    revision: body.revision ?? 0,
+    segments: (body.segments ?? []).flatMap((segment) =>
       segment.id
         ? [
             {
               id: segment.id,
-              start: segment.start_time ?? 0,
-              end: segment.end_time ?? 0,
               text: segment.text ?? '',
+              speakerId: segment.speaker_id ?? '',
+              start: segment.start_s ?? 0,
+              end: segment.end_s ?? 0,
             },
           ]
         : [],
-    )
-    // Sorted here rather than trusted, because the wire shape is a map and a
-    // map has no order. Everything downstream pairs segments with captions by
-    // position, so the order is not a presentational detail.
-    .sort((a, b) => a.start - b.start || a.end - b.end)
-
-  return {
-    id: body.id ?? dubbingId,
-    segments,
-    speakers: Object.values(body.speaker_tracks ?? {}).flatMap((track) =>
-      track.id ? [{ id: track.id, segments: track.segments ?? [] }] : [],
     ),
-    renders: Object.fromEntries(
-      Object.entries(body.renders ?? {}).map(([id, render]) => [
-        id,
-        { status: (render.status ?? 'processing') as RenderStatus },
-      ]),
-    ),
-    ...(body.source_language ? { sourceLanguage: body.source_language } : {}),
   }
 }
 
 /**
- * Waits for the first pass — transcribe, separate, segment — to finish.
+ * Waits for transcription, then hands back what it found.
  *
  * Two conditions rather than one, because they answer different questions and
  * either alone has been enough to hang a job: the status says the provider
- * thinks it is done, and the resource having segments says there is actually
- * something to edit. A status that has gone quiet with no segments behind it is
- * a job that finished by failing.
+ * thinks it is done, and the transcript having segments says there is actually
+ * something to edit. A project that went ready with nothing in it is a clip
+ * with no speech in it, which is worth saying rather than dubbing silence.
  */
-export async function waitForSegments(
-  dubbingId: string,
-  { signal, onWait }: { signal?: AbortSignal; onWait?: (elapsed: number) => void } = {},
-): Promise<DubbingResource> {
+export async function waitForTranscript(
+  projectId: string,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<DubbingTranscript> {
   const startedAt = Date.now()
 
   for (let attempt = 0; ; attempt += 1) {
     if (Date.now() - startedAt > DUB_TIMEOUT_MS) throw timedOut('preparing')
     await sleep(delayForAttempt(attempt), signal)
 
-    const state = await metadata(dubbingId, signal)
+    const state = await project(projectId, signal)
     const status = (state.status ?? '').toLowerCase()
-    if (status && !RUNNING.has(status)) {
-      if (/fail|error/.test(status)) {
+    if (status && !PREPARING.has(status)) {
+      if (status === 'failed' || /fail|error/.test(status)) {
         throw new ProviderError(
           'ElevenLabs',
           502,
-          'ElevenLabs could not dub that clip.',
-          state.error ?? `The job came back as "${state.status}".`,
+          'ElevenLabs could not prepare that clip for dubbing.',
+          state.error?.message ?? `The project came back as "${state.status}".`,
         )
       }
-      const resource = await dubbingResource(dubbingId, signal)
-      if (resource.segments.length > 0) return resource
+      const transcript = await dubbingTranscript(projectId, signal)
+      if (transcript.segments.length > 0) return transcript
       throw new ProviderError(
         'ElevenLabs',
         502,
@@ -308,11 +290,10 @@ export async function waitForSegments(
         'Dubbing splits a clip into spans of speech, and this one came back with none.',
       )
     }
-    onWait?.((Date.now() - startedAt) / 1000)
   }
 }
 
-/* --- Editing it ----------------------------------------------------------- */
+/* --- Editing the script onto it ------------------------------------------- */
 
 export interface SegmentEdit {
   start: number
@@ -321,200 +302,222 @@ export interface SegmentEdit {
 }
 
 /**
- * Sets a segment's words and its span, without re-saying anything.
+ * Rewrites several segments in one request.
  *
- * Deliberately two steps from re-saying it: every segment is written first and
- * only then are they all dubbed in one call, so the provider sees the finished
- * script rather than a script being assembled. The language in the path is the
- * target, which for this feature is also the source.
+ * Bulk rather than one call each, which is what the API offers and what this
+ * wants: the segments are one script being written in, so sending them together
+ * is both fewer round trips and one revision bump rather than a run of them.
  */
-export async function updateSegment(
-  dubbingId: string,
-  segmentId: string,
-  language: string,
-  edit: SegmentEdit,
+export async function updateSegments(
+  projectId: string,
+  edits: Readonly<Record<string, SegmentEdit>>,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (isMockEnabled()) return mockDubbingUpdateSegment(dubbingId, segmentId, edit)
+  const entries = Object.entries(edits)
+  if (entries.length === 0) return
+  if (isMockEnabled()) return mockDubbingUpdateSegments(projectId, edits)
 
-  await elevenFetch(
-    `/v1/dubbing/resource/${encodeURIComponent(dubbingId)}/segment/${encodeURIComponent(segmentId)}/${encodeURIComponent(language)}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify({ start_time: edit.start, end_time: edit.end, text: edit.text }),
-      headers: { 'content-type': 'application/json' },
-      signal,
-    },
-  )
+  await elevenFetch(`/v1/dubbing/project/${encodeURIComponent(projectId)}/transcript/segments`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      segments: Object.fromEntries(
+        entries.map(([id, edit]) => [
+          id,
+          { text: edit.text, start_s: edit.start, end_s: edit.end },
+        ]),
+      ),
+    }),
+    headers: { 'content-type': 'application/json' },
+    signal,
+  })
 }
 
-/** Adds a span the transcription did not find, and returns its id. */
+/** Adds a span the transcription missed, and returns its id. */
 export async function createSegment(
-  dubbingId: string,
+  projectId: string,
   speakerId: string,
   edit: SegmentEdit,
   signal?: AbortSignal,
 ): Promise<string> {
-  if (isMockEnabled()) return mockDubbingCreateSegment(dubbingId, edit)
+  if (isMockEnabled()) return mockDubbingCreateSegment(projectId, edit)
 
   const response = await elevenFetch(
-    `/v1/dubbing/resource/${encodeURIComponent(dubbingId)}/speaker/${encodeURIComponent(speakerId)}/segment`,
+    `/v1/dubbing/project/${encodeURIComponent(projectId)}/transcript/segment`,
     {
       method: 'POST',
-      body: JSON.stringify({ start_time: edit.start, end_time: edit.end, text: edit.text }),
+      body: JSON.stringify({
+        text: edit.text,
+        speaker_id: speakerId,
+        start_s: edit.start,
+        end_s: edit.end,
+      }),
       headers: { 'content-type': 'application/json' },
       signal,
     },
   )
-  const body = (await response.json()) as { new_segment?: string; id?: string }
-  const id = body.new_segment ?? body.id
+  const body = (await response.json()) as { segment_id?: string; id?: string }
+  const id = body.segment_id ?? body.id
   if (!id) throw new Error('ElevenLabs added a segment but did not name it.')
   return id
 }
 
 /** Removes a span the transcription found and the captions do not have. */
 export async function deleteSegment(
-  dubbingId: string,
+  projectId: string,
   segmentId: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (isMockEnabled()) return mockDubbingDeleteSegment(dubbingId, segmentId)
+  if (isMockEnabled()) return mockDubbingDeleteSegment(projectId, segmentId)
 
   await elevenFetch(
-    `/v1/dubbing/resource/${encodeURIComponent(dubbingId)}/segment/${encodeURIComponent(segmentId)}`,
+    `/v1/dubbing/project/${encodeURIComponent(projectId)}/transcript/segment/${encodeURIComponent(segmentId)}`,
     { method: 'DELETE', signal },
   )
 }
 
-/**
- * Points the speaker at a voice.
- *
- * `clip-clone` is the default and is what makes a fixed line sound like the
- * clip it stands in for: ElevenLabs copies the voice out of the media it was
- * given, inside its own account, and nothing here has to create or delete a
- * voice to get it. That is the whole of why the clone machinery this feature
- * used to carry is gone — see the module header in `clipAudioFix.ts`.
- */
-export async function setSpeakerVoice(
-  dubbingId: string,
-  speakerId: string,
-  voiceId: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (isMockEnabled()) return
-
-  await elevenFetch(
-    `/v1/dubbing/resource/${encodeURIComponent(dubbingId)}/speaker/${encodeURIComponent(speakerId)}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify({ voice_id: voiceId }),
-      headers: { 'content-type': 'application/json' },
-      signal,
-    },
-  )
-}
-
-/** The voice option that copies the clip's own, in ElevenLabs' vocabulary. */
-export const CLIP_CLONE_VOICE = 'clip-clone'
-
 /* --- Saying it again ------------------------------------------------------ */
 
-/** Re-says the named segments. Returns once the request is accepted, not done. */
-export async function dubSegments(
-  dubbingId: string,
-  segmentIds: readonly string[],
-  language: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (isMockEnabled()) return
-
-  await elevenFetch(`/v1/dubbing/resource/${encodeURIComponent(dubbingId)}/dub`, {
-    method: 'POST',
-    body: JSON.stringify({ segments: [...segmentIds], languages: [language] }),
-    headers: { 'content-type': 'application/json' },
-    signal,
-  })
-}
-
-/** Starts a render of the finished language track and returns its id. */
-export async function renderDub(
-  dubbingId: string,
+/**
+ * Adds the language to dub into, which is what starts the speaking.
+ *
+ * The same language the project was transcribed in, always. This is a
+ * re-voicing: the words are already the user's, sitting in the segments, and
+ * asking for a different target would be asking for them to be translated.
+ *
+ * Created after the script is in, never before — see the module header.
+ */
+export async function createLanguageTarget(
+  projectId: string,
   language: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  if (isMockEnabled()) return mockDubbingRender(dubbingId)
+  if (isMockEnabled()) return mockDubbingLanguage(projectId)
 
   const response = await elevenFetch(
-    `/v1/dubbing/resource/${encodeURIComponent(dubbingId)}/render/${encodeURIComponent(language)}`,
+    `/v1/dubbing/project/${encodeURIComponent(projectId)}/language`,
     {
       method: 'POST',
-      // MP3 rather than the video types: the picture is untouched by this
-      // feature, so rendering an MP4 would be paying to re-encode a video in
-      // order to throw the video away. The timeline mixes MP3 like any other
-      // audio, which is what the text-to-speech path returned too.
-      body: JSON.stringify({ render_type: 'mp3', normalize_volume: false }),
+      body: JSON.stringify({ target_language: language }),
       headers: { 'content-type': 'application/json' },
       signal,
     },
   )
-  const body = (await response.json()) as { render_id?: string }
-  if (!body.render_id) throw new Error('ElevenLabs started a render but did not name it.')
-  return body.render_id
+  const body = (await response.json()) as WireLanguage
+  if (!body.language_id)
+    throw new Error('ElevenLabs started dubbing but did not name the language.')
+  return body.language_id
 }
 
+/** Language-target statuses that mean it is still being said. */
+const DUBBING = new Set(['queued', 'processing'])
+
 /**
- * Waits for a render, which is the long half of a run.
+ * Waits for the dub, and returns where to download it from.
  *
- * A render that vanishes from the resource is treated as still running rather
- * than as finished: the map is the provider's, and reading "not there yet" as
- * "done" would download the previous render, or nothing at all.
+ * `stale` is treated as a failure rather than as a result, and that is
+ * deliberate. It means the transcript changed after the audio was made, so the
+ * audio says something other than what the segments now say — which is exactly
+ * the disagreement between what is heard and what is burnt into the video that
+ * this whole feature exists to prevent. Laying it down would be worse than
+ * failing.
  */
-export async function waitForRender(
-  dubbingId: string,
-  renderId: string,
-  { signal, onWait }: { signal?: AbortSignal; onWait?: (elapsed: number) => void } = {},
-): Promise<void> {
+export async function waitForDub(
+  projectId: string,
+  languageId: string,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<string> {
   const startedAt = Date.now()
 
   for (let attempt = 0; ; attempt += 1) {
-    if (Date.now() - startedAt > DUB_TIMEOUT_MS) throw timedOut('rendering')
+    if (Date.now() - startedAt > DUB_TIMEOUT_MS) throw timedOut('dubbing')
     await sleep(delayForAttempt(attempt), signal)
 
-    const resource = await dubbingResource(dubbingId, signal)
-    const status = resource.renders[renderId]?.status
-    if (status === 'complete') return
-    if (status === 'failed') {
-      throw new ProviderError(
-        'ElevenLabs',
-        502,
-        'ElevenLabs could not render the corrected audio.',
-        'The segments were re-said, but mixing them down failed.',
-      )
+    const state = await languageTarget(projectId, languageId, signal)
+    const status = (state.status ?? '').toLowerCase()
+    if (DUBBING.has(status)) continue
+
+    if (status === 'completed') {
+      const url = state.outputs?.lossless_audio
+      if (!url) {
+        throw new ProviderError(
+          'ElevenLabs',
+          502,
+          'ElevenLabs finished dubbing but returned no audio.',
+          'The language target reported itself complete with no output to download.',
+        )
+      }
+      return url
     }
-    onWait?.((Date.now() - startedAt) / 1000)
+
+    throw new ProviderError(
+      'ElevenLabs',
+      502,
+      status === 'stale'
+        ? 'The corrected audio no longer matches the script it was made from.'
+        : 'ElevenLabs could not dub that clip.',
+      state.error?.message ??
+        (status === 'stale'
+          ? 'The transcript changed after the audio was generated, so what it says and what the captions say would disagree.'
+          : `The dub came back as "${state.status}".`),
+    )
   }
 }
 
-/** Downloads the dubbed track for a language. */
-export async function dubbedAudio(
-  dubbingId: string,
-  language: string,
+async function languageTarget(
+  projectId: string,
+  languageId: string,
   signal?: AbortSignal,
-): Promise<Blob> {
-  if (isMockEnabled()) return await mockDubbingAudio(dubbingId)
+): Promise<WireLanguage> {
+  if (isMockEnabled()) return mockDubbingLanguageState(projectId, languageId)
 
   const response = await elevenFetch(
-    `/v1/dubbing/${encodeURIComponent(dubbingId)}/audio/${encodeURIComponent(language)}`,
-    { headers: { accept: 'audio/mpeg' }, signal },
-  )
+    `/v1/dubbing/project/${encodeURIComponent(projectId)}/language/${encodeURIComponent(languageId)}`,
+    { signal },
+  ).catch(refuseClosedBeta)
+  return (await response.json()) as WireLanguage
+}
+
+function mockDubbingLanguageState(projectId: string, languageId: string): WireLanguage {
+  return {
+    language_id: languageId,
+    status: 'completed',
+    outputs: { lossless_audio: `mock://dub/${projectId}` },
+  }
+}
+
+/**
+ * Downloads the finished track.
+ *
+ * The one request in this file that does not go through the proxy, because it
+ * does not need to: the URL is signed and time-limited by ElevenLabs and
+ * carries its own authorisation, so no key is involved and the arrangement that
+ * keeps keys out of the browser is untouched. Sending it through the proxy
+ * would mean teaching the proxy to fetch an arbitrary URL, which is a much
+ * larger hole than this closes.
+ *
+ * Its origin is not `api.elevenlabs.io`, so it depends on that origin allowing
+ * a cross-origin GET. If it does not, this is where a run fails.
+ */
+export async function dubbedAudio(url: string, signal?: AbortSignal): Promise<Blob> {
+  if (isMockEnabled()) return await mockDubbingAudio(url.replace('mock://dub/', ''))
+
+  const response = await fetch(url, { signal })
+  if (!response.ok) {
+    throw new ProviderError(
+      'ElevenLabs',
+      response.status,
+      'The corrected audio could not be downloaded.',
+      'ElevenLabs finished the dub and gave a link to it, but the link could not be fetched.',
+    )
+  }
   return await response.blob()
 }
 
-/** Removes the job from the account. Best effort; see `clipAudioFix.ts`. */
-export async function deleteDub(dubbingId: string): Promise<void> {
-  if (isMockEnabled()) return mockDubbingDelete(dubbingId)
+/** Removes the project from the account. Best effort; see `clipAudioFix.ts`. */
+export async function deleteDubbingProject(projectId: string): Promise<void> {
+  if (isMockEnabled()) return mockDubbingDelete(projectId)
 
-  await elevenFetch(`/v1/dubbing/${encodeURIComponent(dubbingId)}`, { method: 'DELETE' })
+  await elevenFetch(`/v1/dubbing/project/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
 }
 
 /* --- Getting the word timings back ---------------------------------------- */
@@ -523,12 +526,13 @@ export async function deleteDub(dubbingId: string): Promise<void> {
  * When each word was said, from the audio and the text that was said in it.
  *
  * The one thing dubbing does not give back. Text-to-speech returned per-word
- * timings with the audio, and the karaoke highlight is built on them; a render
- * is just a track. Forced alignment is the answer rather than re-running Scribe
- * because it is told the words instead of guessing them — the script is already
- * known exactly, so recognising it again would be spending a request to
- * introduce mistakes. It also returns words directly, where Scribe's answer
- * would have to be reconciled with the captions it was supposed to be timing.
+ * timings with the audio, and the karaoke highlight is built on them; a dub is
+ * just a track, and its transcript is timed per segment and no finer. Forced
+ * alignment is the answer rather than re-running Scribe because it is told the
+ * words instead of guessing them — the script is already known exactly, so
+ * recognising it again would be spending a request to introduce mistakes. It
+ * also returns words directly, where Scribe's answer would have to be reconciled
+ * with the captions it was supposed to be timing.
  */
 export async function alignWords(
   audio: Blob,
@@ -555,6 +559,41 @@ export async function alignWords(
     word.text?.trim()
       ? [{ text: word.text, start: word.start ?? 0, end: word.end ?? word.start ?? 0 }]
       : [],
+  )
+}
+
+/* --- Failures worth naming ------------------------------------------------ */
+
+/**
+ * Turns "you are not in the beta" into a sentence that says so.
+ *
+ * Worth naming rather than passing on as another authorization error, because
+ * it is the one failure on this path that no amount of retrying, re-signing-in
+ * or key-checking will move — and because it is invisible until it happens.
+ * This was confirmed against the live API on the *resource* API this file used
+ * to call: creating the job answered 200 and reported `editable: true`, and only
+ * reading its segments answered `401 no_dubbing_api_access`. The project API
+ * called here is the documented current one and may well not be gated the same
+ * way, but the failure shape is worth keeping either way — it costs one
+ * predicate and it is the difference between a comprehensible message and being
+ * told to sign in again about a closed beta.
+ */
+function isClosedBeta(error: unknown): boolean {
+  return (
+    error instanceof ProviderError &&
+    /no_dubbing_api_access|closed[- ]beta/i.test(error.detail ?? '')
+  )
+}
+
+function refuseClosedBeta(cause: unknown): never {
+  if (!isClosedBeta(cause)) throw cause
+  throw new ProviderError(
+    'ElevenLabs',
+    403,
+    'This site’s ElevenLabs workspace has not been given access to the dubbing API.',
+    'Fixing a clip’s audio is built on editing a dub’s segments, and that API is in closed ' +
+      'beta for this workspace — any project it created has been deleted again. Whoever deployed ' +
+      'this site needs to ask ElevenLabs for dubbing API access. Nothing you can fix from here.',
   )
 }
 

@@ -21,17 +21,13 @@
  * than seconds; holding a modal over the editor for all of it would be holding
  * it for something the user has already finished describing.
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Button, Callout, Field, Modal, Select, TextArea, TextInput } from './ui'
-import { listVoices, VOICE_LANGUAGES, type Voice } from '../lib/elevenlabs'
+import { VOICE_LANGUAGES } from '../lib/elevenlabs'
 import { dubbableSeconds, type FixTarget } from '../lib/clipAudioFix'
 import { formatTime } from '../lib/timeline'
-import { toDisplayMessage } from '../lib/errors'
 import { useAudioFixStore, type FixRequestLine } from '../state/useAudioFixStore'
 import { canUseElevenLabs, useSettingsStore } from '../state/useSettingsStore'
-
-/** The voice option that copies the clip's own, rather than naming one. */
-const CLONE_VOICE = ''
 
 export function FixAudioDialog({
   target,
@@ -42,28 +38,6 @@ export function FixAudioDialog({
   onClose: () => void
 }) {
   const available = useSettingsStore(canUseElevenLabs)
-  const [voices, setVoices] = useState<Voice[] | null>(null)
-  const [voiceError, setVoiceError] = useState<string | null>(null)
-
-  // Loaded out here rather than in the form, which is remounted per clip: the
-  // list belongs to the account, not to the clip, and fetching it again every
-  // time a different clip's menu is used would be a request per opening.
-  useEffect(() => {
-    if (!target || !available || voices) return
-    let cancelled = false
-    listVoices()
-      .then((list) => {
-        if (!cancelled) setVoices(list)
-      })
-      .catch((cause) => {
-        // Not fatal: copying the clip's own voice needs no list, and that is
-        // the option most of these clips want anyway.
-        if (!cancelled) setVoiceError(toDisplayMessage(cause))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [target, available, voices])
 
   return (
     <Modal
@@ -76,14 +50,7 @@ export function FixAudioDialog({
         // Keyed by clip, so every field starts from the clip it is describing.
         // The alternative is copying props into state in an effect, which is how
         // the last clip's line ends up being said over this one.
-        <FixAudioForm
-          key={target.clipId}
-          target={target}
-          available={available}
-          voices={voices}
-          voiceError={voiceError}
-          onClose={onClose}
-        />
+        <FixAudioForm key={target.clipId} target={target} available={available} onClose={onClose} />
       ) : null}
     </Modal>
   )
@@ -92,15 +59,11 @@ export function FixAudioDialog({
 function FixAudioForm({
   target,
   available,
-  voices,
-  voiceError,
   onClose,
 }: {
   target: FixTarget
   /** False only on a deployment with no ElevenLabs key of its own. */
   available: boolean
-  voices: Voice[] | null
-  voiceError: string | null
   onClose: () => void
 }) {
   const fixClip = useAudioFixStore((state) => state.fixClip)
@@ -118,7 +81,6 @@ function FixAudioForm({
   // because the answer is known before anything is spent, and finding out after
   // the press would mean an error where a disabled button belongs.
   const tooLong = target.duration > dubbableSeconds()
-  const [voiceId, setVoiceId] = useState(() => useAudioFixStore.getState().voiceId)
 
   /** The captions, as they are being edited. One entry per line, in order. */
   const [lines, setLines] = useState<string[]>(() => target.lines.map((line) => line.text))
@@ -132,13 +94,7 @@ function FixAudioForm({
   const characters = script.reduce((total, line) => total + line.text.trim().length, 0)
 
   const submit = () => {
-    const chosen = voices?.find((voice) => voice.voice_id === voiceId)
-    void fixClip(target, {
-      lines: script,
-      language,
-      voiceId,
-      ...(chosen ? { voiceName: chosen.name } : {}),
-    })
+    void fixClip(target, { lines: script, language })
     onClose()
   }
 
@@ -211,35 +167,16 @@ function FixAudioForm({
         </Select>
       </Field>
 
-      <Field
-        label="Voice"
-        hint={
-          voiceId === CLONE_VOICE
-            ? 'Copied by ElevenLabs from the clip’s own audio as part of the dub, and gone again with the job. If cloning is refused, pick a ready-made voice below instead.'
-            : 'A ready-made voice. It will not sound like the clip.'
-        }
-        htmlFor="fix-audio-voice"
-      >
-        <Select
-          id="fix-audio-voice"
-          value={voiceId}
-          onChange={(event) => setVoiceId(event.target.value)}
-        >
-          <option value={CLONE_VOICE}>Copy this clip’s own voice</option>
-          {voices?.map((voice) => (
-            <option key={voice.voice_id} value={voice.voice_id}>
-              {voice.name}
-            </option>
-          ))}
-        </Select>
-      </Field>
-
-      {voiceError ? (
-        <Callout tone="warn">
-          The ready-made voices could not be listed ({voiceError}) — copying this clip’s own voice
-          still works.
-        </Callout>
-      ) : null}
+      {/* No voice picker any more, and its absence is not an oversight. Dubbing
+          copies the speaker out of the clip's own audio as part of the job and
+          offers no way to name a voice instead — the language target takes
+          cloning *settings*, not a voice id. The field would have been a control
+          that quietly did nothing. */}
+      <Callout tone="info">
+        This clip is re-said in a copy of its own voice, made by ElevenLabs from the clip’s audio as
+        part of the dub and gone again with it. Dubbing offers no way to substitute a different
+        voice, so unlike the rest of the app there is nothing to choose here.
+      </Callout>
 
       {tooLong ? (
         <Callout tone="warn">

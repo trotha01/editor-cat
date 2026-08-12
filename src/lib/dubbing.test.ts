@@ -1,15 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   alignWords,
-  createDub,
+  createDubbingProject,
+  createLanguageTarget,
   createSegment,
-  dubbingResource,
-  dubSegments,
-  renderDub,
-  setSpeakerVoice,
-  updateSegment,
-  waitForRender,
-  waitForSegments,
+  deleteSegment,
+  dubbingTranscript,
+  updateSegments,
+  waitForDub,
+  waitForTranscript,
 } from './dubbing'
 import { ProviderError, toDisplayMessage } from './errors'
 
@@ -18,22 +17,19 @@ vi.mock('./auth0/client', () => ({ auth0Token: () => Promise.resolve('session-to
 /**
  * The wire, pinned down.
  *
- * Worth asserting at this level more than most things in this app, because most
- * of it could not be tried against the live API while it was written —
- * elevenlabs.io is unreachable from the sandbox this was built in, so every path
- * and field name here came from ElevenLabs' own generated SDK rather than from a
- * response. These tests are what say the code matches what was read: a segment
- * update is a PATCH with the language last in the path, a render asks for
- * `render_type`, and a resource's segments come back as a map that has to be put
- * in order.
+ * Worth asserting at this level more than most things in this app, because none
+ * of it could be tried from the sandbox it was written in — elevenlabs.io is
+ * unreachable from there, so every path and field name came from the API
+ * reference and from ElevenLabs' own generated SDK rather than from a response.
+ * These tests are what say the code matches what was read: a project is created
+ * with `source_language` and no target, segments are rewritten in one bulk
+ * PATCH keyed by id, and times are `start_s`/`end_s`.
  *
- * A later run against a deploy preview reached the API for real and settled the
- * first half: creating a job, polling its status and deleting it again all work
- * exactly as written here. It also settled the second half in the least useful
- * way — the segment endpoints this whole design rests on are in closed beta and
- * answered 401. The shapes below the resource are therefore still only as good
- * as the SDK they were read from, and the last suite in this file is the one
- * piece of that answer we do have.
+ * One run against a deploy preview did reach the API, on the older *resource*
+ * API this used to call. It settled two things worth keeping: an audio-only WAV
+ * upload works and the ownership marker survives a round trip — and the segment
+ * endpoints there answered `401 no_dubbing_api_access`, which is why this file
+ * now calls the project API instead and why the last suite exists.
  */
 
 const fetchMock = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>()
@@ -49,210 +45,243 @@ const json = (body: unknown, status = 200) =>
 const lastCall = () => fetchMock.mock.calls.at(-1) ?? []
 const lastBody = () => JSON.parse(String(lastCall()[1]?.body)) as Record<string, unknown>
 
-/** A resource as the API returns one: maps, snake_case, and no order at all. */
-const RESOURCE = {
-  id: 'dub_1',
-  source_language: 'es',
-  speaker_tracks: { sp_1: { id: 'sp_1', segments: ['seg_b', 'seg_a'] } },
-  speaker_segments: {
-    seg_b: { id: 'seg_b', start_time: 2, end_time: 3.5, text: 'como estas' },
-    seg_a: { id: 'seg_a', start_time: 0, end_time: 1.8, text: 'buenos dias' },
-  },
-  renders: {},
+/** A source transcript as the API returns one. */
+const TRANSCRIPT = {
+  language: 'es',
+  revision: 3,
+  segments: [
+    { id: 'seg_a', text: 'buenos dias', speaker_id: 'sp_1', start_s: 0, end_s: 1.8 },
+    { id: 'seg_b', text: 'como estas', speaker_id: 'sp_1', start_s: 2, end_s: 3.5 },
+  ],
 }
 
-describe('createDub', () => {
-  it('asks for an editable job in one language, as a file', async () => {
-    fetchMock.mockResolvedValue(json({ dubbing_id: 'dub_1', expected_duration_sec: 8 }))
+describe('createDubbingProject', () => {
+  it('sends the clip as a file, in one named language, with no target yet', async () => {
+    fetchMock.mockResolvedValue(json({ project_id: 'proj_1', status: 'preparing', revision: 0 }))
 
-    const id = await createDub({
+    const id = await createDubbingProject({
       audio: new Blob(['wav'], { type: 'audio/wav' }),
-      name: 'editor-cat fix · lighthouse.mp4',
+      reference: 'editor-cat fix · lighthouse.mp4',
       language: 'es',
       seconds: 8,
     })
 
-    expect(id).toBe('dub_1')
-    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing')
+    expect(id).toBe('proj_1')
+    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/project')
     const form = lastCall()[1]?.body as FormData
-    // Same in and out. This is a re-voicing, not a translation: the captions are
-    // the script, so asking for a different target language would be asking the
-    // provider to replace the user's words with its own.
-    expect(form.get('source_lang')).toBe('es')
-    expect(form.get('target_lang')).toBe('es')
-    // Without this the job is one-shot and there are no segments to edit, which
-    // is the only reason to be using dubbing rather than text-to-speech.
-    expect(form.get('dubbing_studio')).toBe('true')
-    expect(form.get('num_speakers')).toBe('1')
+    expect(form.get('source_language')).toBe('es')
+    // The API's own "identify this on your end" field, which is what the proxy
+    // reads back before it will delete anything.
+    expect(form.get('reference')).toBe('editor-cat fix · lighthouse.mp4')
     // The extension is what ElevenLabs sniffs the container from.
     expect((form.get('file') as File).name).toMatch(/\.wav$/)
+    // The one that would quietly ruin everything. `target_language` here is a
+    // shortcut that queues the dub to start as soon as transcription finishes —
+    // which is before the captions have been written into the segments, so it
+    // would say the transcriber's words and then go stale.
+    expect(form.has('target_language')).toBe(false)
   })
 
-  it('refuses a reply with no job id rather than polling nothing', async () => {
-    fetchMock.mockResolvedValue(json({ expected_duration_sec: 8 }))
+  it('refuses a reply with no project id rather than polling nothing', async () => {
+    fetchMock.mockResolvedValue(json({ status: 'preparing' }))
     await expect(
-      createDub({ audio: new Blob(['wav']), name: 'n', language: 'es', seconds: 8 }),
+      createDubbingProject({
+        audio: new Blob(['wav']),
+        reference: 'r',
+        language: 'es',
+        seconds: 8,
+      }),
     ).rejects.toThrow(/did not name it/)
   })
 })
 
-describe('dubbingResource', () => {
-  it('puts the segments in time order, whatever order the map was in', async () => {
-    // The wire shape is a map, and a map has no order. Everything downstream
-    // pairs segments with captions by position, so this is not presentation.
-    fetchMock.mockResolvedValue(json(RESOURCE))
+describe('dubbingTranscript', () => {
+  it('reads the segments, their speakers and their spans', async () => {
+    fetchMock.mockResolvedValue(json(TRANSCRIPT))
 
-    const resource = await dubbingResource('dub_1')
+    const transcript = await dubbingTranscript('proj_1')
 
-    expect(resource.segments.map((segment) => segment.id)).toEqual(['seg_a', 'seg_b'])
-    expect(resource.segments[0]).toEqual({
+    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/project/proj_1/transcript')
+    expect(transcript.revision).toBe(3)
+    expect(transcript.segments[0]).toEqual({
       id: 'seg_a',
+      text: 'buenos dias',
+      speakerId: 'sp_1',
       start: 0,
       end: 1.8,
-      text: 'buenos dias',
     })
-    expect(resource.speakers).toEqual([{ id: 'sp_1', segments: ['seg_b', 'seg_a'] }])
-    expect(resource.sourceLanguage).toBe('es')
   })
 
-  it('survives a resource with nothing in it yet', async () => {
-    fetchMock.mockResolvedValue(json({ id: 'dub_1' }))
-    const resource = await dubbingResource('dub_1')
-    expect(resource.segments).toEqual([])
-    expect(resource.speakers).toEqual([])
+  it('survives a transcript with nothing in it yet', async () => {
+    fetchMock.mockResolvedValue(json({ revision: 0 }))
+    expect((await dubbingTranscript('proj_1')).segments).toEqual([])
   })
 })
 
-describe('waitForSegments', () => {
-  it('waits out the job, then hands back what it found', async () => {
+describe('waitForTranscript', () => {
+  it('waits out the transcription, then hands back what it found', async () => {
     fetchMock
-      .mockResolvedValueOnce(json({ dubbing_id: 'dub_1', status: 'dubbing' }))
-      .mockResolvedValueOnce(json({ dubbing_id: 'dub_1', status: 'dubbed' }))
-      .mockResolvedValueOnce(json(RESOURCE))
+      .mockResolvedValueOnce(json({ project_id: 'proj_1', status: 'preparing' }))
+      .mockResolvedValueOnce(json({ project_id: 'proj_1', status: 'processing' }))
+      .mockResolvedValueOnce(json({ project_id: 'proj_1', status: 'ready' }))
+      .mockResolvedValueOnce(json(TRANSCRIPT))
 
-    const resource = await waitForSegments('dub_1')
+    const transcript = await waitForTranscript('proj_1')
 
-    expect(resource.segments).toHaveLength(2)
+    expect(transcript.segments).toHaveLength(2)
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      '/api/elevenlabs/v1/dubbing/dub_1',
-      '/api/elevenlabs/v1/dubbing/dub_1',
-      '/api/elevenlabs/v1/dubbing/resource/dub_1',
+      '/api/elevenlabs/v1/dubbing/project/proj_1',
+      '/api/elevenlabs/v1/dubbing/project/proj_1',
+      '/api/elevenlabs/v1/dubbing/project/proj_1',
+      '/api/elevenlabs/v1/dubbing/project/proj_1/transcript',
     ])
   })
 
-  it('reports what the provider said when the job failed', async () => {
+  it('reports what the provider said when the project failed', async () => {
     fetchMock.mockResolvedValue(
-      json({ dubbing_id: 'dub_1', status: 'failed', error: 'no speech detected' }),
+      json({ project_id: 'proj_1', status: 'failed', error: { message: 'no speech detected' } }),
     )
-    await expect(waitForSegments('dub_1')).rejects.toThrow(/could not dub/i)
+    const error = await waitForTranscript('proj_1').catch((cause: unknown) => cause)
+    expect(toDisplayMessage(error)).toMatch(/could not prepare/i)
+    expect(toDisplayMessage(error)).toMatch(/no speech detected/)
   })
 
-  it('treats a finished job with no segments as a failure, not as a result', async () => {
-    // The status having gone quiet is not the same as there being something to
-    // edit, and a run that carried on from here would render silence.
+  it('treats a ready project with no segments as a failure, not as a result', async () => {
+    // Ready is not the same as there being something to edit, and a run that
+    // carried on from here would dub silence.
     fetchMock
-      .mockResolvedValueOnce(json({ dubbing_id: 'dub_1', status: 'dubbed' }))
-      .mockResolvedValueOnce(json({ id: 'dub_1', speaker_segments: {} }))
+      .mockResolvedValueOnce(json({ project_id: 'proj_1', status: 'ready' }))
+      .mockResolvedValueOnce(json({ revision: 0, segments: [] }))
 
-    await expect(waitForSegments('dub_1')).rejects.toThrow(/nothing being said/i)
+    await expect(waitForTranscript('proj_1')).rejects.toThrow(/nothing being said/i)
   })
 
   it('stops waiting the moment Cancel is pressed', async () => {
-    fetchMock.mockResolvedValue(json({ dubbing_id: 'dub_1', status: 'dubbing' }))
+    fetchMock.mockResolvedValue(json({ project_id: 'proj_1', status: 'processing' }))
     const controller = new AbortController()
-    const waiting = waitForSegments('dub_1', { signal: controller.signal })
+    const waiting = waitForTranscript('proj_1', { signal: controller.signal })
     controller.abort()
     await expect(waiting).rejects.toThrow(/abort/i)
   })
 })
 
-describe('editing the script onto the segments', () => {
-  it('puts a caption on a segment with the language last in the path', async () => {
-    fetchMock.mockResolvedValue(json({ version: 2 }))
+describe('writing the script onto the segments', () => {
+  it('rewrites every segment in one request, keyed by id', async () => {
+    // One request rather than one each: they are one script being written in,
+    // so they go together and bump the revision once.
+    fetchMock.mockResolvedValue(json({ revision: 4 }))
 
-    await updateSegment('dub_1', 'seg_a', 'es', { start: 0, end: 1.8, text: 'Buenos días' })
+    await updateSegments('proj_1', {
+      seg_a: { start: 0, end: 1.8, text: 'Buenos días' },
+      seg_b: { start: 2, end: 3.5, text: '¿Cómo estás?' },
+    })
 
     const [url, init] = lastCall()
-    expect(url).toBe('/api/elevenlabs/v1/dubbing/resource/dub_1/segment/seg_a/es')
+    expect(url).toBe('/api/elevenlabs/v1/dubbing/project/proj_1/transcript/segments')
     expect(init?.method).toBe('PATCH')
-    expect(lastBody()).toEqual({ start_time: 0, end_time: 1.8, text: 'Buenos días' })
+    expect(lastBody()).toEqual({
+      segments: {
+        seg_a: { text: 'Buenos días', start_s: 0, end_s: 1.8 },
+        seg_b: { text: '¿Cómo estás?', start_s: 2, end_s: 3.5 },
+      },
+    })
   })
 
-  it('adds a span the transcription missed, under the speaker that owns them', async () => {
-    fetchMock.mockResolvedValue(json({ version: 3, new_segment: 'seg_new' }))
+  it('spends no request at all when there is nothing to rewrite', async () => {
+    await updateSegments('proj_1', {})
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 
-    const id = await createSegment('dub_1', 'sp_1', { start: 4, end: 5, text: 'Adiós' })
+  it('adds a span the transcription missed, under a speaker that exists', async () => {
+    fetchMock.mockResolvedValue(json({ segment_id: 'seg_new', revision: 5 }))
+
+    const id = await createSegment('proj_1', 'sp_1', { start: 4, end: 5, text: 'Adiós' })
 
     expect(id).toBe('seg_new')
-    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/resource/dub_1/speaker/sp_1/segment')
+    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/project/proj_1/transcript/segment')
+    expect(lastBody()).toEqual({
+      text: 'Adiós',
+      speaker_id: 'sp_1',
+      start_s: 4,
+      end_s: 5,
+    })
   })
 
-  it('points the speaker at the clip’s own voice without creating one', async () => {
-    // Where the whole clone-and-delete dance went. ElevenLabs copies the voice
-    // out of the media it was given, inside its own account, so nothing here
-    // makes a voice and nothing has to remember to remove one.
-    fetchMock.mockResolvedValue(json({ version: 4 }))
+  it('drops a span the captions do not have', async () => {
+    fetchMock.mockResolvedValue(json({ revision: 6 }))
 
-    await setSpeakerVoice('dub_1', 'sp_1', 'clip-clone')
+    await deleteSegment('proj_1', 'seg_b')
 
     const [url, init] = lastCall()
-    expect(url).toBe('/api/elevenlabs/v1/dubbing/resource/dub_1/speaker/sp_1')
-    expect(init?.method).toBe('PATCH')
-    expect(lastBody()).toEqual({ voice_id: 'clip-clone' })
+    expect(url).toBe('/api/elevenlabs/v1/dubbing/project/proj_1/transcript/segment/seg_b')
+    expect(init?.method).toBe('DELETE')
   })
 })
 
 describe('saying it again', () => {
-  it('names every segment to re-say, and the one language to say it in', async () => {
-    fetchMock.mockResolvedValue(json({ version: 5 }))
+  it('adds a language target in the same language, which is what starts it', async () => {
+    // Same in and out. This is a re-voicing, not a translation: the captions are
+    // already the user's words, sitting in the segments.
+    fetchMock.mockResolvedValue(json({ language_id: 'lang_1', status: 'queued' }))
 
-    await dubSegments('dub_1', ['seg_a', 'seg_b'], 'es')
+    const languageId = await createLanguageTarget('proj_1', 'es')
 
-    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/resource/dub_1/dub')
-    expect(lastBody()).toEqual({ segments: ['seg_a', 'seg_b'], languages: ['es'] })
+    expect(languageId).toBe('lang_1')
+    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/project/proj_1/language')
+    expect(lastBody()).toEqual({ target_language: 'es' })
   })
 
-  it('renders audio rather than video, because the picture is untouched', async () => {
-    fetchMock.mockResolvedValue(json({ version: 6, render_id: 'ren_1' }))
-
-    const renderId = await renderDub('dub_1', 'es')
-
-    expect(renderId).toBe('ren_1')
-    expect(lastCall()[0]).toBe('/api/elevenlabs/v1/dubbing/resource/dub_1/render/es')
-    expect(lastBody()).toEqual({ render_type: 'mp3', normalize_volume: false })
-  })
-})
-
-describe('waitForRender', () => {
-  it('waits for the named render, and not for any other', async () => {
-    const withRenders = (renders: Record<string, { status: string }>) =>
-      json({ ...RESOURCE, renders })
-
+  it('waits for the dub and returns where to download it', async () => {
     fetchMock
-      // An older render for the same job is already complete. Reading the map
-      // rather than the id would call this done before it started.
-      .mockResolvedValueOnce(withRenders({ ren_0: { status: 'complete' } }))
+      .mockResolvedValueOnce(json({ language_id: 'lang_1', status: 'queued' }))
+      .mockResolvedValueOnce(json({ language_id: 'lang_1', status: 'processing' }))
       .mockResolvedValueOnce(
-        withRenders({ ren_0: { status: 'complete' }, ren_1: { status: 'processing' } }),
-      )
-      .mockResolvedValueOnce(
-        withRenders({ ren_0: { status: 'complete' }, ren_1: { status: 'complete' } }),
+        json({
+          language_id: 'lang_1',
+          status: 'completed',
+          outputs: { lossless_audio: 'https://signed.example/dub.wav' },
+        }),
       )
 
-    await waitForRender('dub_1', 'ren_1')
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(await waitForDub('proj_1', 'lang_1')).toBe('https://signed.example/dub.wav')
   })
 
-  it('gives up when the render itself failed', async () => {
-    fetchMock.mockResolvedValue(json({ ...RESOURCE, renders: { ren_1: { status: 'failed' } } }))
-    await expect(waitForRender('dub_1', 'ren_1')).rejects.toThrow(/could not render/i)
+  it('refuses a dub that no longer matches the script it was made from', async () => {
+    // `stale` means the transcript changed after the audio was made, so what is
+    // heard and what is burnt into the video would disagree — which is the one
+    // thing this whole feature exists to prevent. Better to fail than to lay it
+    // down.
+    fetchMock.mockResolvedValue(
+      json({
+        language_id: 'lang_1',
+        status: 'stale',
+        revision: 7,
+        output_revision: 4,
+        outputs: { lossless_audio: 'https://signed.example/old.wav' },
+      }),
+    )
+    await expect(waitForDub('proj_1', 'lang_1')).rejects.toThrow(/no longer matches/i)
+  })
+
+  it('does not call a completed target with no output a success', async () => {
+    fetchMock.mockResolvedValue(json({ language_id: 'lang_1', status: 'completed' }))
+    await expect(waitForDub('proj_1', 'lang_1')).rejects.toThrow(/returned no audio/i)
+  })
+
+  it('reports what the provider said when the dub failed', async () => {
+    fetchMock.mockResolvedValue(
+      json({ language_id: 'lang_1', status: 'failed', error: { message: 'voice not permitted' } }),
+    )
+    const error = await waitForDub('proj_1', 'lang_1').catch((cause: unknown) => cause)
+    expect(toDisplayMessage(error)).toMatch(/voice not permitted/)
   })
 })
 
 describe('alignWords', () => {
-  it('sends the rendered track and the script, and returns the words timed', async () => {
-    // The one thing dubbing does not hand back. Without this the karaoke
-    // highlight has nothing to follow.
+  it('sends the finished track and the script, and returns the words timed', async () => {
+    // The one thing dubbing does not hand back: its transcript is timed per
+    // segment and no finer, so without this the karaoke highlight has nothing
+    // to follow.
     fetchMock.mockResolvedValue(
       json({
         words: [
@@ -267,8 +296,7 @@ describe('alignWords', () => {
     const words = await alignWords(new Blob(['mp3']), 'Buenos días')
 
     expect(lastCall()[0]).toBe('/api/elevenlabs/v1/forced-alignment')
-    const form = lastCall()[1]?.body as FormData
-    expect(form.get('text')).toBe('Buenos días')
+    expect((lastCall()[1]?.body as FormData).get('text')).toBe('Buenos días')
     // Whitespace is nobody's word, exactly as it was under the timestamps
     // endpoint this replaced.
     expect(words).toEqual([
@@ -285,13 +313,8 @@ describe('alignWords', () => {
 
 describe('when the workspace is not in the closed beta', () => {
   it('says so, instead of telling the user to sign in again', async () => {
-    // Confirmed against the live API: creating the job answers 200 and says
-    // `editable: true`, and only reading the resource answers 401 with
-    // `no_dubbing_api_access`. Passed on as a bare 401 it reaches the browser
-    // as "This site could not confirm that you are signed in", which is advice
-    // about the one thing that cannot possibly help.
-    // Verbatim, including the `x-elevenlabs-status` the proxy adds to say the
-    // 401 is ElevenLabs' and not this site's session check.
+    // Verbatim from a live run, including the `x-elevenlabs-status` the proxy
+    // adds to say the 401 is ElevenLabs' and not this site's session check.
     fetchMock.mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -313,10 +336,10 @@ describe('when the workspace is not in the closed beta', () => {
     // Caught once rather than awaited twice: a Response body can only be read
     // through the once, so asking the mock for the same one again would hand
     // back a spent stream and a much vaguer error than the code really gives.
-    const error = await dubbingResource('dub_1').catch((cause: unknown) => cause)
+    const error = await dubbingTranscript('proj_1').catch((cause: unknown) => cause)
 
     expect(error).toBeInstanceOf(ProviderError)
-    expect(toDisplayMessage(error)).toMatch(/not been given access to the Dubbing Studio API/i)
+    expect(toDisplayMessage(error)).toMatch(/not been given access to the dubbing API/i)
     // And the way out, which is not "try again" and not "sign in".
     expect(toDisplayMessage(error)).toMatch(/ask ElevenLabs for dubbing API access/i)
     expect(toDisplayMessage(error)).not.toMatch(/sign in/i)
@@ -329,6 +352,6 @@ describe('when the workspace is not in the closed beta', () => {
         headers: { 'content-type': 'application/json', 'x-elevenlabs-status': '429' },
       }),
     )
-    await expect(dubbingResource('dub_1')).rejects.toThrow(/rate limit/i)
+    await expect(dubbingTranscript('proj_1')).rejects.toThrow(/rate limit/i)
   })
 })

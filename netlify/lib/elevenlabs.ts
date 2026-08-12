@@ -22,12 +22,13 @@
  *    hours of somebody's editing rather than a throwaway.
  *
  * What is deliberately *not* guarded is the rest of the dubbing surface: reading
- * a resource, rewriting a segment, starting a render. Each of those names a
- * dubbing id, and confirming ownership means a round trip to fetch its name —
- * which on the polling paths would double the request count of every run. The
- * id is what protects them instead, and it holds here in a way it would not for
- * voices: `GET v1/dubbing` (the list) is **not** on the allowlist, so there is
- * no way through this proxy to learn an id that was not yours. Voice ids, by
+ * a project, rewriting its segments, adding a language. Each of those names a
+ * project id, and confirming ownership means a round trip to fetch its
+ * reference — which on the polling paths would double the request count of
+ * every run. The id is what protects them instead, and it holds here in a way it
+ * would not for voices: `GET v1/dubbing/project` (the list) is **not** on the
+ * allowlist, so there is no way through this proxy to learn an id that was not
+ * yours. Voice ids, by
  * contrast, are listable by design — which is exactly why deleting one needed a
  * check and reading one did not.
  *
@@ -48,56 +49,56 @@
 export const APP_JOB_PREFIX = 'editor-cat fix'
 
 /** Whether a dubbing project is one of this app's own. */
-export function isAppJob(name: unknown): boolean {
-  return typeof name === 'string' && name.startsWith(APP_JOB_PREFIX)
+export function isAppJob(reference: unknown): boolean {
+  return typeof reference === 'string' && reference.startsWith(APP_JOB_PREFIX)
 }
 
 export interface UpstreamDub {
-  dubbing_id?: string
-  name?: string
+  project_id?: string
+  /** The API's own "identify this on your end" field, which is where the name goes. */
+  reference?: string
 }
 
 export function isDubDeletion(method: string, path: string): boolean {
-  return method === 'DELETE' && /^v1\/dubbing\/[^/]+$/.test(path)
+  return method === 'DELETE' && /^v1\/dubbing\/project\/[^/]+$/.test(path)
 }
 
 /**
  * The dubbing calls this app makes, by method.
  *
  * Written out rather than collapsed into `v1/dubbing/.*` because the shape of
- * each one is the guard: `v1/dubbing/resource/{id}` reads one job, and
- * `v1/dubbing` with nothing after it lists every job in the account. One
- * character of regex separates those, so they are spelled out separately and
- * the list one is simply absent.
+ * each one is the guard: `v1/dubbing/project/{id}` reads one project, and
+ * `v1/dubbing/project` with nothing after it lists every project in the
+ * account. One character of regex separates those, so they are spelled out
+ * separately and the list one is simply absent.
  */
 const DUBBING_READS = [
-  // One job's status, and the editable resource behind it.
-  /^v1\/dubbing\/[^/]+$/,
-  /^v1\/dubbing\/resource\/[^/]+$/,
-  // The finished track, which is the only thing the browser keeps.
-  /^v1\/dubbing\/[^/]+\/audio\/[^/]+$/,
+  // One project's status, and the transcript whose segments are the script.
+  /^v1\/dubbing\/project\/[^/]+$/,
+  /^v1\/dubbing\/project\/[^/]+\/transcript$/,
+  // How the dub into one language is getting on, and where to fetch it.
+  /^v1\/dubbing\/project\/[^/]+\/language\/[^/]+$/,
 ]
 
 const DUBBING_WRITES = [
-  // Start a job over a clip's audio.
-  /^v1\/dubbing$/,
-  // Re-say the named segments, then mix them down.
-  /^v1\/dubbing\/resource\/[^/]+\/dub$/,
-  /^v1\/dubbing\/resource\/[^/]+\/render\/[^/]+$/,
+  // Start a project over a clip's audio.
+  /^v1\/dubbing\/project$/,
   // Add a span the transcription missed.
-  /^v1\/dubbing\/resource\/[^/]+\/speaker\/[^/]+\/segment$/,
+  /^v1\/dubbing\/project\/[^/]+\/transcript\/segment$/,
+  // Add the language to dub into, which is what starts the speaking.
+  /^v1\/dubbing\/project\/[^/]+\/language$/,
 ]
 
 const DUBBING_EDITS = [
-  // A segment's words and its span. The language is the last path element.
-  /^v1\/dubbing\/resource\/[^/]+\/segment\/[^/]+\/[^/]+$/,
-  // Which voice the speaker is re-said in.
-  /^v1\/dubbing\/resource\/[^/]+\/speaker\/[^/]+$/,
+  // Every rewritten segment, in one request. The per-segment form is not
+  // forwarded because this app does not call it: the segments are one script
+  // being written in, and they go together.
+  /^v1\/dubbing\/project\/[^/]+\/transcript\/segments$/,
 ]
 
 const DUBBING_REMOVALS = [
   // A span the transcription found and the captions do not have.
-  /^v1\/dubbing\/resource\/[^/]+\/segment\/[^/]+$/,
+  /^v1\/dubbing\/project\/[^/]+\/transcript\/segment\/[^/]+$/,
 ]
 
 /**
@@ -107,7 +108,8 @@ const DUBBING_REMOVALS = [
  * reachable with a *caller's* key, where it is their account and their business
  * — that is what the "test connection" button in Settings reads — but the site's
  * subscription is not something a visitor needs to see. Absent for the same
- * reason: `v1/dubbing` as a GET, which lists every job in the account.
+ * reason: `v1/dubbing/project` as a GET, which lists every project in the
+ * account.
  */
 export function isAllowedWithSiteKey(method: string, path: string): boolean {
   if (method === 'GET') {

@@ -60,12 +60,8 @@ export interface FixRequestLine {
 export interface FixRequest {
   /** The lines to say, in order — the clip's captions, as edited. */
   lines: FixRequestLine[]
-  /** ISO-639-1, or empty to let the model read the language off the text. */
+  /** BCP-47. Never empty: a dub has one target language and no detect option. */
   language: string
-  /** An ElevenLabs voice id, or empty to copy the clip's own voice. */
-  voiceId: string
-  /** What that voice is called. The dialog has the list; nothing here does. */
-  voiceName?: string
 }
 
 interface AudioFixState {
@@ -84,7 +80,6 @@ interface AudioFixState {
    * chooses.
    */
   language: string
-  voiceId: string
 
   /** The clip being fixed right now, or null when nothing is running. */
   clipId: string | null
@@ -108,7 +103,6 @@ let inFlight: AbortController | null = null
 
 export const useAudioFixStore = create<AudioFixState>((set, get) => ({
   language: DEFAULT_LANGUAGE,
-  voiceId: '',
 
   clipId: null,
   label: '',
@@ -129,7 +123,6 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
       stage: null,
       outcome: null,
       language: request.language,
-      voiceId: request.voiceId,
     })
 
     try {
@@ -163,8 +156,6 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
           end: target.lines[index]?.end ?? target.startTime + target.duration,
         })),
         language: request.language,
-        voiceId: request.voiceId,
-        ...(request.voiceName ? { voiceName: request.voiceName } : {}),
         label: target.label,
         onStage: (stage, done, total) =>
           set({ stage: done > 0 && total > 1 ? `${stage} · ${done} of ${total}` : stage }),

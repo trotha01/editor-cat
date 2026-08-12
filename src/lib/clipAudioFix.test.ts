@@ -12,22 +12,21 @@ import { isAppJob } from '../../netlify/lib/elevenlabs'
 import type { Asset, AudioClip, CaptionCue, Clip, Project } from './types'
 
 /**
- * A fake dubbing job, held the way the real resource is: segments the caller
- * did not choose, which is the situation `planSegments` exists to resolve.
+ * A fake dubbing project, held the way the real transcript is: segments the
+ * caller did not choose, which is the situation `planSegments` exists to
+ * resolve.
  */
 const dub = {
-  segments: [] as { id: string; start: number; end: number; text: string }[],
-  speakers: [{ id: 'sp_1', segments: [] as string[] }],
+  segments: [] as { id: string; text: string; speakerId: string; start: number; end: number }[],
 }
 
-const createDub = vi.fn<(options: { name: string; language: string }) => Promise<string>>()
-const updateSegment =
+const createDubbingProject =
+  vi.fn<(options: { reference: string; language: string }) => Promise<string>>()
+const updateSegments =
   vi.fn<
     (
       id: string,
-      segmentId: string,
-      language: string,
-      edit: { start: number; end: number; text: string },
+      edits: Record<string, { start: number; end: number; text: string }>,
     ) => Promise<void>
   >()
 const createSegment =
@@ -39,37 +38,30 @@ const createSegment =
     ) => Promise<string>
   >()
 const deleteSegment = vi.fn<(id: string, segmentId: string) => Promise<void>>()
-const setSpeakerVoice = vi.fn<(id: string, speakerId: string, voiceId: string) => Promise<void>>()
-const dubSegments = vi.fn<(id: string, segmentIds: string[], language: string) => Promise<void>>()
-const renderDub = vi.fn<(id: string, language: string) => Promise<string>>()
-const dubbedAudio = vi.fn<(id: string, language: string) => Promise<Blob>>()
-const deleteDub = vi.fn<(id: string) => Promise<void>>()
+const createLanguageTarget = vi.fn<(id: string, language: string) => Promise<string>>()
+const waitForDub = vi.fn<(id: string, languageId: string) => Promise<string>>()
+const dubbedAudio = vi.fn<(url: string) => Promise<Blob>>()
+const deleteDubbingProject = vi.fn<(id: string) => Promise<void>>()
 const alignWords = vi.fn<(audio: Blob, text: string) => Promise<unknown[]>>()
 
 vi.mock('./dubbing', () => ({
-  CLIP_CLONE_VOICE: 'clip-clone',
-  createDub: (options: { name: string; language: string }) => createDub(options),
-  waitForSegments: () => Promise.resolve({ id: 'dub_1', ...dub, renders: {} }),
-  updateSegment: (
+  createDubbingProject: (options: { reference: string; language: string }) =>
+    createDubbingProject(options),
+  waitForTranscript: () => Promise.resolve({ segments: dub.segments, revision: 1 }),
+  updateSegments: (
     id: string,
-    segmentId: string,
-    language: string,
-    edit: { start: number; end: number; text: string },
-  ) => updateSegment(id, segmentId, language, edit),
+    edits: Record<string, { start: number; end: number; text: string }>,
+  ) => updateSegments(id, edits),
   createSegment: (
     id: string,
     speakerId: string,
     edit: { start: number; end: number; text: string },
   ) => createSegment(id, speakerId, edit),
   deleteSegment: (id: string, segmentId: string) => deleteSegment(id, segmentId),
-  setSpeakerVoice: (id: string, speakerId: string, voiceId: string) =>
-    setSpeakerVoice(id, speakerId, voiceId),
-  dubSegments: (id: string, segmentIds: string[], language: string) =>
-    dubSegments(id, segmentIds, language),
-  renderDub: (id: string, language: string) => renderDub(id, language),
-  waitForRender: () => Promise.resolve(),
-  dubbedAudio: (id: string, language: string) => dubbedAudio(id, language),
-  deleteDub: (id: string) => deleteDub(id),
+  createLanguageTarget: (id: string, language: string) => createLanguageTarget(id, language),
+  waitForDub: (id: string, languageId: string) => waitForDub(id, languageId),
+  dubbedAudio: (url: string) => dubbedAudio(url),
+  deleteDubbingProject: (id: string) => deleteDubbingProject(id),
   alignWords: (audio: Blob, text: string) => alignWords(audio, text),
 }))
 
@@ -413,17 +405,17 @@ describe('fixClipAudio', () => {
   }
 
   beforeEach(() => {
-    dub.segments = [{ id: 'seg_a', start: 0, end: 4, text: 'whatever it heard' }]
-    dub.speakers = [{ id: 'sp_1', segments: ['seg_a'] }]
-    createDub.mockReset().mockResolvedValue('dub_1')
-    updateSegment.mockReset().mockResolvedValue(undefined)
-    createSegment.mockReset().mockImplementation(() => Promise.resolve(`seg_new_${Date.now()}`))
+    dub.segments = [{ id: 'seg_a', text: 'whatever it heard', speakerId: 'sp_1', start: 0, end: 4 }]
+    createDubbingProject.mockReset().mockResolvedValue('proj_1')
+    updateSegments.mockReset().mockResolvedValue(undefined)
+    createSegment
+      .mockReset()
+      .mockImplementation((_id, _speaker, edit) => Promise.resolve(`seg_new_${edit.start}`))
     deleteSegment.mockReset().mockResolvedValue(undefined)
-    setSpeakerVoice.mockReset().mockResolvedValue(undefined)
-    dubSegments.mockReset().mockResolvedValue(undefined)
-    renderDub.mockReset().mockResolvedValue('ren_1')
+    createLanguageTarget.mockReset().mockResolvedValue('lang_1')
+    waitForDub.mockReset().mockResolvedValue('https://signed.example/dub.wav')
     dubbedAudio.mockReset().mockResolvedValue(new Blob(['mp3'], { type: 'audio/mpeg' }))
-    deleteDub.mockReset().mockResolvedValue(undefined)
+    deleteDubbingProject.mockReset().mockResolvedValue(undefined)
     alignWords.mockReset().mockResolvedValue([{ text: 'Buongiorno', start: 0.2, end: 1 }])
     monoWav.mockReset().mockResolvedValue(new Blob(['wav'], { type: 'audio/wav' }))
   })
@@ -433,42 +425,49 @@ describe('fixClipAudio', () => {
 
     // The whole clip, not a sample of it: this is the audio being re-voiced.
     expect(monoWav).toHaveBeenCalledWith(expect.anything(), { from: 1, to: 5 })
-    expect(createDub).toHaveBeenCalledWith(
-      expect.objectContaining({ name: dubNameFor('lighthouse.mp4'), language: 'it' }),
+    expect(createDubbingProject).toHaveBeenCalledWith(
+      expect.objectContaining({ reference: dubNameFor('lighthouse.mp4'), language: 'it' }),
     )
-    expect(updateSegment).toHaveBeenCalledWith('dub_1', 'seg_a', 'it', {
-      start: 0,
-      end: 4,
-      text: 'Buongiorno',
+    expect(updateSegments).toHaveBeenCalledWith('proj_1', {
+      seg_a: { start: 0, end: 4, text: 'Buongiorno' },
     })
-    expect(dubSegments).toHaveBeenCalledWith('dub_1', ['seg_a'], 'it')
-    expect(renderDub).toHaveBeenCalledWith('dub_1', 'it')
+    expect(createLanguageTarget).toHaveBeenCalledWith('proj_1', 'it')
+    expect(dubbedAudio).toHaveBeenCalledWith('https://signed.example/dub.wav')
     // One piece of audio for the clip, where the old path returned one per line.
     expect(result.blob.type).toBe('audio/mpeg')
     expect(result.lines).toEqual([
       { text: 'Buongiorno', words: [{ text: 'Buongiorno', start: 0.2, end: 1 }] },
     ])
-    // A job left behind holds a copy of the clip in the site's account.
-    expect(deleteDub).toHaveBeenCalledWith('dub_1')
+    // A project left behind holds a copy of the clip in the site's account.
+    expect(deleteDubbingProject).toHaveBeenCalledWith('proj_1')
   })
 
-  it('copies the clip’s own voice by asking for it, not by making one', async () => {
+  it('writes the script in before asking for it to be said', async () => {
+    // The order that matters most in the whole run. A language target created
+    // any earlier starts from the words the transcriber heard rather than the
+    // ones the user typed, and then goes stale the moment a segment is
+    // corrected.
+    const order: string[] = []
+    updateSegments.mockImplementation(() => {
+      order.push('script')
+      return Promise.resolve()
+    })
+    createLanguageTarget.mockImplementation(() => {
+      order.push('speak')
+      return Promise.resolve('lang_1')
+    })
+
     await fixClipAudio(request)
-    expect(setSpeakerVoice).toHaveBeenCalledWith('dub_1', 'sp_1', 'clip-clone')
-  })
 
-  it('uses a named voice when one was chosen', async () => {
-    const result = await fixClipAudio({ ...request, voiceId: 'rachel', voiceName: 'Rachel' })
-    expect(setSpeakerVoice).toHaveBeenCalledWith('dub_1', 'sp_1', 'rachel')
-    expect(result.voiceName).toBe('Rachel')
+    expect(order).toEqual(['script', 'speak'])
   })
 
   it('reconciles a segmentation that disagrees with the captions', async () => {
     // Three captions against two spans the transcriber found: two are rewritten
     // and the third is created. This is the ordinary case, not the odd one.
     dub.segments = [
-      { id: 'seg_a', start: 0, end: 2, text: 'heard one' },
-      { id: 'seg_b', start: 2, end: 4, text: 'heard two' },
+      { id: 'seg_a', text: 'heard one', speakerId: 'sp_1', start: 0, end: 2 },
+      { id: 'seg_b', text: 'heard two', speakerId: 'sp_1', start: 2, end: 4 },
     ]
 
     await fixClipAudio({
@@ -480,29 +479,28 @@ describe('fixClipAudio', () => {
       ],
     })
 
-    expect(updateSegment.mock.calls.map((call) => [call[1], call[3].text])).toEqual([
-      ['seg_a', 'One.'],
-      ['seg_b', 'Two.'],
-    ])
-    expect(createSegment).toHaveBeenCalledWith('dub_1', 'sp_1', {
+    expect(updateSegments).toHaveBeenCalledWith('proj_1', {
+      seg_a: { start: 0, end: 1, text: 'One.' },
+      seg_b: { start: 1, end: 2, text: 'Two.' },
+    })
+    // Under a speaker that already exists — a new segment has to name one.
+    expect(createSegment).toHaveBeenCalledWith('proj_1', 'sp_1', {
       start: 2,
       end: 4,
       text: 'Three.',
     })
-    // Every segment there is gets re-said, including the one just made.
-    expect(dubSegments.mock.calls[0]?.[1]).toHaveLength(3)
   })
 
   it('empties the spare spans only after the kept ones are rewritten', async () => {
-    // A resource with nothing in it is a resource dubbing may decide is empty,
-    // and refilling it afterwards would pass through that state every time the
+    // A transcript with nothing in it is one dubbing may decide is empty, and
+    // refilling it afterwards would pass through that state every time the
     // captions are fewer than the transcriber's spans — which is most runs.
     dub.segments = [
-      { id: 'seg_a', start: 0, end: 2, text: 'heard one' },
-      { id: 'seg_b', start: 2, end: 4, text: 'heard two' },
+      { id: 'seg_a', text: 'heard one', speakerId: 'sp_1', start: 0, end: 2 },
+      { id: 'seg_b', text: 'heard two', speakerId: 'sp_1', start: 2, end: 4 },
     ]
     const order: string[] = []
-    updateSegment.mockImplementation(() => {
+    updateSegments.mockImplementation(() => {
       order.push('update')
       return Promise.resolve()
     })
@@ -514,7 +512,7 @@ describe('fixClipAudio', () => {
     await fixClipAudio(request)
 
     expect(order).toEqual(['update', 'delete'])
-    expect(deleteSegment).toHaveBeenCalledWith('dub_1', 'seg_b')
+    expect(deleteSegment).toHaveBeenCalledWith('proj_1', 'seg_b')
   })
 
   it('keeps the audio when only the word timings could not be had', async () => {
@@ -528,27 +526,27 @@ describe('fixClipAudio', () => {
     expect(result.lines[0]?.words).toEqual([])
   })
 
-  it('tidies the job away even when the render fails', async () => {
-    renderDub.mockRejectedValue(new Error('out of credit'))
+  it('tidies the project away even when the dub fails', async () => {
+    waitForDub.mockRejectedValue(new Error('out of credit'))
     await expect(fixClipAudio(request)).rejects.toThrow('out of credit')
-    expect(deleteDub).toHaveBeenCalledWith('dub_1')
+    expect(deleteDubbingProject).toHaveBeenCalledWith('proj_1')
   })
 
   it('refuses a clip too long to fit through the proxy, before spending anything', async () => {
     await expect(fixClipAudio({ ...request, duration: 600 })).rejects.toThrow(/has to be under/)
-    expect(createDub).not.toHaveBeenCalled()
+    expect(createDubbingProject).not.toHaveBeenCalled()
   })
 
   it('refuses an empty script rather than dubbing silence', async () => {
     await expect(
       fixClipAudio({ ...request, lines: [{ start: 0, end: 1, text: '   ' }] }),
     ).rejects.toThrow(/nothing to say/)
-    expect(createDub).not.toHaveBeenCalled()
+    expect(createDubbingProject).not.toHaveBeenCalled()
   })
 
   it('refuses to guess a language, because a dub only has the one', async () => {
     await expect(fixClipAudio({ ...request, language: '' })).rejects.toThrow(/Pick the language/)
-    expect(createDub).not.toHaveBeenCalled()
+    expect(createDubbingProject).not.toHaveBeenCalled()
   })
 
   it('reports each stage, and how far through the lines it is', async () => {
@@ -567,10 +565,12 @@ describe('fixClipAudio', () => {
       'sending it to be dubbed 0/2',
       'finding the lines in it 0/2',
       'putting your words on them 0/2',
+      // One tick for the bulk rewrite, however many segments it carried, and
+      // then one per segment created afterwards — here the second line, which
+      // the transcriber's single span had no room for.
       'putting your words on them 1/2',
       'putting your words on them 2/2',
       'saying them again 0/2',
-      'mixing the new track 0/2',
       'bringing it back 0/2',
       'finding the words in it 0/2',
     ])

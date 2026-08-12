@@ -36,6 +36,27 @@ const fail = (message) => {
   throw new Error(message)
 }
 
+/**
+ * Waits for a value to stop changing, then returns it.
+ *
+ * Retiming a word rewrites the caption it is in and then re-fits its neighbours
+ * against where it ended up, which is two renders — and a caption caught between
+ * them is briefly missing the words that are on their way back to it. A fixed
+ * sleep is a guess about how long that takes; this is the thing actually being
+ * waited for. Two identical reads in a row is the whole test, because the
+ * intermediate state never survives a frame.
+ */
+const settled = async (read, { tries = 40, gap = 50 } = {}) => {
+  let previous = await read()
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, gap))
+    const current = await read()
+    if (current === previous) return current
+    previous = current
+  }
+  return previous
+}
+
 /*
  * CHROMIUM_PATH lets this run against a browser that was provisioned outside
  * npm (some CI images ship one), where the build Playwright expects will not
@@ -708,15 +729,17 @@ try {
   // without touching a word in it, and only a real browser exercises it.
   const firstBlock = page.locator('[role="group"][aria-label^="Caption "]').first()
   await firstBlock.scrollIntoViewIfNeeded()
+  // Settled first: the word retimes just above are still re-fitting neighbours,
+  // and grabbing the edge of a caption that is momentarily a fifth of a second
+  // wide is a drag that lands inside its own end and does nothing.
+  const beforeTrim = await settled(() => firstBlock.getAttribute('aria-label'))
   const blockBox = await firstBlock.boundingBox()
   if (!blockBox) fail('no caption block on the timeline to drag')
-  const beforeTrim = await firstBlock.getAttribute('aria-label')
   await page.mouse.move(blockBox.x + 2, blockBox.y + blockBox.height / 2)
   await page.mouse.down()
   await page.mouse.move(blockBox.x + 30, blockBox.y + blockBox.height / 2, { steps: 6 })
   await page.mouse.up()
-  await page.waitForTimeout(200)
-  const afterTrim = await firstBlock.getAttribute('aria-label')
+  const afterTrim = await settled(() => firstBlock.getAttribute('aria-label'))
   if (beforeTrim === afterTrim) fail(`dragging a caption's edge did nothing: "${afterTrim}"`)
   step(`a caption brought up later by dragging its edge (${beforeTrim} -> ${afterTrim})`)
 

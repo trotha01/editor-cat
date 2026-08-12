@@ -10,18 +10,20 @@ import { isAllowedWithSiteKey, isAppJob, isDubDeletion, type UpstreamDub } from 
  *   GET    /api/elevenlabs/v1/voices                        -> list target voices
  *   GET    /api/elevenlabs/v1/models                        -> find a capable model
  *   POST   /api/elevenlabs/v1/speech-to-speech/<voice_id>   -> convert a recording
- *   POST   /api/elevenlabs/v1/dubbing                       -> start fixing a clip
- *   GET    /api/elevenlabs/v1/dubbing/<id>                  -> how it is getting on
- *   GET    /api/elevenlabs/v1/dubbing/resource/<id>         -> its segments and renders
- *   PATCH  .../resource/<id>/segment/<seg>/<lang>           -> put a caption on a segment
- *   POST   .../resource/<id>/speaker/<sp>/segment           -> add one it missed
- *   DELETE .../resource/<id>/segment/<seg>                  -> drop one it invented
- *   PATCH  .../resource/<id>/speaker/<sp>                   -> choose the voice
- *   POST   .../resource/<id>/dub                            -> say them again
- *   POST   .../resource/<id>/render/<lang>                  -> mix the new track
- *   GET    /api/elevenlabs/v1/dubbing/<id>/audio/<lang>     -> bring it back
- *   DELETE /api/elevenlabs/v1/dubbing/<id>                  -> tidy the job away
+ *   POST   /api/elevenlabs/v1/dubbing/project               -> start fixing a clip
+ *   GET    /api/elevenlabs/v1/dubbing/project/<id>          -> how it is getting on
+ *   GET    .../project/<id>/transcript                      -> the spans it found
+ *   PATCH  .../project/<id>/transcript/segments             -> put the captions on them
+ *   POST   .../project/<id>/transcript/segment              -> add one it missed
+ *   DELETE .../project/<id>/transcript/segment/<seg>        -> drop one it invented
+ *   POST   .../project/<id>/language                        -> say them again
+ *   GET    .../project/<id>/language/<lang>                 -> how that is getting on
+ *   DELETE /api/elevenlabs/v1/dubbing/project/<id>          -> tidy the project away
  *   POST   /api/elevenlabs/v1/forced-alignment              -> find the words in it
+ *
+ * The finished audio is not on this list: it arrives as a signed, time-limited
+ * URL on another origin and is fetched straight from the browser, which needs no
+ * key and so needs no proxy.
  *
  * One key pays for all of it: `ELEVENLABS_API_KEY`, the deployment's own. That
  * is why a visitor needs no key for anything — images, video and captions
@@ -112,15 +114,17 @@ async function forward(
  * happened.
  */
 async function mayDeleteDub(key: string, path: string): Promise<boolean> {
-  const id = path.slice('v1/dubbing/'.length)
-  const found = await fetch(`${ELEVENLABS_ORIGIN}/v1/dubbing/${encodeURIComponent(id)}`, {
+  const id = path.slice('v1/dubbing/project/'.length)
+  const found = await fetch(`${ELEVENLABS_ORIGIN}/v1/dubbing/project/${encodeURIComponent(id)}`, {
     headers: { 'xi-api-key': key },
   })
   if (found.status === 404) return true
   if (!found.ok) return false
 
+  // `reference` is the API's own "identify this project on your end" field,
+  // which is where the client puts the name — see `dubNameFor`.
   const dub = (await found.json()) as UpstreamDub
-  return isAppJob(dub.name)
+  return isAppJob(dub.reference)
 }
 
 export default async (request: Request): Promise<Response> => {

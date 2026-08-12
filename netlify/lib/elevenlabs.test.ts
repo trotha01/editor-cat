@@ -21,17 +21,15 @@ describe('isAllowedWithSiteKey', () => {
     // fail the feature until whichever step needed it, which on this path can
     // be minutes and a paid render in.
     const run: [string, string][] = [
-      ['POST', 'v1/dubbing'],
-      ['GET', 'v1/dubbing/dub_1'],
-      ['GET', 'v1/dubbing/resource/dub_1'],
-      ['PATCH', 'v1/dubbing/resource/dub_1/speaker/sp_1'],
-      ['PATCH', 'v1/dubbing/resource/dub_1/segment/seg_1/es'],
-      ['POST', 'v1/dubbing/resource/dub_1/speaker/sp_1/segment'],
-      ['DELETE', 'v1/dubbing/resource/dub_1/segment/seg_9'],
-      ['POST', 'v1/dubbing/resource/dub_1/dub'],
-      ['POST', 'v1/dubbing/resource/dub_1/render/es'],
-      ['GET', 'v1/dubbing/dub_1/audio/es'],
-      ['DELETE', 'v1/dubbing/dub_1'],
+      ['POST', 'v1/dubbing/project'],
+      ['GET', 'v1/dubbing/project/proj_1'],
+      ['GET', 'v1/dubbing/project/proj_1/transcript'],
+      ['PATCH', 'v1/dubbing/project/proj_1/transcript/segments'],
+      ['POST', 'v1/dubbing/project/proj_1/transcript/segment'],
+      ['DELETE', 'v1/dubbing/project/proj_1/transcript/segment/seg_9'],
+      ['POST', 'v1/dubbing/project/proj_1/language'],
+      ['GET', 'v1/dubbing/project/proj_1/language/lang_1'],
+      ['DELETE', 'v1/dubbing/project/proj_1'],
     ]
     for (const [method, path] of run) {
       expect([method, path, isAllowedWithSiteKey(method, path)]).toEqual([method, path, true])
@@ -39,11 +37,24 @@ describe('isAllowedWithSiteKey', () => {
   })
 
   it('will not list the account’s dubbing projects', () => {
-    // The one that matters most on this surface, and it is one character of
-    // regex away from the call above it. Nothing here can be enumerated, which
-    // is what lets the segment and resource calls go unguarded: an id you were
-    // not given is an id you cannot reach.
+    // The one that matters most on this surface, and it is one path element
+    // away from the call above it. Nothing here can be enumerated, which is
+    // what lets the project and segment calls go unguarded: an id you were not
+    // given is an id you cannot reach.
+    expect(isAllowedWithSiteKey('GET', 'v1/dubbing/project')).toBe(false)
+    // The older dubbing API, which this app no longer speaks at all.
     expect(isAllowedWithSiteKey('GET', 'v1/dubbing')).toBe(false)
+    expect(isAllowedWithSiteKey('POST', 'v1/dubbing')).toBe(false)
+    expect(isAllowedWithSiteKey('GET', 'v1/dubbing/resource/dub_1')).toBe(false)
+  })
+
+  it('does not forward the finished audio, because it does not travel this way', () => {
+    // The dub arrives as a signed, time-limited URL on another origin and is
+    // fetched straight from the browser. Nothing here needs to carry it, so
+    // nothing here does.
+    expect(isAllowedWithSiteKey('GET', 'v1/dubbing/project/proj_1/language/lang_1/audio')).toBe(
+      false,
+    )
   })
 
   it('keeps the account’s own plan and history out of reach', () => {
@@ -69,30 +80,48 @@ describe('isAllowedWithSiteKey', () => {
   it('refuses anything that only looks like an allowed call', () => {
     expect(isAllowedWithSiteKey('GET', 'v1/voices/abc123')).toBe(false)
     expect(isAllowedWithSiteKey('POST', 'v1/voices')).toBe(false)
-    expect(isAllowedWithSiteKey('PUT', 'v1/dubbing/dub_1')).toBe(false)
-    expect(isAllowedWithSiteKey('GET', 'v1/dubbing/dub_1/transcript/es')).toBe(false)
-    // Translating is the one dubbing call this feature must never make: the
-    // captions are the script, so a translation is the provider replacing the
-    // user's words with its own.
-    expect(isAllowedWithSiteKey('POST', 'v1/dubbing/resource/dub_1/translate')).toBe(false)
-    expect(isAllowedWithSiteKey('POST', 'v1/dubbing/resource/dub_1/transcribe')).toBe(false)
-    expect(isAllowedWithSiteKey('DELETE', 'v1/dubbing/resource/dub_1')).toBe(false)
+    expect(isAllowedWithSiteKey('PUT', 'v1/dubbing/project/proj_1')).toBe(false)
+    // A target's transcript carries the machine translation of every segment.
+    // The captions are the script, so a translation is the provider replacing
+    // the user's words with its own, and this app never reads or writes one.
+    expect(
+      isAllowedWithSiteKey('GET', 'v1/dubbing/project/proj_1/language/lang_1/transcript'),
+    ).toBe(false)
+    expect(
+      isAllowedWithSiteKey(
+        'PATCH',
+        'v1/dubbing/project/proj_1/language/lang_1/transcript/segments',
+      ),
+    ).toBe(false)
+    expect(
+      isAllowedWithSiteKey(
+        'POST',
+        'v1/dubbing/project/proj_1/language/lang_1/transcript/regenerate',
+      ),
+    ).toBe(false)
+    // The per-segment rewrite: real, but not something this app calls, because
+    // the segments go together as one script.
+    expect(
+      isAllowedWithSiteKey('PATCH', 'v1/dubbing/project/proj_1/transcript/segment/seg_1'),
+    ).toBe(false)
   })
 })
 
 describe('isDubDeletion', () => {
-  it('recognises a deletion of one job, and nothing else', () => {
-    expect(isDubDeletion('DELETE', 'v1/dubbing/dub_1')).toBe(true)
-    expect(isDubDeletion('DELETE', 'v1/dubbing')).toBe(false)
-    expect(isDubDeletion('POST', 'v1/dubbing/dub_1')).toBe(false)
-    // Deleting a segment is not deleting the job, and must not be sent through
-    // the name check — it addresses something inside a job, not the job.
-    expect(isDubDeletion('DELETE', 'v1/dubbing/resource/dub_1/segment/seg_1')).toBe(false)
+  it('recognises a deletion of one project, and nothing else', () => {
+    expect(isDubDeletion('DELETE', 'v1/dubbing/project/proj_1')).toBe(true)
+    expect(isDubDeletion('DELETE', 'v1/dubbing/project')).toBe(false)
+    expect(isDubDeletion('POST', 'v1/dubbing/project/proj_1')).toBe(false)
+    // Deleting a segment is not deleting the project, and must not be sent
+    // through the reference check — it addresses something inside a project.
+    expect(isDubDeletion('DELETE', 'v1/dubbing/project/proj_1/transcript/segment/seg_1')).toBe(
+      false,
+    )
   })
 })
 
 describe('isAppJob', () => {
-  it('recognises the names this app gives its own dubbing jobs', () => {
+  it('recognises the references this app gives its own dubbing projects', () => {
     // The client end of this string is checked against these rules in
     // `src/lib/clipAudioFix.test.ts`, which can import both sides — the
     // functions build cannot see `src`, and dragging the browser's half into it
@@ -101,9 +130,9 @@ describe('isAppJob', () => {
     expect(isAppJob('editor-cat fix · ' + 'a'.repeat(300))).toBe(true)
   })
 
-  it('does not claim a job the operator made by hand', () => {
-    // A Dubbing Studio project somebody has been editing all afternoon, which
-    // is what the name check exists to keep out of reach of a delete request
+  it('does not claim a project the operator made by hand', () => {
+    // A dubbing project somebody has been editing all afternoon, which is what
+    // the reference check exists to keep out of reach of a delete request
     // carrying an id from the browser.
     expect(isAppJob('Spanish cut v3')).toBe(false)
     expect(isAppJob('my editor-cat fix job')).toBe(false)

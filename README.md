@@ -85,11 +85,12 @@ captions, one row each with the moment the picture says it:
    English and then again in Italian, that means picking one mouth for both —
    choose the half that is wrong, and see the limitations below, because this is
    the sharpest edge of the feature.
-3. **Voice** defaults to _copy this clip's own voice_. ElevenLabs copies the
-   speaker out of the clip's own audio as part of the dub and it goes away with
-   the job; nothing is created in the voice library and nothing has to be
-   deleted afterwards. Pick a ready-made voice instead if you would rather, or if
-   the account's plan does not include cloning.
+3. **There is no voice to pick.** ElevenLabs copies the speaker out of the
+   clip's own audio as part of the dub and it goes away with the project;
+   nothing is created in the voice library and nothing has to be deleted
+   afterwards. Dubbing also offers no way to substitute a different voice, so
+   unlike the rest of the app there is nothing to choose — the ready-made voices
+   the voice changer offers are not available here.
 
 None of this asks the visitor for anything: it runs on the key the deployment
 sets as `ELEVENLABS_API_KEY`, the same arrangement image and video generation
@@ -104,13 +105,15 @@ line comes back however long it comes back, so a slow reading pushes the next
 line late and a quick one leaves a hole mid-sentence, and no placement rule can
 do better than move the error around.
 
-So this goes through **ElevenLabs' dubbing API in studio mode** instead, where
-the unit is a **segment**: a timed, editable span whose duration is held constant
-while the speech inside it is sped or slowed to fit. Every one of your captions
-becomes exactly one segment, covering exactly the stretch that caption covers,
-saying exactly the words you typed. Anything the provider's own transcription
-found that your captions do not have is deleted, and anything it missed is
-created, so what gets said is your script and nothing else.
+So this goes through **ElevenLabs' dubbing API** instead, where a project's
+transcript is a list of **segments**: timed, editable spans, with the speech in
+a segment fitted to the span rather than the other way round. Every one of your
+captions becomes exactly one segment, covering exactly the stretch that caption
+covers, saying exactly the words you typed. Anything the provider's own
+transcription found that your captions do not have is deleted, and anything it
+missed is created, so what gets said is your script and nothing else. Only once
+all of that is in place is the language target added, which is what starts the
+speaking — asking for it any earlier would dub the words the transcriber heard.
 
 That inverts what the captions are for. In a text-to-speech version a caption
 supplies a mark to aim at and is **re-timed to whatever comes back**; here the
@@ -914,6 +917,12 @@ and **do not use IP allowlisting**, because these requests come from Netlify
 functions whose egress addresses are neither fixed nor published, so every one
 of them would come back 403.
 
+Scope is not the whole of it. The workspace also has to have been granted
+**dubbing API access**: without it a dubbing project can be created but its
+segments cannot be read or edited, which is the only part the audio fix uses,
+and the refusal arrives after the project has already been made. A live run met
+exactly that. Ask ElevenLabs for access before expecting the fix to work.
+
 Then decide who is allowed to spend them. `/api/fal/*` and `/api/elevenlabs/*`
 both generate on your accounts, so both verify the caller's Auth0 access token
 before attaching a key:
@@ -1537,17 +1546,22 @@ If your CI image ships its own browser, point the test at it with
   cross-origin isolation, which would block loading provider media in the page,
   and WebGPU would be a second execution path reachable on only some machines.
   Both are the same trade the exporter already makes.
-- **The API this is built on is in closed beta, and without access none of it
-  works.** Creating a dubbing job succeeds on an ordinary key, and the job even
-  reports itself as `editable` — but reading its _segments_, which is the whole
-  of how the captions become the script, answers
-  `401 no_dubbing_api_access`: "This API is in closed-beta and is only available
-  to workspaces that are granted access." The app says so plainly and deletes
-  the job it made. Whoever deployed the site has to ask ElevenLabs for dubbing
-  API access before this feature can do anything at all.
+- **The dubbing API may need to be enabled for your workspace.** A run against
+  the older dubbing endpoints answered `401 no_dubbing_api_access` — "This API
+  is in closed-beta and is only available to workspaces that are granted
+  access" — after the job had already been created and reported itself as
+  editable. This uses the current dubbing **project** API instead, which may not
+  be gated the same way; if it is, the app says so plainly and deletes the
+  project it made. Ask ElevenLabs for dubbing API access if you meet that
+  message.
+- **No choice of voice.** Dubbing copies the speaker out of the clip and offers
+  no way to name a different one, so the ready-made voices the voice changer
+  offers are not available here. If the account's plan does not allow cloning,
+  this feature does not work at all — there is no falling back to a stranger's
+  voice with the right words in it.
 - **A fix is one language for the whole clip, and this is the sharpest edge.**
-  A dubbing job has exactly one target language and every line in it is re-said
-  in that language. The clips this feature exists for are usually bilingual — the
+  A dubbing project is transcribed in one language and each target re-says
+  everything in that language. The clips this feature exists for are usually bilingual — the
   line in English and then again in Italian — so fixing the Italian half means
   the English half is also re-said, with an Italian mouth. There is no per-line
   language and no "read it as it is written": pick the half that is wrong, and

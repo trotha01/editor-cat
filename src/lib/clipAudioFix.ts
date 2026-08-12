@@ -24,11 +24,11 @@
  * leaves a hole mid-sentence, and the placing rule can only ever redistribute
  * the error rather than remove it.
  *
- * The dubbing API attacks it from the other end. A dubbing studio job is a list
- * of **segments** — timed, editable spans — and its default *fixed generation*
- * holds a segment's duration constant, speeding or slowing the speech to fit.
- * So instead of asking for audio and then finding somewhere to put it, this
- * declares where every line goes and asks for audio that fits there.
+ * The dubbing API attacks it from the other end. A dubbing project's transcript
+ * is a list of **segments** — timed, editable spans — and the speech in a
+ * segment is fitted to the span rather than the other way round. So instead of
+ * asking for audio and then finding somewhere to put it, this declares where
+ * every line goes and asks for audio that fits there.
  *
  * That inverts what the captions are for. In the text-to-speech path a caption
  * supplied a mark to aim at and was then **re-timed to whatever came back**.
@@ -50,10 +50,14 @@
  *
  * Three things, all of them real, all of them in the README's limitations:
  *
- *  - **One language for the whole clip.** A dubbing job has exactly one target
- *    language, so a bilingual line is re-said as one or the other and the other
- *    half gets the wrong mouth. This is the fault the feature exists to remove,
- *    reintroduced from a different direction, and it is the largest thing lost.
+ *  - **One language for the whole clip.** A project is transcribed in one
+ *    language and each target re-says everything in one language, so a bilingual
+ *    line is re-said as one or the other and the other half gets the wrong
+ *    mouth. This is the fault the feature exists to remove, reintroduced from a
+ *    different direction, and it is the largest thing lost.
+ *  - **No choice of voice.** Dubbing copies the speaker out of the clip and
+ *    offers no way to name one instead, so the ready-made voices the
+ *    text-to-speech path offered are simply gone.
  *  - **Speech is rate-adjusted to fit.** A caption whose corrected text no
  *    longer fits its old span is read fast rather than allowed to run over.
  *    `hurriedLines` counts those before the run so the report can name them.
@@ -66,23 +70,20 @@
  *
  * The provider calls live in `dubbing.ts`. What is here is the choosing — which
  * clips can be fixed, what the dialog opens with, which words land on which
- * segment — plus the cleanup, because a dubbing job left behind sits in the
+ * segment — plus the cleanup, because a dubbing project left behind sits in the
  * deployment's account holding a copy of the clip.
  */
 import {
   alignWords,
-  CLIP_CLONE_VOICE,
-  createDub,
+  createDubbingProject,
+  createLanguageTarget,
   createSegment,
-  deleteDub,
+  deleteDubbingProject,
   deleteSegment,
   dubbedAudio,
-  dubSegments,
-  renderDub,
-  setSpeakerVoice,
-  updateSegment,
-  waitForRender,
-  waitForSegments,
+  updateSegments,
+  waitForDub,
+  waitForTranscript,
   type SegmentEdit,
 } from './dubbing'
 import type { SpokenWord } from './elevenlabs'
@@ -245,7 +246,7 @@ export function fixTargets(project: Project, assets: readonly Asset[]): Map<stri
   return targets
 }
 
-/** What to call the dubbing job in the account while it exists. */
+/** What to call the dubbing project in the account while it exists. */
 export function dubNameFor(label: string): string {
   // Named after the clip and marked as this app's, so one left behind by a
   // failure — the delete below is best-effort — is recognisable in the user's
@@ -409,13 +410,9 @@ export interface FixClipAudioOptions {
    * clip, which is the only difference between the two paths downstream.
    */
   lines: readonly ScriptLine[]
-  /** ISO-639-1. Required: a dub has one target language and no detect option. */
+  /** BCP-47. Required: a dub has one target language and no detect option. */
   language: string
-  /** An ElevenLabs voice to say it in, or empty to copy the clip's own. */
-  voiceId?: string
-  /** What that voice is called, which only the caller with the list knows. */
-  voiceName?: string
-  /** The clip's name, which is what the dubbing job is called after. */
+  /** The clip's name, which is what the dubbing project is called after. */
   label: string
   /** What is happening now, for the status line. */
   onStage?: (stage: string, done: number, total: number) => void
@@ -437,10 +434,9 @@ export interface FixedAudio {
 export const FIX_STAGES = {
   sampling: 'listening to the clip',
   uploading: 'sending it to be dubbed',
-  segmenting: 'finding the lines in it',
+  transcribing: 'finding the lines in it',
   scripting: 'putting your words on them',
   speaking: 'saying them again',
-  rendering: 'mixing the new track',
   fetching: 'bringing it back',
   aligning: 'finding the words in it',
 } as const
@@ -465,8 +461,6 @@ export async function fixClipAudio({
   clipStart,
   lines,
   language,
-  voiceId,
-  voiceName,
   label,
   onStage,
   signal,
@@ -488,48 +482,40 @@ export async function fixClipAudio({
   const audio = await clipAudio(media, inPoint, duration)
   abortIfAsked(signal)
 
-  let dubbingId: string | undefined
+  let projectId: string | undefined
   try {
     stage(FIX_STAGES.uploading)
-    dubbingId = await createDub({
+    projectId = await createDubbingProject({
       audio,
-      name: dubNameFor(label),
+      reference: dubNameFor(label),
       language,
       seconds: duration,
       ...(signal ? { signal } : {}),
     })
 
-    stage(FIX_STAGES.segmenting)
-    const resource = await waitForSegments(dubbingId, {
-      ...(signal ? { signal } : {}),
-    })
-
-    // The speaker is set before the segments are, because it applies to all of
-    // them and because getting it wrong is the one mistake that cannot be seen
-    // until the render is paid for.
-    const speaker = resource.speakers[0]
-    if (speaker) {
-      await setSpeakerVoice(dubbingId, speaker.id, voiceId || CLIP_CLONE_VOICE, signal)
-    }
+    stage(FIX_STAGES.transcribing)
+    const transcript = await waitForTranscript(projectId, { ...(signal ? { signal } : {}) })
 
     stage(FIX_STAGES.scripting)
-    const plan = planSegments(script, resource.segments, { clipStart, duration })
-    const segmentIds = await applyPlan(dubbingId, plan, {
-      language,
-      ...(speaker ? { speakerId: speaker.id } : {}),
+    const plan = planSegments(script, transcript.segments, { clipStart, duration })
+    await applyPlan(projectId, plan, {
+      // Every segment the transcriber found belongs to some speaker, and a new
+      // one has to name a speaker that already exists. The first is the right
+      // one: a clip is one shot of one person talking, and where dubbing has
+      // heard two it has split one voice rather than found two.
+      speakerId: transcript.segments[0]?.speakerId,
       ...(signal ? { signal } : {}),
       onLine: (done) => stage(FIX_STAGES.scripting, done),
     })
 
+    // Only now. A language target created any earlier starts from the words the
+    // transcriber heard rather than the ones the user typed — see `dubbing.ts`.
     stage(FIX_STAGES.speaking)
-    await dubSegments(dubbingId, segmentIds, language, signal)
-
-    stage(FIX_STAGES.rendering)
-    const renderId = await renderDub(dubbingId, language, signal)
-    await waitForRender(dubbingId, renderId, { ...(signal ? { signal } : {}) })
+    const languageId = await createLanguageTarget(projectId, language, signal)
+    const url = await waitForDub(projectId, languageId, { ...(signal ? { signal } : {}) })
 
     stage(FIX_STAGES.fetching)
-    const blob = await dubbedAudio(dubbingId, language, signal)
+    const blob = await dubbedAudio(url, signal)
 
     stage(FIX_STAGES.aligning)
     const texts = script.map((line) => line.text)
@@ -545,67 +531,66 @@ export async function fixClipAudio({
         text: texts[index] ?? '',
         words: wordsForLine,
       })),
-      voiceName: voiceId ? voiceName || 'an ElevenLabs voice' : 'a copy of its own voice',
+      voiceName: 'a copy of its own voice',
       hurried: hurriedLines([...plan.update, ...plan.create]),
     }
   } finally {
-    if (dubbingId) {
+    if (projectId) {
       // Best effort, and deliberately not awaited into the failure path: the
       // audio is already made or already lost, and neither outcome is improved
       // by reporting that the tidying up also went wrong.
-      void deleteDub(dubbingId).catch(() => {})
+      void deleteDubbingProject(projectId).catch(() => {})
     }
   }
 }
 
 /**
- * Writes the plan onto the resource and returns every segment to be dubbed.
+ * Writes the plan onto the project's transcript.
  *
- * Removals go last on purpose. A resource with no segments at all is a resource
+ * Removals go last on purpose. A transcript with no segments at all is one
  * dubbing may decide has nothing in it, and emptying it before refilling it
  * would pass through that state on every run where the captions are fewer than
  * the transcriber's spans — which is most of them, since a caption is usually a
  * whole sentence and a span is usually a breath.
+ *
+ * The rewrites go in one request rather than one each: they are one script being
+ * written in, so sending them together is fewer round trips and one revision
+ * bump instead of a run of them.
  */
 async function applyPlan(
-  dubbingId: string,
+  projectId: string,
   plan: SegmentPlan,
   {
-    language,
     speakerId,
     signal,
     onLine,
   }: {
-    language: string
     speakerId?: string
     signal?: AbortSignal
     onLine?: (done: number) => void
   },
-): Promise<string[]> {
-  const ids: string[] = []
-  let done = 0
-
-  for (const { id, ...edit } of plan.update) {
-    await updateSegment(dubbingId, id, language, edit, signal)
-    ids.push(id)
-    onLine?.((done += 1))
-  }
+): Promise<void> {
+  await updateSegments(
+    projectId,
+    Object.fromEntries(plan.update.map(({ id, ...edit }) => [id, edit])),
+    signal,
+  )
+  let done = plan.update.length
+  onLine?.(done)
 
   for (const edit of plan.create) {
     // Without a speaker there is nothing to hang a new segment on. The lines
-    // that did fit existing segments are still said correctly, so this reports
+    // that did fit existing segments are still said correctly, so this stops
     // rather than throws — losing four of five corrected lines because the
     // fifth had nowhere to go would be the worse trade.
     if (!speakerId) break
-    ids.push(await createSegment(dubbingId, speakerId, edit, signal))
+    await createSegment(projectId, speakerId, edit, signal)
     onLine?.((done += 1))
   }
 
   for (const id of plan.remove) {
-    await deleteSegment(dubbingId, id, signal)
+    await deleteSegment(projectId, id, signal)
   }
-
-  return ids
 }
 
 function abortIfAsked(signal?: AbortSignal): void {
