@@ -245,23 +245,25 @@ function mockLlm(input: Record<string, unknown>): { output: string } {
 
 const IDEA_TEMPLATES: ((word: string) => string)[] = [
   (w) =>
-    `A raccoon files a noise complaint against the moon. "Take it up with the ${w}," the moon says.`,
+    `A raccoon files a noise complaint against the moon. "Save it for the ${w} debate," the moon sighs.`,
   (w) =>
-    `A vending machine and a fire hydrant split the last snack between them. "Fair is fair about the ${w}," the hydrant hisses.`,
+    `A vending machine and a fire hydrant split the last snack between them. "Not in front of the ${w}," the hydrant hisses, glancing away.`,
   (w) =>
-    `Two houseplants stage a coup over the sunny windowsill. "The ${w} is mine by right," one snaps.`,
+    `Two houseplants stage a coup over the sunny windowsill. "Careful, you'll wake the ${w}," one warns mid-scuffle.`,
   (w) =>
-    `A ghost tries to return something it stole in 1987. "Keep the ${w}," the shopkeeper deadpans.`,
-  (w) => `A traffic cone directs a marching band. "Left, then ${w}!" it barks.`,
+    `A ghost tries to return something it stole in 1987. "Just leave it by the ${w}," the shopkeeper says, not looking up.`,
   (w) =>
-    `An umbrella refuses to open until someone apologises. "Say sorry for the ${w} first," it insists.`,
+    `A traffic cone directs a marching band through a chaotic intersection. "Not you, ${w}, keep marching!" it barks at someone in the crowd.`,
   (w) =>
-    `A toaster interviews a loaf of bread for a job opening. "You're overqualified for ${w}," it says.`,
+    `An umbrella refuses to open until someone apologises for something else entirely. "This has nothing to do with the ${w}," it insists, still shut.`,
   (w) =>
-    `A cloud sues a lawnmower over something stolen. "The evidence is in the ${w}," the cloud rumbles.`,
-  (w) => `A mailbox falls for a passer-by. "Write back about the ${w}," it whispers.`,
+    `A toaster interviews a loaf of bread for a job opening in accounting. "Mind the ${w} on your way out," it says, shaking hands.`,
   (w) =>
-    `A stapler goes on strike until the office admits it was rigged. "Never trust a ${w} again," it clicks.`,
+    `A cloud sues a lawnmower over a stolen garden gnome. "I saw it happen near the ${w}," a scarecrow tells the judge.`,
+  (w) =>
+    `A mailbox falls for a passer-by delivering flyers. "Sorry about the ${w} earlier," they say, hurrying off.`,
+  (w) =>
+    `A stapler goes on strike after office supplies are cut. "Don't blame the ${w} for this," it clicks at the printer.`,
 ]
 
 /**

@@ -23,6 +23,7 @@ Generate exactly ${IDEA_COUNT} scene ideas that all use the given word. Every id
 - Involve one or two characters, occasionally more. Characters need not be human — they can be animals, objects, machines, ghosts, anything at all.
 - Be a weird, absurd situation that would not happen in real life.
 - Include a short line of dialogue, in quotes, and the dialogue itself must use the given word at least once — not just the surrounding description.
+- Keep the word incidental: it must not be the scene's main action, goal, or topic — just a word one of the characters happens to say in passing. The scene should be about something else entirely.
 - Be as succinct as possible — a sentence or two, never a paragraph.
 
 Output a JSON array of exactly ${IDEA_COUNT} strings and nothing else. No markdown, no numbering, no commentary.`
