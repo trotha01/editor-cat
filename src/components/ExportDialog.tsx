@@ -1,5 +1,5 @@
 /** Renders the timeline to an MP4 in the browser, then downloads or publishes it. */
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Callout, Field, Modal, Select, Spinner, TextInput } from './ui'
 import { MintspacePublish } from './MintspacePublish'
 import { exportPlan, renderTimeline } from '../lib/export/timelineRender'
@@ -108,6 +108,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const setResolution = useProjectStore((state) => state.setResolution)
   const recordPublication = useProjectStore((state) => state.recordPublication)
   const forgetPublication = useProjectStore((state) => state.forgetPublication)
+  // What is marked on the timeline itself — with its Start/End buttons or the
+  // I/O keys — which this dialog opens onto and stays in step with, so
+  // marking a range there and sending it off here is one choice, not two.
+  const timelineRange = useProjectStore((state) => state.exportRange)
+  const setTimelineRange = useProjectStore((state) => state.setExportRange)
   const assets = useAssetStore((state) => state.assets)
 
   // Remembered across exports, and across sessions: someone who publishes
@@ -138,11 +143,25 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   // is held as typed — strings, so a half-written number is not rewritten under
   // the cursor — and resets to the whole video whenever the timeline's length
   // changes, which is also how it starts out.
+  //
+  // It is also seeded from whatever is marked on the timeline each time the
+  // dialog opens, rather than always starting over from the whole video —
+  // tracked alongside the duration in one piece of state so opening the
+  // dialog and growing the timeline in the same tick cannot fire both resets
+  // and leave the boxes disagreeing about which one happened last.
   const [typed, setTyped] = useState({ start: '0', end: secondsText(plan.outputDuration) })
-  const [typedFor, setTypedFor] = useState(plan.outputDuration)
-  if (typedFor !== plan.outputDuration) {
-    setTypedFor(plan.outputDuration)
-    setTyped({ start: '0', end: secondsText(plan.outputDuration) })
+  const [track, setTrack] = useState({ open, duration: plan.outputDuration })
+  if (track.open !== open || track.duration !== plan.outputDuration) {
+    const durationChanged = track.duration !== plan.outputDuration
+    const justOpened = open && !track.open
+    setTrack({ open, duration: plan.outputDuration })
+    if (durationChanged) {
+      setTyped({ start: '0', end: secondsText(plan.outputDuration) })
+      setTimelineRange(null)
+    } else if (justOpened) {
+      const fitted = exportRangeOf(timelineRange, plan.outputDuration)
+      if (fitted) setTyped({ start: secondsText(fitted.start), end: secondsText(fitted.end) })
+    }
   }
 
   const startSeconds = Number(typed.start)
@@ -167,6 +186,17 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     [rangeError, startSeconds, endSeconds, plan.outputDuration],
   )
   const exportedLength = range ? range.end - range.start : plan.outputDuration
+
+  // Kept in step with what is marked on the timeline itself: editing the
+  // boxes here is as much "setting the start and end" as dragging their
+  // handles there, and closing the dialog should leave the same stretch
+  // marked. Skipped while a typed range is invalid — an in-progress edit is
+  // not a choice yet — and while the dialog is closed, which the seeding
+  // above already owns.
+  useEffect(() => {
+    if (!open || rangeError) return
+    setTimelineRange(range ?? null)
+  }, [open, rangeError, range, setTimelineRange])
 
   /**
    * The render on hand, but only while the settings above still describe it.

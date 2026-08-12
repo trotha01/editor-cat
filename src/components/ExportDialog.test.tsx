@@ -75,7 +75,7 @@ beforeEach(() => {
   window.localStorage.clear()
   configured.value = true
   renderTimeline.mockResolvedValue(RENDERED)
-  useProjectStore.setState({ project: { ...emptyProject(), clips: [CLIP] } })
+  useProjectStore.setState({ project: { ...emptyProject(), clips: [CLIP] }, exportRange: null })
   useAssetStore.setState({ assets: [], loading: false })
 })
 
@@ -270,6 +270,76 @@ describe('choosing a start and an end', () => {
     })
 
     expect(screen.getByLabelText(/end/i)).toHaveValue(8)
+  })
+})
+
+/**
+ * The range marked on the timeline itself — with its Start/End buttons or the
+ * I/O keys — and this dialog's own boxes, which describe the same choice two
+ * ways. What matters is that opening the dialog is where the timeline's own
+ * marking arrives, and that refining it here is not a dead end: it is worth
+ * as much "setting the start and end" as the timeline is.
+ */
+describe("the timeline's own marked range", () => {
+  it('opens onto whatever is marked on the timeline', () => {
+    useProjectStore.setState({ exportRange: { start: 1, end: 3 } })
+    const view = render(<ExportDialog open={false} onClose={() => {}} />)
+    view.rerender(<ExportDialog open onClose={() => {}} />)
+
+    expect(screen.getByLabelText(/start/i)).toHaveValue(1)
+    expect(screen.getByLabelText(/end/i)).toHaveValue(3)
+  })
+
+  it('reseeds from the timeline each time it is reopened, not only the first time', () => {
+    useProjectStore.setState({ exportRange: { start: 1, end: 3 } })
+    const view = render(<ExportDialog open={false} onClose={() => {}} />)
+    view.rerender(<ExportDialog open onClose={() => {}} />)
+    expect(screen.getByLabelText(/end/i)).toHaveValue(3)
+
+    // Marked again while the dialog is shut — nothing here should notice
+    // until it is reopened.
+    act(() => {
+      useProjectStore.setState({ exportRange: { start: 1, end: 3.5 } })
+    })
+    view.rerender(<ExportDialog open={false} onClose={() => {}} />)
+    expect(screen.getByLabelText(/end/i)).toHaveValue(3)
+
+    view.rerender(<ExportDialog open onClose={() => {}} />)
+    expect(screen.getByLabelText(/end/i)).toHaveValue(3.5)
+  })
+
+  it('marks what is typed here on the timeline too', async () => {
+    open()
+
+    fireEvent.change(screen.getByLabelText(/end/i), { target: { value: '3' } })
+
+    await waitFor(() =>
+      expect(useProjectStore.getState().exportRange).toEqual({ start: 0, end: 3 }),
+    )
+  })
+
+  it('clears the timeline’s marked range once the whole video is put back', async () => {
+    open()
+    fireEvent.change(screen.getByLabelText(/end/i), { target: { value: '3' } })
+    await waitFor(() => expect(useProjectStore.getState().exportRange).not.toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: /whole video/i }))
+
+    await waitFor(() => expect(useProjectStore.getState().exportRange).toBeNull())
+  })
+
+  it('leaves the timeline alone while a typed range does not add up yet', async () => {
+    useProjectStore.setState({ exportRange: { start: 1, end: 3 } })
+    const view = render(<ExportDialog open={false} onClose={() => {}} />)
+    view.rerender(<ExportDialog open onClose={() => {}} />)
+
+    fireEvent.change(screen.getByLabelText(/start/i), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText(/end/i), { target: { value: '1' } })
+
+    expect(screen.getByText(/end has to come after the start/i)).toBeInTheDocument()
+    // Give any effect a chance to run before confirming it left well alone.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useProjectStore.getState().exportRange).toEqual({ start: 1, end: 3 })
   })
 })
 
