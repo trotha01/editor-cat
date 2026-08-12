@@ -11,21 +11,29 @@ import {
   waitForRender,
   waitForSegments,
 } from './dubbing'
+import { ProviderError, toDisplayMessage } from './errors'
 
 vi.mock('./auth0/client', () => ({ auth0Token: () => Promise.resolve('session-token') }))
 
 /**
  * The wire, pinned down.
  *
- * Worth asserting at this level more than most things in this app, because none
- * of it could be tried against the live API while it was written — elevenlabs.io
- * is unreachable from the sandbox this was built in, so every path and field
- * name here came from ElevenLabs' own generated SDK rather than from a response.
- * These tests are what say the code matches what was read: a segment update is a
- * PATCH with the language last in the path, a render asks for `render_type`, and
- * a resource's segments come back as a map that has to be put in order.
+ * Worth asserting at this level more than most things in this app, because most
+ * of it could not be tried against the live API while it was written —
+ * elevenlabs.io is unreachable from the sandbox this was built in, so every path
+ * and field name here came from ElevenLabs' own generated SDK rather than from a
+ * response. These tests are what say the code matches what was read: a segment
+ * update is a PATCH with the language last in the path, a render asks for
+ * `render_type`, and a resource's segments come back as a map that has to be put
+ * in order.
  *
- * They are not evidence that the API behaves as documented. That is in the PR.
+ * A later run against a deploy preview reached the API for real and settled the
+ * first half: creating a job, polling its status and deleting it again all work
+ * exactly as written here. It also settled the second half in the least useful
+ * way — the segment endpoints this whole design rests on are in closed beta and
+ * answered 401. The shapes below the resource are therefore still only as good
+ * as the SDK they were read from, and the last suite in this file is the one
+ * piece of that answer we do have.
  */
 
 const fetchMock = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>()
@@ -272,5 +280,55 @@ describe('alignWords', () => {
   it('says nothing rather than guessing when nothing came back', async () => {
     fetchMock.mockResolvedValue(json({ loss: 0 }))
     expect(await alignWords(new Blob(['mp3']), 'Hola')).toEqual([])
+  })
+})
+
+describe('when the workspace is not in the closed beta', () => {
+  it('says so, instead of telling the user to sign in again', async () => {
+    // Confirmed against the live API: creating the job answers 200 and says
+    // `editable: true`, and only reading the resource answers 401 with
+    // `no_dubbing_api_access`. Passed on as a bare 401 it reaches the browser
+    // as "This site could not confirm that you are signed in", which is advice
+    // about the one thing that cannot possibly help.
+    // Verbatim, including the `x-elevenlabs-status` the proxy adds to say the
+    // 401 is ElevenLabs' and not this site's session check.
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            type: 'authorization_error',
+            code: 'forbidden',
+            message:
+              'This API is in closed-beta and is only available to workspaces that are granted access.',
+            status: 'no_dubbing_api_access',
+          },
+        }),
+        {
+          status: 401,
+          headers: { 'content-type': 'application/json', 'x-elevenlabs-status': '401' },
+        },
+      ),
+    )
+
+    // Caught once rather than awaited twice: a Response body can only be read
+    // through the once, so asking the mock for the same one again would hand
+    // back a spent stream and a much vaguer error than the code really gives.
+    const error = await dubbingResource('dub_1').catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(toDisplayMessage(error)).toMatch(/not been given access to the Dubbing Studio API/i)
+    // And the way out, which is not "try again" and not "sign in".
+    expect(toDisplayMessage(error)).toMatch(/ask ElevenLabs for dubbing API access/i)
+    expect(toDisplayMessage(error)).not.toMatch(/sign in/i)
+  })
+
+  it('leaves every other refusal to say what it already says', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: { message: 'quota exceeded' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'x-elevenlabs-status': '429' },
+      }),
+    )
+    await expect(dubbingResource('dub_1')).rejects.toThrow(/rate limit/i)
   })
 })

@@ -147,3 +147,18 @@ describe('toDisplayMessage', () => {
     expect(toDisplayMessage('raw string')).toBe('raw string')
   })
 })
+
+describe('a 401 from the provider is not a 401 from us', () => {
+  it('sends the user to sign in only when it was our own session check', () => {
+    expect(explainStatus('ElevenLabs', 401)).toMatch(/sign in/i)
+  })
+
+  it('says the site’s account was refused when the provider is the one refusing', () => {
+    // The site's key is revoked, or the workspace has no access to an endpoint —
+    // as happened with dubbing's resource API, which is in closed beta. Signing
+    // in again cannot touch any of that.
+    const message = explainStatus('ElevenLabs', 401, true)
+    expect(message).not.toMatch(/sign in/i)
+    expect(message).toMatch(/nothing you can fix/i)
+  })
+})

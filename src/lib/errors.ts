@@ -73,11 +73,25 @@ export function extractMessage(body: unknown): string | undefined {
  * deployment's list, and for an endpoint it will not forward. Both arrive with a
  * `detail` saying exactly which, and `toDisplayMessage` prints it after this
  * line — so this stays the general case and the specific one speaks for itself.
+ *
+ * A 401 has two meanings and they need different sentences, which is what
+ * `fromProvider` is for. Our own proxy answers 401 when the caller's session
+ * cannot be verified, and that is worth telling them to sign in about. The
+ * provider answers 401 when the *site's* key is refused — revoked, or a
+ * workspace without access to an endpoint — and there is no signing in that
+ * fixes it. Telling somebody to sign in again about a closed beta is worse than
+ * saying nothing, because they will do it.
  */
-export function explainStatus(provider: 'fal.ai' | 'ElevenLabs', status: number): string {
+export function explainStatus(
+  provider: 'fal.ai' | 'ElevenLabs',
+  status: number,
+  fromProvider = false,
+): string {
   switch (status) {
     case 401:
-      return 'This site could not confirm that you are signed in. Sign in again, then retry.'
+      return fromProvider
+        ? `This site's ${provider} account was refused. Nothing you can fix from here — the details below say why.`
+        : 'This site could not confirm that you are signed in. Sign in again, then retry.'
     case 403:
       return 'This site would not allow that. The details below say why.'
     case 402:
@@ -202,10 +216,13 @@ export async function providerErrorFrom(
   }
 
   const detail = extractMessage(body)
+  // Set by the proxy on anything it merely carried, so a status the provider
+  // chose is never read as one this site chose. Absent on our own refusals.
+  const fromProvider = response.headers.has('x-elevenlabs-status')
   return new ProviderError(
     provider,
     response.status,
-    explainStatus(provider, response.status),
+    explainStatus(provider, response.status, fromProvider),
     detail,
   )
 }

@@ -193,6 +193,25 @@ async function metadata(dubbingId: string, signal?: AbortSignal): Promise<WireMe
   return (await response.json()) as WireMetadata
 }
 
+/**
+ * Whether ElevenLabs refused because this workspace is not in the beta.
+ *
+ * Worth naming rather than passing on as another authorization error, because
+ * it is the one failure on this path that no amount of retrying, re-signing-in
+ * or key-checking will move — and because it is invisible until this exact
+ * call. Creating the job succeeds, the metadata comes back saying
+ * `editable: true`, and only reading the resource says the editing API is not
+ * available at all. Confirmed against the live API on a deploy preview:
+ * `POST /v1/dubbing` answered 200 and `GET /v1/dubbing/resource/{id}` answered
+ * 401 `no_dubbing_api_access`.
+ */
+function isClosedBeta(error: unknown): boolean {
+  return (
+    error instanceof ProviderError &&
+    /no_dubbing_api_access|closed[- ]beta/i.test(error.detail ?? '')
+  )
+}
+
 /** The editable resource: the segments, the speakers, and any renders so far. */
 export async function dubbingResource(
   dubbingId: string,
@@ -202,6 +221,17 @@ export async function dubbingResource(
 
   const response = await elevenFetch(`/v1/dubbing/resource/${encodeURIComponent(dubbingId)}`, {
     signal,
+  }).catch((cause: unknown) => {
+    if (!isClosedBeta(cause)) throw cause
+    throw new ProviderError(
+      'ElevenLabs',
+      403,
+      'This site’s ElevenLabs workspace has not been given access to the Dubbing Studio API.',
+      'Fixing a clip’s audio is built on editing a dub’s segments, and that API is in closed ' +
+        'beta — the job itself was created and has been deleted again, but its segments cannot ' +
+        'be read. Whoever deployed this site needs to ask ElevenLabs for dubbing API access. ' +
+        'Nothing you can fix from here.',
+    )
   })
   const body = (await response.json()) as WireResource
 

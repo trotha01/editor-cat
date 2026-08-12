@@ -70,6 +70,18 @@ function status(): Response {
   return json({ configured: siteKey().length > 0 })
 }
 
+/**
+ * Says a status came from ElevenLabs rather than from this function.
+ *
+ * They collide on exactly the code that matters most. This proxy answers 401
+ * when the caller has no valid session, and ElevenLabs answers 401 when the
+ * *site's* key is refused — a revoked key, or a workspace without access to a
+ * closed-beta API. Passed through bare, the second one reaches the browser
+ * looking like the first, and the user is told to sign in again about something
+ * signing in cannot touch. That happened, with dubbing's resource endpoints.
+ */
+const UPSTREAM_STATUS_HEADER = 'x-elevenlabs-status'
+
 /** Straight to ElevenLabs with whichever key won, and back out again. */
 async function forward(
   target: URL,
@@ -163,10 +175,9 @@ export default async (request: Request): Promise<Response> => {
     const body = hasBody ? await request.arrayBuffer() : undefined
     const upstream = await forward(target, method, key, request, body)
 
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: passthroughHeaders(upstream.headers),
-    })
+    const headers = passthroughHeaders(upstream.headers)
+    headers.set(UPSTREAM_STATUS_HEADER, String(upstream.status))
+    return new Response(upstream.body, { status: upstream.status, headers })
   } catch (error) {
     return jsonError(
       502,

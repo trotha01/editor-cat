@@ -1537,6 +1537,14 @@ If your CI image ships its own browser, point the test at it with
   cross-origin isolation, which would block loading provider media in the page,
   and WebGPU would be a second execution path reachable on only some machines.
   Both are the same trade the exporter already makes.
+- **The API this is built on is in closed beta, and without access none of it
+  works.** Creating a dubbing job succeeds on an ordinary key, and the job even
+  reports itself as `editable` — but reading its _segments_, which is the whole
+  of how the captions become the script, answers
+  `401 no_dubbing_api_access`: "This API is in closed-beta and is only available
+  to workspaces that are granted access." The app says so plainly and deletes
+  the job it made. Whoever deployed the site has to ask ElevenLabs for dubbing
+  API access before this feature can do anything at all.
 - **A fix is one language for the whole clip, and this is the sharpest edge.**
   A dubbing job has exactly one target language and every line in it is re-said
   in that language. The clips this feature exists for are usually bilingual — the
