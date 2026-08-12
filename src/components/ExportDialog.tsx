@@ -1,8 +1,9 @@
 /** Renders the timeline to an MP4 in the browser, then downloads or publishes it. */
-import { useRef, useState } from 'react'
-import { Button, Callout, Field, Modal, Select, Spinner } from './ui'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Button, Callout, Field, Modal, Select, Spinner, TextInput } from './ui'
 import { MintspacePublish } from './MintspacePublish'
 import { exportPlan, renderTimeline } from '../lib/export/timelineRender'
+import { exportRangeOf, type ExportRange } from '../lib/export/range'
 import type { RenderProgress } from '../lib/export/render'
 import { downloadBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
@@ -71,12 +72,45 @@ function usableQuality(stored: unknown): number {
   return QUALITY.some((option) => option.crf === stored) ? (stored as number) : DEFAULT_CRF
 }
 
+/** Seconds as the range boxes hold them: fine enough to name a frame, no finer. */
+function secondsText(seconds: number): string {
+  return (Math.round(Math.max(0, seconds) * 100) / 100).toString()
+}
+
+/**
+ * What is wrong with a typed range, as a sentence, or null when nothing is.
+ *
+ * Said rather than quietly corrected. A box reading 200 on a project that runs
+ * 87 seconds could be clamped without a word, but then the export is not the
+ * one on screen — and the whole point of naming a start and an end is knowing
+ * exactly what comes out.
+ */
+function rangeProblem(start: number, end: number, duration: number): string | null {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'Give the start and end in seconds.'
+  if (start < 0) return 'The start cannot be before the beginning.'
+  if (end - start <= 0) return 'The end has to come after the start.'
+  // A hundredth of slack, matching what the boxes are rounded to, so the end
+  // filled in from the duration itself is never a hundredth too late.
+  if (end > duration + 0.01) {
+    return `This project runs ${formatTime(duration)}, so the end cannot be later than that.`
+  }
+  return null
+}
+
+/** Whether two ranges — either of which may be "the whole thing" — are the same. */
+function sameRange(a: ExportRange | undefined, b: ExportRange | undefined): boolean {
+  if (!a || !b) return a === b
+  return a.start === b.start && a.end === b.end
+}
+
 /** A finished render, stamped with the settings that produced it. */
 interface RenderedFile {
   blob: Blob
   crf: number
   width: number
   height: number
+  /** Undefined for a render of the whole timeline. */
+  range: ExportRange | undefined
 }
 
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -84,6 +118,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const setResolution = useProjectStore((state) => state.setResolution)
   const recordPublication = useProjectStore((state) => state.recordPublication)
   const forgetPublication = useProjectStore((state) => state.forgetPublication)
+  // What is marked on the timeline itself — with its Start/End buttons or the
+  // I/O keys — which this dialog opens onto and stays in step with, so
+  // marking a range there and sending it off here is one choice, not two.
+  const timelineRange = useProjectStore((state) => state.exportRange)
+  const setTimelineRange = useProjectStore((state) => state.setExportRange)
   const assets = useAssetStore((state) => state.assets)
 
   // Remembered across exports, and across sessions: someone who publishes
@@ -108,6 +147,67 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const vertical = orientationOf(project.width, project.height) === 'vertical'
   const plan = exportPlan(project, assets)
 
+  // The range is deliberately not remembered the way the destination and the
+  // quality are. Those describe a preference; this describes one timeline, and
+  // "up to 0:42" means something else on a project that has since grown. So it
+  // is held as typed — strings, so a half-written number is not rewritten under
+  // the cursor — and resets to the whole video whenever the timeline's length
+  // changes, which is also how it starts out.
+  //
+  // It is also seeded from whatever is marked on the timeline each time the
+  // dialog opens, rather than always starting over from the whole video —
+  // tracked alongside the duration in one piece of state so opening the
+  // dialog and growing the timeline in the same tick cannot fire both resets
+  // and leave the boxes disagreeing about which one happened last.
+  const [typed, setTyped] = useState({ start: '0', end: secondsText(plan.outputDuration) })
+  const [track, setTrack] = useState({ open, duration: plan.outputDuration })
+  if (track.open !== open || track.duration !== plan.outputDuration) {
+    const durationChanged = track.duration !== plan.outputDuration
+    const justOpened = open && !track.open
+    setTrack({ open, duration: plan.outputDuration })
+    if (durationChanged) {
+      setTyped({ start: '0', end: secondsText(plan.outputDuration) })
+      setTimelineRange(null)
+    } else if (justOpened) {
+      const fitted = exportRangeOf(timelineRange, plan.outputDuration)
+      if (fitted) setTyped({ start: secondsText(fitted.start), end: secondsText(fitted.end) })
+    }
+  }
+
+  const startSeconds = Number(typed.start)
+  const endSeconds = Number(typed.end)
+  // Not asked of a timeline with nothing on it: both boxes read zero, which is
+  // a range that names no video — but "add at least one clip" is already said
+  // above and is the only thing anybody can do about it.
+  const rangeError =
+    plan.outputDuration > 0 ? rangeProblem(startSeconds, endSeconds, plan.outputDuration) : null
+  /**
+   * The range as the export will use it, or undefined for the whole timeline.
+   *
+   * Memoised because its identity is what decides when the Mintspace panel
+   * re-fingerprints the project, and a fresh object every render would have it
+   * hashing the whole document on every keystroke in the caption box.
+   */
+  const range = useMemo(
+    () =>
+      rangeError
+        ? undefined
+        : exportRangeOf({ start: startSeconds, end: endSeconds }, plan.outputDuration),
+    [rangeError, startSeconds, endSeconds, plan.outputDuration],
+  )
+  const exportedLength = range ? range.end - range.start : plan.outputDuration
+
+  // Kept in step with what is marked on the timeline itself: editing the
+  // boxes here is as much "setting the start and end" as dragging their
+  // handles there, and closing the dialog should leave the same stretch
+  // marked. Skipped while a typed range is invalid — an in-progress edit is
+  // not a choice yet — and while the dialog is closed, which the seeding
+  // above already owns.
+  useEffect(() => {
+    if (!open || rangeError) return
+    setTimelineRange(range ?? null)
+  }, [open, rangeError, range, setTimelineRange])
+
   /**
    * The render on hand, but only while the settings above still describe it.
    *
@@ -120,7 +220,8 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     rendered &&
     rendered.crf === crf &&
     rendered.width === project.width &&
-    rendered.height === project.height
+    rendered.height === project.height &&
+    sameRange(rendered.range, range)
       ? rendered
       : null
 
@@ -164,10 +265,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         project,
         assets,
         crf,
+        range,
         onProgress: setProgress,
         signal: controller.signal,
       })
-      setRendered({ blob, crf, width: project.width, height: project.height })
+      setRendered({ blob, crf, width: project.width, height: project.height, range })
       return blob
     } finally {
       setProgress(null)
@@ -256,6 +358,49 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           </Field>
         </div>
 
+        {/* Start and end, which begin as the whole video: an export nobody has
+            touched is the one they have been watching. */}
+        <div className="grid items-end gap-3 sm:grid-cols-3">
+          <Field label="Start (seconds)" htmlFor="export-start">
+            <TextInput
+              id="export-start"
+              type="number"
+              min={0}
+              max={secondsText(plan.outputDuration)}
+              step={0.1}
+              value={typed.start}
+              disabled={busy}
+              onChange={(event) => setTyped({ ...typed, start: event.target.value })}
+            />
+          </Field>
+
+          <Field label="End (seconds)" htmlFor="export-end">
+            <TextInput
+              id="export-end"
+              type="number"
+              min={0}
+              max={secondsText(plan.outputDuration)}
+              step={0.1}
+              value={typed.end}
+              disabled={busy}
+              onChange={(event) => setTyped({ ...typed, end: event.target.value })}
+            />
+          </Field>
+
+          {/* Off only when the boxes already say the whole video. A range that
+              does not add up is exactly when someone wants this. */}
+          <Button
+            variant="ghost"
+            className="self-end"
+            disabled={busy || (!range && !rangeError)}
+            onClick={() => setTyped({ start: '0', end: secondsText(plan.outputDuration) })}
+          >
+            Export the whole video
+          </Button>
+        </div>
+
+        {rangeError ? <Callout tone="warn">{rangeError}</Callout> : null}
+
         {destination === 'download' ? (
           <Callout tone="info" title="Everything happens on your machine">
             Rendering runs in this tab with ffmpeg compiled to WebAssembly — your media is never
@@ -272,10 +417,17 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
         <p className="text-sm text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
-          {formatTime(plan.outputDuration)}
+          {formatTime(exportedLength)}
+          {/* Both numbers while a range is set, so the shorter one reads as a
+              choice rather than as a timeline that has lost something. */}
+          {range ? ` of ${formatTime(plan.outputDuration)}` : ''}
           {/* Worth saying outright: it explains an export that is longer than
-              the clips add up to, and confirms the count-in has room. */}
-          {plan.leadIn > 0 ? ` · ${formatTime(plan.leadIn)} of black before the picture` : ''}
+              the clips add up to, and confirms the count-in has room. Only what
+              survives the range — an export starting after the lead-in keeps
+              none of it. */}
+          {plan.leadIn > (range?.start ?? 0)
+            ? ` · ${formatTime(plan.leadIn - (range?.start ?? 0))} of black before the picture`
+            : ''}
           {plan.transitions > 0
             ? ` · ${plan.transitions} transition${plan.transitions === 1 ? '' : 's'}, which overlap the clips they join`
             : ''}{' '}
@@ -318,7 +470,8 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             render={render}
             project={project}
             crf={crf}
-            empty={project.clips.length === 0}
+            range={range}
+            empty={project.clips.length === 0 || rangeError !== null}
             vertical={vertical}
             busy={progress !== null}
             onBusyChange={setPublishing}
@@ -328,7 +481,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           />
         ) : destination === 'mintspace' || busy ? null : (
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" onClick={runDownload} disabled={project.clips.length === 0}>
+            <Button
+              variant="primary"
+              onClick={runDownload}
+              disabled={project.clips.length === 0 || rangeError !== null}
+            >
               <span aria-hidden>⬇️</span> Render and download MP4
             </Button>
             <Button variant="ghost" onClick={onClose}>

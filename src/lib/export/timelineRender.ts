@@ -18,6 +18,7 @@
 import { renderProject, type ExportAsset, type RenderProgress, type RenderRequest } from './render'
 import { buildAssFile } from './assCaptions'
 import { captionFonts } from './captionFonts'
+import { exportRangeOf, type ExportRange } from './range'
 import { getBlob } from '../db'
 import { clipGain, layoutClips, leadInOf } from '../timeline'
 import { audioEnd, gainFor } from '../audioTracks'
@@ -98,14 +99,20 @@ export interface TimelineRenderOptions {
   project: Project
   assets: Asset[]
   crf: number
+  /** The stretch of the timeline to export. Absent is the whole of it. */
+  range?: ExportRange
   onProgress?: (progress: RenderProgress) => void
   signal?: AbortSignal
 }
 
 /** Renders the project to an MP4, exactly as the preview shows it. */
 export async function renderTimeline(options: TimelineRenderOptions): Promise<Blob> {
-  const { project, assets, crf, onProgress, signal } = options
+  const { project, assets, crf, range, onProgress, signal } = options
   const plan = exportPlan(project, assets)
+  // Fitted here rather than taken on trust: the range was chosen against
+  // whatever the timeline was when the dialog opened, and a render is the last
+  // place to discover it asks for a second of picture that no longer exists.
+  const fitted = exportRangeOf(range, plan.outputDuration)
 
   // Gather every blob the render needs up front, so a missing asset fails
   // before the encoder has spent a minute of the user's time.
@@ -203,6 +210,7 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
       fps: project.fps,
       leadIn: plan.leadIn,
       ...(captions ? { captions } : {}),
+      ...(fitted ? { range: fitted } : {}),
       crf,
     },
     { onProgress, signal },

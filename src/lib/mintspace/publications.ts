@@ -7,6 +7,7 @@
  * travels with the project rather than with the browser.
  */
 import { sha256Hex } from '../digest'
+import type { ExportRange } from '../export/range'
 import type { Project, Publication } from '../types'
 
 /** Absent means none: every project saved before publishing existed has none. */
@@ -55,13 +56,20 @@ function stableStringify(value: unknown): string {
 /** The settings, beyond the timeline itself, that change what comes out. */
 export interface ExportSettings {
   crf: number
+  /**
+   * The stretch of the timeline being exported, when it is not all of it.
+   * Absent has to stay absent rather than become `{ start: 0, end: duration }`:
+   * a key is only useful against the ones already recorded, and every one of
+   * those was taken before an export could be trimmed at all.
+   */
+  range?: ExportRange
 }
 
 /**
  * A fingerprint of everything that decides what this export will be.
  *
- * The timeline plus the quality setting — the frame size is part of the
- * timeline already. Deliberately not the project's id or name: renaming a
+ * The timeline plus the quality setting and the range — the frame size is part
+ * of the timeline already. Deliberately not the project's id or name: renaming a
  * project does not make its export a different video. Deliberately not its
  * publications either, and that one is load-bearing rather than tidy: they
  * change the moment something is published, so including them would make every
@@ -75,7 +83,10 @@ export async function sourceKeyOf(
   settings: ExportSettings,
 ): Promise<string | null> {
   const { id: _id, name: _name, publications: _publications, ...doc } = project
-  return sha256Hex(new Blob([stableStringify({ doc, crf: settings.crf })]))
+  // `stableStringify` drops undefined members, so an untrimmed export hashes to
+  // the very key it did before ranges existed — which is what keeps "already in
+  // the feed" true for everything published up to now.
+  return sha256Hex(new Blob([stableStringify({ doc, crf: settings.crf, range: settings.range })]))
 }
 
 /**

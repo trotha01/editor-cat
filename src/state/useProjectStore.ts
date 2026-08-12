@@ -52,6 +52,7 @@ import {
   type TimedWord,
 } from '../lib/captions'
 import { withTransition } from '../lib/transitions'
+import type { ExportRange } from '../lib/export/range'
 import {
   addVideoTrack,
   createVideoTrack,
@@ -143,6 +144,14 @@ interface ProjectState {
   selectedAudioClipId: string | null
   selectedVideoClipId: string | null
   selectedCaption: CaptionSelection | null
+  /**
+   * The stretch of the timeline an export will keep, marked there directly —
+   * with the Start/End buttons or the I/O keys — rather than only typed into
+   * the export dialog. Null is the whole video, same as an absent range
+   * everywhere else. Not part of the project: it describes this sitting, not
+   * the document, so it is never saved and never undone.
+   */
+  exportRange: ExportRange | null
   loaded: boolean
 
   /**
@@ -174,6 +183,19 @@ interface ProjectState {
    * over it, and nothing placed by hand should move on its own.
    */
   setLeadIn: (seconds: number) => void
+  /** Marks the stretch an export will keep. Null puts the whole video back. */
+  setExportRange: (range: ExportRange | null) => void
+  /**
+   * Marks where an export would start, at a given time. The other edge is left
+   * where it was, or put at `duration` if nothing has been marked there yet —
+   * marking only one edge should still describe a real range to export.
+   */
+  markExportStart: (seconds: number, duration: number) => void
+  /**
+   * Marks where an export would end, leaving the other edge where it was, or
+   * at the very start of the timeline if nothing has been marked there yet.
+   */
+  markExportEnd: (seconds: number) => void
 
   /**
    * Puts an asset on the picture track after the clip `atTime` falls in, which
@@ -446,6 +468,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     selectedAudioClipId: null,
     selectedVideoClipId: null,
     selectedCaption: null,
+    exportRange: null,
     loaded: false,
     past: [],
     future: [],
@@ -472,9 +495,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           // an undo here must not reach back into it.
           past: [],
           future: [],
+          // Nor does a range marked against the timeline just left — its
+          // seconds name a different video here.
+          exportRange: null,
         })
       } catch {
-        set({ project: emptyProject(id), loaded: true, past: [], future: [] })
+        set({ project: emptyProject(id), loaded: true, past: [], future: [], exportRange: null })
       }
     },
 
@@ -489,6 +515,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedCaption: null,
         past: [],
         future: [],
+        exportRange: null,
       })
     },
 
@@ -531,6 +558,18 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setLeadIn: (seconds) =>
       mutate((project) => underClips(project, { ...project, leadIn: clampLeadIn(seconds) })),
+
+    setExportRange: (range) => set({ exportRange: range }),
+
+    markExportStart: (seconds, duration) =>
+      set((state) => ({
+        exportRange: { start: seconds, end: state.exportRange?.end ?? duration },
+      })),
+
+    markExportEnd: (seconds) =>
+      set((state) => ({
+        exportRange: { start: state.exportRange?.start ?? 0, end: seconds },
+      })),
 
     addClip: (asset, atTime) => {
       const clip = clipForAsset(asset, newId('clip'))
