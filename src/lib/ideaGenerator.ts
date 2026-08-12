@@ -66,20 +66,62 @@ export async function generateIdeas({ word, signal }: GenerateIdeasOptions): Pro
 export function parseIdeas(text: string): string[] {
   const cleaned = stripWrapping(text)
 
-  try {
-    const parsed: unknown = JSON.parse(cleaned)
-    if (Array.isArray(parsed)) {
-      const strings = parsed
-        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-        .map((item) => item.trim())
-      if (strings.length > 0) return strings
-    }
-  } catch {
-    // Not JSON — fall through to line-based parsing below.
+  const strings =
+    parseJsonStringArray(cleaned) ?? parseJsonStringArray(closeTrailingString(cleaned))
+  if (strings) return strings
+
+  // The response is JSON-shaped but broken somewhere in the middle rather than
+  // just at the end — the closing-quote repair above only fixes the last
+  // element. Pulling out every well-formed `"..."` literal still recovers
+  // most of the list instead of the whole array collapsing into one line.
+  // Gated on actually looking like a JSON array so this doesn't hijack a
+  // numbered or bulleted list whose lines happen to quote some dialogue.
+  if (cleaned.trim().startsWith('[')) {
+    const literals = extractQuotedLiterals(cleaned)
+    if (literals.length > 1) return literals
   }
 
   return cleaned
     .split('\n')
     .map((line) => line.replace(/^[\s>*-]*\d*[.)]?\s*/, '').trim())
     .filter((line) => line.length > 0)
+}
+
+/** Parses `text` as a JSON array of non-blank strings, or null if it isn't one. */
+function parseJsonStringArray(text: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!Array.isArray(parsed)) return null
+    const strings = parsed
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim())
+    return strings.length > 0 ? strings : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Claude occasionally drops the quote that closes the array's last string —
+ * easy to do when the line right before it already ends on a quoted piece of
+ * dialogue. Putting it back recovers an otherwise well-formed 20-idea
+ * response from a single missing character, rather than losing all of it.
+ */
+function closeTrailingString(text: string): string {
+  const trimmed = text.trim()
+  return trimmed.endsWith(']') ? `${trimmed.slice(0, -1)}"]` : text
+}
+
+/** Every complete `"..."` JSON string literal in `text`, in order. */
+function extractQuotedLiterals(text: string): string[] {
+  const literals: string[] = []
+  for (const match of text.match(/"(?:[^"\\]|\\.)*"/g) ?? []) {
+    try {
+      const value: unknown = JSON.parse(match)
+      if (typeof value === 'string' && value.trim().length > 0) literals.push(value.trim())
+    } catch {
+      // A literal that doesn't parse on its own is skipped rather than kept broken.
+    }
+  }
+  return literals
 }

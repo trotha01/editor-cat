@@ -61,6 +61,37 @@ describe('parseIdeas', () => {
     const text = JSON.stringify(['A real idea.', null, 42, '  '])
     expect(parseIdeas(text)).toEqual(['A real idea.'])
   })
+
+  it('repairs a JSON array missing the closing quote on its last element', () => {
+    // A real response that came back exactly this way: 20 well-formed ideas,
+    // but the very last one was missing the quote that closes its string,
+    // right before the array's own `]`. Without a fix, that single missing
+    // character used to fail the whole parse and dump all 20 ideas into one.
+    const ideas = ['First idea.', 'Second idea, with a line of "dialogue" in it.']
+    const text = JSON.stringify(ideas)
+    expect(text.endsWith('"]')).toBe(true)
+    const broken = `${text.slice(0, -2)}]` // drop the closing `"` before `]`
+
+    expect(() => JSON.parse(broken)).toThrow()
+    expect(parseIdeas(broken)).toEqual(ideas)
+  })
+
+  it('recovers the well-formed ideas from an array missing commas between elements', () => {
+    const text = '["First idea." "Second idea." "Third idea."]'
+    expect(() => JSON.parse(text)).toThrow()
+    expect(parseIdeas(text)).toEqual(['First idea.', 'Second idea.', 'Third idea.'])
+  })
+
+  it('still falls back to a numbered list when the lines themselves quote dialogue', () => {
+    // Quoted literal recovery is gated on the response actually looking like a
+    // JSON array (starting with `[`), so it must not hijack a plain numbered
+    // list just because each line happens to contain a quote.
+    const text = '1. A raccoon knocks: "Let me in."\n2. A toaster says: "Not today."'
+    expect(parseIdeas(text)).toEqual([
+      'A raccoon knocks: "Let me in."',
+      'A toaster says: "Not today."',
+    ])
+  })
 })
 
 describe('IDEA_COUNT', () => {
