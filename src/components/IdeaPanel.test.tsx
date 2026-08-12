@@ -8,6 +8,7 @@ vi.mock('../lib/ideaGenerator', () => ({
 }))
 
 const { IdeaPanel } = await import('./IdeaPanel')
+const { useIdeaStore } = await import('../state/useIdeaStore')
 
 const IDEAS = Array.from({ length: 20 }, (_, i) => `Idea number ${i + 1}.`)
 
@@ -15,6 +16,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   generateIdeas.mockResolvedValue(IDEAS)
   Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+  useIdeaStore.setState({ word: '', ideas: null, busy: false, error: null })
 })
 
 describe('the Idea tab', () => {
@@ -58,5 +60,23 @@ describe('the Idea tab', () => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('Idea number 1.'),
     )
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+  })
+
+  it('keeps the word and generated ideas after switching away and back to the tab', async () => {
+    // The panel unmounts when another tab is picked (see App.tsx), and remounts
+    // when this one is picked again — so the state behind it has to live
+    // somewhere that switching tabs does not tear down.
+    const { unmount } = render(<IdeaPanel />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'umbrella' } })
+    fireEvent.click(screen.getByRole('button', { name: /Generate 20 ideas/ }))
+    await screen.findByText('Idea number 1.')
+
+    unmount()
+    render(<IdeaPanel />)
+
+    expect(screen.getByRole('textbox')).toHaveValue('umbrella')
+    expect(screen.getByText('Idea number 1.')).toBeInTheDocument()
+    expect(screen.getByText('Idea number 20.')).toBeInTheDocument()
+    expect(generateIdeas).toHaveBeenCalledTimes(1)
   })
 })

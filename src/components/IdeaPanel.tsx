@@ -11,29 +11,18 @@
  */
 import { useState } from 'react'
 import { Button, Callout, Field, Spinner, TextInput } from './ui'
-import { generateIdeas } from '../lib/ideaGenerator'
 import { toDisplayMessage } from '../lib/errors'
+import { useIdeaStore } from '../state/useIdeaStore'
 
 export function IdeaPanel() {
-  const [word, setWord] = useState('')
-  const [ideas, setIdeas] = useState<string[] | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const word = useIdeaStore((state) => state.word)
+  const setWord = useIdeaStore((state) => state.setWord)
+  const ideas = useIdeaStore((state) => state.ideas)
+  const busy = useIdeaStore((state) => state.busy)
+  const error = useIdeaStore((state) => state.error)
+  const setError = useIdeaStore((state) => state.setError)
+  const generate = useIdeaStore((state) => state.generate)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
-
-  const generate = async () => {
-    if (!word.trim() || busy) return
-    setBusy(true)
-    setError(null)
-    setIdeas(null)
-    try {
-      setIdeas(await generateIdeas({ word }))
-    } catch (cause) {
-      setError(toDisplayMessage(cause))
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const copy = async (idea: string, index: number) => {
     try {
