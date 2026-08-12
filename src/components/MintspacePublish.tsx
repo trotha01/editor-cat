@@ -12,7 +12,12 @@ import { Button, Callout, Field, Spinner, TextArea, TextInput } from './ui'
 import { isAbort } from '../lib/errors'
 import { sha256Hex } from '../lib/digest'
 import { isMintspaceConfigured, mintspaceSiteUrl } from '../lib/mintspace/client'
-import { publicationsOf, publishedAs } from '../lib/mintspace/publications'
+import {
+  publicationsOf,
+  publishedAs,
+  publishedFrom,
+  sourceKeyOf,
+} from '../lib/mintspace/publications'
 import {
   CAPTION_MAX_LENGTH,
   currentAccount,
@@ -35,6 +40,8 @@ export interface MintspacePublishProps {
    * everything else does.
    */
   project: Project
+  /** The quality setting, which with the timeline decides what comes out. */
+  crf: number
   /** True when there is nothing on the timeline to publish. */
   empty: boolean
   /** False for a 16:9 project, which the feed will letterbox. */
@@ -48,7 +55,7 @@ export interface MintspacePublishProps {
 }
 
 export function MintspacePublish(props: MintspacePublishProps) {
-  const { render, project, empty, vertical, busy, onBusyChange, onClose } = props
+  const { render, project, crf, empty, vertical, busy, onBusyChange, onClose } = props
   const { onPublished, onForget } = props
 
   const configured = isMintspaceConfigured()
@@ -71,7 +78,16 @@ export function MintspacePublish(props: MintspacePublishProps) {
   const [confirming, setConfirming] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
 
+  /**
+   * What this export would be made from, or null while it is being worked out.
+   *
+   * Recomputed whenever the timeline or the quality changes, so the answer on
+   * screen is about the export the button would produce right now.
+   */
+  const [sourceKey, setSourceKey] = useState<string | null>(null)
+
   const publications = publicationsOf(project)
+  const alreadyUp = publishedFrom(project, sourceKey)
 
   // Restoring a session is a round trip, and it decides which of two completely
   // different forms is shown — so it happens as the panel opens rather than
@@ -100,6 +116,19 @@ export function MintspacePublish(props: MintspacePublishProps) {
       cancelled = true
     }
   }, [configured])
+
+  // Hashing the document is cheap next to rendering it, but not free, so it is
+  // done here rather than during a render: the panel is only mounted while the
+  // dialog is open.
+  useEffect(() => {
+    let cancelled = false
+    void sourceKeyOf(project, { crf }).then((key) => {
+      if (!cancelled) setSourceKey(key)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [project, crf])
 
   const publish = async () => {
     setError(null)
@@ -134,6 +163,7 @@ export function MintspacePublish(props: MintspacePublishProps) {
         storagePath: result.storagePath,
         videoUrl: result.videoUrl,
         digest: digest ?? '',
+        sourceKey: sourceKey ?? undefined,
         caption: caption.trim() || null,
         publishedAt: new Date().toISOString(),
         accountId: account?.id ?? '',
@@ -206,7 +236,7 @@ export function MintspacePublish(props: MintspacePublishProps) {
       {publications.length > 0 ? (
         <section className="flex flex-col gap-2 rounded-lg border border-line bg-surface-2/40 p-3">
           <h3 className="text-xs font-semibold tracking-wide text-ink-dim uppercase">
-            Already in the feed
+            Published from this project
           </h3>
           {publications.map((entry) => (
             <div
@@ -329,13 +359,31 @@ export function MintspacePublish(props: MintspacePublishProps) {
         />
       )}
 
+      {/* Before the button rather than after the render, which is the whole
+          point of keeping a fingerprint of the source as well as of the file:
+          being told a video is a duplicate is worth much more a minute of
+          encoding earlier. */}
+      {alreadyUp ? (
+        <Callout tone="warn" title="Already in the Mintspace feed">
+          This project, at these settings, is what went up
+          {alreadyUp.caption ? ` as “${alreadyUp.caption}”` : ''} on{' '}
+          {new Date(alreadyUp.publishedAt).toLocaleDateString()}. Publishing again would put a
+          second copy in the feed, so the button is off — edit the project, change the size or
+          quality, or delete the post above.
+        </Callout>
+      ) : null}
+
       {stage ? (
         <p className="flex items-center gap-2 text-sm">
           <Spinner /> {stage}
         </p>
       ) : account && !locked ? (
         <div className="flex flex-wrap gap-2">
-          <Button variant="primary" onClick={() => void publish()} disabled={empty}>
+          <Button
+            variant="primary"
+            onClick={() => void publish()}
+            disabled={empty || Boolean(alreadyUp)}
+          >
             <span aria-hidden>📤</span> Render and publish to Mintspace
           </Button>
           <Button variant="ghost" onClick={onClose}>

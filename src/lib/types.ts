@@ -401,6 +401,20 @@ export interface Publication {
    * it is. Empty when the browser would not hash it — see lib/digest.ts.
    */
   digest: string
+  /**
+   * Hash of what the video was *made from* — the timeline and the export
+   * settings — as opposed to `digest`, which is what it came out as.
+   *
+   * The two answer the same question at different moments. This one is
+   * knowable before anything is rendered, so the dialog can say "already in the
+   * feed" while the button is still unpressed rather than after a minute of
+   * encoding. The digest is the exact one and stays the final word, because a
+   * timeline can change in ways the picture does not: edit a hidden caption
+   * track and this differs while the file does not.
+   *
+   * Absent on anything recorded before it existed, which is why it is optional.
+   */
+  sourceKey?: string
   caption: string | null
   /** ISO 8601, as `new Date().toISOString()` writes it. */
   publishedAt: string

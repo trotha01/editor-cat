@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { publicationsOf, publishedAs } from './publications'
+import { publicationsOf, publishedAs, publishedFrom, sourceKeyOf } from './publications'
 import type { Project, Publication } from '../types'
 
 /**
@@ -71,5 +71,88 @@ describe('publishedAs', () => {
   it('does not match a record written without a digest', () => {
     const older: Project = { ...base, publications: [publication('')] }
     expect(publishedAs(older, '')).toBeUndefined()
+  })
+})
+
+describe('sourceKeyOf', () => {
+  it('is the same for the same timeline at the same settings', async () => {
+    const one = await sourceKeyOf(base, { crf: 23 })
+    const two = await sourceKeyOf({ ...base }, { crf: 23 })
+
+    expect(one).toBe(two)
+  })
+
+  it('differs once the timeline changes', async () => {
+    const edited: Project = {
+      ...base,
+      clips: [{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }],
+    }
+
+    expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(await sourceKeyOf(edited, { crf: 23 }))
+  })
+
+  it('differs once the quality changes, which is a different file', async () => {
+    expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(await sourceKeyOf(base, { crf: 18 }))
+  })
+
+  it('differs once the frame size changes', async () => {
+    const bigger: Project = { ...base, width: 1080, height: 1920 }
+
+    expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(await sourceKeyOf(bigger, { crf: 23 }))
+  })
+
+  it('survives a rename, which does not change a single frame', async () => {
+    const renamed: Project = { ...base, name: 'Something else' }
+
+    expect(await sourceKeyOf(base, { crf: 23 })).toBe(await sourceKeyOf(renamed, { crf: 23 }))
+  })
+
+  it('survives publishing, or the post would hide the export it was made from', async () => {
+    // Load-bearing: the publications list changes the moment something goes up,
+    // so counting it would make every export unrecognisable immediately after
+    // the publish that is supposed to make it recognisable.
+    const after: Project = { ...base, publications: [publication('aaa')] }
+
+    expect(await sourceKeyOf(base, { crf: 23 })).toBe(await sourceKeyOf(after, { crf: 23 }))
+  })
+
+  it('survives a round trip that reorders the document’s keys', async () => {
+    // What Postgres `jsonb` does to a project on the way through Supabase. The
+    // same timeline coming back from a sync must not read as a new video.
+    const reordered = JSON.parse(
+      JSON.stringify({
+        fps: base.fps,
+        height: base.height,
+        width: base.width,
+        audioClips: base.audioClips,
+        audioTracks: base.audioTracks,
+        clips: base.clips,
+        name: base.name,
+        id: base.id,
+      }),
+    ) as Project
+
+    expect(await sourceKeyOf(base, { crf: 23 })).toBe(await sourceKeyOf(reordered, { crf: 23 }))
+  })
+})
+
+describe('publishedFrom', () => {
+  it('finds the post this timeline and these settings already went up as', async () => {
+    const key = (await sourceKeyOf(base, { crf: 23 }))!
+    const project: Project = { ...base, publications: [{ ...publication('aaa'), sourceKey: key }] }
+
+    expect(publishedFrom(project, key)?.videoId).toBe('aaa')
+  })
+
+  it('finds nothing for a record kept before source keys existed', async () => {
+    const key = (await sourceKeyOf(base, { crf: 23 }))!
+    const project: Project = { ...base, publications: [publication('aaa')] }
+
+    expect(publishedFrom(project, key)).toBeUndefined()
+  })
+
+  it('finds nothing when the key could not be worked out', () => {
+    const project: Project = { ...base, publications: [publication('aaa')] }
+    expect(publishedFrom(project, null)).toBeUndefined()
   })
 })

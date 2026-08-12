@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Clip } from '../lib/types'
 
 /**
@@ -39,8 +39,10 @@ vi.mock('../lib/export/timelineRender', async (importOriginal) => {
 })
 
 // Enough of Mintspace to reach the publish button without a network.
+const configured = { value: true }
+
 vi.mock('../lib/mintspace/client', () => ({
-  isMintspaceConfigured: () => true,
+  isMintspaceConfigured: () => configured.value,
   mintspaceSiteUrl: () => '',
 }))
 
@@ -68,6 +70,8 @@ const CLIP: Clip = { id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  window.localStorage.clear()
+  configured.value = true
   renderTimeline.mockResolvedValue(RENDERED)
   useProjectStore.setState({ project: { ...emptyProject(), clips: [CLIP] } })
   useAssetStore.setState({ assets: [], loading: false })
@@ -102,6 +106,47 @@ describe('choosing where an export goes', () => {
     await screen.findByRole('button', { name: /publish to mintspace/i })
     expect(screen.queryByText(/never uploaded/i)).not.toBeInTheDocument()
     expect(screen.getByText(/never leaves the machine/i)).toBeInTheDocument()
+  })
+})
+
+describe('remembering the settings', () => {
+  it('opens on the destination last used', () => {
+    open()
+    fireEvent.change(screen.getByLabelText(/export to/i), { target: { value: 'mintspace' } })
+
+    cleanup()
+    open()
+
+    expect(screen.getByLabelText(/export to/i)).toHaveValue('mintspace')
+  })
+
+  it('opens on the quality last used', () => {
+    open()
+    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '18' } })
+
+    cleanup()
+    open()
+
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
+  })
+
+  it('does not remember a destination this deployment cannot reach', () => {
+    // A site that has since dropped its Mintspace configuration would otherwise
+    // open every export on a panel that can only apologise.
+    window.localStorage.setItem('editor-cat.exportDestination.v1', '"mintspace"')
+    configured.value = false
+
+    open()
+
+    expect(screen.getByLabelText(/export to/i)).toHaveValue('download')
+  })
+
+  it('ignores a remembered quality that is not one of the offered ones', () => {
+    window.localStorage.setItem('editor-cat.exportQuality.v1', '99')
+
+    open()
+
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('23')
   })
 })
 
@@ -143,10 +188,13 @@ describe('the render itself', () => {
     expect(publications).toHaveLength(1)
     expect(publications[0]).toMatchObject({ videoId: 'v1', storagePath: 'uid-1/v1.mp4' })
 
-    // Pressing it again renders the same file, recognises it, and stops.
-    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+    // And it says so without being asked: the button is off and the reason is
+    // on screen, rather than waiting for a second render to find out.
+    expect(await screen.findByText(/already in the mintspace feed/i)).toBeInTheDocument()
+    const button = screen.getByRole('button', { name: /publish to mintspace/i })
+    expect(button).toBeDisabled()
 
-    expect(await screen.findByText(/the one already posted/i)).toBeInTheDocument()
+    fireEvent.click(button)
     expect(publishVideo).toHaveBeenCalledTimes(1)
   })
 

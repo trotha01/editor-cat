@@ -713,11 +713,20 @@ was captioned, when it went up and whose account it belongs to. Each one has a
 bucket — asked about first, because it cannot be undone and anyone holding the
 link loses it. Your project and its media are untouched either way.
 
-**The same video cannot go up twice.** The export is hashed before anything is
-uploaded and checked against what this project has already posted, so pressing
-publish a second time on an unchanged project is recognised and refused rather
-than filling the feed with copies. Edit the project and the export hashes
-differently, which is a new video and posts as one.
+**The same video cannot go up twice**, and you are told before you press
+anything. Opening the panel fingerprints the timeline and the export settings
+and compares that against what this project has already posted: if it matches,
+**Already in the Mintspace feed** appears and the publish button is off. Edit the
+project, change the size or quality, or delete the post that is up, and it comes
+back on.
+
+That check is a prediction — it says the export would be made from the same
+things, not that the bytes will match — so the finished file is hashed as well,
+just before it is uploaded, and a duplicate is refused there too. Two
+fingerprints because they answer at different moments: one is knowable without
+rendering, the other is exact. The second catches what the first cannot, such as
+editing a caption on a hidden track, which changes the timeline but not one
+frame of the picture.
 
 That record lives on the project document, not in this browser, so it syncs with
 everything else: publish on a laptop and the phone knows about it too. It is
@@ -742,6 +751,10 @@ someone else published says so rather than appearing to vanish.
   publish it, and the file that goes up is the one you checked — not a second
   render at the same settings. Change the resolution or the quality and it is
   encoded again, because then it genuinely is a different file.
+- **The destination and quality are remembered**, in this browser, so a second
+  video exports the way the first one did. The frame size is not among them: it
+  belongs to the project, where it also drives the preview and the orientation
+  toggle, so each project keeps its own.
 - **No thumbnail is uploaded.** The row's `poster_url` is left unset, and
   Mintspace shows the video's own first decoded frame instead.
 - **A video deleted in Mintspace itself** is noticed the next time you delete it

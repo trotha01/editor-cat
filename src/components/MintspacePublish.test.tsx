@@ -88,6 +88,7 @@ function setup(overrides: Partial<Parameters<typeof MintspacePublish>[0]> = {}) 
   const props = {
     render: vi.fn().mockResolvedValue(VIDEO),
     project: PROJECT,
+    crf: 23,
     empty: false,
     vertical: true,
     busy: false,
@@ -261,8 +262,34 @@ describe('videos this project is already up as', () => {
   it('lists them, so it is known before a minute is spent rendering', async () => {
     setup({ project: posted })
 
-    expect(await screen.findByText(/already in the feed/i)).toBeInTheDocument()
+    expect(await screen.findByText(/published from this project/i)).toBeInTheDocument()
     expect(screen.getByText('declensions, hour 4')).toBeInTheDocument()
+  })
+
+  it('says so before the button is pressed, not after the render', async () => {
+    // The source key is what makes this answerable up front: the same timeline
+    // at the same settings, recognised without encoding anything.
+    const { sourceKeyOf } = await import('../lib/mintspace/publications')
+    const sourceKey = await sourceKeyOf(PROJECT, { crf: 23 })
+    const project: Project = { ...PROJECT, publications: [{ ...POSTED, sourceKey: sourceKey! }] }
+
+    const props = setup({ project })
+
+    expect(await screen.findByText(/already in the mintspace feed/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /publish to mintspace/i })).toBeDisabled()
+    expect(props.render).not.toHaveBeenCalled()
+  })
+
+  it('says nothing up front about a project that has changed since', async () => {
+    const { sourceKeyOf } = await import('../lib/mintspace/publications')
+    const sourceKey = await sourceKeyOf(PROJECT, { crf: 23 })
+    // Same publication, but the quality has moved on, so this is a new export.
+    const project: Project = { ...PROJECT, publications: [{ ...POSTED, sourceKey: sourceKey! }] }
+
+    setup({ project, crf: 18 })
+
+    expect(await screen.findByRole('button', { name: /publish to mintspace/i })).toBeEnabled()
+    expect(screen.queryByText(/already in the mintspace feed/i)).not.toBeInTheDocument()
   })
 
   it('refuses to post the same file a second time', async () => {
@@ -275,7 +302,7 @@ describe('videos this project is already up as', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
 
-    expect(await screen.findByText(/already in the feed/i)).toBeInTheDocument()
+    expect(await screen.findByText(/the one already posted/i)).toBeInTheDocument()
     expect(publishVideo).not.toHaveBeenCalled()
     expect(props.onPublished).not.toHaveBeenCalled()
   })
@@ -301,6 +328,9 @@ describe('videos this project is already up as', () => {
     await waitFor(() => expect(onPublished).toHaveBeenCalled())
     const publication = onPublished.mock.calls[0]![0]
     expect(publication.accountId).toBe('uid-1')
+    // Both fingerprints, so the next export is recognisable before *and* after
+    // it is rendered.
+    expect(publication.sourceKey).toMatch(/^[0-9a-f]{64}$/)
     expect(publication.storagePath).toBe('uid-1/export.mp4')
     // Non-empty, or nothing downstream can recognise this file again.
     expect(publication.digest).toMatch(/^[0-9a-f]{64}$/)

@@ -9,6 +9,8 @@ import { formatTime } from '../lib/timeline'
 import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { exportPresetsFor, orientationOf, type ExportPreset } from '../lib/orientation'
+import { isMintspaceConfigured } from '../lib/mintspace/client'
+import { usePersistedState } from '../hooks/usePersistedState'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 
@@ -41,6 +43,24 @@ function resolutionOptions(width: number, height: number): ExportPreset[] {
   ]
 }
 
+/**
+ * Reads back a remembered choice, or the default.
+ *
+ * Storage is not a schema: what comes back may be from an older build, or hand
+ * edited, or a destination this deployment no longer has. Anything unusable
+ * falls back rather than being trusted — which for the destination also covers
+ * the honest case of a site that has since dropped its Mintspace configuration,
+ * where the remembered answer would otherwise open the dialog on a panel that
+ * can only apologise.
+ */
+function usableDestination(stored: unknown): Destination {
+  return stored === 'mintspace' && isMintspaceConfigured() ? 'mintspace' : 'download'
+}
+
+function usableQuality(stored: unknown): number {
+  return QUALITY.some((option) => option.crf === stored) ? (stored as number) : 23
+}
+
 /** A finished render, stamped with the settings that produced it. */
 interface RenderedFile {
   blob: Blob
@@ -56,8 +76,17 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const forgetPublication = useProjectStore((state) => state.forgetPublication)
   const assets = useAssetStore((state) => state.assets)
 
-  const [destination, setDestination] = useState<Destination>('download')
-  const [crf, setCrf] = useState(23)
+  // Remembered across exports, and across sessions: someone who publishes
+  // everything to Mintspace at Best quality should not be re-choosing both on
+  // every video. The frame size is not here — it lives on the project, where
+  // it also drives the preview and the orientation toggle.
+  const [storedDestination, setStoredDestination] = usePersistedState<Destination>(
+    'editor-cat.exportDestination.v1',
+    'download',
+  )
+  const [storedCrf, setStoredCrf] = usePersistedState('editor-cat.exportQuality.v1', 23)
+  const destination = usableDestination(storedDestination)
+  const crf = usableQuality(storedCrf)
   const [progress, setProgress] = useState<RenderProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rendered, setRendered] = useState<RenderedFile | null>(null)
@@ -165,7 +194,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               value={destination}
               disabled={busy}
               onChange={(event) => {
-                setDestination(event.target.value as Destination)
+                setStoredDestination(event.target.value as Destination)
                 setError(null)
               }}
             >
@@ -206,7 +235,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               id="export-quality"
               value={crf}
               disabled={busy}
-              onChange={(event) => setCrf(Number(event.target.value))}
+              onChange={(event) => setStoredCrf(Number(event.target.value))}
             >
               {QUALITY.map((option) => (
                 <option key={option.crf} value={option.crf}>
@@ -270,10 +299,15 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           </div>
         ) : null}
 
-        {destination === 'mintspace' ? (
+        {/* Only while the dialog is actually up. The panel resolves a Mintspace
+            session and fingerprints the timeline as it mounts, and neither is
+            worth doing for a dialog nobody has opened — which, now that the
+            destination is remembered, would otherwise happen on page load. */}
+        {destination === 'mintspace' && open ? (
           <MintspacePublish
             render={render}
             project={project}
+            crf={crf}
             empty={project.clips.length === 0}
             vertical={vertical}
             busy={progress !== null}
@@ -282,7 +316,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             onForget={forgetPublication}
             onClose={onClose}
           />
-        ) : busy ? null : (
+        ) : destination === 'mintspace' || busy ? null : (
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" onClick={runDownload} disabled={project.clips.length === 0}>
               <span aria-hidden>⬇️</span> Render and download MP4
