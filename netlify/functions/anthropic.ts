@@ -23,7 +23,7 @@ export default async (request: Request): Promise<Response> => {
   const session = await requireSession(request)
   if (!session.ok) return session.response
 
-  const auth = requireServerKey('ANTHROPIC_API_KEY', 'idea generation')
+  const auth = requireServerKey('ANTHROPIC_API_KEY', 'idea generation and prompt improvement')
   if (!auth.ok) return auth.response
 
   if (request.method !== 'POST') {

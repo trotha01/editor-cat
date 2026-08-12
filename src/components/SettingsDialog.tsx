@@ -71,11 +71,11 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         </Callout>
 
         <ModelPicker
-          label="Prompt-improvement model"
+          label="Video prompt-improvement model"
           options={LLM_MODELS}
           value={settings.llmModel}
           onChange={(id) => settings.setPref('llmModel', id)}
-          hint="Routed through fal.ai, so it is covered by this site's own key. Cheaper models are perfectly good at rewriting prompts."
+          hint="Routed through fal.ai, so it is covered by this site's own key. Cheaper models are perfectly good at rewriting prompts. The image prompt is not offered as a choice — it always goes to Claude, since every clip is built from it."
         />
 
         <AccountSettings />

@@ -229,18 +229,29 @@ async function mockVideo(
   return { video: { url: URL.createObjectURL(blob), content_type: blob.type } }
 }
 
-function mockLlm(input: Record<string, unknown>): { output: string } {
-  const prompt = String(input.prompt ?? '')
-
+function mockEnhancement(prompt: string): string {
   // Echo back something clearly shaped like an enhanced prompt so the diff UI
   // has real content to show, while staying obviously fake.
   const subject = prompt.split('\n').at(-1)?.slice(0, 200) ?? prompt
-  return {
-    output:
-      `${subject.trim()}, rendered with cinematic depth of field, soft rim lighting from the left, ` +
-      `shallow 35mm perspective, rich colour grading, fine surface detail, composed on the thirds. ` +
-      `[mock enhancement — no LLM was called]`,
-  }
+  return (
+    `${subject.trim()}, rendered with cinematic depth of field, soft rim lighting from the left, ` +
+    `shallow 35mm perspective, rich colour grading, fine surface detail, composed on the thirds. ` +
+    `[mock enhancement — no LLM was called]`
+  )
+}
+
+function mockLlm(input: Record<string, unknown>): { output: string } {
+  return { output: mockEnhancement(String(input.prompt ?? '')) }
+}
+
+/**
+ * The mock rewrite behind "Improve with AI" on the image prompt, which calls
+ * Claude directly and so never passes through `mockFal`. Same text as the
+ * `any-llm` mock the video button gets, so the two behave alike offline.
+ */
+export async function mockImprovedPrompt(prompt: string): Promise<string> {
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  return mockEnhancement(prompt)
 }
 
 const IDEA_TEMPLATES: ((word: string) => string)[] = [
