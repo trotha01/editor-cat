@@ -54,8 +54,6 @@ export interface TimelineTranscript {
 export interface TranscribeTimelineOptions {
   sources: readonly SpeechSource[]
   assets: readonly Asset[]
-  /** Leave unset to let Scribe detect the language. */
-  languageCode?: string
   onProgress?: (progress: TranscribeProgress) => void
   signal?: AbortSignal
 }
@@ -83,7 +81,6 @@ function describeFailure(cause: unknown): string {
 export async function transcribeTimeline({
   sources,
   assets,
-  languageCode,
   onProgress,
   signal,
 }: TranscribeTimelineOptions): Promise<TimelineTranscript> {
@@ -103,11 +100,12 @@ export async function transcribeTimeline({
       const blob = await getBlob(asset.blobKey)
       if (!blob) throw new Error('its media is no longer stored in this browser')
 
+      // No language is sent: Scribe detects it per stretch, which is the right
+      // answer for a timeline whose clips need not all be in one language.
       const result = await transcribeStretch({
         buffer: await decodeAudio(blob),
         from: source.inPoint,
         to: source.inPoint + source.duration,
-        ...(languageCode ? { languageCode } : {}),
         onProgress: (progress) =>
           onProgress?.({
             done,

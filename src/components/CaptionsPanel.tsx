@@ -17,11 +17,15 @@
  * The button here is the blunt instrument: it transcribes everything on the
  * timeline and replaces the lot. The aimed version of it is not in this panel at
  * all — it is the ⋯ menu on each clip, which is where you are looking at the
- * moment you notice that one take came out wrong. This panel keeps the language
- * they both transcribe with, so the two cannot disagree about it.
+ * moment you notice that one take came out wrong.
+ *
+ * There is nothing to set up before pressing it. Scribe detects the spoken
+ * language itself, and it does so per clip, so a timeline that switches language
+ * partway comes out right without anyone being asked — which is more than the
+ * one-language-for-the-project picker that used to sit here could manage.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Callout, EmptyState, Field, Select, Spinner, TextArea } from './ui'
+import { Button, Callout, EmptyState, Spinner, TextArea } from './ui'
 import {
   activeWordIndexAt,
   captionCuesOf,
@@ -31,13 +35,12 @@ import {
   splitBoundary,
 } from '../lib/captions'
 import { speechSources } from '../lib/captionSources'
-import { SPEECH_LANGUAGES, TRANSCRIBE_ATTEMPTS } from '../lib/scribe'
+import { TRANSCRIBE_ATTEMPTS } from '../lib/scribe'
 import { formatCost, speechCost } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from '../state/useAssetStore'
-import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { CaptionCue, CaptionStyle, CaptionTrack } from '../lib/types'
 
@@ -53,17 +56,6 @@ export function CaptionsPanel({
   const setCaptionsFromWords = useProjectStore((state) => state.setCaptionsFromWords)
   const assets = useAssetStore((state) => state.assets)
 
-  // Shared with the clip menus rather than held here: which language is spoken
-  // is a fact about the audio, and a clip redone from the timeline has to be
-  // transcribed as the same one.
-  const language = useCaptionJobStore((state) => state.language)
-  const setLanguage = useCaptionJobStore((state) => state.setLanguage)
-
-  // Setup folds away once there is a transcript, so the words are near the top
-  // of the panel rather than below two cards of controls nobody is using any
-  // more. Initial only, and set again when a run finishes — deriving it every
-  // render would slam the card shut on anyone who had just opened it.
-  const [setupOpen, setSetupOpen] = useState(() => captionCuesOf(project).length === 0)
   const [lookOpen, setLookOpen] = useState(false)
   const [progress, setProgress] = useState<TranscribeProgress | null>(null)
   // Set before the first await rather than derived from `progress`, which does
@@ -96,17 +88,12 @@ export function CaptionsPanel({
       const transcript = await transcribeTimeline({
         sources,
         assets,
-        ...(language ? { languageCode: language } : {}),
         onProgress: setProgress,
         signal: controller.signal,
       })
 
       const count = setCaptionsFromWords(trackId, transcript.words)
       setWarnings(transcript.failures)
-      // Out of the way, now that there is something to read underneath it. Only
-      // when it worked: an empty result is exactly when you want the language
-      // picker still in front of you.
-      if (count > 0) setSetupOpen(false)
       setNotice(
         count === 0
           ? 'No speech was recognised in the audio on the timeline.'
@@ -128,41 +115,11 @@ export function CaptionsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <Section
-        title="Karaoke captions"
-        summary={cues.length > 0 ? `${cues.length} caption${cues.length === 1 ? '' : 's'}` : ''}
-        open={setupOpen}
-        onToggle={() => setSetupOpen((open) => !open)}
-      >
-        <p className="text-xs leading-relaxed text-ink-dim">
-          Transcribes the voice tracks and the sound your video clips carry, then puts one caption
-          at a time on screen with the word being spoken picked out. Edit the words below; drag the
-          captions and their word marks on the timeline.
-        </p>
-
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Field label="Spoken language">
-            <Select
-              value={language}
-              disabled={busy}
-              onChange={(event) => setLanguage(event.target.value)}
-              aria-label="Which language is spoken"
-            >
-              {SPEECH_LANGUAGES.map((entry) => (
-                <option key={entry.code} value={entry.code}>
-                  {entry.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-
-        <p className="text-xs leading-relaxed text-ink-dim">
-          Transcribed by ElevenLabs Scribe, which times every word — that timing is what the
-          highlight follows. It runs on this site&apos;s own account, so it needs no key from you.
-          Only the audio is sent, separated from the picture first.
-        </p>
-
+      {/* The whole of the setup that used to sit here: press it, and see what
+          the press will cost first. Everything else the card held — the
+          language picker, what Scribe is, what redoing replaces — was read once
+          and then in the way of the transcript for the rest of the session. */}
+      <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="primary"
@@ -233,15 +190,7 @@ export function CaptionsPanel({
             )}
           </div>
         ) : null}
-
-        {cues.length > 0 && !busy ? (
-          <p className="text-xs text-ink-dim">
-            Redoing replaces every caption below, so anything edited by hand is lost. To keep those,
-            redo the one clip that needs it from its ⋯ menu on the timeline instead — only that clip
-            is transcribed, and only its captions change.
-          </p>
-        ) : null}
-      </Section>
+      </div>
 
       {notice ? <Callout tone="success">{notice}</Callout> : null}
       {warnings.length > 0 ? (
@@ -258,7 +207,7 @@ export function CaptionsPanel({
       {track ? (
         <Section
           title="Look"
-          summary={`${Math.round(track.style.fontScale * 100)}% · ${track.style.bold ? 'bold' : 'regular'}`}
+          summary={`${percent(track.style.fontScale, 1)} · ${track.style.bold ? 'bold' : 'regular'}`}
           open={lookOpen}
           onToggle={() => setLookOpen((open) => !open)}
         >
@@ -285,11 +234,10 @@ export function CaptionsPanel({
 /**
  * A card that folds away.
  *
- * Both of these are setup: you use them once and then spend the rest of the
- * session in the transcript underneath. Left open they push the transcript far
- * enough down the page that following the playhead means scrolling — so they
- * close themselves the moment there is a transcript to make room for, and the
- * summary in the header says what is inside without opening it.
+ * Styling is something you set once and then spend the rest of the session in
+ * the transcript underneath. Left open it pushes the transcript far enough down
+ * the page that following the playhead means scrolling — so it starts closed,
+ * and the summary in the header says what is inside without opening it.
  */
 function Section({
   title,
@@ -328,6 +276,15 @@ function Section({
   )
 }
 
+/**
+ * A fraction of the frame as the percentage people read.
+ *
+ * Size moves in half-percent steps, so it is written to one decimal — rounding
+ * it to whole percent would print the same number for two different sizes, which
+ * is worse than no number at all when the number is there to be matched.
+ */
+const percent = (fraction: number, decimals = 0) => `${(fraction * 100).toFixed(decimals)}%`
+
 /** How captions look. Every value is a fraction of the frame, so it survives a resolution change. */
 function CaptionStyleControls({ track }: { track: CaptionTrack }) {
   const setCaptionStyle = useProjectStore((state) => state.setCaptionStyle)
@@ -337,6 +294,11 @@ function CaptionStyleControls({ track }: { track: CaptionTrack }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-4">
+        {/* The number beside each slider, because a slider alone says
+            "somewhere around here" — and these two are the settings people
+            nudge until it looks right and then want to put back exactly. With
+            the value on screen the arrow keys become an exact instrument: one
+            press is one step, and you can see which step you are on. */}
         <label className="flex items-center gap-2 text-xs text-ink-dim">
           Size
           <input
@@ -347,9 +309,15 @@ function CaptionStyleControls({ track }: { track: CaptionTrack }) {
             value={style.fontScale}
             onChange={(event) => set({ fontScale: Number(event.target.value) })}
             aria-label="Caption size, as a fraction of the frame height"
-            title={`${Math.round(style.fontScale * 100)}% of the frame height`}
+            // Announced as the percentage that is drawn beside it, rather than
+            // as the raw 0.08 that no part of the UI shows.
+            aria-valuetext={percent(style.fontScale, 1)}
+            title={`${percent(style.fontScale, 1)} of the frame height`}
             className="h-1 w-28"
           />
+          <span className="w-10 shrink-0 tabular-nums text-ink" aria-hidden>
+            {percent(style.fontScale, 1)}
+          </span>
         </label>
 
         <label className="flex items-center gap-2 text-xs text-ink-dim">
@@ -362,9 +330,13 @@ function CaptionStyleControls({ track }: { track: CaptionTrack }) {
             value={style.position}
             onChange={(event) => set({ position: Number(event.target.value) })}
             aria-label="How far down the frame the captions sit"
-            title={`${Math.round(style.position * 100)}% down the frame`}
+            aria-valuetext={percent(style.position)}
+            title={`${percent(style.position)} down the frame`}
             className="h-1 w-28"
           />
+          <span className="w-10 shrink-0 tabular-nums text-ink" aria-hidden>
+            {percent(style.position)}
+          </span>
         </label>
 
         <label className="flex items-center gap-2 text-xs text-ink-dim">

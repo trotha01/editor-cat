@@ -163,15 +163,17 @@ describe('captioning one clip', () => {
     await first
   })
 
-  it('transcribes as the language the Captions step is set to', async () => {
-    useCaptionJobStore.setState({ language: 'spa' })
+  // Detection is per clip and asked for by sending nothing, so "no language" is
+  // the setting rather than the absence of one: a code creeping back into this
+  // call would pin every clip to one language again.
+  it('names no language, leaving Scribe to detect it', async () => {
     transcribeTimeline.mockResolvedValue(transcript())
 
     await useCaptionJobStore.getState().captionClip(CLIP_A)
 
     expect(transcribeTimeline).toHaveBeenCalledWith(
-      expect.objectContaining({ languageCode: 'spa', sources: [CLIP_A] }),
+      expect.not.objectContaining({ languageCode: expect.anything() }),
     )
-    useCaptionJobStore.setState({ language: '' })
+    expect(transcribeTimeline).toHaveBeenCalledWith(expect.objectContaining({ sources: [CLIP_A] }))
   })
 })
