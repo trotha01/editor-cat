@@ -95,6 +95,27 @@ describe('exportPlan', () => {
     expect(exportPlan({ ...base, leadIn: 2 }, assets).outputDuration).toBe(6)
   })
 
+  describe('the export range', () => {
+    it('is the whole timeline when none was asked for', () => {
+      const plan = exportPlan(base, assets)
+      expect(plan.range).toEqual({ start: 0, end: 4 })
+      expect(plan.timelineDuration).toBe(4)
+    })
+
+    it('reports the length of the window rather than of the timeline', () => {
+      const plan = exportPlan(base, assets, { start: 1, end: 3 })
+      expect(plan.outputDuration).toBe(2)
+      // The timeline itself has not changed length, and the dialog says so.
+      expect(plan.timelineDuration).toBe(4)
+    })
+
+    it('holds a range to the timeline it was measured on', () => {
+      // What happens when a clip is deleted while the dialog is open: the
+      // range outlives the seconds it named.
+      expect(exportPlan(base, assets, { start: 0, end: 30 }).range).toEqual({ start: 0, end: 4 })
+    })
+  })
+
   describe('sound', () => {
     it('leaves out clips on a muted track, which would encode as silence', () => {
       const project: Project = {

@@ -29,7 +29,7 @@ import {
   signUp,
   type MintspaceAccount,
 } from '../lib/mintspace/publish'
-import type { Project, Publication } from '../lib/types'
+import type { ExportRange, Project, Publication } from '../lib/types'
 
 export interface MintspacePublishProps {
   /** Renders the timeline to an MP4 — or hands back one already rendered. */
@@ -42,6 +42,14 @@ export interface MintspacePublishProps {
   project: Project
   /** The quality setting, which with the timeline decides what comes out. */
   crf: number
+  /**
+   * The stretch of the timeline being exported, when it is not all of it.
+   *
+   * Only here for the fingerprint — the render itself is the dialog's job and
+   * arrives through `render` already trimmed. Without it, narrowing the range
+   * would produce a different file that this panel still called "already up".
+   */
+  range?: ExportRange
   /** True when there is nothing on the timeline to publish. */
   empty: boolean
   /** False for a 16:9 project, which the feed will letterbox. */
@@ -55,7 +63,7 @@ export interface MintspacePublishProps {
 }
 
 export function MintspacePublish(props: MintspacePublishProps) {
-  const { render, project, crf, empty, vertical, busy, onBusyChange, onClose } = props
+  const { render, project, crf, range, empty, vertical, busy, onBusyChange, onClose } = props
   const { onPublished, onForget } = props
 
   const configured = isMintspaceConfigured()
@@ -120,15 +128,25 @@ export function MintspacePublish(props: MintspacePublishProps) {
   // Hashing the document is cheap next to rendering it, but not free, so it is
   // done here rather than during a render: the panel is only mounted while the
   // dialog is open.
+  //
+  // Watched as two numbers rather than as the range itself, because the dialog
+  // has no reason to hand down the same object twice and this would otherwise
+  // rehash on every keystroke in the caption field below.
+  const rangeStart = range?.start
+  const rangeEnd = range?.end
   useEffect(() => {
     let cancelled = false
-    void sourceKeyOf(project, { crf }).then((key) => {
+    const window =
+      rangeStart === undefined || rangeEnd === undefined
+        ? undefined
+        : { start: rangeStart, end: rangeEnd }
+    void sourceKeyOf(project, { crf, range: window }).then((key) => {
       if (!cancelled) setSourceKey(key)
     })
     return () => {
       cancelled = true
     }
-  }, [project, crf])
+  }, [project, crf, rangeStart, rangeEnd])
 
   const publish = async () => {
     setError(null)
@@ -324,8 +342,8 @@ export function MintspacePublish(props: MintspacePublishProps) {
             This project, at these settings, is what went up
             {alreadyUp.caption ? ` as “${alreadyUp.caption}”` : ''} on{' '}
             {new Date(alreadyUp.publishedAt).toLocaleDateString()}. Publishing again would put a
-            second copy in the feed, so the button is off — edit the project, change the size or
-            quality, or delete the post below.
+            second copy in the feed, so the button is off — edit the project, change the size,
+            quality or export range, or delete the post below.
           </p>
           {rowsFor(publications)}
         </Callout>

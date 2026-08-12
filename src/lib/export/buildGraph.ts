@@ -125,6 +125,18 @@ export interface ExportSpec {
    * scripts/copy-caption-font.mjs.
    */
   captions?: { file: string; fontsDir: string }
+  /**
+   * The stretch of the assembled timeline to keep, in absolute timeline
+   * seconds — the same clock the overlays and the captions are dated from, and
+   * the one the lead-in padding is what establishes. Absent is all of it.
+   *
+   * Cut at the very end of the graph rather than by seeking the inputs, because
+   * a window is a property of the finished picture: a transition that begins
+   * before the window and lands inside it still has to be blended, and a
+   * caption written against timeline seconds still has to be burnt in where it
+   * was written. Seeking the sources would lose both.
+   */
+  range?: { start: number; end: number }
   /** 18 is visually lossless, 28 is small. 23 is a good middle. */
   crf?: number
   preset?: string
@@ -139,6 +151,11 @@ export interface ExportPlan {
 /** Seconds rounded to millisecond precision, avoiding float noise in argv. */
 function sec(value: number): string {
   return (Math.round(value * 1000) / 1000).toString()
+}
+
+function clamp(value: number, low: number, high: number): number {
+  if (!Number.isFinite(value)) return low
+  return Math.min(Math.max(value, low), high)
 }
 
 /** Gain to three decimals — finer than anyone can hear, and keeps argv tidy. */
@@ -284,7 +301,17 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // count here as well as sound: a layer held past the last clip needs
   // something under it, and black would be the picture ending early.
   const contentEnd = Math.max(audioEnd, overlayEnd)
-  const outputDuration = Math.max(visualEnd, contentEnd)
+  const timelineEnd = Math.max(visualEnd, contentEnd)
+
+  // Clamped here as well as by whoever asked for it: this file's own idea of
+  // how long the timeline runs is what every filter below is measured against,
+  // and it is not quite the dialog's — layers and muted clips count differently
+  // there. A range that covers the whole thing is not a trim at all, and builds
+  // the command it built before ranges existed.
+  const rangeStart = clamp(spec.range?.start ?? 0, 0, timelineEnd)
+  const rangeEnd = clamp(spec.range?.end ?? timelineEnd, rangeStart, timelineEnd)
+  const trimming = rangeEnd > rangeStart && (rangeStart > 0 || rangeEnd < timelineEnd - 0.001)
+  const outputDuration = trimming ? rangeEnd - rangeStart : timelineEnd
 
   const args: string[] = []
 
@@ -347,7 +374,7 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // [vout] itself, rather than every export ending with a relabelling filter
   // that exists only because the graph was built without looking ahead.
   let pending = leadIn > 0 || contentEnd > visualEnd + 0.01 ? 1 : 0
-  pending += overlays.length + (spec.captions ? 1 : 0)
+  pending += overlays.length + (spec.captions ? 1 : 0) + (trimming ? 1 : 0)
   const nextStage = (label: string): string => {
     pending -= 1
     return pending === 0 ? '[vout]' : label
@@ -431,9 +458,24 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // would put every caption late by the length of it — and lose outright any
   // caption written over it.
   if (spec.captions) {
+    const out = nextStage('[vass]')
     chains.push(
-      `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${nextStage('[vass]')}`,
+      `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${out}`,
     )
+    stage = out
+  }
+
+  // The export range, last of all. Every step above is dated from the timeline
+  // — the padding that put the stream on its clock, the layers gated by `t`,
+  // the captions — so the window has to be taken out after all of them, while
+  // those seconds still mean what they say. `setpts` then rebases what survives
+  // to start at zero, which is where a file has to start.
+  if (trimming) {
+    const out = nextStage('[vtrim]')
+    chains.push(
+      `${stage}trim=start=${sec(rangeStart)}:end=${sec(rangeEnd)},setpts=PTS-STARTPTS${out}`,
+    )
+    stage = out
   }
 
   // --- Audio graph -------------------------------------------------------
@@ -479,13 +521,32 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   })
 
   const hasAudio = placed.length > 0
+  // Where the mix comes out. With a range there is one more filter to go
+  // through before it is the output.
+  const mixed = trimming ? '[amix]' : '[aout]'
   if (placed.length === 1) {
-    chains.push(`${placed[0]}anull[aout]`)
+    chains.push(`${placed[0]}anull${mixed}`)
   } else if (placed.length > 1) {
     // normalize=0 keeps every clip at its own level; the default would quietly
     // divide the volume by the number of inputs, so adding a music bed would
     // duck the narration it is supposed to sit under.
-    chains.push(`${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0[aout]`)
+    chains.push(
+      `${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0${mixed}`,
+    )
+  }
+
+  if (hasAudio && trimming) {
+    // The same window, off the same clock — the mix is already at absolute
+    // timeline positions, which is what `adelay` above was for.
+    //
+    // `apad` because the window may begin after the last sound in the project,
+    // which would otherwise hand the encoder an audio stream with not one
+    // sample in it. It runs until the `-t` below stops it, so a project whose
+    // sound genuinely ends early carries silence to the end rather than a
+    // stream that ends mid-file.
+    chains.push(
+      `${mixed}atrim=start=${sec(rangeStart)}:end=${sec(rangeEnd)},asetpts=PTS-STARTPTS,apad[aout]`,
+    )
   }
 
   args.push('-filter_complex', chains.join(';'))

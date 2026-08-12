@@ -328,6 +328,20 @@ export interface CaptionTrack {
   style: CaptionStyle
 }
 
+/**
+ * The stretch of a timeline an export keeps, in absolute timeline seconds —
+ * the same clock the lead-in, the layers and the captions are all dated from.
+ *
+ * A decision about one export rather than a property of the edit, which is why
+ * it is not on the `Project`: trimming the file you are about to hand someone
+ * is not a change to the cut, and should not travel with it, sync, or land in
+ * the undo history. See lib/export/range.ts.
+ */
+export interface ExportRange {
+  start: number
+  end: number
+}
+
 export interface Project {
   id: string
   name: string

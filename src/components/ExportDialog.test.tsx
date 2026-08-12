@@ -29,13 +29,13 @@ vi.mock('../lib/media', async (importOriginal) => {
 })
 
 const RENDERED = new Blob(['mp4'], { type: 'video/mp4' })
-const renderTimeline = vi.fn<() => Promise<Blob>>()
+const renderTimeline = vi.fn<(options: unknown) => Promise<Blob>>()
 
 vi.mock('../lib/export/timelineRender', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/export/timelineRender')>()
   // The plan is the shipped one — the dialog's summary is derived from it — but
   // nothing here is going to run ffmpeg.
-  return { ...actual, renderTimeline: () => renderTimeline() }
+  return { ...actual, renderTimeline: (options: unknown) => renderTimeline(options) }
 })
 
 // Enough of Mintspace to reach the publish button without a network.
@@ -153,6 +153,84 @@ describe('remembering the settings', () => {
     open()
 
     expect(screen.getByLabelText(/quality/i)).toHaveValue('23')
+  })
+})
+
+/**
+ * Start and end, which are two boxes over the one number that matters: how much
+ * of the timeline comes out. The whole of it by default — nobody opening the
+ * export dialog to hand someone a video is asking to have part of it withheld —
+ * and once narrowed, the same window all the way down to the encoder.
+ */
+describe('choosing how much of it to export', () => {
+  it('offers the whole timeline to start with', () => {
+    // The one clip runs four seconds, and nothing has said otherwise.
+    open()
+
+    expect(screen.getByLabelText(/^start$/i)).toHaveValue(0)
+    expect(screen.getByLabelText(/^end$/i)).toHaveValue(4)
+    expect(screen.queryByRole('button', { name: /whole timeline/i })).not.toBeInTheDocument()
+  })
+
+  it('renders only the stretch that was asked for', async () => {
+    open()
+
+    fireEvent.change(screen.getByLabelText(/^start$/i), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^end$/i), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ range: { start: 1, end: 3 } }),
+    )
+  })
+
+  it('asks for no range at all when it covers everything', async () => {
+    open()
+
+    fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(expect.objectContaining({ range: undefined }))
+  })
+
+  it('says how long the file runs, and which part of the timeline it is', () => {
+    open()
+
+    fireEvent.change(screen.getByLabelText(/^end$/i), { target: { value: '3' } })
+
+    // Three seconds of file, and enough to tell whether the right three.
+    expect(screen.getByText(/0:03\.0 · 0:00\.0 to 0:03\.0 of 0:04\.0/)).toBeInTheDocument()
+  })
+
+  it('holds a range that reaches past the end of the timeline', () => {
+    open()
+
+    fireEvent.change(screen.getByLabelText(/^end$/i), { target: { value: '99' } })
+
+    expect(screen.getByLabelText(/^end$/i)).toHaveValue(4)
+  })
+
+  it('puts it back to the whole timeline on request', () => {
+    open()
+
+    fireEvent.change(screen.getByLabelText(/^start$/i), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: /whole timeline/i }))
+
+    expect(screen.getByLabelText(/^start$/i)).toHaveValue(0)
+    expect(screen.getByLabelText(/^end$/i)).toHaveValue(4)
+  })
+
+  it('encodes again once the range no longer describes what is on hand', async () => {
+    open()
+
+    fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByLabelText(/^end$/i), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(2))
   })
 })
 

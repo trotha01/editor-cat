@@ -20,7 +20,7 @@ import {
 } from './buildGraph'
 import { hasAudioStream } from './probe'
 import { xfadeNameOf } from '../transitions'
-import type { Transition } from '../types'
+import type { ExportRange, Transition } from '../types'
 
 export interface ExportAsset {
   /** Stable key used to name the file inside the ffmpeg filesystem. */
@@ -66,6 +66,11 @@ export interface RenderRequest {
   fps: number
   /** Seconds of black before the first clip. Audio keeps its own timing. */
   leadIn?: number
+  /**
+   * The stretch of the assembled timeline to keep, in absolute timeline
+   * seconds. Absent is all of it, which is what an export is by default.
+   */
+  range?: ExportRange
   /**
    * Captions to burn in, as a ready-made ASS file plus the font faces it needs.
    * Absent means no captions and no font is fetched at all.
@@ -268,6 +273,7 @@ export async function renderProject(
     fps: request.fps,
     outputFile,
     ...(request.leadIn ? { leadIn: request.leadIn } : {}),
+    ...(request.range ? { range: request.range } : {}),
     ...(request.captions ? { captions: { file: CAPTIONS_FILE, fontsDir: FONTS_DIR } } : {}),
     ...(request.crf !== undefined ? { crf: request.crf } : {}),
   })

@@ -7,7 +7,7 @@
  * travels with the project rather than with the browser.
  */
 import { sha256Hex } from '../digest'
-import type { Project, Publication } from '../types'
+import type { ExportRange, Project, Publication } from '../types'
 
 /** Absent means none: every project saved before publishing existed has none. */
 export function publicationsOf(project: Project): Publication[] {
@@ -55,17 +55,25 @@ function stableStringify(value: unknown): string {
 /** The settings, beyond the timeline itself, that change what comes out. */
 export interface ExportSettings {
   crf: number
+  /**
+   * The stretch of the timeline being exported, when it is not all of it.
+   * Absent — the ordinary case — hashes exactly as it did before ranges
+   * existed, so a project published from a full export is still recognised as
+   * having been.
+   */
+  range?: ExportRange
 }
 
 /**
  * A fingerprint of everything that decides what this export will be.
  *
- * The timeline plus the quality setting — the frame size is part of the
- * timeline already. Deliberately not the project's id or name: renaming a
- * project does not make its export a different video. Deliberately not its
- * publications either, and that one is load-bearing rather than tidy: they
- * change the moment something is published, so including them would make every
- * export unrecognisable straight after the publish that should be recognised.
+ * The timeline plus the quality setting and the export range — the frame size
+ * is part of the timeline already. Deliberately not the project's id or name:
+ * renaming a project does not make its export a different video. Deliberately
+ * not its publications either, and that one is load-bearing rather than tidy:
+ * they change the moment something is published, so including them would make
+ * every export unrecognisable straight after the publish that should be
+ * recognised.
  *
  * Null when the browser will not hash, which `publishedFrom` reads as "cannot
  * say" rather than "no" — see lib/digest.ts.
@@ -75,7 +83,9 @@ export async function sourceKeyOf(
   settings: ExportSettings,
 ): Promise<string | null> {
   const { id: _id, name: _name, publications: _publications, ...doc } = project
-  return sha256Hex(new Blob([stableStringify({ doc, crf: settings.crf })]))
+  // `stableStringify` drops undefined entries, so an untrimmed export hashes to
+  // the same key it did before there was such a thing as a range.
+  return sha256Hex(new Blob([stableStringify({ doc, crf: settings.crf, range: settings.range })]))
 }
 
 /**

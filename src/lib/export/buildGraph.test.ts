@@ -664,6 +664,141 @@ describe('buildExportPlan', () => {
   })
 
   /**
+   * The export range, which is a window on the finished timeline rather than a
+   * seek into the sources. What is worth pinning down is *where* it is taken:
+   * a trim applied before the padding, the layers or the captions renders
+   * perfectly happily and keeps the wrong seconds.
+   */
+  describe('export range', () => {
+    const over = (file: string, startTime: number, duration: number): ExportOverlayClip => ({
+      file,
+      kind: 'video',
+      inPoint: 0,
+      startTime,
+      duration,
+    })
+
+    it('builds exactly what it always did when the range is the whole thing', () => {
+      const whole = buildExportPlan({ ...base, clips: [img('a.png', 6)], audio: [] })
+      const asked = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 6)],
+        audio: [],
+        range: { start: 0, end: 6 },
+      })
+
+      expect(asked.args).toEqual(whole.args)
+      expect(graphOf(asked.args)).not.toContain('trim=')
+    })
+
+    it('cuts the window out of the finished picture and rebases it to zero', () => {
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 10)],
+        audio: [],
+        range: { start: 2, end: 7 },
+      })
+
+      expect(graphOf(plan.args)).toContain('[vcat]trim=start=2:end=7,setpts=PTS-STARTPTS[vout]')
+      // The file runs the length of the window, not of the timeline.
+      expect(plan.durationSeconds).toBeCloseTo(5)
+      expect(plan.args.at(-2)).toBe('5')
+    })
+
+    it('takes it after the padding, the layers and the captions', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          leadIn: 3,
+          overlays: [over('b.mp4', 4, 2)],
+          captions: { file: 'captions.ass', fontsDir: '/fonts' },
+          range: { start: 5, end: 9 },
+        }).args,
+      )
+
+      // Every step above dates itself from the timeline, so the window has to
+      // come last: trimming first would leave the layer's `enable` window and
+      // every cue time pointing five seconds past where they belong.
+      expect(graph).toContain('[vcat]tpad=start_mode=add:start_duration=3:color=black[vpad]')
+      expect(graph).toContain('[vpad][ov0]overlay=')
+      expect(graph).toContain("enable='between(t,4,6)'")
+      expect(graph).toContain('[vov0]ass=filename=captions.ass:fontsdir=/fonts[vass]')
+      expect(graph).toContain('[vass]trim=start=5:end=9,setpts=PTS-STARTPTS[vout]')
+    })
+
+    it('takes the same window out of the mix', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [aud('v1.mp3', 0, 4), aud('v2.mp3', 5, 3)],
+          range: { start: 3, end: 8 },
+        }).args,
+      )
+
+      // The mix is already at absolute timeline positions, so the same two
+      // numbers cut it — and `apad` covers a window that begins after the last
+      // sound, which would otherwise be an audio stream with no samples in it.
+      expect(graph).toContain('amix=inputs=2:duration=longest:normalize=0[amix]')
+      expect(graph).toContain('[amix]atrim=start=3:end=8,asetpts=PTS-STARTPTS,apad[aout]')
+    })
+
+    it('trims a lone take without mixing it', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [aud('v1.mp3', 0, 9)],
+          range: { start: 1, end: 4 },
+        }).args,
+      )
+
+      expect(graph).toContain('anull[amix]')
+      expect(graph).toContain('[amix]atrim=start=1:end=4,asetpts=PTS-STARTPTS,apad[aout]')
+    })
+
+    it('leaves a silent export silent', () => {
+      const { args } = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 10)],
+        audio: [],
+        range: { start: 1, end: 4 },
+      })
+
+      expect(args).toContain('-an')
+      expect(graphOf(args)).not.toContain('atrim')
+    })
+
+    it('keeps a range inside the timeline it was measured on', () => {
+      // The dialog counts layers and muted clips differently, so a range from
+      // it can reach past what this file thinks the timeline runs.
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 6)],
+        audio: [],
+        range: { start: 2, end: 99 },
+      })
+
+      expect(graphOf(plan.args)).toContain('trim=start=2:end=6,setpts=PTS-STARTPTS[vout]')
+      expect(plan.durationSeconds).toBeCloseTo(4)
+    })
+
+    it('exports the whole thing rather than nothing when the range is empty', () => {
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 6)],
+        audio: [],
+        range: { start: 4, end: 4 },
+      })
+
+      expect(graphOf(plan.args)).not.toContain('trim=')
+      expect(plan.durationSeconds).toBeCloseTo(6)
+    })
+  })
+
+  /**
    * Transitions, which are the one thing that changes how the picture is put
    * together. What is worth pinning down is the offset: a blend placed by the
    * wrong number renders happily and cuts in the wrong place, which is exactly

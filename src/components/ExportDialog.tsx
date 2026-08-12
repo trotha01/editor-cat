@@ -1,8 +1,9 @@
 /** Renders the timeline to an MP4 in the browser, then downloads or publishes it. */
 import { useRef, useState } from 'react'
-import { Button, Callout, Field, Modal, Select, Spinner } from './ui'
+import { Button, Callout, Field, Modal, Select, Spinner, TextInput } from './ui'
 import { MintspacePublish } from './MintspacePublish'
 import { exportPlan, renderTimeline } from '../lib/export/timelineRender'
+import { isWholeTimeline } from '../lib/export/range'
 import type { RenderProgress } from '../lib/export/render'
 import { downloadBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
@@ -13,6 +14,7 @@ import { isMintspaceConfigured } from '../lib/mintspace/client'
 import { usePersistedState } from '../hooks/usePersistedState'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
+import type { ExportRange } from '../lib/types'
 
 const QUALITY = [
   { crf: 28, label: 'Smaller file' },
@@ -67,6 +69,8 @@ interface RenderedFile {
   crf: number
   width: number
   height: number
+  start: number
+  end: number
 }
 
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -87,6 +91,16 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [storedCrf, setStoredCrf] = usePersistedState('editor-cat.exportQuality.v1', 23)
   const destination = usableDestination(storedDestination)
   const crf = usableQuality(storedCrf)
+  /**
+   * How much of the timeline to export. Null is all of it, which is what an
+   * export is until someone says otherwise.
+   *
+   * Held here rather than on the project, and deliberately not remembered
+   * across sessions like the two settings above: it is a decision about one
+   * file, measured in seconds of one timeline, so it has no meaning against the
+   * next project — or against this one after another clip lands on the end.
+   */
+  const [range, setRange] = useState<ExportRange | null>(null)
   const [progress, setProgress] = useState<RenderProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rendered, setRendered] = useState<RenderedFile | null>(null)
@@ -96,7 +110,13 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
   const resolutions = resolutionOptions(project.width, project.height)
   const vertical = orientationOf(project.width, project.height) === 'vertical'
-  const plan = exportPlan(project, assets)
+  const plan = exportPlan(project, assets, range ?? undefined)
+  // The range as everything downstream should see it: clamped by the plan, and
+  // undefined when it covers the whole timeline — which is how an export says
+  // "all of it" the whole way down, rather than by carrying two numbers that
+  // happen to be the ends.
+  const { start, end } = plan.range
+  const trimmed = isWholeTimeline(plan.range, plan.timelineDuration) ? undefined : { start, end }
 
   /**
    * The render on hand, but only while the settings above still describe it.
@@ -110,7 +130,9 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     rendered &&
     rendered.crf === crf &&
     rendered.width === project.width &&
-    rendered.height === project.height
+    rendered.height === project.height &&
+    rendered.start === start &&
+    rendered.end === end
       ? rendered
       : null
 
@@ -154,10 +176,11 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         project,
         assets,
         crf,
+        range: trimmed,
         onProgress: setProgress,
         signal: controller.signal,
       })
-      setRendered({ blob, crf, width: project.width, height: project.height })
+      setRendered({ blob, crf, width: project.width, height: project.height, start, end })
       return blob
     } finally {
       setProgress(null)
@@ -246,6 +269,53 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           </Field>
         </div>
 
+        {/* The window on the timeline. Whole by default — an export is the
+            whole thing unless someone says otherwise — and each box writes both
+            numbers so that touching one does not leave the other undecided.
+            Out of order or past the end is clamped rather than refused, which
+            is what makes these typeable at all. */}
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field
+            label="Start"
+            htmlFor="export-start"
+            hint={`Seconds on the timeline, which runs ${formatTime(plan.timelineDuration)}.`}
+          >
+            <TextInput
+              id="export-start"
+              type="number"
+              min={0}
+              max={plan.timelineDuration}
+              step={0.1}
+              value={start.toFixed(1)}
+              disabled={busy}
+              onChange={(event) => setRange({ start: Number(event.target.value), end })}
+            />
+          </Field>
+
+          <Field label="End" htmlFor="export-end">
+            <TextInput
+              id="export-end"
+              type="number"
+              min={0}
+              max={plan.timelineDuration}
+              step={0.1}
+              value={end.toFixed(1)}
+              disabled={busy}
+              onChange={(event) => setRange({ start, end: Number(event.target.value) })}
+            />
+          </Field>
+
+          {/* Only when there is something to undo: a button that cannot change
+              anything is one more thing to read past. */}
+          {trimmed ? (
+            <div className="flex items-start sm:items-center">
+              <Button variant="ghost" disabled={busy} onClick={() => setRange(null)}>
+                Export the whole timeline
+              </Button>
+            </div>
+          ) : null}
+        </div>
+
         {destination === 'download' ? (
           <Callout tone="info" title="Everything happens on your machine">
             Rendering runs in this tab with ffmpeg compiled to WebAssembly — your media is never
@@ -263,9 +333,18 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         <p className="text-sm text-ink-dim">
           {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
           {formatTime(plan.outputDuration)}
+          {/* Which stretch it is, said next to how long it runs, because the
+              length alone cannot tell you whether the right part was kept. */}
+          {trimmed
+            ? ` · ${formatTime(start)} to ${formatTime(end)} of ${formatTime(plan.timelineDuration)}`
+            : ''}
           {/* Worth saying outright: it explains an export that is longer than
-              the clips add up to, and confirms the count-in has room. */}
-          {plan.leadIn > 0 ? ` · ${formatTime(plan.leadIn)} of black before the picture` : ''}
+              the clips add up to, and confirms the count-in has room. Only
+              while the export still starts inside it — a range beginning after
+              the picture does has no black in it at all. */}
+          {plan.leadIn > start
+            ? ` · ${formatTime(plan.leadIn - start)} of black before the picture`
+            : ''}
           {plan.transitions > 0
             ? ` · ${plan.transitions} transition${plan.transitions === 1 ? '' : 's'}, which overlap the clips they join`
             : ''}{' '}
@@ -308,6 +387,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             render={render}
             project={project}
             crf={crf}
+            range={trimmed}
             empty={project.clips.length === 0}
             vertical={vertical}
             busy={progress !== null}

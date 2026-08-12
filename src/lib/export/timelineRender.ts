@@ -18,6 +18,7 @@
 import { renderProject, type ExportAsset, type RenderProgress, type RenderRequest } from './render'
 import { buildAssFile } from './assCaptions'
 import { captionFonts } from './captionFonts'
+import { clampExportRange, isWholeTimeline } from './range'
 import { getBlob } from '../db'
 import { clipGain, layoutClips, leadInOf } from '../timeline'
 import { audioEnd, gainFor } from '../audioTracks'
@@ -29,6 +30,7 @@ import type {
   CaptionCue,
   CaptionTrack,
   Clip,
+  ExportRange,
   PositionedClip,
   Project,
 } from '../types'
@@ -38,7 +40,11 @@ export interface ExportPlan {
   leadIn: number
   /** The clips as the timeline actually lays them out, transitions fitted. */
   positioned: PositionedClip[]
-  /** How long the finished file runs, sound included. */
+  /** How long the whole timeline runs, sound included, before any trimming. */
+  timelineDuration: number
+  /** The stretch of it being exported — all of it unless someone narrowed it. */
+  range: ExportRange
+  /** How long the finished file runs: the length of `range`. */
   outputDuration: number
   /** Audio clips that will be encoded; muted tracks are not among them. */
   audibleClips: AudioClip[]
@@ -55,8 +61,14 @@ export interface ExportPlan {
   burntInCues: CaptionCue[]
 }
 
-/** Everything about an export that can be known before running it. */
-export function exportPlan(project: Project, assets: Asset[]): ExportPlan {
+/**
+ * Everything about an export that can be known before running it.
+ *
+ * `range` is what the export dialog's two boxes hold, and absent is the whole
+ * timeline. It is resolved here rather than at the boxes so that the length the
+ * dialog prints and the window the renderer cuts are the same arithmetic.
+ */
+export function exportPlan(project: Project, assets: Asset[], range?: ExportRange): ExportPlan {
   const leadIn = leadInOf(project)
   // Positions already carry the lead-in, so the last clip's end is where the
   // picture really finishes rather than how long it runs for.
@@ -80,10 +92,15 @@ export function exportPlan(project: Project, assets: Asset[]): ExportPlan {
     captionTracks.some((track) => track.id === cue.trackId),
   )
 
+  const timelineDuration = Math.max(visualDuration, audioEnd(project.audioClips))
+  const resolved = clampExportRange(range, timelineDuration)
+
   return {
     leadIn,
     positioned,
-    outputDuration: Math.max(visualDuration, audioEnd(project.audioClips)),
+    timelineDuration,
+    range: resolved,
+    outputDuration: resolved.end - resolved.start,
     audibleClips,
     mutedCount: project.audioClips.length - audibleClips.length,
     videoClips,
@@ -98,14 +115,16 @@ export interface TimelineRenderOptions {
   project: Project
   assets: Asset[]
   crf: number
+  /** The stretch of the timeline to keep. Absent is all of it. */
+  range?: ExportRange
   onProgress?: (progress: RenderProgress) => void
   signal?: AbortSignal
 }
 
 /** Renders the project to an MP4, exactly as the preview shows it. */
 export async function renderTimeline(options: TimelineRenderOptions): Promise<Blob> {
-  const { project, assets, crf, onProgress, signal } = options
-  const plan = exportPlan(project, assets)
+  const { project, assets, crf, range, onProgress, signal } = options
+  const plan = exportPlan(project, assets, range)
 
   // Gather every blob the render needs up front, so a missing asset fails
   // before the encoder has spent a minute of the user's time.
@@ -202,6 +221,10 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
       height: project.height,
       fps: project.fps,
       leadIn: plan.leadIn,
+      // Left off when it covers everything, so an untrimmed export is the
+      // command it always was rather than one with a filter that keeps every
+      // frame it is given.
+      ...(isWholeTimeline(plan.range, plan.timelineDuration) ? {} : { range: plan.range }),
       ...(captions ? { captions } : {}),
       crf,
     },

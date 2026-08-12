@@ -95,6 +95,15 @@ describe('sourceKeyOf', () => {
     expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(await sourceKeyOf(base, { crf: 18 }))
   })
 
+  it('differs once the export range does, which is a different file', async () => {
+    expect(await sourceKeyOf(base, { crf: 23 })).not.toBe(
+      await sourceKeyOf(base, { crf: 23, range: { start: 1, end: 3 } }),
+    )
+    expect(await sourceKeyOf(base, { crf: 23, range: { start: 0, end: 3 } })).not.toBe(
+      await sourceKeyOf(base, { crf: 23, range: { start: 1, end: 3 } }),
+    )
+  })
+
   it('differs once the frame size changes', async () => {
     const bigger: Project = { ...base, width: 1080, height: 1920 }
 
