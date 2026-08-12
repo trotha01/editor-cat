@@ -56,9 +56,30 @@ export interface ExportPreset {
   height: number
 }
 
+/**
+ * The frame a new project starts on.
+ *
+ * The smallest tier, and deliberately: the render runs in this tab on the
+ * user's own CPU with ffmpeg compiled to WebAssembly, so frame size is mostly
+ * minutes spent waiting on an export. A first cut that comes back quickly is
+ * worth more than a sharp one that does not, and the two larger tiers are one
+ * Select away in the export dialog — where whichever was chosen then survives
+ * an orientation flip, since `dimensionsFor` re-orients rather than resizes.
+ *
+ * Kept in `EXPORT_PRESETS` below rather than written out twice: the dialog
+ * matches the project's size against the presets, and a default that drifted
+ * out of that list would show up as an extra "Current" option.
+ */
+export const DEFAULT_PRESET: ExportPreset = {
+  label: '480p',
+  orientation: 'vertical',
+  width: 480,
+  height: 854,
+}
+
 /** H.264 needs even dimensions in both axes, which every pair here satisfies. */
 export const EXPORT_PRESETS: readonly ExportPreset[] = [
-  { label: '480p', orientation: 'vertical', width: 480, height: 854 },
+  DEFAULT_PRESET,
   { label: '720p', orientation: 'vertical', width: 720, height: 1280 },
   { label: '1080p', orientation: 'vertical', width: 1080, height: 1920 },
   { label: '480p', orientation: 'horizontal', width: 854, height: 480 },

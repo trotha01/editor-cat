@@ -64,6 +64,7 @@ import {
   videoTracksOf,
 } from '../lib/videoTracks'
 import { publicationsOf } from '../lib/mintspace/publications'
+import { DEFAULT_PRESET } from '../lib/orientation'
 import { newId } from '../lib/media'
 import type {
   Asset,
@@ -99,9 +100,11 @@ export function emptyProject(id = LOCAL_PROJECT_ID, name = 'Untitled project'): 
     audioClips: [],
     // Vertical by default: short-form is what most of these get made for, and
     // it is far easier to notice and flip than to discover afterwards that a
-    // 9:16 clip has been letterboxed into a landscape frame.
-    width: 720,
-    height: 1280,
+    // 9:16 clip has been letterboxed into a landscape frame. The tier that
+    // comes with it is the export dialog's starting resolution — see
+    // DEFAULT_PRESET for why it is the smallest one.
+    width: DEFAULT_PRESET.width,
+    height: DEFAULT_PRESET.height,
     fps: 30,
   }
 }

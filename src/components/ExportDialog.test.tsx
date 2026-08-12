@@ -115,6 +115,26 @@ describe('choosing where an export goes', () => {
   })
 })
 
+describe('the resolution offered', () => {
+  it('starts a new project on 480p, the quickest tier to render', () => {
+    open()
+
+    expect(screen.getByLabelText(/resolution/i)).toHaveValue('480x854')
+  })
+
+  it('opens on whatever the project was already set to', () => {
+    // The frame size lives on the project rather than in storage, so an older
+    // project keeps the tier it was made at.
+    useProjectStore.setState({
+      project: { ...emptyProject(), clips: [CLIP], width: 1080, height: 1920 },
+    })
+
+    open()
+
+    expect(screen.getByLabelText(/resolution/i)).toHaveValue('1080x1920')
+  })
+})
+
 describe('remembering the settings', () => {
   it('opens on the destination last used', () => {
     open()
