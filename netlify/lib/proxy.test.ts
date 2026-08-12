@@ -4,7 +4,6 @@ import {
   isBlockedHost,
   passthroughHeaders,
   redactHeaders,
-  requireKey,
   requireServerKey,
   upstreamPath,
 } from './proxy'
@@ -69,37 +68,6 @@ describe('isAllowedMediaUrl', () => {
   it('refuses malformed input', () => {
     expect(isAllowedMediaUrl('not a url').ok).toBe(false)
     expect(isAllowedMediaUrl('').ok).toBe(false)
-  })
-})
-
-describe('requireKey', () => {
-  it('accepts and trims a caller-supplied key', () => {
-    const request = new Request('https://x.test/api/elevenlabs/v1/voices', {
-      headers: { 'xi-api-key': '  abc  ' },
-    })
-    const result = requireKey(request, 'xi-api-key', 'ElevenLabs')
-    expect(result.ok).toBe(true)
-    if (result.ok) expect(result.key).toBe('abc')
-  })
-
-  it('rejects a missing or blank key with a 401 and actionable text', () => {
-    const missing = requireKey(new Request('https://x.test/'), 'xi-api-key', 'ElevenLabs')
-    expect(missing.ok).toBe(false)
-    if (!missing.ok) expect(missing.response.status).toBe(401)
-
-    const blank = new Request('https://x.test/', { headers: { 'xi-api-key': '   ' } })
-    expect(requireKey(blank, 'xi-api-key', 'ElevenLabs').ok).toBe(false)
-  })
-
-  it('never falls back to a deployment key for a bring-your-own-key provider', () => {
-    // A shared helper quietly substituting the site's own credentials would be
-    // a security surprise, so the environment is not consulted here at all.
-    process.env.ELEVENLABS_API_KEY = 'site-owned'
-    try {
-      expect(requireKey(new Request('https://x.test/'), 'xi-api-key', 'ElevenLabs').ok).toBe(false)
-    } finally {
-      delete process.env.ELEVENLABS_API_KEY
-    }
   })
 })
 

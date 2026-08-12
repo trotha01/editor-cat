@@ -94,7 +94,11 @@ export async function decodeAudio(blob: Blob): Promise<AudioBuffer> {
  * voice panned, or a stereo clip whose dialogue sits on one side, would
  * otherwise come back half transcribed.
  */
-export async function speechSamples(buffer: AudioBuffer, range: TimeRange): Promise<Float32Array> {
+export async function speechSamples(
+  buffer: AudioBuffer,
+  range: TimeRange,
+  targetRate = SPEECH_SAMPLE_RATE,
+): Promise<Float32Array> {
   const rate = buffer.sampleRate
   const first = Math.max(0, Math.floor(range.from * rate))
   const last = Math.min(buffer.length, Math.ceil(range.to * rate))
@@ -114,13 +118,28 @@ export async function speechSamples(buffer: AudioBuffer, range: TimeRange): Prom
     }
   }
 
-  return resample(mono, rate, SPEECH_SAMPLE_RATE)
+  return resample(mono, rate, targetRate)
 }
 
-/** The same stretch, wrapped as a WAV file for a provider that wants one. */
+/**
+ * The same stretch, wrapped as a WAV file for a provider that wants one.
+ *
+ * The rate is a parameter because not every provider wants what a transcriber
+ * wants: 16kHz throws away everything above a telephone line, which recognition
+ * never listens to and voice cloning very much does.
+ */
+export async function monoWav(
+  buffer: AudioBuffer,
+  range: TimeRange,
+  sampleRate = SPEECH_SAMPLE_RATE,
+): Promise<Blob> {
+  const samples = await speechSamples(buffer, range, sampleRate)
+  return new Blob([encodeWav(samples, sampleRate)], { type: WAV_MIME })
+}
+
+/** One chunk of audio to transcribe, at the rate speech recognition wants. */
 export async function speechChunkWav(buffer: AudioBuffer, range: TimeRange): Promise<Blob> {
-  const samples = await speechSamples(buffer, range)
-  return new Blob([encodeWav(samples, SPEECH_SAMPLE_RATE)], { type: WAV_MIME })
+  return await monoWav(buffer, range, SPEECH_SAMPLE_RATE)
 }
 
 /**

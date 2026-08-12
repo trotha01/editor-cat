@@ -21,6 +21,16 @@ const QUALITY = [
   { crf: 18, label: 'Best quality' },
 ]
 
+/**
+ * Best quality, unless someone has said otherwise.
+ *
+ * A lower CRF costs encode time and megabytes, but an export is the thing
+ * people keep and post — and a render that came out soft cannot be sharpened
+ * afterwards, only done again. Paying for that up front is the better default;
+ * the two cheaper settings are still one Select away for anyone who wants them.
+ */
+const DEFAULT_CRF = 18
+
 const DESTINATIONS = [
   { id: 'download', label: 'Download an MP4' },
   { id: 'mintspace', label: 'Publish to Mintspace' },
@@ -59,7 +69,7 @@ function usableDestination(stored: unknown): Destination {
 }
 
 function usableQuality(stored: unknown): number {
-  return QUALITY.some((option) => option.crf === stored) ? (stored as number) : 23
+  return QUALITY.some((option) => option.crf === stored) ? (stored as number) : DEFAULT_CRF
 }
 
 /** Seconds as the range boxes hold them: fine enough to name a frame, no finer. */
@@ -123,7 +133,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     'editor-cat.exportDestination.v1',
     'download',
   )
-  const [storedCrf, setStoredCrf] = usePersistedState('editor-cat.exportQuality.v1', 23)
+  const [storedCrf, setStoredCrf] = usePersistedState('editor-cat.exportQuality.v1', DEFAULT_CRF)
   const destination = usableDestination(storedDestination)
   const crf = usableQuality(storedCrf)
   const [progress, setProgress] = useState<RenderProgress | null>(null)

@@ -21,6 +21,7 @@ import { clipAtTime, clipGain, formatTime, layoutClips, leadInOf } from '../lib/
 import { transitionAt, transitionStyles } from '../lib/transitions'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
+import { useProjectsStore } from '../state/useProjectsStore'
 import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
 import { useFullscreen } from '../hooks/useFullscreen'
 import { usePersistedState } from '../hooks/usePersistedState'
@@ -68,6 +69,7 @@ function ClipLayer({
   start,
   gain,
   blend,
+  mediaLoading,
 }: {
   clip: Clip
   asset: Asset | undefined
@@ -87,6 +89,8 @@ function ClipLayer({
   gain: number
   /** How this layer draws mid-transition: opacity, a wipe, a shift, a blur. */
   blend?: CSSProperties
+  /** True while the asset library is still arriving, so a missing asset may yet turn up. */
+  mediaLoading: boolean
 }) {
   const { url, failed } = useAssetSource(asset)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -115,6 +119,7 @@ function ClipLayer({
     warm: active || warm,
     imageLoaded,
     imageBroken,
+    mediaLoading,
   })
 
   // Park a warmed-up clip on its own in-point.
@@ -352,6 +357,11 @@ export function Preview({
 }) {
   const project = useProjectStore((state) => state.project)
   const assets = useAssetStore((state) => state.assets)
+  const assetsLoading = useAssetStore((state) => state.loading)
+  const hydrating = useProjectsStore((state) => state.hydration !== null)
+  // Same reading the timeline goes by: while either of these is true, a clip
+  // whose asset is not in the library yet is still on its way rather than gone.
+  const mediaLoading = assetsLoading || hydrating
 
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const leadIn = leadInOf(project)
@@ -490,6 +500,7 @@ export function Preview({
                     start={entry.start}
                     gain={clipGain(entry.clip) * (outgoing || incoming ? across : 1)}
                     blend={outgoing ? blend?.from : incoming ? blend?.to : undefined}
+                    mediaLoading={mediaLoading}
                   />
                 )
               })}

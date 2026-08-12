@@ -117,6 +117,26 @@ describe('choosing where an export goes', () => {
   })
 })
 
+describe('the resolution offered', () => {
+  it('starts a new project on 480p, the quickest tier to render', () => {
+    open()
+
+    expect(screen.getByLabelText(/resolution/i)).toHaveValue('480x854')
+  })
+
+  it('opens on whatever the project was already set to', () => {
+    // The frame size lives on the project rather than in storage, so an older
+    // project keeps the tier it was made at.
+    useProjectStore.setState({
+      project: { ...emptyProject(), clips: [CLIP], width: 1080, height: 1920 },
+    })
+
+    open()
+
+    expect(screen.getByLabelText(/resolution/i)).toHaveValue('1080x1920')
+  })
+})
+
 describe('remembering the settings', () => {
   it('opens on the destination last used', () => {
     open()
@@ -128,14 +148,20 @@ describe('remembering the settings', () => {
     expect(screen.getByLabelText(/export to/i)).toHaveValue('mintspace')
   })
 
+  it('opens on Best quality until someone says otherwise', () => {
+    open()
+
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
+  })
+
   it('opens on the quality last used', () => {
     open()
-    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '18' } })
+    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '28' } })
 
     cleanup()
     open()
 
-    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('28')
   })
 
   it('does not remember a destination this deployment cannot reach', () => {
@@ -154,7 +180,7 @@ describe('remembering the settings', () => {
 
     open()
 
-    expect(screen.getByLabelText(/quality/i)).toHaveValue('23')
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
   })
 })
 
@@ -364,7 +390,7 @@ describe('the render itself', () => {
     fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
     await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(1))
 
-    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '18' } })
+    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '28' } })
     fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
 
     await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(2))
