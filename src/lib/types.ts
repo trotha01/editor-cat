@@ -373,6 +373,19 @@ export interface Project {
   captionTracks?: CaptionTrack[]
   captionCues?: CaptionCue[]
   /**
+   * The files in this project's library, oldest first.
+   *
+   * The asset catalogue is per browser rather than per project, so without a
+   * list of its own every project would show every file this machine has ever
+   * made. Kept here, on the document, because it belongs to the project and has
+   * to reach the user's other machines the same way the timeline does.
+   *
+   * Absent on everything saved before the library was per project, which is why
+   * it is optional and read through `libraryAssetIdsOf` — see lib/library.ts
+   * for what an absent one is taken to mean.
+   */
+  libraryAssetIds?: string[]
+  /**
    * Seconds of black before the first clip, so something can be heard before
    * anything is seen — a count-in, a slate, a beat of silence.
    *

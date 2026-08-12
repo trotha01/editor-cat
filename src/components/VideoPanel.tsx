@@ -18,6 +18,7 @@ import { buildVideoInput } from '../lib/videoRequest'
 import { getBlob } from '../lib/db'
 import { imageInputFor, ingestFromUrl } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
+import { libraryAssets } from '../lib/library'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
@@ -28,10 +29,16 @@ export function VideoPanel() {
   const assets = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
   const addClip = useProjectStore((state) => state.addClip)
+  const project = useProjectStore((state) => state.project)
   const projectWidth = useProjectStore((state) => state.project.width)
   const projectHeight = useProjectStore((state) => state.project.height)
 
-  const images = useMemo(() => assets.filter((asset) => asset.kind === 'image'), [assets])
+  // This project's images, not every image on the machine: the picker is
+  // offering the library, and the library belongs to the project.
+  const images = useMemo(
+    () => libraryAssets(assets, project).filter((asset) => asset.kind === 'image'),
+    [assets, project],
+  )
 
   const [firstFrameChoice, setFirstFrameChoice] = useState<string | null>(null)
   const [lastFrameId, setLastFrameId] = useState<string | null>(null)

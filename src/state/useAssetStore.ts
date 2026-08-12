@@ -1,5 +1,10 @@
 /**
- * The media library.
+ * The asset catalogue: every file this browser holds the bytes for.
+ *
+ * Browser-wide rather than per project, because that is what it is for —
+ * resolving the asset a clip names, wherever the clip came from. Which of these
+ * files a project *shows* is the project's own library list, kept on the
+ * document; see lib/library.ts.
  *
  * Object URLs are cached per asset rather than created per render — a
  * `<video>` whose src changes identity on every render will restart playback,
@@ -8,6 +13,7 @@
 import { create } from 'zustand'
 import { deleteAsset as dbDeleteAsset, getBlob, listAssets, putAsset } from '../lib/db'
 import { forgetPeaks } from '../lib/audioPeaks'
+import { useProjectStore } from './useProjectStore'
 import type { Asset } from '../lib/types'
 
 const urlCache = new Map<string, string>()
@@ -35,7 +41,14 @@ export const useAssetStore = create<AssetState>((set, get) => ({
     }
   },
 
-  add: (asset) => set((state) => ({ assets: [asset, ...state.assets] })),
+  add: (asset) => {
+    // A file arriving in this session — generated, recorded, uploaded or
+    // imported — was made for the project that is open, so it joins that
+    // project's library. Every panel that produces media comes through here,
+    // which is what makes that one rule rather than seven.
+    useProjectStore.getState().addToLibrary(asset.id)
+    set((state) => ({ assets: [asset, ...state.assets] }))
+  },
 
   update: async (id, patch) => {
     const existing = get().assets.find((asset) => asset.id === id)

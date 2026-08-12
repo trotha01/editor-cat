@@ -30,10 +30,16 @@ vi.mock('../hooks/useAssetUrl', () => ({
 const projectState = {
   project: { width: 720, height: 1280 },
   addClip: vi.fn(),
+  // A generated image joins the open project's library on its way into the
+  // asset store, which is a `getState` call rather than a hook.
+  addToLibrary: vi.fn(),
 }
 
 vi.mock('../state/useProjectStore', () => ({
-  useProjectStore: (selector: (state: typeof projectState) => unknown) => selector(projectState),
+  useProjectStore: Object.assign(
+    (selector: (state: typeof projectState) => unknown) => selector(projectState),
+    { getState: () => projectState },
+  ),
 }))
 
 const { ImagePanel } = await import('./ImagePanel')

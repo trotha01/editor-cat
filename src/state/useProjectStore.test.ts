@@ -25,10 +25,11 @@ const PUBLICATION: Publication = {
 }
 
 const saveProject = vi.fn<(project: Project) => Promise<void>>()
+const loadProject = vi.fn<(id: string) => Promise<Project | undefined>>()
 
 vi.mock('../lib/db', () => ({
   saveProject: (project: Project) => saveProject(project),
-  loadProject: () => Promise.resolve(undefined),
+  loadProject: (id: string) => loadProject(id),
 }))
 
 /** The project as it was last written to storage. */
@@ -56,6 +57,8 @@ function withCaptions(): { trackId: string } {
 beforeEach(() => {
   saveProject.mockClear()
   saveProject.mockResolvedValue(undefined)
+  loadProject.mockReset()
+  loadProject.mockResolvedValue(undefined)
   useProjectStore.setState({ project: emptyProject(), selectedCaption: null, past: [], future: [] })
 })
 
@@ -1231,5 +1234,130 @@ describe('undo and redo', () => {
 
     expect(useProjectStore.getState().project.clips).toHaveLength(1)
     expect(useProjectStore.getState().selectedClipId).toBeNull()
+  })
+})
+
+/**
+ * The library, which is a list of files and not a list of what is in the edit.
+ *
+ * The bug these answer: the Library panel used to show the whole browser-wide
+ * asset catalogue, so a brand new project opened with somebody else's files in
+ * it. What replaced that has to hold at both ends — a file joins the library
+ * when it arrives and stays when the shot it was cut into is taken out — and
+ * neither end is something the timeline can be asked about.
+ */
+describe('the library', () => {
+  const asset: Asset = {
+    id: 'a-lib',
+    kind: 'image',
+    blobKey: 'b-lib',
+    mimeType: 'image/png',
+    name: 'shot.png',
+    createdAt: 0,
+  }
+
+  it('starts empty on a new project', () => {
+    expect(emptyProject().libraryAssetIds).toEqual([])
+  })
+
+  it('holds a file that has been added to it, and writes it down', () => {
+    useProjectStore.getState().addToLibrary(asset.id)
+
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([asset.id])
+    expect(stored().libraryAssetIds).toEqual([asset.id])
+  })
+
+  it('does not list the same file twice, or save for the second one', () => {
+    useProjectStore.getState().addToLibrary(asset.id)
+    saveProject.mockClear()
+    useProjectStore.getState().addToLibrary(asset.id)
+
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([asset.id])
+    expect(saveProject).not.toHaveBeenCalled()
+  })
+
+  it('keeps a file after the clip it was cut into is taken off the timeline', () => {
+    useProjectStore.getState().addToLibrary(asset.id)
+    useProjectStore.getState().addClip(asset)
+    const clipId = useProjectStore.getState().project.clips[0]!.id
+
+    useProjectStore.getState().removeClip(clipId)
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([asset.id])
+  })
+
+  it('takes a file out when it is removed from the library, timeline or not', () => {
+    useProjectStore.getState().addToLibrary(asset.id)
+    useProjectStore.getState().addClip(asset)
+
+    useProjectStore.getState().removeFromLibrary(asset.id)
+
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([])
+    // Still in the edit: removing a file from the library is not a way of
+    // deleting the shot it is under.
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(stored().libraryAssetIds).toEqual([])
+  })
+
+  it('leaves the library off the undo stack', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().addToLibrary(asset.id)
+
+    // One edit, so one step: joining the library did not add one of its own.
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([asset.id])
+  })
+
+  it('does not lose a file by stepping back past the moment it arrived', () => {
+    // The history holds whole projects, so the step taken before the file
+    // arrived still carries the empty list. Restoring it verbatim would leave a
+    // file on this machine with nothing on screen left to reach it by.
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().addToLibrary(asset.id)
+    useProjectStore.getState().addClip(asset)
+
+    useProjectStore.getState().undo()
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([asset.id])
+  })
+
+  it('does not bring a removed one back by stepping forward again either', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().undo()
+    useProjectStore.getState().removeFromLibrary(asset.id)
+    useProjectStore.getState().redo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([])
+  })
+
+  it('backfills a project saved before the list existed from its timeline', async () => {
+    const legacy = {
+      ...emptyProject('legacy'),
+      clips: [{ id: 'c1', assetId: 'a-old', inPoint: 0, outPoint: 3 }],
+    }
+    delete legacy.libraryAssetIds
+    loadProject.mockResolvedValue(legacy)
+
+    await useProjectStore.getState().open('legacy')
+
+    // Read as the files its edit uses, and written down on the way past so one
+    // of them can be taken out of the library afterwards.
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual(['a-old'])
+    expect(stored().libraryAssetIds).toEqual(['a-old'])
+  })
+
+  it('backfills one that arrives from the server too', () => {
+    const remote = { ...emptyProject('remote'), clips: [] }
+    delete remote.libraryAssetIds
+
+    useProjectStore.getState().adopt(remote)
+
+    expect(useProjectStore.getState().project.libraryAssetIds).toEqual([])
   })
 })

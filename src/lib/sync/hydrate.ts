@@ -13,6 +13,7 @@ import { getAssets, fromRow } from '../supabase/assets'
 import { downloadFile } from '../google/drive'
 import { getBlob, putAsset, putBlob } from '../db'
 import { mapLimited } from '../concurrency'
+import { libraryAssetIdsOf, referencedAssetIds } from '../library'
 import { newId } from '../media'
 import { toDisplayMessage } from '../errors'
 import type { Asset, Project } from '../types'
@@ -31,17 +32,17 @@ export function planFor(hasLocalBlob: boolean, driveFileId: string | undefined):
   return driveFileId ? 'download' : 'missing'
 }
 
-/** Every asset id a project refers to, visual and audio, without duplicates. */
-export function referencedAssetIds(project: Project): string[] {
-  const ids = new Set<string>()
-  for (const clip of project.clips) ids.add(clip.assetId)
-  for (const clip of project.audioClips) {
-    ids.add(clip.assetId)
-    // The converted take is a separate asset and is what plays when the clip is
-    // set to use it, so a project that opens without it is missing audio.
-    if (clip.convertedAssetId) ids.add(clip.convertedAssetId)
-  }
-  return [...ids]
+/**
+ * Every asset a project needs on this machine, without duplicates.
+ *
+ * Its library as well as everything the edit references, because the library is
+ * what the second machine also has to be able to *show*: a file generated last
+ * week and not yet cut in is one of this project's files, and a Library panel
+ * that only filled in once something reached the timeline would look empty for
+ * no reason anybody could see.
+ */
+export function neededAssetIds(project: Project): string[] {
+  return [...new Set([...libraryAssetIdsOf(project), ...referencedAssetIds(project)])]
 }
 
 export interface HydrationProgress {
@@ -65,8 +66,8 @@ export async function hydrateProject(
   known: Map<string, Asset>,
   onProgress: (progress: HydrationProgress) => void,
 ): Promise<Asset[]> {
-  const referenced = referencedAssetIds(project)
-  const unknown = referenced.filter((id) => !known.has(id))
+  const needed = neededAssetIds(project)
+  const unknown = needed.filter((id) => !known.has(id))
 
   // Pull down metadata for anything this browser has never heard of, and store
   // it locally so the library and timeline can render before any bytes land.
@@ -80,7 +81,7 @@ export async function hydrateProject(
     }
   }
 
-  const all = [...known.values(), ...restored].filter((asset) => referenced.includes(asset.id))
+  const all = [...known.values(), ...restored].filter((asset) => needed.includes(asset.id))
 
   const failures: string[] = []
   let done = 0
