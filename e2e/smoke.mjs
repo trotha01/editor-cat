@@ -96,7 +96,7 @@ try {
   step('image added to the timeline')
 
   // --- Video generation ----------------------------------------------------
-  await page.getByRole('button', { name: /2 · Video/ }).click()
+  await page.getByRole('button', { name: /3 · Video/ }).click()
   await page.fill('#prompt-video', 'slow push in as the beam sweeps across the water')
   await page.getByRole('button', { name: /^Generate video/ }).click()
   await page.waitForSelector('text=Clip added to your library', { timeout: 120000 })
@@ -269,7 +269,7 @@ try {
   const trackCount = () =>
     page.locator('section[aria-label="Timeline"] [aria-label$="volume"]').count()
 
-  await page.getByRole('button', { name: /3 · Audio/ }).click()
+  await page.getByRole('button', { name: /5 · Audio/ }).click()
   const tracksAtStart = await trackCount()
 
   const recordFrom = async (seconds) => {
