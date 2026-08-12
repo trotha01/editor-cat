@@ -20,7 +20,6 @@ import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from './useAssetStore'
 import { useProjectStore } from './useProjectStore'
-import { useSettingsStore } from './useSettingsStore'
 
 /** What a finished run has to say for itself. */
 export interface AudioFixOutcome {
@@ -103,14 +102,12 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
     })
 
     try {
-      const key = useSettingsStore.getState().elevenlabs
       const asset = useAssetStore.getState().byId(target.assetId)
       if (!asset) throw new Error('This clip’s media is no longer in the library.')
       const media = await getBlob(asset.blobKey)
       if (!media) throw new Error('This clip’s media is no longer stored in this browser.')
 
       const { blob, voiceName } = await fixClipAudio({
-        key,
         media,
         inPoint: target.inPoint,
         duration: target.duration,
@@ -130,7 +127,7 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
       useAssetStore.getState().add(fixed)
 
       const spoken = fixed.duration && fixed.duration > 0 ? fixed.duration : target.duration
-      const placement = useProjectStore.getState().replaceClipAudio(target.clipId, {
+      const placement = useProjectStore.getState().addFixedClipAudio(target.clipId, {
         assetId: fixed.id,
         useConverted: false,
         startTime: target.startTime,
@@ -148,8 +145,21 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
       })
 
       // Nothing stretches speech to fit a shot, so the one thing worth saying
-      // about a fix that worked is how it sits against the picture.
+      // about a fix that worked is how it sits against the picture. The second
+      // is where the go before it went, since it is still there.
       const overrun = spoken - target.duration
+      const notes = [
+        overrun > 0.25
+          ? `The line runs ${formatTime(overrun)} past the end of the clip. Trim it on its ` +
+            `lane, hold the clip longer, or shorten the text and fix it again.`
+          : '',
+        placement.silenced > 0
+          ? `The earlier ${placement.silenced === 1 ? 'take is' : 'takes are'} still on ` +
+            `${placement.silenced === 1 ? 'its own lane' : 'their own lanes'}, muted — unmute to ` +
+            `compare, or delete what you do not want.`
+          : '',
+      ].filter(Boolean)
+
       set({
         outcome: {
           tone: overrun > 0.25 ? 'warn' : 'success',
@@ -158,13 +168,7 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
             `${target.label} now says your line in ${voiceName} — ${formatTime(spoken)} of ` +
             `speech under a ${formatTime(target.duration)} clip, on ${placement.trackName}. ` +
             `The clip’s own sound is muted; undo puts it back.`,
-          ...(overrun > 0.25
-            ? {
-                detail:
-                  `The line runs ${formatTime(overrun)} past the end of the clip. Trim it on its ` +
-                  `lane, hold the clip longer, or shorten the text and fix it again.`,
-              }
-            : {}),
+          ...(notes.length > 0 ? { detail: notes.join(' ') } : {}),
         },
       })
     } catch (cause) {

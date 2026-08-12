@@ -8,7 +8,8 @@ for another one → caption it karaoke-style → export an MP4.
 
 Images, video and caption transcription run on the deployment's own fal.ai
 account, and the voice features on its own ElevenLabs one, so visitors need
-**no key at all**. Bring one only if you would rather spend your own quota.
+**no key at all** — and, for the same reason, the deployment decides **who may
+sign in**.
 
 ---
 
@@ -27,17 +28,18 @@ account, and the voice features on its own ElevenLabs one, so visitors need
 
 ## What you need
 
-**As a visitor:** nothing at all. Every provider call — images, video, captions,
-changing a recorded voice, and [fixing a clip that pronounces its line
-wrong](#fixing-a-clip-that-says-it-wrong) — runs on the site's own accounts.
+**As a visitor:** a Google account the site's owner has approved, and nothing
+else. There is no key field anywhere in the app: every provider call — images,
+video, captions, changing a recorded voice, and [fixing a clip that pronounces
+its line wrong](#fixing-a-clip-that-says-it-wrong) — runs on the site's own
+accounts.
 
-- **[ElevenLabs](https://elevenlabs.io)**, optionally, entered in **Settings**. Only for using your own account rather than the site's: your quota, your voices, your saved clones. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, takes precedence over the site's own key, and is never written to a server or a log.
-
-**As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key set as
-`FAL_KEY`, and an [ElevenLabs](https://elevenlabs.io) key set as
-`ELEVENLABS_API_KEY`, both in the site environment. Without the second one the
-voice features ask each visitor for a key instead of working. See
-[Deploying to Netlify](#deploying-to-netlify).
+**As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key as
+`FAL_KEY`, an [ElevenLabs](https://elevenlabs.io) key as `ELEVENLABS_API_KEY`,
+and `ALLOWED_EMAILS` naming who may sign in — because those two keys are yours
+and everyone who gets in spends them. See
+[Deploying to Netlify](#deploying-to-netlify) and [Who is allowed
+in](#who-is-allowed-in).
 
 **Costs are real, and they land on the deployment.** Images are roughly
 $0.003–$0.04 each; video is roughly $0.04 per second at 480p on the default
@@ -58,6 +60,56 @@ preview switches the whole pipeline at once — the shape of generated images, t
 aspect ratio sent to the video model, and the export frame — because a clip
 generated one way up and exported the other just gets black bars. Existing
 projects keep the orientation they were made with until you change it.
+
+## Who is allowed in
+
+Every generation is billed to whoever deployed this — pictures and captions to
+its fal account, voices to its ElevenLabs one — so signing in and being allowed
+to spend are two different things, and the second one is a list.
+
+**`ALLOWED_EMAILS`** in the site environment is that list: addresses separated by
+commas or newlines, `@example.com` for a whole domain, case-insensitive.
+
+```
+ALLOWED_EMAILS=you@example.com, someone@else.test, @yourcompany.com
+```
+
+**Unset means nobody.** A deployment that has not said who it is for refuses
+every session and says which variable is missing, rather than running open until
+the bill explains it. Every function checks independently, so it holds for
+anything calling the API directly as well as for the editor — and the editor
+asks once at the door, so an unapproved account is told on the way in rather
+than by whichever button it presses first.
+
+### Stopping it at the login instead
+
+The list above refuses people _after_ Auth0 has signed them in. Better to refuse
+them at the login itself, which takes a **Login Action** in the Auth0 dashboard
+(Actions → Library → Build Custom, trigger _Login / Post Login_):
+
+```js
+exports.onExecutePostLogin = async (event, api) => {
+  const allowed = (event.secrets.ALLOWED_EMAILS ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+
+  const email = (event.user.email ?? '').toLowerCase()
+  const domain = email.slice(email.lastIndexOf('@'))
+  const ok = allowed.some((entry) => (entry.startsWith('@') ? entry === domain : entry === email))
+
+  if (!ok) api.access.deny('This account is not authorised to use editor-cat.')
+}
+```
+
+Add `ALLOWED_EMAILS` as a **secret** on the Action with the same value as the
+site environment variable, and drag the Action into the Login flow. Keep both
+halves: the Action is the good experience, and the server-side list is the one
+that cannot be switched off from a dashboard by accident.
+
+Sign-in is Google-only, through Auth0 — see [what sign-in
+needs](#what-sign-in-needs) for the tenant setup that puts an address in the
+access token, which this list needs to have anything to check.
 
 ## Fixing a clip that says it wrong
 
@@ -89,15 +141,19 @@ So the line is said again. **⋯ menu on the clip → Fix this clip's audio**, a
 
 None of this asks the visitor for anything: it runs on the key the deployment
 sets as `ELEVENLABS_API_KEY`, the same arrangement image and video generation
-already have with fal. Anyone who would rather use their own account can put a
-key in Settings, and theirs is used instead.
+already have with fal. There is no key field in the app at all — which is also
+why there is a list of [who is allowed in](#who-is-allowed-in).
 
 What comes back is laid on a **voice track under the clip** and the clip's own
 sound is **muted** — as one edit, so a single undo puts both back. The audio is
 anchored to the clip, so it follows that shot around the timeline like a
 voiceover recorded against it, and it is mixed into the preview and burnt into
-the export like any other audio. Fixing the same clip again replaces the line
-that is there rather than laying a second voice over it.
+the export like any other audio.
+
+Fixing the same clip again **never overwrites** what is already there. The new
+line lands on a row of its own and the row before it is muted, so only the
+newest plays — but every take you have paid for is still on the timeline, one
+per lane, and un-muting a lane is one click if the earlier reading was better.
 
 Nothing stretches speech to fit a shot, so the result says how the two compare —
 "1.6s of speech under a 5.0s clip" — and warns when the line runs past the end
@@ -761,6 +817,11 @@ ID by origin allowlisting.
 able to sign in and save, alongside the dashboard steps in [what sign-in
 needs](#what-sign-in-needs).
 
+**`ALLOWED_EMAILS`** decides who may sign in and spend those two keys, and it has
+no safe default — unset, every session is refused. See [who is allowed
+in](#who-is-allowed-in), which also has the Auth0 Login Action that stops an
+unapproved account at the login rather than after it.
+
 **`GITHUB_TOKEN` and `GITHUB_REPO`** are optional, and only decide whether the
 report bubble can file anything. Without them the editor is unchanged and the
 bubble says reporting is not set up. See [letting a deployment file
@@ -1368,6 +1429,11 @@ If your CI image ships its own browser, point the test at it with
   leftovers are named after the clip they came from, and the proxy sweeps the
   abandoned ones the first time a new clone is refused for want of a slot, so
   the feature repairs itself rather than quietly stopping.
+- **Every fix adds a lane.** Nothing generated is thrown away, so fixing one clip
+  four times leaves four rows: the newest audible and the three before it muted.
+  That is deliberate — you paid for each of them and only listening tells you
+  which reading was best — but the lanes are yours to delete once you have
+  chosen, and nothing prunes them for you.
 - **Only the picture track's clips can be fixed.** Clips on a video lane are
   layered over the picture rather than into it; mute one and lay a voiceover
   under it by hand if its dialogue is wrong.

@@ -6,12 +6,12 @@ import type { Asset, AudioClip, CaptionCue, Clip, Project } from './types'
 const cloneVoice = vi.fn<(options: { name: string; sample: Blob }) => Promise<string>>()
 const speak =
   vi.fn<(options: { voiceId: string; text: string; languageCode?: string }) => Promise<Blob>>()
-const deleteVoice = vi.fn<(key: string, voiceId: string) => Promise<void>>()
+const deleteVoice = vi.fn<(voiceId: string) => Promise<void>>()
 
 vi.mock('./elevenlabs', () => ({
   cloneVoice: (options: { name: string; sample: Blob }) => cloneVoice(options),
   speak: (options: { voiceId: string; text: string; languageCode?: string }) => speak(options),
-  deleteVoice: (key: string, voiceId: string) => deleteVoice(key, voiceId),
+  deleteVoice: (voiceId: string) => deleteVoice(voiceId),
 }))
 
 /**
@@ -187,7 +187,6 @@ describe('cloneNameFor', () => {
 describe('fixClipAudio', () => {
   const media = new Blob(['media'], { type: 'video/mp4' })
   const request = {
-    key: 'k',
     media,
     inPoint: 1,
     duration: 4,
@@ -213,7 +212,7 @@ describe('fixClipAudio', () => {
       expect.objectContaining({ voiceId: 'cloned-voice', text: 'Buongiorno', languageCode: 'it' }),
     )
     // A voice left in the account counts against the user's own slots.
-    expect(deleteVoice).toHaveBeenCalledWith('k', 'cloned-voice')
+    expect(deleteVoice).toHaveBeenCalledWith('cloned-voice')
     expect(result.blob.type).toBe('audio/mpeg')
   })
 
@@ -241,7 +240,7 @@ describe('fixClipAudio', () => {
   it('deletes the copy even when saying the line fails', async () => {
     speak.mockRejectedValue(new Error('out of credit'))
     await expect(fixClipAudio(request)).rejects.toThrow('out of credit')
-    expect(deleteVoice).toHaveBeenCalledWith('k', 'cloned-voice')
+    expect(deleteVoice).toHaveBeenCalledWith('cloned-voice')
   })
 
   it('refuses an empty line rather than spending a request on it', async () => {

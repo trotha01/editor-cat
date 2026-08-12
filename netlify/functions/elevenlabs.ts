@@ -22,22 +22,19 @@ import {
  *   POST   /api/elevenlabs/v1/voices/ivc/create           -> copy a voice
  *   DELETE /api/elevenlabs/v1/voices/<voice_id>           -> delete that copy again
  *
- * Two keys can pay for this, and which one is in play changes everything about
- * what the request is allowed to be.
+ * One key pays for all of it: `ELEVENLABS_API_KEY`, the deployment's own. That
+ * is why a visitor needs no key for anything — images, video and captions
+ * already run on the site's fal account, and voice runs on the site's ElevenLabs
+ * account beside them. Nothing the browser sends is used as a credential, and a
+ * caller-supplied `xi-api-key` is ignored rather than forwarded: there is no
+ * field left to type one into, so a request carrying one is not a visitor
+ * bringing their own account, it is somebody probing what this endpoint will do
+ * with a header.
  *
- * **The deployment's own key** (`ELEVENLABS_API_KEY`) is the normal case, and it
- * is why a visitor needs no key of their own for anything: images, video and
- * captions already run on the site's fal account, and voice now runs on the
- * site's ElevenLabs account beside them. It spends the operator's money, so it
- * demands a verified session exactly as `/api/fal` does, and it is restricted to
- * the endpoints this app actually calls — see `netlify/lib/elevenlabs.ts`, which
- * is where each restriction is explained and tested.
- *
- * **The caller's own key**, sent as `xi-api-key`, still works and takes
- * precedence. Somebody who wants their own voice library, their own quota, or
- * simply not to be on the site's account can put a key in Settings, and from
- * there this behaves as the pass-through it always was: forwarded once,
- * forgotten immediately, never read from the environment.
+ * Spending the operator's money demands a verified session exactly as
+ * `/api/fal` does, and confines the request to the endpoints this app actually
+ * calls — see `netlify/lib/elevenlabs.ts`, where each restriction is explained
+ * and tested.
  *
  * Multipart bodies (a recording to convert, a sample to clone from) have to stay
  * under the 6MB function payload ceiling. Conversion sends the recording as it
@@ -158,40 +155,32 @@ export default async (request: Request): Promise<Response> => {
     return jsonError(400, 'Invalid ElevenLabs endpoint path.')
   }
 
-  const callerKey = request.headers.get('xi-api-key')?.trim()
-  const site = siteKey()
-
-  if (!callerKey && !site) {
+  const key = siteKey()
+  if (!key) {
     return jsonError(
-      401,
-      'No ElevenLabs key.',
-      "This site provides none of its own, so add yours in Settings — or set ELEVENLABS_API_KEY in the site's environment.",
+      503,
+      'This site is not set up for voice generation.',
+      "Set ELEVENLABS_API_KEY in the site's environment variables.",
     )
   }
 
-  // Spending the site's key needs the same proof of a session /api/fal wants,
-  // and confines the request to what this app does. A caller who brought their
-  // own key is spending their own money on their own account, and neither
-  // applies to them.
-  if (!callerKey) {
-    const session = await requireSession(request)
-    if (!session.ok) return session.response
-    if (!isAllowedWithSiteKey(method, path)) {
-      return jsonError(
-        403,
-        'That ElevenLabs endpoint is not reachable through this site.',
-        'Only the calls this editor makes are forwarded on the site’s own key.',
-      )
-    }
-    if (isVoiceDeletion(method, path) && !(await mayDelete(site, path))) {
-      return jsonError(
-        403,
-        'That voice was not created by this site, so it will not be deleted through here.',
-      )
-    }
+  const session = await requireSession(request)
+  if (!session.ok) return session.response
+
+  if (!isAllowedWithSiteKey(method, path)) {
+    return jsonError(
+      403,
+      'That ElevenLabs endpoint is not reachable through this site.',
+      'Only the calls this editor makes are forwarded on the site’s key.',
+    )
+  }
+  if (isVoiceDeletion(method, path) && !(await mayDelete(key, path))) {
+    return jsonError(
+      403,
+      'That voice was not created by this site, so it will not be deleted through here.',
+    )
   }
 
-  const key = callerKey || site
   const hasBody = method !== 'GET' && method !== 'HEAD'
 
   try {
@@ -203,7 +192,7 @@ export default async (request: Request): Promise<Response> => {
     // leftovers, so it is cleared of the abandoned ones and the request is
     // given its second and only chance. Buffered rather than streamed here
     // because deciding that means reading the message.
-    if (!upstream.ok && !callerKey && isCloneRequest(method, path)) {
+    if (!upstream.ok && isCloneRequest(method, path)) {
       const detail = await upstream.text()
       if (isVoiceLimitError(detail) && (await sweepAbandonedClones(key, Date.now())) > 0) {
         const retried = await forward(target, method, key, request, body)

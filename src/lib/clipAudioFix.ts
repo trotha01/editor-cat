@@ -74,7 +74,13 @@ export interface FixTarget {
   text: string
   /** The language a previous fix enforced, so a redo defaults to the same one. */
   language?: string
-  /** Audio a previous fix left under this clip. A new one replaces it. */
+  /**
+   * The newest correction already sitting under this clip, if any.
+   *
+   * What makes the menu say "redo" rather than "fix", and where the text box
+   * starts from. Nothing replaces it — another go lands on a lane of its own —
+   * so this is the latest of however many there are.
+   */
   fixedAudioClipId?: string
 }
 
@@ -89,6 +95,8 @@ export interface FixTarget {
 export function fixTargets(project: Project, assets: readonly Asset[]): Map<string, FixTarget> {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]))
 
+  // Last one wins: fixes are appended, so the newest is the one whose words a
+  // redo should open with.
   const fixes = new Map<string, AudioClip>()
   for (const clip of project.audioClips ?? []) {
     if (clip.speechFix && clip.anchorClipId) fixes.set(clip.anchorClipId, clip)
@@ -133,7 +141,6 @@ export function cloneNameFor(label: string): string {
 }
 
 export interface FixClipAudioOptions {
-  key: string
   /** The clip's media, as stored. Decoded here to take the voice out of it. */
   media: Blob
   /** The stretch of that media the clip uses, in source seconds. */
@@ -173,12 +180,11 @@ export const FIX_STAGES = {
  *
  * Two requests where the voice is being copied, one where it is being chosen.
  * The copy is deleted on the way out however this ends, including on a
- * cancellation: a voice left behind counts against the user's own slot limit,
- * and nothing here needs it a second time — a redo copies the voice again from
- * whatever the clip says by then.
+ * cancellation: voice slots are finite and shared by everyone this deployment
+ * lets in, and nothing here needs the copy a second time — a redo copies the
+ * voice again from whatever the clip says by then.
  */
 export async function fixClipAudio({
-  key,
   media,
   inPoint,
   duration,
@@ -205,7 +211,6 @@ export async function fixClipAudio({
 
       onStage?.(FIX_STAGES.cloning)
       cloned = await cloneVoice({
-        key,
         name: cloneNameFor(label),
         sample,
         ...(signal ? { signal } : {}),
@@ -216,7 +221,6 @@ export async function fixClipAudio({
 
     onStage?.(FIX_STAGES.speaking)
     const blob = await speak({
-      key,
       voiceId: speaker,
       text: line,
       ...(language ? { languageCode: language } : {}),
@@ -229,7 +233,7 @@ export async function fixClipAudio({
       // Best effort, and deliberately not awaited into the failure path: the
       // speech is already made or already lost, and neither outcome is improved
       // by reporting that the tidying up also went wrong.
-      void deleteVoice(key, cloned).catch(() => {})
+      void deleteVoice(cloned).catch(() => {})
     }
   }
 }

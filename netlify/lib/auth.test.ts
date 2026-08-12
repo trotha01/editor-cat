@@ -19,6 +19,9 @@ import { resetForTests } from './auth0'
  */
 const DOMAIN = 'tenant.auth0.com'
 const AUDIENCE = 'https://editor-cat/api'
+/** The namespaced claim an Auth0 Action puts the address in. See auth0.ts. */
+const EMAIL_CLAIM = 'https://editor-cat/email'
+const ALLOWED = 'listed@example.com'
 
 const ENV_KEYS = [
   'AUTH0_DOMAIN',
@@ -26,6 +29,7 @@ const ENV_KEYS = [
   'VITE_AUTH0_DOMAIN',
   'VITE_AUTH0_AUDIENCE',
   'FAL_PROXY_ALLOW_ANONYMOUS',
+  'ALLOWED_EMAILS',
 ] as const
 
 let saved: Record<string, string | undefined> = {}
@@ -63,6 +67,7 @@ function validClaims(overrides: Record<string, unknown> = {}): Record<string, un
     iss: `https://${DOMAIN}/`,
     aud: [AUDIENCE, `https://${DOMAIN}/userinfo`],
     exp: Math.floor(Date.now() / 1000) + 3600,
+    [EMAIL_CLAIM]: ALLOWED,
     ...overrides,
   }
 }
@@ -121,6 +126,10 @@ afterEach(() => {
 function configured() {
   process.env.AUTH0_DOMAIN = DOMAIN
   process.env.AUTH0_AUDIENCE = AUDIENCE
+  // A verified session is only half of the answer now: the other half is
+  // whether this deployment is for that person. See allowlist.test.ts for the
+  // matching itself; what these tests care about is that it is consulted.
+  process.env.ALLOWED_EMAILS = ALLOWED
 }
 
 describe('requireSession', () => {
@@ -146,8 +155,49 @@ describe('requireSession', () => {
   it('takes the build-time tenant settings, which name the same tenant', async () => {
     process.env.VITE_AUTH0_DOMAIN = DOMAIN
     process.env.VITE_AUTH0_AUDIENCE = AUDIENCE
+    process.env.ALLOWED_EMAILS = ALLOWED
 
     expect((await requireSession(requestWith(await sign(validClaims())))).ok).toBe(true)
+  })
+
+  it('refuses a perfectly good session from an account that is not listed', async () => {
+    // The failure this exists for: a real Google account, a real token, and
+    // somebody who is not the person paying for the generation.
+    configured()
+
+    const stranger = await sign(validClaims({ [EMAIL_CLAIM]: 'stranger@example.com' }))
+    const result = await requireSession(requestWith(stranger))
+
+    expect(result.ok).toBe(false)
+    // 403, not 401: their session is fine, so "sign in again" would be a loop.
+    if (!result.ok) expect(result.response.status).toBe(403)
+  })
+
+  it('refuses everybody when the deployment has listed nobody', async () => {
+    process.env.AUTH0_DOMAIN = DOMAIN
+    process.env.AUTH0_AUDIENCE = AUDIENCE
+    delete process.env.ALLOWED_EMAILS
+
+    const result = await requireSession(requestWith(await sign(validClaims())))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.response.status).toBe(403)
+      // Named, because the only person who can fix this is the one who deployed it.
+      expect(await result.response.text()).toContain('ALLOWED_EMAILS')
+    }
+  })
+
+  it('refuses a token with no address in it at all', async () => {
+    // A tenant missing the email-claim Action. Nothing to check against a list
+    // of addresses, so it cannot be a pass.
+    configured()
+
+    const anonymous = await sign(validClaims({ [EMAIL_CLAIM]: undefined }))
+    const result = await requireSession(requestWith(anonymous))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.response.status).toBe(403)
   })
 
   it('allows anonymous access only when explicitly opted in', async () => {

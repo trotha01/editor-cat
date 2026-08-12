@@ -36,7 +36,6 @@ export function FixAudioDialog({
   target: FixTarget | null
   onClose: () => void
 }) {
-  const elevenKey = useSettingsStore((state) => state.elevenlabs)
   const available = useSettingsStore(canUseElevenLabs)
   const [voices, setVoices] = useState<Voice[] | null>(null)
   const [voiceError, setVoiceError] = useState<string | null>(null)
@@ -47,7 +46,7 @@ export function FixAudioDialog({
   useEffect(() => {
     if (!target || !available || voices) return
     let cancelled = false
-    listVoices(elevenKey)
+    listVoices()
       .then((list) => {
         if (!cancelled) setVoices(list)
       })
@@ -59,7 +58,7 @@ export function FixAudioDialog({
     return () => {
       cancelled = true
     }
-  }, [target, available, elevenKey, voices])
+  }, [target, available, voices])
 
   return (
     <Modal
@@ -191,16 +190,16 @@ function FixAudioForm({
 
       {voiceError ? (
         <Callout tone="warn">
-          Your voices could not be listed ({voiceError}) — copying this clip’s own voice still
-          works.
+          The ready-made voices could not be listed ({voiceError}) — copying this clip’s own voice
+          still works.
         </Callout>
       ) : null}
 
       {available ? null : (
         <Callout tone="warn">
           This site is not set up for voice generation, so nothing can be said here yet. Whoever
-          deployed it needs to set <code>ELEVENLABS_API_KEY</code> — or you can put a key of your
-          own in Settings and use your own account.
+          deployed it needs to set <code>ELEVENLABS_API_KEY</code> in the site environment. Nothing
+          you can fix from here.
         </Callout>
       )}
 

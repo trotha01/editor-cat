@@ -123,7 +123,7 @@ describe('fixing a clip’s audio', () => {
   }
   const still: Asset = { ...video, id: 'a2', kind: 'image', name: 'still.png' }
 
-  function timelineWith(assets: Asset[], key: string, siteElevenLabs = false) {
+  function timelineWith(assets: Asset[], siteElevenLabs = true) {
     useProjectStore.setState({
       project: {
         ...emptyProject(),
@@ -136,12 +136,12 @@ describe('fixing a clip’s audio', () => {
       },
     })
     useAssetStore.setState({ assets, loading: false })
-    useSettingsStore.setState({ elevenlabs: key, siteElevenLabs })
+    useSettingsStore.setState({ siteElevenLabs })
     render(<Timeline currentTime={0} onSeek={vi.fn()} />)
   }
 
   it('offers the fix on a clip with sound, and opens the form for that clip', () => {
-    timelineWith([video], 'a-key')
+    timelineWith([video])
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
     const item = screen.getByRole('menuitem', { name: /Fix this clip’s audio/ })
@@ -153,17 +153,10 @@ describe('fixing a clip’s audio', () => {
     expect(screen.getByLabelText('What this clip should say')).toBeInTheDocument()
   })
 
-  it('needs no key from the visitor when the deployment provides one', () => {
-    // The normal case: nobody is asked for anything, because the site pays.
-    timelineWith([video], '', true)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
-
-    expect(screen.getByRole('menuitem', { name: /Fix this clip’s audio/ })).toBeEnabled()
-  })
-
-  it('greys the item out where neither the site nor the visitor has a key', () => {
-    timelineWith([video], '')
+  it('greys the item out on a deployment with no ElevenLabs key', () => {
+    // Nothing the visitor can do about it, which is exactly why the row stays
+    // on the menu saying so rather than disappearing.
+    timelineWith([video], false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
 
@@ -171,7 +164,7 @@ describe('fixing a clip’s audio', () => {
   })
 
   it('says nothing about it on a still, which has no sound to be wrong', () => {
-    timelineWith([still], 'a-key')
+    timelineWith([still])
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for still.png' }))
 
@@ -179,8 +172,8 @@ describe('fixing a clip’s audio', () => {
   })
 
   it('calls it a redo once there is a corrected line under the clip already', () => {
-    timelineWith([video], 'a-key')
-    useProjectStore.getState().replaceClipAudio('c1', {
+    timelineWith([video])
+    useProjectStore.getState().addFixedClipAudio('c1', {
       assetId: 'fixed-1',
       useConverted: false,
       startTime: 0,

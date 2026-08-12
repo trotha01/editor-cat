@@ -501,6 +501,11 @@ describe('transitions reach storage, and carry the timeline with them', () => {
  * under the right one, which is worse than either failure on its own, and an
  * undo that unpicked only half of it would leave a clip silent with nothing to
  * replace what it used to say.
+ *
+ * The other rule is that nothing generated is ever thrown away: a second go
+ * lands on a lane of its own and quietens the one before it. Somebody paid for
+ * that first take, and "which of these two readings is better" is a question
+ * you can only answer with both of them still there.
  */
 describe('fixed clip audio', () => {
   const twoClips = () => {
@@ -527,7 +532,9 @@ describe('fixed clip audio', () => {
 
   it('places the speech, mutes the clip, and anchors the two together', () => {
     twoClips()
-    const placement = useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+    const placement = useProjectStore
+      .getState()
+      .addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
 
     const laid = stored().audioClips
     expect(laid).toHaveLength(1)
@@ -541,6 +548,7 @@ describe('fixed clip audio', () => {
     const track = stored().audioTracks.find((entry) => entry.id === laid[0]?.trackId)
     expect(track?.kind).toBe('voice')
     expect(placement.trackName).toBe(track?.name)
+    expect(placement.silenced).toBe(0)
     // And the clip it stands in for is silent, or both would play at once.
     expect(stored().clips.find((clip) => clip.id === 'clip-2')?.muted).toBe(true)
     expect(stored().clips.find((clip) => clip.id === 'clip-1')?.muted).toBeUndefined()
@@ -548,7 +556,7 @@ describe('fixed clip audio', () => {
 
   it('is one step, so a single undo puts the clip’s own sound back', () => {
     twoClips()
-    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
 
     useProjectStore.getState().undo()
 
@@ -558,15 +566,56 @@ describe('fixed clip audio', () => {
     ).toBeUndefined()
   })
 
-  it('replaces the last correction rather than playing over it', () => {
+  it('keeps the first take and gives the second a lane of its own', () => {
     twoClips()
-    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
-    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-2', 'Buenos días'))
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
+    const second = useProjectStore
+      .getState()
+      .addFixedClipAudio('clip-2', speech('fix-2', 'Buenos días'))
 
-    expect(stored().audioClips.map((clip) => clip.assetId)).toEqual(['fix-2'])
-    // One lane, too: the replaced clip freed the room, so a second go does not
-    // stack up voice tracks nobody asked for.
-    expect(stored().audioTracks.filter((track) => track.kind === 'voice')).toHaveLength(1)
+    // Nothing generated is overwritten: both readings are still on the timeline.
+    expect(stored().audioClips.map((clip) => clip.assetId)).toEqual(['fix-1', 'fix-2'])
+    const lanes = stored().audioClips.map((clip) => clip.trackId)
+    expect(new Set(lanes).size).toBe(2)
+    expect(second.silenced).toBe(1)
+  })
+
+  it('mutes the lane the earlier take is on, so only the newest is heard', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-2', 'Buenos días'))
+
+    const laneOf = (assetId: string) =>
+      stored().audioTracks.find(
+        (track) =>
+          track.id === stored().audioClips.find((clip) => clip.assetId === assetId)?.trackId,
+      )
+    expect(laneOf('fix-1')?.muted).toBe(true)
+    expect(laneOf('fix-2')?.muted).toBe(false)
+  })
+
+  it('leaves a lane alone once something else is sharing it', () => {
+    // Muting is only ever safe on a lane holding nothing but fixes. Drag a take
+    // onto one and it stops being this feature's to silence.
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
+    const fixLane = stored().audioClips[0]!.trackId
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'recording',
+      useConverted: false,
+      startTime: 20,
+      inPoint: 0,
+      duration: 1,
+    })
+    useProjectStore
+      .getState()
+      .updateAudioClip(stored().audioClips.find((clip) => clip.assetId === 'recording')!.id, {
+        trackId: fixLane,
+      })
+
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-2', 'Buenos días'))
+
+    expect(stored().audioTracks.find((track) => track.id === fixLane)?.muted).toBe(false)
   })
 
   it('leaves a take that happens to be anchored to the same clip alone', () => {
@@ -578,20 +627,18 @@ describe('fixed clip audio', () => {
       inPoint: 0,
       duration: 1,
     })
-    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
-    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-2', 'Buenos días'))
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-2', 'Buenos días'))
 
-    // Somebody's recording is not a previous fix, however close it is sitting.
-    expect(
-      stored()
-        .audioClips.map((clip) => clip.assetId)
-        .sort(),
-    ).toEqual(['fix-2', 'recording'])
+    // Somebody's recording is not a fix, however close it is sitting, so the
+    // lane it is on is never the one a later fix quietens.
+    const recordingLane = stored().audioClips.find((clip) => clip.assetId === 'recording')?.trackId
+    expect(stored().audioTracks.find((track) => track.id === recordingLane)?.muted).toBe(false)
   })
 
   it('carries the correction with the clip when the picture is rearranged', () => {
     twoClips()
-    useProjectStore.getState().replaceClipAudio('clip-2', speech('fix-1', 'Hola'))
+    useProjectStore.getState().addFixedClipAudio('clip-2', speech('fix-1', 'Hola'))
 
     // clip-2 now plays first, so its line has to move with it.
     useProjectStore.getState().moveClip(1, 0)

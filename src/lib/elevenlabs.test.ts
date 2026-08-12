@@ -39,24 +39,16 @@ const MODELS = [
 ]
 
 describe('who pays', () => {
-  it('sends no key at all when the site is providing one', async () => {
+  it('sends the session and no key at all', async () => {
+    // The browser has no ElevenLabs credential to send. What it has is proof of
+    // who is asking, which is what the proxy checks before attaching the site's.
     fetchMock.mockResolvedValue(json({ voices: [] }))
 
-    await deleteVoice('', 'cloned')
+    await deleteVoice('cloned')
 
     const headers = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers)
     expect(headers.has('xi-api-key')).toBe(false)
-    // What the proxy checks before it spends the site's key on anybody.
     expect(headers.get('authorization')).toBe('Bearer session-token')
-  })
-
-  it('forwards a key the user entered, which is what makes it theirs', async () => {
-    fetchMock.mockResolvedValue(json({ voices: [] }))
-
-    await deleteVoice('  their-own-key  ', 'cloned')
-
-    const headers = new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers)
-    expect(headers.get('xi-api-key')).toBe('their-own-key')
   })
 
   it('reads the deployment’s answer once and remembers it', async () => {
@@ -83,12 +75,12 @@ describe('findSpeechModel', () => {
     fetchMock.mockResolvedValue(json(MODELS))
     // Multilingual v2 is the better model and comes first in the account's
     // list, but it answers a language_code with a 422 rather than obeying it.
-    expect(await findSpeechModel('k', 'it')).toBe('eleven_turbo_v2_5')
+    expect(await findSpeechModel('it')).toBe('eleven_turbo_v2_5')
   })
 
   it('prefers the model that reads mixed text when no language was named', async () => {
     fetchMock.mockResolvedValue(json(MODELS))
-    expect(await findSpeechModel('k')).toBe('eleven_multilingual_v2')
+    expect(await findSpeechModel()).toBe('eleven_multilingual_v2')
   })
 
   it('passes over a model that does not speak the language asked for', async () => {
@@ -97,12 +89,12 @@ describe('findSpeechModel', () => {
     )
     // Nothing in the account speaks Japanese, so the documented default stands
     // rather than a model picked for being present.
-    expect(await findSpeechModel('k', 'ja')).toBe('eleven_turbo_v2_5')
+    expect(await findSpeechModel('ja')).toBe('eleven_turbo_v2_5')
   })
 
   it('falls back rather than failing when the model list cannot be read', async () => {
     fetchMock.mockResolvedValue(json({ detail: 'nope' }, 500))
-    expect(await findSpeechModel('k')).toBe('eleven_multilingual_v2')
+    expect(await findSpeechModel()).toBe('eleven_multilingual_v2')
   })
 })
 
@@ -110,7 +102,7 @@ describe('speak', () => {
   it('sends the line, the model and the language, and asks for MP3 back', async () => {
     fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(audio())
 
-    const result = await speak({ key: 'k', voiceId: 'v1', text: 'Buongiorno', languageCode: 'it' })
+    const result = await speak({ voiceId: 'v1', text: 'Buongiorno', languageCode: 'it' })
 
     const [url, init] = fetchMock.mock.calls.at(-1) ?? []
     expect(url).toContain('/api/elevenlabs/v1/text-to-speech/v1')
@@ -126,7 +118,7 @@ describe('speak', () => {
   it('leaves the language out entirely when none was chosen', async () => {
     fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(audio())
 
-    await speak({ key: 'k', voiceId: 'v1', text: 'Hello' })
+    await speak({ voiceId: 'v1', text: 'Hello' })
 
     const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)) as Record<
       string,
@@ -138,7 +130,7 @@ describe('speak', () => {
   it('spends no request on finding a model when it was given one', async () => {
     fetchMock.mockResolvedValue(audio())
 
-    await speak({ key: 'k', voiceId: 'v1', text: 'Hello', modelId: 'eleven_flash_v2_5' })
+    await speak({ voiceId: 'v1', text: 'Hello', modelId: 'eleven_flash_v2_5' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -149,7 +141,6 @@ describe('cloneVoice', () => {
     fetchMock.mockResolvedValue(json({ voice_id: 'cloned' }))
 
     const voiceId = await cloneVoice({
-      key: 'k',
       name: 'editor-cat fix · lighthouse.mp4',
       sample: new Blob(['wav'], { type: 'audio/wav' }),
     })
@@ -168,7 +159,7 @@ describe('cloneVoice', () => {
       .mockResolvedValueOnce(json({ detail: 'Not Found' }, 404))
       .mockResolvedValueOnce(json({ voice_id: 'cloned' }))
 
-    expect(await cloneVoice({ key: 'k', name: 'n', sample: new Blob(['wav']) })).toBe('cloned')
+    expect(await cloneVoice({ name: 'n', sample: new Blob(['wav']) })).toBe('cloned')
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/elevenlabs/v1/voices/ivc/create',
       '/api/elevenlabs/v1/voices/add',
@@ -179,7 +170,7 @@ describe('cloneVoice', () => {
     // A settled answer. Asking again would only bury it behind a second error.
     fetchMock.mockResolvedValue(json({ detail: { message: 'invalid key' } }, 401))
 
-    await expect(cloneVoice({ key: 'k', name: 'n', sample: new Blob(['wav']) })).rejects.toThrow()
+    await expect(cloneVoice({ name: 'n', sample: new Blob(['wav']) })).rejects.toThrow()
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
@@ -188,7 +179,7 @@ describe('deleteVoice', () => {
   it('removes the copy from the account', async () => {
     fetchMock.mockResolvedValue(json({ status: 'ok' }))
 
-    await deleteVoice('k', 'cloned')
+    await deleteVoice('cloned')
 
     const [url, init] = fetchMock.mock.calls.at(-1) ?? []
     expect(url).toBe('/api/elevenlabs/v1/voices/cloned')

@@ -8,16 +8,11 @@
  * pronunciation that has already been performed, so the line is said again from
  * the text.
  *
- * Both are paid for by the deployment, like image and video generation and like
- * captions, which reach the same company's Scribe through fal (see `scribe.ts`).
- * Nothing here asks the visitor for a key: the site's own is attached by the
- * proxy, which is also why these requests carry the Auth0 session — that is what
- * the function checks before spending it.
- *
- * A key the user *has* entered still wins, and is forwarded once and forgotten,
- * for anyone who would rather use their own quota and their own voice library.
- * `key` is therefore an ordinary empty string most of the time, and the header
- * is simply left off.
+ * No key appears anywhere in this file, and that is the whole arrangement: the
+ * deployment's own is attached inside the proxy and never reaches the browser,
+ * exactly as image and video generation already work, and as captions do through
+ * fal (see `scribe.ts`). What these requests carry instead is the Auth0 session,
+ * which is what the function checks before spending it.
  *
  * All traffic goes through /api/elevenlabs so we do not depend on ElevenLabs'
  * browser CORS policy.
@@ -49,17 +44,15 @@ interface ModelsResponse {
   languages?: { language_id?: string; name?: string }[]
 }
 
-async function elevenFetch(path: string, key: string, init?: RequestInit): Promise<Response> {
-  // Sent when there is one, which is what the proxy reads to decide whose
-  // account this is. Without it the site's key pays, and the session below is
-  // what says the caller may spend it.
+async function elevenFetch(path: string, init?: RequestInit): Promise<Response> {
+  // The only credential this end has. It says who is asking; the proxy decides
+  // whether that person may spend the site's key, and then attaches it.
   const token = await auth0Token().catch(() => null)
 
   const response = await fetch(`${PROXY_BASE}${path}`, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      ...(key.trim() ? { 'xi-api-key': key.trim() } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
   })
@@ -68,13 +61,13 @@ async function elevenFetch(path: string, key: string, init?: RequestInit): Promi
 }
 
 /**
- * Whether this deployment provides a key of its own.
+ * Whether this deployment has a key at all.
  *
  * Asked once and remembered: it is a property of the build on the other end of
  * the wire, not of the moment, and every voice control on screen reads it to
- * decide whether to work or to ask for a key. A checkout served by plain
- * `vite dev` has no /api routes at all, so this throws rather than 404s — and
- * the answer is the same either way, which is "not from here".
+ * decide whether to work or to say the site is not set up for this. A checkout
+ * served by plain `vite dev` has no /api routes, so this throws rather than
+ * 404s — and the answer is the same either way, which is "not from here".
  */
 let sitePromise: Promise<boolean> | null = null
 
@@ -90,10 +83,10 @@ export function siteProvidesKey(): Promise<boolean> {
   return sitePromise
 }
 
-export async function listVoices(key: string, signal?: AbortSignal): Promise<Voice[]> {
+export async function listVoices(signal?: AbortSignal): Promise<Voice[]> {
   if (isMockEnabled()) return mockVoices().voices
 
-  const response = await elevenFetch('/v1/voices', key, { signal })
+  const response = await elevenFetch('/v1/voices', { signal })
   const body = (await response.json()) as VoicesResponse
   return body.voices ?? []
 }
@@ -104,11 +97,11 @@ export async function listVoices(key: string, signal?: AbortSignal): Promise<Voi
  * Asking the API rather than hardcoding an ID means this keeps working when
  * ElevenLabs retires or renames a model, which they do periodically.
  */
-export async function findConversionModel(key: string, signal?: AbortSignal): Promise<string> {
+export async function findConversionModel(signal?: AbortSignal): Promise<string> {
   if (isMockEnabled()) return 'eleven_multilingual_sts_v2'
 
   try {
-    const response = await elevenFetch('/v1/models', key, { signal })
+    const response = await elevenFetch('/v1/models', { signal })
     const models = (await response.json()) as ModelsResponse[]
     const capable = models.find((model) => model.can_do_voice_conversion)
     if (capable?.model_id) return capable.model_id
@@ -120,7 +113,6 @@ export async function findConversionModel(key: string, signal?: AbortSignal): Pr
 }
 
 export interface ConvertOptions {
-  key: string
   voiceId: string
   audio: Blob
   modelId?: string
@@ -131,7 +123,6 @@ export interface ConvertOptions {
 
 /** Converts a recording into the chosen voice, returning the new audio. */
 export async function convertVoice({
-  key,
   voiceId,
   audio,
   modelId,
@@ -140,7 +131,7 @@ export async function convertVoice({
 }: ConvertOptions): Promise<Blob> {
   if (isMockEnabled()) return mockConvert(audio)
 
-  const model = modelId ?? (await findConversionModel(key, signal))
+  const model = modelId ?? (await findConversionModel(signal))
 
   const form = new FormData()
   // The extension matters: ElevenLabs sniffs the container from the filename
@@ -149,7 +140,7 @@ export async function convertVoice({
   form.append('model_id', model)
   form.append('remove_background_noise', String(removeBackgroundNoise))
 
-  const response = await elevenFetch(`/v1/speech-to-speech/${encodeURIComponent(voiceId)}`, key, {
+  const response = await elevenFetch(`/v1/speech-to-speech/${encodeURIComponent(voiceId)}`, {
     method: 'POST',
     body: form,
     headers: { accept: 'audio/mpeg' },
@@ -213,7 +204,6 @@ const DETECTING_MODELS = ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven
  * finding out.
  */
 export async function findSpeechModel(
-  key: string,
   languageCode?: string,
   signal?: AbortSignal,
 ): Promise<string> {
@@ -221,7 +211,7 @@ export async function findSpeechModel(
   if (isMockEnabled()) return wanted[0] as string
 
   try {
-    const response = await elevenFetch('/v1/models', key, { signal })
+    const response = await elevenFetch('/v1/models', { signal })
     const models = (await response.json()) as ModelsResponse[]
     const speaks = (model: ModelsResponse) =>
       model.can_do_text_to_speech !== false &&
@@ -244,7 +234,6 @@ export async function findSpeechModel(
 }
 
 export interface SpeakOptions {
-  key: string
   /** Whose voice says it. A cloned voice is just another id here. */
   voiceId: string
   text: string
@@ -261,7 +250,6 @@ export interface SpeakOptions {
  * this is the format every browser this app runs in can decode without help.
  */
 export async function speak({
-  key,
   voiceId,
   text,
   modelId,
@@ -270,11 +258,10 @@ export async function speak({
 }: SpeakOptions): Promise<Blob> {
   if (isMockEnabled()) return mockSpeech(text)
 
-  const model = modelId ?? (await findSpeechModel(key, languageCode, signal))
+  const model = modelId ?? (await findSpeechModel(languageCode, signal))
 
   const response = await elevenFetch(
     `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
-    key,
     {
       method: 'POST',
       body: JSON.stringify({
@@ -291,8 +278,7 @@ export async function speak({
 }
 
 export interface CloneOptions {
-  key: string
-  /** What the voice is called in the user's account while it exists. */
+  /** What the voice is called in the account while it exists. */
   name: string
   /** Audio of the voice to copy. */
   sample: Blob
@@ -315,10 +301,11 @@ const CLONE_PATHS = ['/v1/voices/ivc/create', '/v1/voices/add']
  *
  * Instant cloning, which is what makes a fixed line sound like the clip it is
  * standing in for rather than like a stranger dubbed over it. The voice is
- * created in the user's own ElevenLabs account, so whoever asks for one is
- * expected to `deleteVoice` it again — see `clipAudioFix.ts`, which does.
+ * created in the deployment's ElevenLabs account, so whoever asks for one is
+ * expected to `deleteVoice` it again — see `clipAudioFix.ts`, which does, and
+ * `netlify/lib/elevenlabs.ts`, which sweeps up after the runs that could not.
  */
-export async function cloneVoice({ key, name, sample, signal }: CloneOptions): Promise<string> {
+export async function cloneVoice({ name, sample, signal }: CloneOptions): Promise<string> {
   if (isMockEnabled()) return mockClonedVoiceId()
 
   const form = new FormData()
@@ -331,7 +318,7 @@ export async function cloneVoice({ key, name, sample, signal }: CloneOptions): P
   let lastError: unknown
   for (const path of CLONE_PATHS) {
     try {
-      const response = await elevenFetch(path, key, { method: 'POST', body: form, signal })
+      const response = await elevenFetch(path, { method: 'POST', body: form, signal })
       const body = (await response.json()) as { voice_id?: string }
       if (!body.voice_id) throw new Error('ElevenLabs cloned the voice but did not name it.')
       return body.voice_id
@@ -345,10 +332,10 @@ export async function cloneVoice({ key, name, sample, signal }: CloneOptions): P
   throw lastError
 }
 
-/** Removes a voice from the user's account. Used to clean up a clone. */
-export async function deleteVoice(key: string, voiceId: string): Promise<void> {
+/** Removes a voice from the account. Used to clean up a clone. */
+export async function deleteVoice(voiceId: string): Promise<void> {
   if (isMockEnabled()) return
-  await elevenFetch(`/v1/voices/${encodeURIComponent(voiceId)}`, key, { method: 'DELETE' })
+  await elevenFetch(`/v1/voices/${encodeURIComponent(voiceId)}`, { method: 'DELETE' })
 }
 
 function filenameFor(mimeType: string): string {
@@ -357,11 +344,4 @@ function filenameFor(mimeType: string): string {
   if (mimeType.includes('mp4') || mimeType.includes('m4a')) return 'take.m4a'
   if (mimeType.includes('wav')) return 'take.wav'
   return 'take.mp3'
-}
-
-/** Cheap credential check for the "test connection" button in Settings. */
-export async function verifyKey(key: string, signal?: AbortSignal): Promise<boolean> {
-  if (isMockEnabled()) return true
-  await elevenFetch('/v1/user', key, { signal })
-  return true
 }

@@ -111,6 +111,12 @@ export interface PlacementOutcome {
   createdTrack: boolean
 }
 
+/** The same, plus what a new fix did to the fixes already under that clip. */
+export interface FixPlacement extends PlacementOutcome {
+  /** Earlier fixes for this clip whose lanes were muted, not removed. */
+  silenced: number
+}
+
 /** Which caption, and which word inside it, the editor is working on. */
 export interface CaptionSelection {
   cueId: string
@@ -199,14 +205,17 @@ interface ProjectState {
    * clip back exactly as it was rather than leaving it mute with the correction
    * gone — or the other way about.
    *
-   * Audio a previous fix left under the same clip is removed rather than
-   * layered under the new one. Fixing twice is how a spelling gets corrected,
-   * and two takes of the same line playing together is nobody's second go.
+   * Every fix gets a **lane of its own**, and an earlier one is never deleted or
+   * written over. Generated audio costs money and a second go is usually a
+   * better spelling of the same line rather than a repudiation of the first —
+   * so the earlier take stays exactly where it was, on its own row, and is
+   * muted rather than removed. Un-mute the row to hear it again, or delete it
+   * if it really was wrong; both are one click on a lane that is still there.
    */
-  replaceClipAudio: (
+  addFixedClipAudio: (
     clipId: string,
     clip: Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>,
-  ) => PlacementOutcome
+  ) => FixPlacement
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -632,37 +641,51 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
     },
 
-    replaceClipAudio: (clipId, clip) => {
+    addFixedClipAudio: (clipId, clip) => {
       const id = newId('aclip')
+      const trackId = newId('track')
       const { project } = get()
 
-      // Anchored to the clip explicitly rather than by where it starts: this
-      // audio *is* that clip's sound, so it follows the shot wherever the shot
-      // goes, even if a transition has pulled the two starts apart.
-      const kept = project.audioClips.filter(
-        (entry) => !(entry.speechFix && entry.anchorClipId === clipId),
+      // A lane of its own, always. `placeAudioClip` would happily drop this
+      // onto whichever voice track was free at that moment — which is right for
+      // a recording, and wrong here: a fix belongs beside the ones before it,
+      // one row each, where they can be told apart and switched between.
+      const track = { ...createTrack(trackId, 'voice', project.audioTracks), id: trackId }
+
+      // The lanes earlier fixes for this clip went onto. Silenced rather than
+      // emptied — but only where the lane holds nothing but fixes, so a row
+      // somebody has since dragged a take onto is left audible.
+      const olderFixLanes = new Set(
+        project.audioClips
+          .filter((entry) => entry.speechFix && entry.anchorClipId === clipId)
+          .map((entry) => entry.trackId)
+          .filter((lane) =>
+            project.audioClips
+              .filter((entry) => entry.trackId === lane)
+              .every((entry) => entry.speechFix),
+          ),
       )
-      const result = placeAudioClip(project.audioTracks, kept, {
-        kind: 'voice',
-        newTrackId: newId('track'),
-        clip: { ...clip, id, anchorClipId: clipId },
-      })
 
       mutate((current) => ({
         ...current,
-        audioTracks: result.tracks,
-        audioClips: result.clips,
+        audioTracks: insertTrack(current.audioTracks, track).map((entry) =>
+          olderFixLanes.has(entry.id) ? { ...entry, muted: true } : entry,
+        ),
+        // Anchored to the clip explicitly rather than by where it starts: this
+        // audio *is* that clip's sound, so it follows the shot wherever the
+        // shot goes, even if a transition has pulled the two starts apart.
+        audioClips: [...current.audioClips, { ...clip, id, trackId, anchorClipId: clipId }],
         clips: current.clips.map((entry) =>
           entry.id === clipId ? { ...entry, muted: true } : entry,
         ),
       }))
       set({ selectedAudioClipId: id })
 
-      const track = result.tracks.find((entry) => entry.id === result.trackId)
       return {
-        trackId: result.trackId,
-        trackName: track?.name ?? 'Track',
-        createdTrack: result.createdTrack,
+        trackId,
+        trackName: track.name,
+        createdTrack: true,
+        silenced: olderFixLanes.size,
       }
     },
 

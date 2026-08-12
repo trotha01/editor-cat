@@ -325,7 +325,6 @@ export function AudioPanel({
 }
 
 function TakeCard({ clip }: { clip: AudioClip }) {
-  const elevenKey = useSettingsStore((state) => state.elevenlabs)
   const canConvert = useSettingsStore(canUseElevenLabs)
   const updateAudioClip = useProjectStore((state) => state.updateAudioClip)
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
@@ -343,7 +342,7 @@ function TakeCard({ clip }: { clip: AudioClip }) {
   useEffect(() => {
     if (!canConvert || voices) return
     let cancelled = false
-    listVoices(elevenKey)
+    listVoices()
       .then((list) => {
         if (cancelled) return
         setVoices(list)
@@ -355,7 +354,7 @@ function TakeCard({ clip }: { clip: AudioClip }) {
     return () => {
       cancelled = true
     }
-  }, [canConvert, elevenKey, voices])
+  }, [canConvert, voices])
 
   const convert = async () => {
     const source = assets.find((asset) => asset.id === clip.assetId)
@@ -369,7 +368,7 @@ function TakeCard({ clip }: { clip: AudioClip }) {
       const blob = await getBlob(source.blobKey)
       if (!blob) throw new Error('The original recording is no longer in local storage.')
 
-      const converted = await convertVoice({ key: elevenKey, voiceId, audio: blob })
+      const converted = await convertVoice({ voiceId, audio: blob })
       const voiceName = voices?.find((voice) => voice.voice_id === voiceId)?.name ?? 'Converted'
 
       const asset = await ingestBlob(converted, {

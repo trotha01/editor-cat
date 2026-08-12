@@ -1,8 +1,8 @@
 /** API keys and model preferences. */
 import { create } from 'zustand'
-import { clearKeys, loadKeys, saveKeys, type KeyState } from '../lib/keys'
+import { purgeStoredKeys } from '../lib/keys'
 import { siteProvidesKey } from '../lib/elevenlabs'
-import { hasAccess } from '../lib/mock'
+import { isMockEnabled } from '../lib/mock'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
@@ -108,7 +108,7 @@ function persistPrefs(prefs: Prefs): void {
   }
 }
 
-export interface SettingsState extends KeyState, Prefs {
+export interface SettingsState extends Prefs {
   /**
    * Whether this deployment provides an ElevenLabs key of its own, so nobody
    * has to bring one.
@@ -119,45 +119,26 @@ export interface SettingsState extends KeyState, Prefs {
    * briefly promising to work on a deployment where they cannot.
    */
   siteElevenLabs: boolean
-  setElevenLabsKey: (value: string) => void
-  setRemember: (remember: boolean) => void
   setPref: <K extends keyof Prefs>(key: K, value: Prefs[K]) => void
-  forgetKeys: () => void
-  hasElevenLabs: () => boolean
-  /** Asks the proxy who is paying. Called once, at startup. */
+  /** Asks the proxy whether it has a key. Called once, at startup. */
   loadElevenLabsSupport: () => Promise<void>
 }
 
 /**
- * Whether the voice features can run at all, whoever is paying.
+ * Whether the voice features can run at all.
  *
  * The one question every voice control on screen actually has — the clip menu,
  * the fix dialog, the take cards — so it is answered in one place rather than
- * three subtly different ones. A key the user entered still counts, and in mock
- * mode everything counts, which is what keeps the whole flow walkable with no
- * provider at all.
+ * three subtly different ones. In mock mode the answer is always yes, which is
+ * what keeps the whole flow walkable with no provider behind it at all.
  */
 export function canUseElevenLabs(state: SettingsState): boolean {
-  return state.siteElevenLabs || hasAccess(state.elevenlabs)
+  return state.siteElevenLabs || isMockEnabled()
 }
 
-export const useSettingsStore = create<SettingsState>((set, get) => ({
-  ...loadKeys(),
+export const useSettingsStore = create<SettingsState>((set) => ({
   ...loadPrefs(),
   siteElevenLabs: false,
-
-  setElevenLabsKey: (value) => {
-    set((state) => {
-      saveKeys({ elevenlabs: value, remember: state.remember })
-      return { elevenlabs: value }
-    })
-  },
-
-  setRemember: (remember) => {
-    const { elevenlabs } = get()
-    saveKeys({ elevenlabs, remember })
-    set({ remember })
-  },
 
   setPref: (key, value) => {
     set((state) => {
@@ -166,14 +147,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     })
   },
 
-  forgetKeys: () => {
-    clearKeys()
-    set({ elevenlabs: '', remember: false })
-  },
-
-  hasElevenLabs: () => get().elevenlabs.trim().length > 0,
-
   loadElevenLabsSupport: async () => {
+    // The moment to take out the credential nobody can spend any more: this
+    // runs once at startup, on every device that ever held one.
+    purgeStoredKeys()
     set({ siteElevenLabs: await siteProvidesKey() })
   },
 }))
