@@ -95,6 +95,13 @@ describe('choosing where an export goes', () => {
     expect(screen.getByText(/never uploaded/i)).toBeInTheDocument()
   })
 
+  it('starts on the best quality, so nothing is thrown away unasked', () => {
+    open()
+
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
+    expect(screen.getByRole('option', { name: /best quality/i })).toBeInTheDocument()
+  })
+
   it('offers Mintspace as a destination', async () => {
     open()
 
@@ -128,12 +135,13 @@ describe('remembering the settings', () => {
 
   it('opens on the quality last used', () => {
     open()
-    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '18' } })
+    // Not the default, or this would pass without anything being remembered.
+    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '28' } })
 
     cleanup()
     open()
 
-    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('28')
   })
 
   it('does not remember a destination this deployment cannot reach', () => {
@@ -152,7 +160,17 @@ describe('remembering the settings', () => {
 
     open()
 
-    expect(screen.getByLabelText(/quality/i)).toHaveValue('23')
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('18')
+  })
+
+  it('keeps a remembered quality rather than forcing the best one back on', () => {
+    // The new default is not a preference: someone who deliberately picked a
+    // smaller file has already answered the question this asks.
+    window.localStorage.setItem('editor-cat.exportQuality.v1', '28')
+
+    open()
+
+    expect(screen.getByLabelText(/quality/i)).toHaveValue('28')
   })
 })
 
@@ -177,7 +195,7 @@ describe('the render itself', () => {
     fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
     await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(1))
 
-    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '18' } })
+    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '28' } })
     fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
 
     await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(2))

@@ -20,6 +20,17 @@ const QUALITY = [
   { crf: 18, label: 'Best quality' },
 ]
 
+/**
+ * Best quality, unless someone says otherwise.
+ *
+ * An export is the copy that leaves the editor, and the source project is not
+ * something a viewer ever gets back to — so a picture thrown away here is
+ * thrown away for good, while the cost of keeping it is only a larger file on
+ * a machine that already holds the footage. Trading that away is a decision
+ * about a particular upload, which is worth asking for rather than assuming.
+ */
+const DEFAULT_CRF = 18
+
 const DESTINATIONS = [
   { id: 'download', label: 'Download an MP4' },
   { id: 'mintspace', label: 'Publish to Mintspace' },
@@ -58,7 +69,7 @@ function usableDestination(stored: unknown): Destination {
 }
 
 function usableQuality(stored: unknown): number {
-  return QUALITY.some((option) => option.crf === stored) ? (stored as number) : 23
+  return QUALITY.some((option) => option.crf === stored) ? (stored as number) : DEFAULT_CRF
 }
 
 /** A finished render, stamped with the settings that produced it. */
@@ -77,14 +88,14 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const assets = useAssetStore((state) => state.assets)
 
   // Remembered across exports, and across sessions: someone who publishes
-  // everything to Mintspace at Best quality should not be re-choosing both on
-  // every video. The frame size is not here — it lives on the project, where
-  // it also drives the preview and the orientation toggle.
+  // everything to Mintspace at a smaller file size should not be re-choosing
+  // both on every video. The frame size is not here — it lives on the project,
+  // where it also drives the preview and the orientation toggle.
   const [storedDestination, setStoredDestination] = usePersistedState<Destination>(
     'editor-cat.exportDestination.v1',
     'download',
   )
-  const [storedCrf, setStoredCrf] = usePersistedState('editor-cat.exportQuality.v1', 23)
+  const [storedCrf, setStoredCrf] = usePersistedState('editor-cat.exportQuality.v1', DEFAULT_CRF)
   const destination = usableDestination(storedDestination)
   const crf = usableQuality(storedCrf)
   const [progress, setProgress] = useState<RenderProgress | null>(null)
