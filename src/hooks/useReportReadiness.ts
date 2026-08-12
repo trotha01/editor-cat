@@ -48,6 +48,7 @@ function settledReadiness({
   warm,
   imageLoaded,
   imageBroken,
+  mediaLoading,
 }: {
   kind: AssetKind | undefined
   url: string | null
@@ -55,8 +56,14 @@ function settledReadiness({
   warm: boolean
   imageLoaded: boolean
   imageBroken: boolean
+  mediaLoading: boolean
 }): ClipReadiness | null {
-  if (!kind || failed) return { state: 'missing', buffered: 0 }
+  if (failed) return { state: 'missing', buffered: 0 }
+  // An asset absent from the library is only gone once the library has finished
+  // arriving. The timeline already draws these clips as "media loading" while
+  // it has not — calling them missing here is what put a red bar across the top
+  // of every one of them on a project that was merely still opening.
+  if (!kind) return { state: mediaLoading ? 'loading' : 'missing', buffered: 0 }
   if (!url) return { state: 'loading', buffered: 0 }
   if (kind === 'video') return null
   if (imageBroken) return { state: 'missing', buffered: 0 }
@@ -76,6 +83,7 @@ export function useReportReadiness({
   warm,
   imageLoaded,
   imageBroken,
+  mediaLoading,
 }: {
   clipId: string
   videoRef: RefObject<HTMLVideoElement | null>
@@ -95,11 +103,21 @@ export function useReportReadiness({
   warm: boolean
   imageLoaded: boolean
   imageBroken: boolean
+  /** True while the asset library itself is still arriving, so a gap in it is not a loss. */
+  mediaLoading: boolean
 }): void {
   const report = useClipReadiness((state) => state.report)
   const forget = useClipReadiness((state) => state.forget)
 
-  const settled = settledReadiness({ kind, url, failed, warm, imageLoaded, imageBroken })
+  const settled = settledReadiness({
+    kind,
+    url,
+    failed,
+    warm,
+    imageLoaded,
+    imageBroken,
+    mediaLoading,
+  })
   // Carried as primitives so the effects below can depend on the answer itself
   // rather than on an object rebuilt every render.
   const settledState = settled?.state ?? null
