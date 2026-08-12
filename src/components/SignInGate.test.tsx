@@ -17,8 +17,6 @@ import { render, screen, waitFor } from '@testing-library/react'
  */
 const authState = {
   status: 'checking' as string,
-  access: 'allowed' as string,
-  accessReason: null as string | null,
   account: null as { id: string; email: string } | null,
   error: null as string | null,
   start: vi.fn(async () => {}),
@@ -97,8 +95,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   signInRequired = true
   authState.status = 'signed-out'
-  authState.access = 'allowed'
-  authState.accessReason = null
   authState.account = null
   authState.error = null
   driveState.status = 'disconnected'
@@ -157,36 +153,6 @@ describe('the gate', () => {
 
     expect(await screen.findByRole('button', { name: /allow google drive/i })).toBeInTheDocument()
     expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
-  })
-
-  it('turns away an account this deployment is not for, before Drive is asked', async () => {
-    // Every generation is billed to whoever deployed this, so a real session is
-    // only half of getting in. Being refused here rather than by whichever
-    // button spends something first is the whole point of asking at the door.
-    authState.status = 'signed-in'
-    authState.account = { id: 'user_1', email: 'stranger@example.com' }
-    authState.access = 'refused'
-    authState.accessReason = 'stranger@example.com is not on this site’s list.'
-
-    mount()
-
-    expect(await screen.findByText(/not on this site’s list/)).toBeInTheDocument()
-    expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
-    // And no Drive consent: asking somebody for a permission and then refusing
-    // them is worse than refusing them first.
-    expect(screen.queryByRole('button', { name: /allow google drive/i })).not.toBeInTheDocument()
-    expect(loadConnectionStatus).not.toHaveBeenCalled()
-  })
-
-  it('waits rather than guessing while the door is still answering', async () => {
-    authState.status = 'signed-in'
-    authState.account = { id: 'user_1', email: 'someone@example.com' }
-    authState.access = 'unknown'
-
-    mount()
-
-    expect(screen.queryByText(EDITOR)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /allow google drive/i })).not.toBeInTheDocument()
   })
 
   it('asks for the grant without disturbing the session', async () => {

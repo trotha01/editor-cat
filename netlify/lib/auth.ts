@@ -1,13 +1,5 @@
 /**
- * Proving the caller is a signed-in user of this site, and one this site is for.
- *
- * Two questions, and they came apart when the keys moved onto the deployment's
- * own accounts. Verifying the session says the person is who they say they are;
- * the allowlist in `allowlist.ts` says whether this deployment is theirs to
- * spend. A stranger with a perfectly good Google account is refused here, not
- * because anything is wrong with their session but because generating on
- * somebody else's fal and ElevenLabs accounts is not a thing a stranger gets to
- * do.
+ * Proving the caller is a signed-in user of this site.
  *
  * The fal proxy used to be harmless: it forwarded the caller's own key, so an
  * unauthenticated request could only ever spend the caller's own money. Now the
@@ -43,15 +35,12 @@
  * — which is why both accept their `VITE_` forms.
  */
 import { jsonError } from './proxy'
-import { isAllowedEmail, refusalDetail } from './allowlist'
 import { Auth0UnavailableError, auth0Config, auth0User } from './auth0'
 
 /**
  * Escape hatch for `netlify dev` against a checkout with no Auth0 tenant.
  * Deliberately opt-in: the default has to be "refuse" rather than "allow", or a
- * forgotten variable in production silently reopens the endpoint. It skips the
- * allowlist too — there is no address to check when there is no tenant, and a
- * local checkout has exactly one user.
+ * forgotten variable in production silently reopens the endpoint.
  */
 function allowAnonymous(): boolean {
   return process.env.FAL_PROXY_ALLOW_ANONYMOUS === '1'
@@ -131,21 +120,5 @@ export async function requireSession(request: Request): Promise<SessionResult> {
 
   if (!user) return { ok: false, response: unauthorised('That session could not be verified.') }
 
-  // Verified, and now: is this person one of ours? A real session from a
-  // stranger is exactly what the allowlist is for, and it is not a 401 — signing
-  // in again would produce the same address and the same answer, so saying
-  // "sign in" would send them round a loop with no exit.
-  const email = user.email || null
-  if (!isAllowedEmail(email)) {
-    return {
-      ok: false,
-      response: jsonError(
-        403,
-        'This account is not authorised to use this site.',
-        refusalDetail(email),
-      ),
-    }
-  }
-
-  return { ok: true, userId: user.id, email }
+  return { ok: true, userId: user.id, email: user.email || null }
 }

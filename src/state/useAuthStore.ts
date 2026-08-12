@@ -16,7 +16,6 @@
  */
 import { create } from 'zustand'
 import { adoptRedirect, auth0SignOut, beginGoogleSignIn, type Account } from '../lib/auth0/client'
-import { checkAccess } from '../lib/access'
 import { SignInRequiredError, supabaseAccessToken } from '../lib/supabase/session'
 import { isSupabaseConfigured } from '../lib/supabase/client'
 import { isMockEnabled } from '../lib/mock'
@@ -25,16 +24,6 @@ import { toDisplayMessage } from '../lib/errors'
 export type AuthStatus =
   /** No Supabase project, or mock mode: the editor is open and purely local. */
   'local' | 'checking' | 'signed-out' | 'signing-in' | 'signed-in'
-
-/**
- * Whether this account is one the deployment is for.
- *
- * Separate from `status` because they are separate facts, and conflating them
- * would lose the only one worth saying out loud: a refused account *is* signed
- * in. Their session is good, their address is simply not on the list, and
- * telling them to sign in again would send them round a loop that ends here.
- */
-export type AccessStatus = 'unknown' | 'allowed' | 'refused'
 
 /** Whether this build gates the editor behind a sign-in. */
 export function requiresSignIn(): boolean {
@@ -45,10 +34,6 @@ export type { Account }
 
 interface AuthState {
   status: AuthStatus
-  /** Only meaningful once signed in; 'unknown' until the door has answered. */
-  access: AccessStatus
-  /** Why the account was refused, from the server that refused it. */
-  accessReason: string | null
   account: Account | null
   error: string | null
 
@@ -62,10 +47,6 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>((set) => ({
   status: requiresSignIn() ? 'checking' : 'local',
-  // A build with no sign-in has nobody to refuse: there is no account, nothing
-  // server-side to spend, and the gate never draws.
-  access: requiresSignIn() ? 'unknown' : 'allowed',
-  accessReason: null,
   account: null,
   error: null,
 
@@ -110,16 +91,6 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
 
     set({ status: 'signed-in', account, error: null })
-
-    // Asked here, once, rather than left to whichever button spends something
-    // first. It cannot gate the *session* — Auth0 owns that, and a Login Action
-    // is what stops an unlisted address at the login itself — but it is what
-    // turns a refusal into a sentence on the way in.
-    const access = await checkAccess()
-    set({
-      access: access.allowed ? 'allowed' : 'refused',
-      accessReason: access.reason,
-    })
   },
 
   signIn: () => {
@@ -146,7 +117,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (cause) {
       set({ error: toDisplayMessage(cause) })
     }
-    set({ status: 'signed-out', account: null, access: 'unknown', accessReason: null })
+    set({ status: 'signed-out', account: null })
   },
 
   setError: (message) => set({ error: message }),

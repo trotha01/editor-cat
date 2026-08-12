@@ -40,13 +40,6 @@ describe('netlify/functions directory', () => {
     // minted the Supabase session the browser used to carry; with nothing to
     // mint, keeping it would deploy an endpoint whose only remaining effect
     // would be to hand out a credential nothing accepts.
-    expect(names).toEqual([
-      'access.ts',
-      'elevenlabs.ts',
-      'fal.ts',
-      'github.ts',
-      'google.ts',
-      'media.ts',
-    ])
+    expect(names).toEqual(['elevenlabs.ts', 'fal.ts', 'github.ts', 'google.ts', 'media.ts'])
   })
 })

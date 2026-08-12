@@ -35,7 +35,6 @@ import { useDriveStore } from '../state/useDriveStore'
 
 export function SignInGate({ children }: { children: ReactNode }) {
   const status = useAuthStore((state) => state.status)
-  const access = useAuthStore((state) => state.access)
   const start = useAuthStore((state) => state.start)
   const driveStatus = useDriveStore((state) => state.status)
   const driveDurable = useDriveStore((state) => state.durable)
@@ -73,12 +72,6 @@ export function SignInGate({ children }: { children: ReactNode }) {
   // is about to be let straight through, or who is already leaving.
   if (status === 'checking' || status === 'signing-in') return <Loading />
   if (status !== 'signed-in') return <SignInScreen />
-
-  // Signed in, and the door has not answered yet. A spinner rather than the
-  // Drive steps: showing somebody a consent screen and then refusing them is a
-  // worse first minute than half a second of waiting.
-  if (access === 'unknown') return <Loading />
-  if (access === 'refused') return <NotAuthorisedScreen />
 
   // The Drive connection being resumed from the account, which most returning
   // visits do without asking for anything.
@@ -260,45 +253,8 @@ function SignInScreen() {
       <p className="text-xs leading-relaxed text-ink-dim">
         Signing in tells us who you are. Saving your media needs one more permission after it, for a
         folder in your own Google Drive — this site only ever sees that folder and the files it puts
-        there. Access is limited to accounts this site&apos;s owner has approved.
-      </p>
-    </Panel>
-  )
-}
-
-/**
- * Signed in, and not on the list.
- *
- * Deliberately a full stop rather than a retry: the address is the answer, so
- * signing in again with the same account would come straight back here. What is
- * offered instead is the two things that can actually change it — asking whoever
- * runs the site, or signing in as somebody else.
- *
- * The reason comes from the server rather than being written here, because the
- * server knows which of the three it is: an address that is not listed, a
- * deployment that has listed nobody at all, or a tenant whose tokens carry no
- * address to check. They need different people to do different things.
- */
-function NotAuthorisedScreen() {
-  const reason = useAuthStore((state) => state.accessReason)
-  const signOut = useAuthStore((state) => state.signOut)
-  const account = useAuthStore((state) => state.account)
-
-  return (
-    <Panel
-      title="This account cannot use this site"
-      lead="You are signed in, but this deployment is limited to accounts its owner has approved."
-    >
-      <Callout tone="warn" title="Not on the list">
-        {reason ?? 'This account is not authorised to use this site.'}
-      </Callout>
-
-      <Button onClick={() => void signOut()}>Sign out</Button>
-
-      <p className="text-xs leading-relaxed text-ink-dim">
-        {account?.email ? `Signed in as ${account.email}. ` : ''}
-        If you should have access, ask whoever runs this site to add your address. Nothing was
-        generated and nothing was charged.
+        there. There are no API keys to enter: everything the editor generates runs on this
+        site&apos;s own accounts.
       </p>
     </Panel>
   )
