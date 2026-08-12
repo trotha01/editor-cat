@@ -1,8 +1,9 @@
 /** Step 1: turn a prompt into images. */
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { PromptField } from './PromptField'
 import { ModelPicker } from './ModelPicker'
 import { GenerationStatus } from './GenerationStatus'
+import { ImageResults } from './ImageResults'
 import { Button, Callout, Field, Select, Spinner } from './ui'
 import { run, type GenerationProgress, type ImageOutput } from '../lib/falClient'
 import { IMAGE_MODELS, IMAGE_SIZES, findImageModel, formatCost } from '../lib/models'
@@ -11,12 +12,16 @@ import { ingestFromUrl } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
+import { useImageResultsStore } from '../state/useImageResultsStore'
 import { useProjectStore } from '../state/useProjectStore'
 
 export function ImagePanel() {
   const model = useSettingsStore((state) => state.imageModel)
   const setPref = useSettingsStore((state) => state.setPref)
+  const assets = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
+  const resultIds = useImageResultsStore((state) => state.ids)
+  const addResults = useImageResultsStore((state) => state.add)
   const addClip = useProjectStore((state) => state.addClip)
   const projectWidth = useProjectStore((state) => state.project.width)
   const projectHeight = useProjectStore((state) => state.project.height)
@@ -36,6 +41,14 @@ export function ImagePanel() {
   // and then stays put. Every image_size is valid for every model, so unlike
   // duration and resolution there is no reason to override a deliberate choice.
   const imageSize = imageSizeChoice ?? imageSizeFor(orientationOf(projectWidth, projectHeight))
+
+  // Resolved against the library each render rather than held as assets, so an
+  // image deleted there drops out of the results instead of showing a picture
+  // whose bytes are gone.
+  const results = useMemo(
+    () => resultIds.flatMap((id) => assets.find((asset) => asset.id === id) ?? []),
+    [resultIds, assets],
+  )
 
   const generate = async () => {
     if (!prompt.trim()) return
@@ -63,7 +76,7 @@ export function ImagePanel() {
 
       // Ingest sequentially so a partial failure still leaves earlier images
       // usable rather than losing the whole batch.
-      let saved = 0
+      const saved: string[] = []
       for (const [index, image] of images.entries()) {
         try {
           const asset = await ingestFromUrl(image.url, {
@@ -73,14 +86,15 @@ export function ImagePanel() {
             signal: controller.signal,
           })
           addAsset(asset)
-          saved += 1
+          saved.push(asset.id)
         } catch (cause) {
           setError(toDisplayMessage(cause))
         }
       }
 
-      if (saved > 0) {
-        setNote(`Added ${saved} image${saved === 1 ? '' : 's'} to your library.`)
+      if (saved.length > 0) {
+        addResults(saved)
+        setNote(`Added ${saved.length} image${saved.length === 1 ? '' : 's'} to your library.`)
       }
     } catch (cause) {
       setError(toDisplayMessage(cause))
@@ -112,8 +126,12 @@ export function ImagePanel() {
       />
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Shape">
-          <Select value={imageSize} onChange={(event) => setImageSizeChoice(event.target.value)}>
+        <Field label="Shape" htmlFor="image-shape">
+          <Select
+            id="image-shape"
+            value={imageSize}
+            onChange={(event) => setImageSizeChoice(event.target.value)}
+          >
             {IMAGE_SIZES.map((size) => (
               <option key={size.value} value={size.value}>
                 {size.label}
@@ -121,8 +139,12 @@ export function ImagePanel() {
             ))}
           </Select>
         </Field>
-        <Field label="How many">
-          <Select value={count} onChange={(event) => setCount(Number(event.target.value))}>
+        <Field label="How many" htmlFor="image-count">
+          <Select
+            id="image-count"
+            value={count}
+            onChange={(event) => setCount(Number(event.target.value))}
+          >
             {[1, 2, 3, 4].map((n) => (
               <option key={n} value={n}>
                 {n}
@@ -152,22 +174,11 @@ export function ImagePanel() {
         </Callout>
       ) : null}
 
-      {note ? (
-        <Callout tone="success">
-          {note}{' '}
-          <button
-            type="button"
-            className="underline underline-offset-2"
-            onClick={() => {
-              const newest = useAssetStore.getState().assets[0]
-              if (newest) addClip(newest)
-            }}
-          >
-            Add the newest one to the timeline
-          </button>
-          .
-        </Callout>
-      ) : null}
+      {/* No "add the newest one" link here any more: every image below carries
+          its own button, which says which image is being added. */}
+      {note ? <Callout tone="success">{note}</Callout> : null}
+
+      {results.length > 0 ? <ImageResults assets={results} onAdd={addClip} /> : null}
     </div>
   )
 }
