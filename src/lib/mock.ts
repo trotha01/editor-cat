@@ -265,12 +265,12 @@ const IDEA_TEMPLATES: ((word: string) => string)[] = [
 ]
 
 /**
- * Twenty mock scene ideas, shaped like `ideaGenerator.ts`'s JSON contract so
- * the "Idea" tab is exercisable offline too. Cycled from a fixed template list
- * rather than duplicating `IDEA_COUNT` here, which would need importing
- * `ideaGenerator.ts` and create a module cycle back through `falClient.ts`.
+ * Twenty mock scene ideas, so the "Idea" tab is exercisable offline too.
+ * Cycled from a fixed template list rather than duplicating `IDEA_COUNT` here,
+ * which would need importing `ideaGenerator.ts` and create a module cycle.
  */
-function mockIdeas(word: string): string[] {
+export async function mockIdeas(word: string): Promise<string[]> {
+  await new Promise((resolve) => setTimeout(resolve, 400))
   const trimmed = word.trim() || 'thing'
   return Array.from(
     { length: 20 },
@@ -290,13 +290,6 @@ export async function mockFal<T>(
 
   if (modelId.includes('any-llm')) {
     await new Promise((resolve) => setTimeout(resolve, 400))
-
-    // The idea generator's system prompt is the only "any-llm" caller that asks
-    // for a JSON array, so it doubles as the mock's routing key without this
-    // file needing to import `ideaGenerator.ts` directly.
-    if (String(input.system_prompt ?? '').includes('JSON array')) {
-      return { output: JSON.stringify(mockIdeas(String(input.prompt ?? ''))) } as T
-    }
     return mockLlm(input) as T
   }
 

@@ -7,9 +7,10 @@ Brainstorm a scene idea → write a prompt → get images → animate one into a
 music → swap your voice for another one → caption it karaoke-style → export an
 MP4.
 
-Idea generation, images, video and caption transcription all run on the
-deployment's own fal.ai account, so visitors need **no key** for any of them.
-Voice conversion uses **your own ElevenLabs key**, held in your browser.
+Images, video and caption transcription all run on the deployment's own fal.ai
+account; idea generation calls the Claude API directly on the deployment's own
+Anthropic account. Either way, visitors need **no key** for any of them. Voice
+conversion uses **your own ElevenLabs key**, held in your browser.
 
 ---
 
@@ -29,14 +30,16 @@ Voice conversion uses **your own ElevenLabs key**, held in your browser.
 
 ## What you need
 
-**As a visitor:** nothing. Idea generation, image and video generation, and
-caption transcription all run on the site's own fal.ai account. A key buys you
-voice conversion.
+**As a visitor:** nothing. Image and video generation and caption transcription
+run on the site's own fal.ai account; idea generation runs on the site's own
+Anthropic account. A key buys you voice conversion.
 
 - **[ElevenLabs](https://elevenlabs.io)** — entered in **Settings**. Needed for changing your recorded voice, and for nothing else. It is held in your browser: tick _remember on this device_ and it goes into local storage, leave it off and it is gone when you close the tab. Either way it is attached to each request as it passes through this site's proxy, and is never written to a server or a log.
 
 **As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key set as
-`FAL_KEY` in the site environment. See [Deploying to Netlify](#deploying-to-netlify).
+`FAL_KEY`, and an [Anthropic](https://console.anthropic.com/settings/keys) key
+set as `ANTHROPIC_API_KEY`, both in the site environment. See [Deploying to
+Netlify](#deploying-to-netlify).
 
 **Costs are real, and they land on the deployment.** Images are roughly
 $0.003–$0.04 each; video is roughly $0.04 per second at 480p on the default
@@ -671,25 +674,27 @@ If you are using the Drive integration, set the `VITE_AUTH0_*` variables in the
 site's environment variables and add the deployed origin to the Auth0
 application's allowed callback, logout and web-origin lists.
 
-### The one secret this needs
+### The secrets this needs
 
-Set **`FAL_KEY`** in the site's environment variables, for **all deploy
-contexts** — scoped to production only, every deploy preview answers 503. No
-`VITE_` prefix: that would inline it into the browser bundle and publish it.
+Set **`FAL_KEY`** and **`ANTHROPIC_API_KEY`** in the site's environment
+variables, for **all deploy contexts** — scoped to production only, every
+deploy preview answers 503. Neither takes a `VITE_` prefix: that would inline
+it into the browser bundle and publish it.
 
-Then decide who is allowed to spend it. `/api/fal/*` generates video on your
-account, so it verifies the caller's Auth0 access token before attaching the key:
+Then decide who is allowed to spend them. `/api/fal/*` generates video on your
+account and `/api/anthropic/*` generates ideas on it, so both verify the
+caller's Auth0 access token before attaching their key:
 
 - **`AUTH0_DOMAIN` and `AUTH0_AUDIENCE`** are what it verifies against — the
   tenant whose published keys must have signed the token, and the API identifier
   its `aud` must include. Both fall back to their `VITE_` forms, which name the
   same tenant and API. Verification is local, with no round trip per request,
   which matters because a single video job polls for minutes.
-- **Without either the proxy refuses every request** rather than running open.
-  `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`; setting
-  it on a deployed site hands your fal credits to anyone who finds the URL.
-  Netlify's own password protection or access controls are worth adding on top
-  if the site is not meant to be public at all.
+- **Without either, both proxies refuse every request** rather than running
+  open. `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`;
+  setting it on a deployed site hands your fal and Anthropic credits to anyone
+  who finds the URL. Netlify's own password protection or access controls are
+  worth adding on top if the site is not meant to be public at all.
 
 The `VITE_AUTH0_*` and `VITE_SUPABASE_*` variables are build-time
 and not secret — the anon key is protected by row-level security, and the client
@@ -711,15 +716,18 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Settings  — one key, in memory or local          /api/fal/*        → queue.fal.run
   Generate  — images, then image → video             Auth0 token verified locally,
   Library   — blobs in IndexedDB                     site's key attached
-  Timeline  — picture + audio + caption lanes      /api/elevenlabs/* → api.elevenlabs.io
-  Captions  — words with their own timings           the caller's own key, forwarded once
-  Speech    — audio decoded here, Scribe there     /api/media        → streams provider media
-  Sign-in   — Auth0 (auth0-spa-js)                 /api/google/*     → oauth2.googleapis.com
-  Projects  — timelines in Supabase (no media)       exchanges the caller's Auth0 token
-  Drive     — media in your own Drive                through Token Vault for a Google one
-  Preview   — custom player over <video>           /api/github/*     → api.github.com
-  Export    — ffmpeg.wasm → MP4, captions burnt in   files what the report form collected,
-  Report    — bug reports, filed as issues            attributed to the verified session
+  Idea      — scene ideas from Claude              /api/anthropic/*  → api.anthropic.com
+  Timeline  — picture + audio + caption lanes         Auth0 token verified locally,
+  Captions  — words with their own timings            site's key attached
+  Speech    — audio decoded here, Scribe there     /api/elevenlabs/* → api.elevenlabs.io
+  Sign-in   — Auth0 (auth0-spa-js)                    the caller's own key, forwarded once
+  Projects  — timelines in Supabase (no media)     /api/media        → streams provider media
+  Drive     — media in your own Drive              /api/google/*     → oauth2.googleapis.com
+  Preview   — custom player over <video>              exchanges the caller's Auth0 token
+  Export    — ffmpeg.wasm → MP4, captions burnt in    through Token Vault for a Google one
+  Report    — bug reports, filed as issues          /api/github/*     → api.github.com
+                                                       files what the report form collected,
+                                                       attributed to the verified session
 
                                                  Supabase and Drive themselves talk to the
                                                  browser directly, not through us — Supabase
@@ -728,12 +736,12 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
 
 A few decisions worth knowing about:
 
-**Why proxy at all?** For fal, secrecy: the key belongs to the deployment and is
-attached on the way through, so it never exists in the browser. For ElevenLabs,
-reliability — browser-direct calls depend on each provider's CORS policy, which
-changes without notice, and going through our own origin makes it deterministic.
-Both share a second payoff: provider media arrives same-origin, so it never
-taints the canvas during export.
+**Why proxy at all?** For fal and Anthropic, secrecy: the key belongs to the
+deployment and is attached on the way through, so it never exists in the
+browser. For ElevenLabs, reliability — browser-direct calls depend on each
+provider's CORS policy, which changes without notice, and going through our own
+origin makes it deterministic. All three share a second payoff: provider media
+arrives same-origin, so it never taints the canvas during export.
 
 **Why the queue API, not the simple one?** A Netlify function may run for about
 ten seconds; video generation takes minutes. So the browser drives the job —

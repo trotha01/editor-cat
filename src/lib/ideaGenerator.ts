@@ -1,18 +1,20 @@
 /**
  * The "Idea" tab's scene generator.
  *
- * Runs through the same fal `any-llm` endpoint as "Improve with AI" (see
- * `promptEnhancer.ts`), but always talks to Claude rather than whichever LLM
- * happens to be picked in Settings for prompt rewriting — the brief for this
- * feature specifically asked for Claude ideas, not "an LLM of the user's
- * choosing wrote something claude-shaped".
+ * Calls the Claude API directly, rather than routing through fal's `any-llm`
+ * endpoint the way "Improve with AI" does (see `promptEnhancer.ts`) — the brief
+ * for this feature specifically asked for Claude ideas, not "an LLM of the
+ * user's choosing wrote something claude-shaped", and going straight to
+ * Anthropic means the model actually used is never at the mercy of fal's own
+ * model catalogue.
  */
-import { run, type LlmOutput } from './falClient'
-import { LLM_ENDPOINT } from './models'
+import { createMessage } from './claudeClient'
+import { isMockEnabled, mockIdeas } from './mock'
 import { stripWrapping } from './promptEnhancer'
 
-export const IDEA_MODEL = 'anthropic/claude-3.5-sonnet'
+export const IDEA_MODEL = 'claude-opus-5'
 export const IDEA_COUNT = 20
+export const IDEA_MAX_TOKENS = 4096
 
 export const IDEA_SYSTEM_PROMPT = `You invent premises for extremely short film scenes, given a single word from the user.
 
@@ -36,17 +38,17 @@ export async function generateIdeas({ word, signal }: GenerateIdeasOptions): Pro
   const trimmed = word.trim()
   if (!trimmed) throw new Error('Type a word first, then generate ideas.')
 
-  const output = await run<LlmOutput>(
-    LLM_ENDPOINT,
-    {
-      model: IDEA_MODEL,
-      system_prompt: IDEA_SYSTEM_PROMPT,
-      prompt: trimmed,
-    },
-    { signal },
-  )
+  if (isMockEnabled()) return mockIdeas(trimmed)
 
-  const ideas = parseIdeas(output.output ?? '')
+  const text = await createMessage({
+    model: IDEA_MODEL,
+    system: IDEA_SYSTEM_PROMPT,
+    prompt: trimmed,
+    maxTokens: IDEA_MAX_TOKENS,
+    signal,
+  })
+
+  const ideas = parseIdeas(text)
   if (ideas.length === 0) {
     throw new Error('Claude returned no ideas. Try a different word.')
   }

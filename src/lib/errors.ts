@@ -8,10 +8,15 @@
 
 export class ProviderError extends Error {
   readonly status: number
-  readonly provider: 'fal.ai' | 'ElevenLabs'
+  readonly provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic'
   readonly detail: string | undefined
 
-  constructor(provider: 'fal.ai' | 'ElevenLabs', status: number, message: string, detail?: string) {
+  constructor(
+    provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
+    status: number,
+    message: string,
+    detail?: string,
+  ) {
     super(message)
     this.name = 'ProviderError'
     this.provider = provider
@@ -29,6 +34,12 @@ export function extractMessage(body: unknown): string | undefined {
 
   if (typeof record.error === 'string') return record.error
   if (typeof record.message === 'string') return record.message
+
+  // Anthropic: { type: "error", error: { type, message } }
+  if (record.error && typeof record.error === 'object') {
+    const entry = record.error as { message?: unknown }
+    if (typeof entry.message === 'string') return entry.message
+  }
 
   // fal validation errors: { detail: [{ msg, loc }] }
   const detail = record.detail
@@ -60,15 +71,17 @@ export function extractMessage(body: unknown): string | undefined {
 /**
  * Maps a status code onto advice about what to actually do next.
  *
- * The two providers need different advice for the same codes. ElevenLabs is
- * still bring-your-own-key, so a rejection is something the user can fix in
- * Settings. fal is reached with the site's own key, so the same codes mean
- * either "your session lapsed" or "the operator needs to fix something" — and
- * telling that user to check a Settings field they cannot see is worse than
- * saying nothing.
+ * ElevenLabs is bring-your-own-key, so a rejection is something the user can
+ * fix in Settings. fal and Anthropic are reached with the site's own key, so
+ * the same codes mean either "your session lapsed" or "the operator needs to
+ * fix something" — and telling that user to check a Settings field they cannot
+ * see is worse than saying nothing.
  */
-export function explainStatus(provider: 'fal.ai' | 'ElevenLabs', status: number): string {
-  const siteOwnsKey = provider === 'fal.ai'
+export function explainStatus(
+  provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
+  status: number,
+): string {
+  const siteOwnsKey = provider === 'fal.ai' || provider === 'Anthropic'
 
   switch (status) {
     case 401:
@@ -78,13 +91,14 @@ export function explainStatus(provider: 'fal.ai' | 'ElevenLabs', status: number)
         : `Your ${provider} API key was rejected. Check it in Settings — keys are easy to paste with a trailing space.`
     case 402:
       return siteOwnsKey
-        ? "This site's fal.ai account is out of credit, so generation is paused. Nothing you can fix from here."
+        ? `This site's ${provider} account is out of credit, so generation is paused. Nothing you can fix from here.`
         : `Your ${provider} account is out of credit. Top it up and try again.`
     case 503:
-      // Our own proxy answers 503 when the deployment has no fal key, so for
-      // fal this is far more likely to be a setup problem than an outage.
+      // Our own proxy answers 503 when the deployment has no key for the
+      // provider, so for a site-owned key this is far more likely to be a
+      // setup problem than an outage.
       return siteOwnsKey
-        ? 'This site is not set up for generation. Whoever deployed it needs to add a fal.ai key to the site environment.'
+        ? `This site is not set up for generation. Whoever deployed it needs to add a ${provider} key to the site environment.`
         : `${provider} had a server error. This is usually transient — try again.`
     case 404:
       return `That ${provider} model ID does not exist. Provider catalogues change often — pick another model, or set a custom ID in the model picker.`
@@ -185,7 +199,7 @@ export function isAbort(error: unknown): boolean {
 }
 
 export async function providerErrorFrom(
-  provider: 'fal.ai' | 'ElevenLabs',
+  provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
   response: Response,
 ): Promise<ProviderError> {
   let body: unknown

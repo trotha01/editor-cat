@@ -1,5 +1,23 @@
-import { describe, expect, it } from 'vitest'
-import { IDEA_COUNT, parseIdeas } from './ideaGenerator'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const createMessage = vi.fn()
+const isMockEnabled = vi.fn(() => false)
+const mockIdeas = vi.fn()
+
+vi.mock('./claudeClient', () => ({
+  createMessage: (opts: unknown) => createMessage(opts) as unknown,
+}))
+vi.mock('./mock', () => ({
+  isMockEnabled: () => isMockEnabled() as unknown,
+  mockIdeas: (word: string) => mockIdeas(word) as unknown,
+}))
+
+const { IDEA_COUNT, IDEA_MODEL, generateIdeas, parseIdeas } = await import('./ideaGenerator')
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  isMockEnabled.mockReturnValue(false)
+})
 
 describe('parseIdeas', () => {
   it('parses a clean JSON array', () => {
@@ -48,5 +66,40 @@ describe('parseIdeas', () => {
 describe('IDEA_COUNT', () => {
   it('is the number of ideas requested from the model', () => {
     expect(IDEA_COUNT).toBe(20)
+  })
+})
+
+describe('generateIdeas', () => {
+  it('asks Claude directly, not through fal', async () => {
+    createMessage.mockResolvedValue(JSON.stringify(['Idea one.', 'Idea two.']))
+
+    const ideas = await generateIdeas({ word: 'umbrella' })
+
+    expect(createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ model: IDEA_MODEL, prompt: 'umbrella' }),
+    )
+    expect(ideas).toEqual(['Idea one.', 'Idea two.'])
+  })
+
+  it('rejects a blank word without calling Claude', async () => {
+    await expect(generateIdeas({ word: '   ' })).rejects.toThrow('Type a word first')
+    expect(createMessage).not.toHaveBeenCalled()
+  })
+
+  it('throws when Claude returns nothing parseable as ideas', async () => {
+    createMessage.mockResolvedValue('')
+
+    await expect(generateIdeas({ word: 'umbrella' })).rejects.toThrow('Claude returned no ideas')
+  })
+
+  it('uses the offline mock generator in mock mode, without calling Claude', async () => {
+    isMockEnabled.mockReturnValue(true)
+    mockIdeas.mockResolvedValue(['Mock idea.'])
+
+    const ideas = await generateIdeas({ word: 'umbrella' })
+
+    expect(mockIdeas).toHaveBeenCalledWith('umbrella')
+    expect(createMessage).not.toHaveBeenCalled()
+    expect(ideas).toEqual(['Mock idea.'])
   })
 })
