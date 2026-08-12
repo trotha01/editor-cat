@@ -39,22 +39,31 @@ describe('explainStatus', () => {
     expect(explainStatus('fal.ai', 402)).toMatch(/credit/i)
     expect(explainStatus('fal.ai', 404)).toMatch(/model ID/i)
     expect(explainStatus('fal.ai', 429)).toMatch(/rate limit/i)
-    expect(explainStatus('ElevenLabs', 503)).toMatch(/server error/i)
+    expect(explainStatus('ElevenLabs', 500)).toMatch(/server error/i)
   })
 
-  it('sends an ElevenLabs rejection to Settings, where its key actually lives', () => {
-    expect(explainStatus('ElevenLabs', 401)).toMatch(/key/i)
-    expect(explainStatus('ElevenLabs', 401)).toMatch(/settings/i)
-  })
-
-  it('never tells the user to fix a fal key, because there is no field for one', () => {
-    // fal runs on the site's own account. Advice to check a Settings field that
-    // does not exist is worse than no advice at all.
-    for (const status of [401, 403, 402, 503]) {
-      expect(explainStatus('fal.ai', status)).not.toMatch(/settings/i)
+  it('never sends anyone to Settings for a key, because there is no field for one', () => {
+    // Both providers run on the site's own accounts. Advice to go and check a
+    // Settings field that does not exist is worse than no advice at all — and
+    // this is the check that outlived the field: the ElevenLabs messages used to
+    // say exactly that, correctly, right up until the key moved.
+    for (const provider of ['fal.ai', 'ElevenLabs'] as const) {
+      for (const status of [401, 403, 402, 503]) {
+        expect(explainStatus(provider, status)).not.toMatch(/settings/i)
+        expect(explainStatus(provider, status)).not.toMatch(/your .*key/i)
+      }
+      expect(explainStatus(provider, 401)).toMatch(/sign in/i)
+      expect(explainStatus(provider, 503)).toMatch(/deployed/i)
+      // The site's account, not the reader's, is the one that ran dry.
+      expect(explainStatus(provider, 402)).toMatch(/this site's/i)
     }
-    expect(explainStatus('fal.ai', 401)).toMatch(/sign in/i)
-    expect(explainStatus('fal.ai', 503)).toMatch(/deployed/i)
+  })
+
+  it('leaves a 403 to explain itself, since the proxy has three ways to mean it', () => {
+    // An account that is not on this deployment's list, an endpoint it will not
+    // forward, and a voice it will not delete all arrive as 403 with a detail
+    // that says which. A confident guess here would contradict two of them.
+    expect(explainStatus('ElevenLabs', 403)).toMatch(/details below/i)
   })
 })
 

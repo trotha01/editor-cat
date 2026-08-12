@@ -786,7 +786,17 @@ The first pays for images, video and captions; the second for the voice
 features — changing a recorded voice, and [fixing a clip that says its line
 wrong](#fixing-a-clip-that-says-it-wrong). Only `FAL_KEY` is required for the
 editor to work at all: without the ElevenLabs one, everything else is unchanged
-and the voice controls ask each visitor for a key of their own instead.
+and the voice controls say that half is not set up here.
+
+Both keys travel the way each provider asks — fal's as `Authorization: Key …`,
+ElevenLabs' in an `xi-api-key` header — attached inside the function and never
+present in the browser. On the ElevenLabs key itself: **scope it** to text to
+speech, speech to speech, voices read, voices write and models read (it creates
+and deletes its own throwaway clones, so voices write is not optional); **set a
+credit quota**, which is the only hard ceiling on what a bad afternoon can cost;
+and **do not use IP allowlisting**, because these requests come from Netlify
+functions whose egress addresses are neither fixed nor published, so every one
+of them would come back 403.
 
 Then decide who is allowed to spend them. `/api/fal/*` and `/api/elevenlabs/*`
 both generate on your accounts, so both verify the caller's Auth0 access token
