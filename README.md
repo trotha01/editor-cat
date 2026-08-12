@@ -80,41 +80,57 @@ captions, one row each with the moment the picture says it:
    button saves your edits to them and then says them, so the subtitle and the
    voice cannot drift apart. Spell a word the way it should be pronounced and
    both follow.
-2. **Language** stays on _detect from the text_ by default, which is the right
-   answer for the clips this exists for: a line that says it in English and then
-   again in Italian is two languages in one breath, and naming either one makes
-   the model read the other with the wrong mouth. Name a language when the whole
-   line is in it and you want it enforced.
-3. **Voice** defaults to _copy this clip's own voice_. ElevenLabs is handed up to
-   30 seconds of the clip's own audio, copies the voice from it, says your lines
-   in that copy, and the copy is deleted again on the way out. Pick a ready-made
-   voice instead if you would rather, or if the account's plan does not include
-   cloning.
+2. **Language** has to be named, and there is no _detect_ option. Dubbing
+   re-says the whole clip in exactly one language. For a line that says it in
+   English and then again in Italian, that means picking one mouth for both —
+   choose the half that is wrong, and see the limitations below, because this is
+   the sharpest edge of the feature.
+3. **Voice** defaults to _copy this clip's own voice_. ElevenLabs copies the
+   speaker out of the clip's own audio as part of the dub and it goes away with
+   the job; nothing is created in the voice library and nothing has to be
+   deleted afterwards. Pick a ready-made voice instead if you would rather, or if
+   the account's plan does not include cloning.
 
 None of this asks the visitor for anything: it runs on the key the deployment
 sets as `ELEVENLABS_API_KEY`, the same arrangement image and video generation
 already have with fal. There is no key field in the app at all.
 
-### Why a line at a time
+### Why the caption's own span
 
-Each caption is spoken as its own request and laid **on that caption's mark**, so
-the new speech tracks the performance it is standing in for rather than starting
-right and drifting away over the length of the clip. The lines either side go
-along as context — not spoken, not billed — which is what keeps a passage
-sounding like one person talking instead of a list of sentences.
+The obvious way to do this is to say each caption as its own text-to-speech
+request and lay the audio at that caption's mark. It works, and it has one
+structural weakness: **nothing makes a model say a word at a chosen moment.** A
+line comes back however long it comes back, so a slow reading pushes the next
+line late and a quick one leaves a hole mid-sentence, and no placement rule can
+do better than move the error around.
 
-A reading is very often quicker than the performance was, and a line will **come
-forward into the room the one before it left unused** rather than wait out a
-pause the speaker never took — mid-sentence that silence does not sound like
-timing, it sounds like the audio dropping out. A line can be at most one
-predecessor's shortfall early, however many quick readings came before it, so
-this closes gaps without letting a long clip walk away from its picture.
+So this goes through **ElevenLabs' dubbing API in studio mode** instead, where
+the unit is a **segment**: a timed, editable span whose duration is held constant
+while the speech inside it is sped or slowed to fit. Every one of your captions
+becomes exactly one segment, covering exactly the stretch that caption covers,
+saying exactly the words you typed. Anything the provider's own transcription
+found that your captions do not have is deleted, and anything it missed is
+created, so what gets said is your script and nothing else.
 
-Then the timings come back the other way. ElevenLabs reports when it said every
-word, and **the captions are re-timed to that**, so the karaoke highlight lands
-on the syllable actually being spoken. Nothing can make a model say a word at a
-chosen moment — there is no such parameter, and stretching the audio would sound
-like stretched audio — but a caption is free to move, and moving it is exact.
+That inverts what the captions are for. In a text-to-speech version a caption
+supplies a mark to aim at and is **re-timed to whatever comes back**; here the
+caption's span is handed over as the segment's span, and what comes back already
+lands on it. The whole clip returns as **one corrected track** rather than as a
+piece of audio per line, because there is no longer anything left to place.
+
+The trade is at the other end. A caption whose corrected text no longer fits the
+stretch it used to occupy is **read fast** rather than allowed to run over, and
+past a point that sounds hurried. The run counts those lines and says so, and
+the fix is the same as it always was: shorten the text, or give that caption more
+room.
+
+Word timings still come back the other way. Dubbing returns a track and not a
+syllable of timing with it, so the rendered audio goes back up to
+`/v1/forced-alignment` with the script that was said in it, and **the captions
+are re-timed to that** — so the karaoke highlight lands on the syllable actually
+being spoken. Forced alignment rather than transcribing it again, because it is
+told the words instead of guessing them: the script is already known exactly, so
+recognising it a second time would only be a chance to get it wrong.
 
 What comes back is laid on a **voice track under the clip** and the clip's own
 sound is **muted**. The audio is anchored to the clip, so it follows that shot
@@ -128,13 +144,18 @@ reading lands on a row of its own and the row before it is muted, so only the
 newest plays — but every take you have paid for is still on the timeline, one per
 lane, and un-muting a lane is one click if the earlier reading was better.
 
-A clip with **no captions** still works: one text box, one piece of audio at the
-head of the clip, and none of the line-by-line timing above. The dialog says so.
+A clip with **no captions** still works: one text box and one segment across the
+whole clip, so the reading is held to the clip's own length and to nothing
+finer. The dialog says so, and captioning first is the better road.
 
-Nothing stretches speech to fit a shot, so a line that takes longer to say than
-its caption had room for pushes the line after it later rather than talking over
-it. The result says how many that happened to, which is the cue to shorten the
-text or give those captions more room.
+**Dubbing bills by the length of the clip, not by how much is said in it** —
+about 2,000 credits a minute against roughly one credit per character for plain
+speech. A ten-second clip is therefore around 330 credits however few words are
+in it, which is several times what saying the same lines as text costs. The
+dialog puts the estimate on screen before the button is pressed. There is also a
+hard ceiling on length: the clip's audio has to cross a serverless function to
+reach ElevenLabs at all, so **a clip over about 53 seconds cannot be fixed** and
+the dialog says so rather than failing halfway.
 
 ## Reporting bugs from inside the app
 
@@ -885,10 +906,10 @@ and the voice controls say that half is not set up here.
 
 Both keys travel the way each provider asks — fal's as `Authorization: Key …`,
 ElevenLabs' in an `xi-api-key` header — attached inside the function and never
-present in the browser. On the ElevenLabs key itself: **scope it** to text to
-speech, speech to speech, voices read, voices write and models read (it creates
-and deletes its own throwaway clones, so voices write is not optional); **set a
-credit quota**, which is the only hard ceiling on what a bad afternoon can cost;
+present in the browser. On the ElevenLabs key itself: **scope it** to speech to
+speech, dubbing read and write, forced alignment, voices read and models read
+(dubbing does its own voice copying inside the account, so voices _write_ is no
+longer needed); **set a credit quota**, which is the only hard ceiling on what a bad afternoon can cost;
 and **do not use IP allowlisting**, because these requests come from Netlify
 functions whose egress addresses are neither fixed nor published, so every one
 of them would come back 403.
@@ -908,10 +929,10 @@ before attaching a key:
   Netlify's own password protection or access controls are worth adding on top
   if the site is not meant to be public at all.
 - **The ElevenLabs proxy is narrower than the fal one**, because a key that can
-  speak can also read the account and empty its voice library. On the site's own
-  key it forwards only the handful of endpoints this editor calls, refuses to
-  delete any voice this app did not create, and sweeps away its own abandoned
-  clones when the library fills up. Each rule and the reason for it is in
+  dub can also read the account and list every dubbing project in it. On the
+  site's own key it forwards only the handful of endpoints this editor calls, it
+  will not list the account's dubbing projects at all, and it refuses to delete
+  any job this app did not create. Each rule and the reason for it is in
   `netlify/lib/elevenlabs.ts`, where they are also tested.
 
 The `VITE_AUTH0_*` and `VITE_SUPABASE_*` variables are build-time
@@ -1444,7 +1465,7 @@ request body.
 takes and checking that the second one lands on a new track, cutting a clip and
 reloading the page to see the cut come back, putting a count-in in front of the
 video and then dragging both it and the picture's lead-in, correcting a clip's
-captions and having them said back a line at a time on their own marks, and
+captions and having the clip re-dubbed from them as one track, and
 counting the inked pixels in the waveform lane, since an undecoded file leaves a
 canvas that looks fine and shows nothing — then parses the
 exported MP4 to confirm it has the tracks it should and runs for exactly as long
@@ -1516,28 +1537,44 @@ If your CI image ships its own browser, point the test at it with
   cross-origin isolation, which would block loading provider media in the page,
   and WebGPU would be a second execution path reachable on only some machines.
   Both are the same trade the exporter already makes.
-- **A fixed line is not lip-synced, and not stretched to fit.** Each line starts
-  where its caption starts, which keeps the new speech tracking the performance,
-  but the mouth on screen is still shaping the words that were originally said.
-  Nothing time-stretches the new reading either: a line that takes longer than
-  the old one pushes the next line later, and the last line can run on past the
-  end of its clip. Shorten the text, or give the captions more room. A quicker
-  reading moves the next line earlier instead, by at most the room the quick one
-  left — so a line can sit slightly ahead of its caption's original mark, and the
-  run says how many did.
+- **A fix is one language for the whole clip, and this is the sharpest edge.**
+  A dubbing job has exactly one target language and every line in it is re-said
+  in that language. The clips this feature exists for are usually bilingual — the
+  line in English and then again in Italian — so fixing the Italian half means
+  the English half is also re-said, with an Italian mouth. There is no per-line
+  language and no "read it as it is written": pick the half that is wrong, and
+  expect the other half to be worse than it was. This is the one thing the
+  text-to-speech approach did better, and it did it for free.
+- **A fixed line is not lip-synced, and it is rate-adjusted rather than moved.**
+  Each line is said inside the span its caption already occupies, so nothing
+  drifts, nothing pushes the line after it late and nothing runs past the end of
+  its clip — but the mouth on screen is still shaping the words that were
+  originally said. Where the corrected text no longer fits the room the caption
+  had, the speech is **compressed to fit** and sounds hurried. The run counts
+  those lines; shorten the text, or give those captions more room.
+- **A clip over about 53 seconds cannot be fixed at all.** Dubbing wants the
+  media, and the media has to travel from the browser through a serverless
+  function with a payload ceiling — as mono PCM that is under a minute. The
+  dialog refuses before anything is spent and says to split the clip.
+- **A fix costs the clip's length, not the words in it.** Dubbing is billed by
+  duration at around 2,000 credits a minute, where saying the same lines as text
+  would be roughly one credit per character. Expect a short clip to cost several
+  times what the text-to-speech route did, and expect it to cost the same again
+  whether you changed one word or all of them.
+- **A fix takes a render, not a request.** The clip is uploaded, transcribed,
+  segmented, re-said and mixed down, and every step is polled from the browser.
+  That is minutes rather than the seconds a handful of parallel speech requests
+  took. The status line beside the timeline says which stage it is on.
 - **Fixing a clip needs its captions to exist first**, or it falls back to one
-  piece of audio at the head of the clip with no line-by-line timing at all. The
-  captions carry the marks; without them there is nothing to lay the speech
-  against.
+  segment across the whole clip, with the reading held to the clip's own length
+  and to nothing finer. The captions carry the marks; without them there is
+  nothing to hold the speech to.
 - **Copying a clip's voice needs an ElevenLabs plan that allows cloning.** An
   account that refuses says so, and the answer is to pick a ready-made voice in
   the same dialog — a stranger's voice under the clip, but the right words in it.
-  The copy is deleted as the run ends, including when it fails; a browser closed
-  mid-run can still leave one behind, which matters more on a shared deployment
-  than it would on your own account because voice slots are finite. Those
-  leftovers are named after the clip they came from, and the proxy sweeps the
-  abandoned ones the first time a new clone is refused for want of a slot, so
-  the feature repairs itself rather than quietly stopping.
+  The copy lives inside the dubbing job rather than in the voice library, so
+  nothing is left behind in the account to sweep up; the job itself is deleted as
+  the run ends, including when it fails.
 - **Every fix adds a lane.** Nothing generated is thrown away, so fixing one clip
   four times leaves four rows: the newest audible and the three before it muted.
   That is deliberate — you paid for each of them and only listening tells you

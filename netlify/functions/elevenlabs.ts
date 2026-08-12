@@ -1,26 +1,27 @@
 import type { Config } from '@netlify/functions'
 import { requireSession } from '../lib/auth'
 import { isBlockedHost, jsonError, passthroughHeaders, upstreamPath } from '../lib/proxy'
-import {
-  isAllowedWithSiteKey,
-  isAppClone,
-  isCloneRequest,
-  isVoiceDeletion,
-  isVoiceLimitError,
-  staleClones,
-  type UpstreamVoice,
-} from '../lib/elevenlabs'
+import { isAllowedWithSiteKey, isAppJob, isDubDeletion, type UpstreamDub } from '../lib/elevenlabs'
 
 /**
  * Proxy to the ElevenLabs API.
  *
- *   GET    /api/elevenlabs/status                        -> is a key provided here?
- *   GET    /api/elevenlabs/v1/voices                      -> list target voices
- *   GET    /api/elevenlabs/v1/models                      -> find a capable model
- *   POST   /api/elevenlabs/v1/text-to-speech/<voice_id>   -> say a line
- *   POST   /api/elevenlabs/v1/speech-to-speech/<voice_id> -> convert a recording
- *   POST   /api/elevenlabs/v1/voices/ivc/create           -> copy a voice
- *   DELETE /api/elevenlabs/v1/voices/<voice_id>           -> delete that copy again
+ *   GET    /api/elevenlabs/status                          -> is a key provided here?
+ *   GET    /api/elevenlabs/v1/voices                        -> list target voices
+ *   GET    /api/elevenlabs/v1/models                        -> find a capable model
+ *   POST   /api/elevenlabs/v1/speech-to-speech/<voice_id>   -> convert a recording
+ *   POST   /api/elevenlabs/v1/dubbing                       -> start fixing a clip
+ *   GET    /api/elevenlabs/v1/dubbing/<id>                  -> how it is getting on
+ *   GET    /api/elevenlabs/v1/dubbing/resource/<id>         -> its segments and renders
+ *   PATCH  .../resource/<id>/segment/<seg>/<lang>           -> put a caption on a segment
+ *   POST   .../resource/<id>/speaker/<sp>/segment           -> add one it missed
+ *   DELETE .../resource/<id>/segment/<seg>                  -> drop one it invented
+ *   PATCH  .../resource/<id>/speaker/<sp>                   -> choose the voice
+ *   POST   .../resource/<id>/dub                            -> say them again
+ *   POST   .../resource/<id>/render/<lang>                  -> mix the new track
+ *   GET    /api/elevenlabs/v1/dubbing/<id>/audio/<lang>     -> bring it back
+ *   DELETE /api/elevenlabs/v1/dubbing/<id>                  -> tidy the job away
+ *   POST   /api/elevenlabs/v1/forced-alignment              -> find the words in it
  *
  * One key pays for all of it: `ELEVENLABS_API_KEY`, the deployment's own. That
  * is why a visitor needs no key for anything — images, video and captions
@@ -36,10 +37,11 @@ import {
  * calls — see `netlify/lib/elevenlabs.ts`, where each restriction is explained
  * and tested.
  *
- * Multipart bodies (a recording to convert, a sample to clone from) have to stay
- * under the 6MB function payload ceiling. Conversion sends the recording as it
- * was made — Opus runs about 4KB/s — and a cloning sample is capped at thirty
- * seconds by the caller, which is well inside it.
+ * Multipart bodies (a recording to convert, a clip to dub, a track to align)
+ * have to stay under the 6MB function payload ceiling. Conversion sends the
+ * recording as it was made — Opus runs about 4KB/s — and a clip travels as mono
+ * PCM, which is why the caller refuses to dub one longer than `dubbableSeconds`
+ * in `src/lib/clipAudioFix.ts`. That constant is this limit, in seconds.
  */
 
 const ELEVENLABS_ORIGIN = 'https://api.elevenlabs.io'
@@ -88,51 +90,25 @@ async function forward(
 }
 
 /**
- * Deletes clones nobody can still be using, and says how many went.
+ * Refuses to delete a dubbing project this app did not make.
  *
- * Only ever called when a clone has just been refused for want of a slot: this
- * is the operator's own voice library, and tidying it is not something to do on
- * a request that was going to succeed anyway.
+ * The id comes from the browser, and on the site's key it addresses every job in
+ * the operator's account — including ones made by hand in Dubbing Studio, which
+ * are somebody's afternoon rather than a throwaway. So the name is read first
+ * and has to say this was one of ours. A job that has already gone is let
+ * through: the caller is tidying up after itself and the outcome it wants has
+ * happened.
  */
-async function sweepAbandonedClones(key: string, nowMs: number): Promise<number> {
-  const listed = await fetch(`${ELEVENLABS_ORIGIN}/v1/voices`, { headers: { 'xi-api-key': key } })
-  if (!listed.ok) return 0
-
-  const body = (await listed.json()) as { voices?: UpstreamVoice[] }
-  const ids = staleClones(body.voices ?? [], nowMs)
-
-  let removed = 0
-  for (const id of ids) {
-    const gone = await fetch(`${ELEVENLABS_ORIGIN}/v1/voices/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: { 'xi-api-key': key },
-    })
-    if (gone.ok) removed += 1
-  }
-  if (removed > 0) {
-    console.warn(`[elevenlabs] Swept ${removed} abandoned voice clone(s) from the site account.`)
-  }
-  return removed
-}
-
-/**
- * Refuses to delete a voice this app did not make.
- *
- * The id comes from the browser, and on the site's key it addresses the
- * operator's whole library — so the name is read first and has to say this was
- * one of ours. A voice that has already gone is let through: the caller is
- * tidying up after itself and the outcome it wants has happened.
- */
-async function mayDelete(key: string, path: string): Promise<boolean> {
-  const id = path.slice('v1/voices/'.length)
-  const found = await fetch(`${ELEVENLABS_ORIGIN}/v1/voices/${encodeURIComponent(id)}`, {
+async function mayDeleteDub(key: string, path: string): Promise<boolean> {
+  const id = path.slice('v1/dubbing/'.length)
+  const found = await fetch(`${ELEVENLABS_ORIGIN}/v1/dubbing/${encodeURIComponent(id)}`, {
     headers: { 'xi-api-key': key },
   })
   if (found.status === 404) return true
   if (!found.ok) return false
 
-  const voice = (await found.json()) as UpstreamVoice
-  return isAppClone(voice.name)
+  const dub = (await found.json()) as UpstreamDub
+  return isAppJob(dub.name)
 }
 
 export default async (request: Request): Promise<Response> => {
@@ -174,10 +150,10 @@ export default async (request: Request): Promise<Response> => {
       'Only the calls this editor makes are forwarded on the site’s key.',
     )
   }
-  if (isVoiceDeletion(method, path) && !(await mayDelete(key, path))) {
+  if (isDubDeletion(method, path) && !(await mayDeleteDub(key, path))) {
     return jsonError(
       403,
-      'That voice was not created by this site, so it will not be deleted through here.',
+      'That dubbing job was not created by this site, so it will not be deleted through here.',
     )
   }
 
@@ -186,28 +162,6 @@ export default async (request: Request): Promise<Response> => {
   try {
     const body = hasBody ? await request.arrayBuffer() : undefined
     const upstream = await forward(target, method, key, request, body)
-
-    // A clone refused for want of a slot is the one failure worth answering
-    // rather than reporting: the library filled up with this app's own
-    // leftovers, so it is cleared of the abandoned ones and the request is
-    // given its second and only chance. Buffered rather than streamed here
-    // because deciding that means reading the message.
-    if (!upstream.ok && isCloneRequest(method, path)) {
-      const detail = await upstream.text()
-      if (isVoiceLimitError(detail) && (await sweepAbandonedClones(key, Date.now())) > 0) {
-        const retried = await forward(target, method, key, request, body)
-        return new Response(retried.body, {
-          status: retried.status,
-          headers: passthroughHeaders(retried.headers),
-        })
-      }
-      // Rebuilt from text rather than streamed, so the length the upstream
-      // declared no longer describes what is being sent. Left in, it is a
-      // header that contradicts the body.
-      const headers = passthroughHeaders(upstream.headers)
-      headers.delete('content-length')
-      return new Response(detail, { status: upstream.status, headers })
-    }
 
     return new Response(upstream.body, {
       status: upstream.status,

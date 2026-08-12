@@ -561,10 +561,11 @@ try {
   // --- Fixing what a clip says, from the same menu -------------------------
   // A generated clip that says a foreign word with an English mouth cannot be
   // repaired by a voice changer: the delivery is the part that is wrong. So the
-  // captions are the script — corrected here, saved, then said back a line at a
-  // time and laid on the mark each caption sits on, with the captions re-timed
-  // to the new voice afterwards. Everything about that is only real in a
-  // browser: the audio has to decode for its length to be known at all.
+  // captions are the script — corrected here, saved, then handed to ElevenLabs
+  // as one dubbing segment per caption, each spanning exactly what that caption
+  // spans, and re-said to fit. What comes back is the whole clip as a single
+  // corrected track. Everything about that is only real in a browser: the audio
+  // has to decode for its length to be known at all.
   const fixItem = page.getByRole('menuitem', { name: /Fix this clip’s audio/ })
   let fixedClip = ''
   for (const [index, name] of menuNames.entries()) {
@@ -597,10 +598,16 @@ try {
   await page.getByRole('button', { name: /Save captions and fix the audio/ }).click()
   await page.waitForSelector('text=/now says your/', { timeout: 180000 })
 
+  // One track for the clip, however many captions it has — which is the whole
+  // difference from the text-to-speech implementation this replaced. There the
+  // count had to be one piece of audio per caption, because each line was said
+  // separately and then placed; here every line is already inside the render, on
+  // its own caption's mark, so a second piece of audio would mean the clip had
+  // been dubbed twice.
   const laid = page.locator('[role="group"][aria-label^="Fixed"]')
   const laidCount = await laid.count()
-  if (laidCount !== rowCount) {
-    fail(`expected one piece of audio per caption: ${laidCount} for ${rowCount} captions`)
+  if (laidCount !== 1) {
+    fail(`expected the clip to come back as one dubbed track, got ${laidCount}`)
   }
   const laidLabel = await laid.first().getAttribute('aria-label')
   if (!/on Voice /.test(laidLabel ?? '')) fail(`the fix landed off the voice lanes: "${laidLabel}"`)
@@ -615,15 +622,15 @@ try {
     fail('the edited line did not reach the caption on the timeline')
   }
   step(
-    `${laidCount} lines spoken under ${fixedClip}, the clip muted, and the edit saved to the ` +
-      `caption itself`,
+    `${fixedClip} re-dubbed as one track from its ${rowCount} captions, the clip muted, and the ` +
+      `edit saved to the caption itself`,
   )
 
   // Both halves of the landing are one edit, so one undo has to put them back —
   // and it leaves the timeline as the rest of this walk-through expects it.
   await page.getByRole('button', { name: 'Undo' }).click()
   await page.waitForTimeout(200)
-  if ((await laid.count()) !== 0) fail('undo left the corrected lines on the timeline')
+  if ((await laid.count()) !== 0) fail('undo left the corrected track on the timeline')
   if ((await page.locator('[aria-label="sound muted"]').count()) !== mutedBefore) {
     fail('undo left the clip silent after taking its replacement away')
   }

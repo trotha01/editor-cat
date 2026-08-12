@@ -14,62 +14,135 @@
  * the dialog and saved before a word is spoken, so what is burnt into the video
  * and what is heard in it cannot disagree.
  *
- * Using them buys the timing as well as the words. A caption knows when its line
- * starts and how long the performance took over it, because it was transcribed
- * from that performance; so each line is spoken as its own request and laid at
- * its own mark — give or take the room a quicker reading leaves for the next one
- * to move into — and the new speech tracks the mouth it is standing in for
- * instead of drifting away over the clip. What comes back carries per-word
- * timings, and those go
- * the other way — onto the captions, so the highlight lands on the syllable
- * being spoken rather than on the one the old audio used to say there.
+ * ## Why dubbing rather than text-to-speech
+ *
+ * The obvious way to say the captions again is to say each one as its own
+ * text-to-speech request and lay it at its caption's mark. That was the first
+ * implementation of this feature and it has one structural weakness: **nothing
+ * makes a model say a word at a chosen moment.** A line comes back however long
+ * it comes back, so a slower reading pushes the next line late and a quicker one
+ * leaves a hole mid-sentence, and the placing rule can only ever redistribute
+ * the error rather than remove it.
+ *
+ * The dubbing API attacks it from the other end. A dubbing studio job is a list
+ * of **segments** — timed, editable spans — and its default *fixed generation*
+ * holds a segment's duration constant, speeding or slowing the speech to fit.
+ * So instead of asking for audio and then finding somewhere to put it, this
+ * declares where every line goes and asks for audio that fits there.
+ *
+ * That inverts what the captions are for. In the text-to-speech path a caption
+ * supplied a mark to aim at and was then **re-timed to whatever came back**.
+ * Here the caption's span is handed to the provider as the segment's span, and
+ * what comes back already lands on it.
+ *
+ * ## The mapping, which is the whole design
+ *
+ * Dubbing does its own transcription and its own segmentation, and its
+ * boundaries have no reason to agree with the user's captions. `planSegments`
+ * is where that is resolved, and the rule it applies is the strongest reading of
+ * "the captions are the script": **the captions become the segment list,
+ * exactly** — one segment per caption, carrying that caption's words and that
+ * caption's span, with anything the transcriber found over and above them
+ * deleted and anything it missed created. See the comment on `planSegments` for
+ * why the pairing is by position rather than by overlap.
+ *
+ * ## What it costs
+ *
+ * Three things, all of them real, all of them in the README's limitations:
+ *
+ *  - **One language for the whole clip.** A dubbing job has exactly one target
+ *    language, so a bilingual line is re-said as one or the other and the other
+ *    half gets the wrong mouth. This is the fault the feature exists to remove,
+ *    reintroduced from a different direction, and it is the largest thing lost.
+ *  - **Speech is rate-adjusted to fit.** A caption whose corrected text no
+ *    longer fits its old span is read fast rather than allowed to run over.
+ *    `hurriedLines` counts those before the run so the report can name them.
+ *  - **The clip has to travel.** Dubbing wants the file, and the file has to
+ *    cross a serverless proxy with a payload ceiling; `dubbableSeconds` is that
+ *    ceiling in seconds.
  *
  * The clip's own sound is muted and the picture is untouched. Nothing here is
  * lip-sync, and nothing pretends to be; it is the same rhythm, said properly.
  *
- * The provider calls live in `elevenlabs.ts`. What is here is the choosing —
- * which clips can be fixed, what the dialog opens with, where each line lands —
- * plus the cleanup, because copying a voice leaves one behind in the account
- * until it is deleted.
+ * The provider calls live in `dubbing.ts`. What is here is the choosing — which
+ * clips can be fixed, what the dialog opens with, which words land on which
+ * segment — plus the cleanup, because a dubbing job left behind sits in the
+ * deployment's account holding a copy of the clip.
  */
-import { cloneVoice, deleteVoice, speak, type SpokenWord } from './elevenlabs'
+import {
+  alignWords,
+  CLIP_CLONE_VOICE,
+  createDub,
+  createSegment,
+  deleteDub,
+  deleteSegment,
+  dubbedAudio,
+  dubSegments,
+  renderDub,
+  setSpeakerVoice,
+  updateSegment,
+  waitForRender,
+  waitForSegments,
+  type SegmentEdit,
+} from './dubbing'
+import type { SpokenWord } from './elevenlabs'
 import { captionCuesOf, cueText } from './captions'
 import { decodeAudio, monoWav } from './speechAudio'
 import { layoutClips, leadInOf } from './timeline'
 import type { Asset, AudioClip, Project } from './types'
 
 /**
- * How much of a clip is handed over to copy the voice from.
+ * What a request body may carry, in bytes.
  *
- * ElevenLabs asks for a minute or more to clone well and takes far less; a clip
- * is what there is, and most of them are seconds long. The cap is here for the
- * long ones — the sample travels as uncompressed PCM through a serverless proxy
- * with a payload ceiling, and thirty seconds is both comfortably inside it and
- * more of one voice than any clone gets better for.
+ * The proxy in front of ElevenLabs is a serverless function with a 6MB payload
+ * ceiling, and this is deliberately well under it rather than snug against it:
+ * the function re-reads the body on its own way through, so a request sized
+ * against the ceiling exactly is a request that fails at the ceiling. The same
+ * reasoning, and the same headroom, as `CHUNK_SECONDS` in `speechAudio.ts`.
  */
-export const CLONE_SAMPLE_SECONDS = 30
+const UPLOAD_BUDGET_BYTES = 4.5 * 1024 * 1024
 
 /**
- * Ceiling on the sample's rate. Under it, the clip's own rate is kept.
+ * The rate the clip is sent at.
  *
- * Cloning listens to timbre, which lives in exactly the high frequencies that
+ * Dubbing copies the speaker's voice out of what it is given, and copying a
+ * voice listens to timbre, which lives in exactly the high frequencies
  * transcription throws away — so this is not the 16kHz the rest of the app
- * sends. Upsampling a source that was never that detailed would only make the
- * request bigger, so the source rate wins whenever it is lower.
+ * sends. A source that was never this detailed keeps its own rate; upsampling
+ * would only make the request bigger.
  */
-const CLONE_SAMPLE_RATE = 44100
+export const DUB_SAMPLE_RATE = 44100
+
+/**
+ * How long a clip may be and still fit through the proxy.
+ *
+ * This is the ceiling the whole approach runs into, and it is worth being blunt
+ * about where it comes from: dubbing wants the media, the media lives in
+ * IndexedDB in the browser, and the only way out of the browser is through a
+ * function with a payload limit. Audio alone rather than the video, mono rather
+ * than stereo, and 16-bit PCM — so a second costs twice the sample rate in
+ * bytes, and the budget divided by that is the answer.
+ *
+ * At 44.1kHz that is under a minute, which covers the generated clips this
+ * feature exists for several times over and would not cover a long take. A
+ * clip past it is refused with the number in the message rather than sent and
+ * rejected upstream.
+ */
+export function dubbableSeconds(sampleRate = DUB_SAMPLE_RATE): number {
+  return Math.floor(UPLOAD_BUDGET_BYTES / (sampleRate * 2))
+}
 
 /**
  * One caption under the clip: what it says, and when the picture says it.
  *
- * The unit everything works in. Each of these becomes one request, one piece of
- * audio laid at `start`, and one caption re-timed to what came back.
+ * The unit everything works in. Each of these becomes one segment, spanning
+ * exactly this stretch, with exactly these words in it.
  */
 export interface FixLine {
   cueId: string
-  /** Where the caption starts on the timeline, which is where its line is laid. */
+  /** Where the caption starts on the timeline, which is where its segment goes. */
   start: number
-  /** Where it currently ends. Replaced by however long the new line takes. */
+  /** Where it ends, which is where its segment ends. */
   end: number
   text: string
 }
@@ -98,9 +171,10 @@ export interface FixTarget {
   /**
    * The same words as one string, for a clip with no captions to work from.
    *
-   * A fallback in every sense: one request, laid at the head of the clip, with
-   * no line-by-line timing to hold it to the picture. Captioning the clip first
-   * is the better road and the dialog says so.
+   * A fallback in every sense: one segment across the whole clip, so the fixed
+   * generation that makes this worth doing has only the clip's own length to
+   * hold the speech to rather than a mark per line. Captioning the clip first is
+   * the better road and the dialog says so.
    */
   text: string
   /** The language a previous fix enforced, so a redo defaults to the same one. */
@@ -171,84 +245,224 @@ export function fixTargets(project: Project, assets: readonly Asset[]): Map<stri
   return targets
 }
 
-/** What to call the copy of a clip's voice while it exists. */
-export function cloneNameFor(label: string): string {
+/** What to call the dubbing job in the account while it exists. */
+export function dubNameFor(label: string): string {
   // Named after the clip and marked as this app's, so one left behind by a
   // failure — the delete below is best-effort — is recognisable in the user's
-  // account rather than being an anonymous voice they dare not remove.
+  // account rather than being an anonymous project they dare not remove. The
+  // proxy reads this prefix back before it will delete anything; see
+  // `netlify/lib/elevenlabs.ts`.
   return `editor-cat fix · ${label}`.slice(0, 100)
 }
 
+/* --- Turning captions into segments --------------------------------------- */
+
+/** A line of the script with the marks the picture puts on it. */
+export interface ScriptLine {
+  /** Timeline seconds, as the caption has them. */
+  start: number
+  end: number
+  text: string
+}
+
+/** What has to happen to the resource before a word is re-said. */
+export interface SegmentPlan {
+  /** Segments that already exist, rewritten to a caption. */
+  update: (SegmentEdit & { id: string })[]
+  /** Captions with no segment to put them on. */
+  create: SegmentEdit[]
+  /** Segments with no caption to put on them. */
+  remove: string[]
+}
+
+/** Nothing shorter than this is a span. Guards a degenerate caption. */
+const MIN_SEGMENT_SECONDS = 0.05
+
+/**
+ * Rewrites the resource's segments as the clip's captions.
+ *
+ * The crux of this implementation. Dubbing transcribed the clip and split it
+ * into spans on its own judgement; the app's design says the user's captions are
+ * the script. Those two are reconciled here, and completely rather than
+ * partially: after this plan is applied the resource holds one segment per
+ * caption, each spanning that caption and saying that caption's words, and
+ * nothing else at all.
+ *
+ * **Paired by position, not by overlap.** The obvious alternative is to match
+ * each segment to the caption it overlaps most. It was not chosen, for two
+ * reasons. The segments come from transcribing the very audio the captions were
+ * transcribed from, so wherever both are sane their orders already agree and
+ * overlap-matching computes the same answer more slowly. Where they do not
+ * agree, overlap-matching fails in the worse direction: it leaves some segment
+ * unmatched, and an unmatched segment keeps the words the transcriber gave it
+ * and is then dubbed and rendered — the clip saying something the user never
+ * typed. Pairing by position cannot do that, because every segment is either
+ * rewritten or removed.
+ *
+ * Times are converted from the timeline's clock to the media's on the way
+ * through: the uploaded audio is this clip and nothing else, so the two differ
+ * by exactly where the clip starts. Everything is clamped into the clip, which
+ * matters for the last caption — a caption may legitimately run past the end of
+ * the shot it belongs to, and a segment may not.
+ */
+export function planSegments(
+  lines: readonly ScriptLine[],
+  segments: readonly { id: string }[],
+  { clipStart, duration }: { clipStart: number; duration: number },
+): SegmentPlan {
+  const edits = lines.map((line): SegmentEdit => {
+    const start = clamp(line.start - clipStart, 0, duration)
+    const end = clamp(Math.max(line.end - clipStart, start + MIN_SEGMENT_SECONDS), start, duration)
+    return { start, end, text: line.text }
+  })
+
+  return {
+    update: edits.flatMap((edit, index) => {
+      const id = segments[index]?.id
+      return id ? [{ ...edit, id }] : []
+    }),
+    create: edits.slice(segments.length),
+    remove: segments.slice(edits.length).map((segment) => segment.id),
+  }
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(Math.max(value, low), Math.max(low, high))
+}
+
+/**
+ * A comfortable reading pace, in characters a second.
+ *
+ * Speech runs at something like twelve to sixteen characters a second across
+ * the languages this offers. The number is only ever used to decide whether to
+ * warn, so what matters is that it sits at the top of ordinary rather than in
+ * the middle of it: warning about every line would be the same as warning about
+ * none.
+ */
+const COMFORTABLE_CHARS_PER_SECOND = 17
+
+/**
+ * The lines that will have to be read fast to fit the span they were given.
+ *
+ * The price of fixed generation, made visible before it is paid. A segment's
+ * duration is held and the speech inside it is compressed to fit, so a caption
+ * whose corrected text is much longer than what was originally said there comes
+ * back gabbled rather than late. That is a better failure than the
+ * text-to-speech path's — nothing drifts, and nothing lands on the line after it
+ * — but it is still a failure, and it is invisible unless something counts it.
+ *
+ * The remedy is the same either way and the report says so: shorten the line, or
+ * give that caption more room.
+ */
+export function hurriedLines(edits: readonly SegmentEdit[]): { count: number; peak: number } {
+  const rates = edits.flatMap((edit) => {
+    const span = edit.end - edit.start
+    const characters = edit.text.trim().length
+    return span > 0 && characters > 0 ? [characters / span] : []
+  })
+  const hurried = rates.filter((rate) => rate > COMFORTABLE_CHARS_PER_SECOND)
+  return { count: hurried.length, peak: Math.max(0, ...rates) }
+}
+
+/**
+ * Hands each line the words that belong to it.
+ *
+ * Forced alignment is run once over the whole rendered track with the whole
+ * script, because that is the only way it can hear a word's neighbours — and it
+ * comes back as one flat run of words. The captions need them line by line, and
+ * the split is by count rather than by time: the script was assembled from these
+ * very lines, so the first line owns the first *n* words for its own *n*, and no
+ * arithmetic on timestamps can be more right than that.
+ *
+ * A short answer is truncated rather than redistributed. If alignment returns
+ * fewer words than were sent, the lines that got some are still correctly timed
+ * and the ones that got none are simply left alone by the caller — which is
+ * better than every line being confidently wrong.
+ */
+export function splitAlignedWords(
+  lines: readonly string[],
+  words: readonly SpokenWord[],
+): SpokenWord[][] {
+  let cursor = 0
+  return lines.map((line) => {
+    const wanted = line.trim().split(/\s+/).filter(Boolean).length
+    const slice = words.slice(cursor, cursor + wanted)
+    cursor += wanted
+    return [...slice]
+  })
+}
+
+/* --- Running one --------------------------------------------------------- */
+
 export interface FixClipAudioOptions {
-  /** The clip's media, as stored. Decoded here to take the voice out of it. */
+  /** The clip's media, as stored. Decoded here to send its sound over. */
   media: Blob
   /** The stretch of that media the clip uses, in source seconds. */
   inPoint: number
   duration: number
+  /** Where the clip starts on the timeline, which the captions are measured in. */
+  clipStart: number
   /**
-   * What to say, one caption line at a time and in order.
+   * What to say, one caption at a time and in order, each with its own marks.
    *
-   * A clip with no captions comes through here as a single line, which is the
-   * only difference between the two paths downstream.
+   * A clip with no captions comes through here as a single line spanning the
+   * clip, which is the only difference between the two paths downstream.
    */
-  lines: readonly string[]
-  /** ISO-639-1, or empty to let the model read the language off the text. */
-  language?: string
+  lines: readonly ScriptLine[]
+  /** ISO-639-1. Required: a dub has one target language and no detect option. */
+  language: string
   /** An ElevenLabs voice to say it in, or empty to copy the clip's own. */
   voiceId?: string
   /** What that voice is called, which only the caller with the list knows. */
   voiceName?: string
-  /** The clip's name, which is what a copied voice is called after. */
+  /** The clip's name, which is what the dubbing job is called after. */
   label: string
   /** What is happening now, for the status line. */
   onStage?: (stage: string, done: number, total: number) => void
   signal?: AbortSignal
 }
 
-/** One line, said. */
-export interface SpokenLine {
-  text: string
-  /** The audio, as MP3. */
-  blob: Blob
-  /** When each word was said, from the start of this piece. */
-  words: SpokenWord[]
-}
-
 export interface FixedAudio {
-  /** One per line asked for, in the same order. */
-  spoken: SpokenLine[]
+  /** The whole corrected clip, as one piece of MP3. */
+  blob: Blob
+  /** Per line asked for, in the same order: the words, timed from the track. */
+  lines: { text: string; words: SpokenWord[] }[]
   /** Who said it, phrased to be read in a sentence about the clip. */
   voiceName: string
+  /** Lines that had to be read fast to fit their caption. */
+  hurried: { count: number; peak: number }
 }
 
 /** What a run of `fixClipAudio` says it is doing, in the order it does it. */
 export const FIX_STAGES = {
   sampling: 'listening to the clip',
-  cloning: 'copying the voice',
-  speaking: 'saying the lines',
+  uploading: 'sending it to be dubbed',
+  segmenting: 'finding the lines in it',
+  scripting: 'putting your words on them',
+  speaking: 'saying them again',
+  rendering: 'mixing the new track',
+  fetching: 'bringing it back',
+  aligning: 'finding the words in it',
 } as const
 
 /**
- * Says a clip's lines properly and hands back the audio for each.
+ * Says a clip's lines properly and hands back the corrected track.
  *
- * One request per caption, not one per clip, and the reason is timing: a caption
- * knows when the picture says its line, so a line that arrives as its own piece
- * of audio can be laid on that mark. One request for the whole clip would come
- * back as a single run of speech that starts right and drifts from there.
+ * One job for the whole clip, not one request per caption, and the reason is the
+ * one in the module header: a segment holds its span, so the timing is declared
+ * up front rather than discovered afterwards. What comes back is a single piece
+ * of audio in which every line is already where its caption is.
  *
- * The lines either side are sent along as context — not spoken, not billed. It
- * costs nothing and is the difference between a passage read aloud and a list of
- * sentences each landing on its own full stop.
- *
- * The voice copy is deleted on the way out however this ends, including on a
- * cancellation: voice slots are finite and shared by everyone this deployment
- * lets in, and nothing here needs the copy a second time — a redo copies the
- * voice again from whatever the clip says by then.
+ * The job is deleted on the way out however this ends, including on a
+ * cancellation. A dubbing project holds a copy of the clip's media in the
+ * deployment's account and there is nothing here that needs it a second time —
+ * a redo dubs the clip again from whatever it says by then.
  */
 export async function fixClipAudio({
   media,
   inPoint,
   duration,
+  clipStart,
   lines,
   language,
   voiceId,
@@ -257,125 +471,168 @@ export async function fixClipAudio({
   onStage,
   signal,
 }: FixClipAudioOptions): Promise<FixedAudio> {
-  const script = lines.map((line) => line.trim()).filter(Boolean)
+  const script = lines.flatMap((line) =>
+    line.text.trim() ? [{ ...line, text: line.text.trim() }] : [],
+  )
   if (script.length === 0) {
     throw new Error('There is nothing to say — type what this clip should be saying.')
   }
+  if (!language) {
+    throw new Error('Pick the language this clip should be said in — dubbing has to be told one.')
+  }
 
-  let cloned: string | undefined
+  const total = script.length
+  const stage = (name: string, done = 0) => onStage?.(name, done, total)
+
+  stage(FIX_STAGES.sampling)
+  const audio = await clipAudio(media, inPoint, duration)
+  abortIfAsked(signal)
+
+  let dubbingId: string | undefined
   try {
-    let speaker = voiceId
-    let spokenBy = voiceName || 'an ElevenLabs voice'
+    stage(FIX_STAGES.uploading)
+    dubbingId = await createDub({
+      audio,
+      name: dubNameFor(label),
+      language,
+      seconds: duration,
+      ...(signal ? { signal } : {}),
+    })
 
-    if (!speaker) {
-      onStage?.(FIX_STAGES.sampling, 0, script.length)
-      const sample = await voiceSample(media, inPoint, duration)
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    stage(FIX_STAGES.segmenting)
+    const resource = await waitForSegments(dubbingId, {
+      ...(signal ? { signal } : {}),
+    })
 
-      onStage?.(FIX_STAGES.cloning, 0, script.length)
-      cloned = await cloneVoice({
-        name: cloneNameFor(label),
-        sample,
-        ...(signal ? { signal } : {}),
-      })
-      speaker = cloned
-      spokenBy = 'a copy of its own voice'
+    // The speaker is set before the segments are, because it applies to all of
+    // them and because getting it wrong is the one mistake that cannot be seen
+    // until the render is paid for.
+    const speaker = resource.speakers[0]
+    if (speaker) {
+      await setSpeakerVoice(dubbingId, speaker.id, voiceId || CLIP_CLONE_VOICE, signal)
     }
 
-    const spoken: SpokenLine[] = []
-    for (const [index, text] of script.entries()) {
-      onStage?.(FIX_STAGES.speaking, index, script.length)
-      const previousText = script[index - 1]
-      const nextText = script[index + 1]
-      const speech = await speak({
-        voiceId: speaker,
-        text,
-        ...(language ? { languageCode: language } : {}),
-        ...(previousText ? { previousText } : {}),
-        ...(nextText ? { nextText } : {}),
-        ...(signal ? { signal } : {}),
-      })
-      spoken.push({ text, blob: speech.blob, words: speech.words })
-    }
+    stage(FIX_STAGES.scripting)
+    const plan = planSegments(script, resource.segments, { clipStart, duration })
+    const segmentIds = await applyPlan(dubbingId, plan, {
+      language,
+      ...(speaker ? { speakerId: speaker.id } : {}),
+      ...(signal ? { signal } : {}),
+      onLine: (done) => stage(FIX_STAGES.scripting, done),
+    })
 
-    return { spoken, voiceName: spokenBy }
+    stage(FIX_STAGES.speaking)
+    await dubSegments(dubbingId, segmentIds, language, signal)
+
+    stage(FIX_STAGES.rendering)
+    const renderId = await renderDub(dubbingId, language, signal)
+    await waitForRender(dubbingId, renderId, { ...(signal ? { signal } : {}) })
+
+    stage(FIX_STAGES.fetching)
+    const blob = await dubbedAudio(dubbingId, language, signal)
+
+    stage(FIX_STAGES.aligning)
+    const texts = script.map((line) => line.text)
+    // Failing to time the words is not failing to fix the clip. The audio is
+    // made and paid for by this point, and the only thing lost is the karaoke
+    // highlight moving onto it — so the captions keep the timings they had
+    // rather than the whole run being thrown away over the last request in it.
+    const words = await alignWords(blob, texts.join(' '), signal).catch(() => [])
+
+    return {
+      blob,
+      lines: splitAlignedWords(texts, words).map((wordsForLine, index) => ({
+        text: texts[index] ?? '',
+        words: wordsForLine,
+      })),
+      voiceName: voiceId ? voiceName || 'an ElevenLabs voice' : 'a copy of its own voice',
+      hurried: hurriedLines([...plan.update, ...plan.create]),
+    }
   } finally {
-    if (cloned) {
+    if (dubbingId) {
       // Best effort, and deliberately not awaited into the failure path: the
-      // speech is already made or already lost, and neither outcome is improved
+      // audio is already made or already lost, and neither outcome is improved
       // by reporting that the tidying up also went wrong.
-      void deleteVoice(cloned).catch(() => {})
+      void deleteDub(dubbingId).catch(() => {})
     }
   }
 }
 
-/** Where one spoken line ended up, once everything before it had its say. */
-export interface PlacedLine {
-  start: number
-  /** True when the line before it was still talking at its caption's mark. */
-  pushed: boolean
-  /** True when it came forward to take up room the line before it left unused. */
-  pulled: boolean
+/**
+ * Writes the plan onto the resource and returns every segment to be dubbed.
+ *
+ * Removals go last on purpose. A resource with no segments at all is a resource
+ * dubbing may decide has nothing in it, and emptying it before refilling it
+ * would pass through that state on every run where the captions are fewer than
+ * the transcriber's spans — which is most of them, since a caption is usually a
+ * whole sentence and a span is usually a breath.
+ */
+async function applyPlan(
+  dubbingId: string,
+  plan: SegmentPlan,
+  {
+    language,
+    speakerId,
+    signal,
+    onLine,
+  }: {
+    language: string
+    speakerId?: string
+    signal?: AbortSignal
+    onLine?: (done: number) => void
+  },
+): Promise<string[]> {
+  const ids: string[] = []
+  let done = 0
+
+  for (const { id, ...edit } of plan.update) {
+    await updateSegment(dubbingId, id, language, edit, signal)
+    ids.push(id)
+    onLine?.((done += 1))
+  }
+
+  for (const edit of plan.create) {
+    // Without a speaker there is nothing to hang a new segment on. The lines
+    // that did fit existing segments are still said correctly, so this reports
+    // rather than throws — losing four of five corrected lines because the
+    // fifth had nowhere to go would be the worse trade.
+    if (!speakerId) break
+    ids.push(await createSegment(dubbingId, speakerId, edit, signal))
+    onLine?.((done += 1))
+  }
+
+  for (const id of plan.remove) {
+    await deleteSegment(dubbingId, id, signal)
+  }
+
+  return ids
+}
+
+function abortIfAsked(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 }
 
 /**
- * Lays the spoken lines out along the timeline.
+ * The clip's own sound, cut out of its media and wrapped as a WAV.
  *
- * Each wants to start where its caption starts, which is where the picture says
- * it. Two things stop that from being the whole rule, and they pull opposite
- * ways.
- *
- * **Late.** Where the line before has not finished — the new reading is slower
- * than the old performance, or the captions were tight to begin with — this one
- * starts as soon as that one stops. Overlapping was the alternative and it is
- * worse in every way: two voices at once is unlistenable, and one lane cannot
- * hold overlapping clips anyway.
- *
- * **Early.** A caption is as long as the performance took to say it, and a
- * reading is very often quicker — the same words without the hesitation. Left
- * alone, that leaves silence at the tail of the caption, and the next line
- * waiting out a pause the speaker never took. Mid-sentence it does not sound
- * like timing, it sounds like the audio dropped out. So a line may come forward
- * into the room its predecessor did not use, by at most the amount unused.
- *
- * That bound is the point of measuring the shortfall against the caption's own
- * span rather than against wherever the previous line actually landed. A line
- * can be at most one predecessor's shortfall early, however many short readings
- * came before it, so a long clip cannot walk away from its picture — which is
- * the whole reason the lines are spoken and placed one at a time.
- *
- * The run reports both, because both are things to know before hunting for them
- * by ear.
+ * The whole clip rather than a sample of it, which is the difference from what
+ * the text-to-speech path sent: that only needed enough of the voice to copy it,
+ * and this is the audio actually being re-voiced, so a second missing from the
+ * end is a second of the clip that does not get fixed.
  */
-export function layoutSpokenLines(
-  lines: readonly { start: number; end: number; duration: number }[],
-): PlacedLine[] {
-  let previous: { end: number; unused: number } | null = null
-  return lines.map((line) => {
-    const duration = Math.max(0, line.duration)
-    const start = previous
-      ? Math.max(previous.end, line.start - previous.unused)
-      : // Nothing before it to be late for, and nothing to come forward into.
-        line.start
-    previous = {
-      end: start + duration,
-      unused: Math.max(0, Math.max(0, line.end - line.start) - duration),
-    }
-    return {
-      start,
-      pushed: start > line.start + TIMING_EPSILON,
-      pulled: start < line.start - TIMING_EPSILON,
-    }
-  })
-}
-
-/** Below this, two times are the same time. Rounding, not lateness. */
-const TIMING_EPSILON = 0.001
-
-/** The clip's own voice, cut out of its media and wrapped as a WAV. */
-async function voiceSample(media: Blob, inPoint: number, duration: number): Promise<Blob> {
+async function clipAudio(media: Blob, inPoint: number, duration: number): Promise<Blob> {
   const buffer = await decodeAudio(media)
+  const rate = Math.min(buffer.sampleRate, DUB_SAMPLE_RATE)
+  const limit = dubbableSeconds(rate)
+  if (duration > limit) {
+    throw new Error(
+      `This clip is ${Math.round(duration)}s long, and a clip has to be under ${limit}s to be ` +
+        `dubbed — that is as much audio as fits through this site's upload limit. Split the clip ` +
+        `and fix the halves separately.`,
+    )
+  }
+
   const from = Math.max(0, inPoint)
-  const to = Math.min(buffer.duration, from + Math.min(duration, CLONE_SAMPLE_SECONDS))
-  return await monoWav(buffer, { from, to }, Math.min(buffer.sampleRate, CLONE_SAMPLE_RATE))
+  const to = Math.min(buffer.duration, from + duration)
+  return await monoWav(buffer, { from, to }, rate)
 }

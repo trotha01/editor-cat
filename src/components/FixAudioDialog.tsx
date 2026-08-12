@@ -8,23 +8,23 @@
  * the other.
  *
  * A line at a time, each with the moment the picture says it. That is the shape
- * of the thing being fixed: a caption knows when its line starts, so a line
- * corrected here can be spoken and laid on that mark rather than somewhere in a
- * run of speech that started right and drifted.
+ * of the thing being fixed: a caption knows when its line starts and how long the
+ * picture spends on it, and both of those are handed to the dubbing job as the
+ * span the corrected line has to fit.
  *
- * A clip with no captions falls back to one text box and one piece of audio at
- * the head of the clip. It works, and it is worse, and the hint says which — the
+ * A clip with no captions falls back to one text box and one span across the
+ * whole clip. It works, and it is worse, and the hint says which — the
  * captioning item is directly above this one in the same menu.
  *
  * The form closes on the press and the run reports itself beside the timeline.
- * Copying a voice and then speaking every line is several round trips, and
- * holding a modal over the editor for all of them would be holding it for
- * something the user has already finished describing.
+ * A dub is an upload, a wait, a re-say and a render, which is minutes rather
+ * than seconds; holding a modal over the editor for all of it would be holding
+ * it for something the user has already finished describing.
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout, Field, Modal, Select, TextArea, TextInput } from './ui'
 import { listVoices, VOICE_LANGUAGES, type Voice } from '../lib/elevenlabs'
-import { CLONE_SAMPLE_SECONDS, type FixTarget } from '../lib/clipAudioFix'
+import { dubbableSeconds, type FixTarget } from '../lib/clipAudioFix'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAudioFixStore, type FixRequestLine } from '../state/useAudioFixStore'
@@ -108,8 +108,16 @@ function FixAudioForm({
   // than English-and-a-stranger, and a project is usually one language pair
   // throughout. A clip that has been fixed before overrides it with its own.
   const [language, setLanguage] = useState(
-    () => target.language ?? useAudioFixStore.getState().language,
+    () =>
+      // Never empty: an unnamed language would show as the first option in the
+      // select while being sent as nothing at all, which is the shape of bug
+      // that reaches the provider rather than the screen.
+      target.language ?? useAudioFixStore.getState().language ?? VOICE_LANGUAGES[0].code,
   )
+  // Longer than the proxy will carry. Checked here rather than only in the run
+  // because the answer is known before anything is spent, and finding out after
+  // the press would mean an error where a disabled button belongs.
+  const tooLong = target.duration > dubbableSeconds()
   const [voiceId, setVoiceId] = useState(() => useAudioFixStore.getState().voiceId)
 
   /** The captions, as they are being edited. One entry per line, in order. */
@@ -138,8 +146,8 @@ function FixAudioForm({
     <div className="flex flex-col gap-4">
       <p className="text-xs leading-relaxed text-ink-dim">
         {captioned
-          ? 'Correct this clip’s captions below — they are the script. Each line is saved, then said by ElevenLabs in a voice copied from the clip, and laid on the timeline where that caption starts. The captions are then re-timed to the new voice, so the highlight stays on the word being spoken.'
-          : 'ElevenLabs says the line from your text, in a voice copied from this clip, and lays it on a voice track underneath.'}{' '}
+          ? 'Correct this clip’s captions below — they are the script. Each line is saved, then handed to ElevenLabs as a span of its own running exactly as long as that caption does, and re-said in a voice copied from the clip to fit it. The whole clip comes back as one corrected track, with every line already on its caption’s mark.'
+          : 'ElevenLabs re-says the line from your text, in a voice copied from this clip, across the length of the whole clip, and lays it on a voice track underneath.'}{' '}
         The clip’s own sound is muted in the same edit — the picture is untouched, and one undo puts
         the audio and the timings back. Your caption edits are a step of their own, so they survive
         that undo unless you press it twice.
@@ -187,7 +195,7 @@ function FixAudioForm({
 
       <Field
         label="Language"
-        hint="Leave this on detect when the line switches languages — naming one makes the model read the whole line with that language’s mouth, English included."
+        hint="Dubbing re-says the whole clip in one language, so this has to be named and there is no detect option. A clip that says its line in English and then again in Italian will get one mouth for both — pick the half that is wrong."
         htmlFor="fix-audio-language"
       >
         <Select
@@ -207,10 +215,7 @@ function FixAudioForm({
         label="Voice"
         hint={
           voiceId === CLONE_VOICE
-            ? `Copied from the first ${Math.min(
-                CLONE_SAMPLE_SECONDS,
-                Math.max(1, Math.round(target.duration)),
-              )}s of this clip, used once, then deleted again. If cloning is refused, pick a ready-made voice below instead.`
+            ? 'Copied by ElevenLabs from the clip’s own audio as part of the dub, and gone again with the job. If cloning is refused, pick a ready-made voice below instead.'
             : 'A ready-made voice. It will not sound like the clip.'
         }
         htmlFor="fix-audio-voice"
@@ -236,6 +241,14 @@ function FixAudioForm({
         </Callout>
       ) : null}
 
+      {tooLong ? (
+        <Callout tone="warn">
+          This clip is {Math.round(target.duration)}s long, and dubbing sends the clip’s audio to
+          ElevenLabs through an upload limited to about {dubbableSeconds()}s of it. Split the clip
+          and fix the halves separately.
+        </Callout>
+      ) : null}
+
       {available ? null : (
         <Callout tone="warn">
           This site is not set up for voice generation, so nothing can be said here yet. Whoever
@@ -245,7 +258,11 @@ function FixAudioForm({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" onClick={submit} disabled={!available || characters === 0}>
+        <Button
+          variant="primary"
+          onClick={submit}
+          disabled={!available || characters === 0 || tooLong}
+        >
           <span aria-hidden>🗣</span>{' '}
           {target.fixedAudioClipId ? 'Fix it again' : 'Save captions and fix the audio'}
         </Button>
@@ -254,10 +271,13 @@ function FixAudioForm({
         </Button>
         {/* What this will spend, in the unit ElevenLabs actually charges in.
             The bill lands on whoever deployed the site, like generation and
-            captions, so the number is on screen before the press — and unlike
-            those, it depends on what is typed rather than on the clip. */}
+            captions, so the number is on screen before the press — and dubbing
+            is billed by the length of the clip rather than by how much is said
+            in it, so the characters are shown as what they are here: the thing
+            that decides how hurried the reading will be, not the price. */}
         <span className="ml-auto text-xs text-ink-dim">
-          {formatTime(target.duration)} clip · {characters} characters
+          {formatTime(target.duration)} clip · about {Math.ceil((target.duration / 60) * 2000)}{' '}
+          credits · {characters} characters
           {captioned ? ` · ${target.lines.length} lines` : ''}
         </span>
       </div>

@@ -287,61 +287,165 @@ export async function mockConvert(audio: Blob): Promise<Blob> {
   return audio
 }
 
-/** Mock voice cloning. No sample is analysed; there is nothing to analyse it with. */
-export function mockClonedVoiceId(): string {
-  return 'mock-cloned-voice'
+/* --- Dubbing ------------------------------------------------------------- */
+
+/**
+ * A mock dubbing studio job, held in memory for the length of a run.
+ *
+ * The whole feature runs through here in mock mode, and it is deliberately not a
+ * straight line: a real job comes back segmented on the provider's judgement
+ * rather than on the user's captions, so this seeds a segmentation that does
+ * **not** match them. That is what makes `planSegments` do its actual work
+ * offline — updating some spans, creating the ones the transcriber missed and
+ * deleting the ones it invented — instead of the end-to-end run walking a happy
+ * path that never occurs.
+ */
+interface MockDub {
+  seconds: number
+  segments: Map<string, { start: number; end: number; text: string }>
+  renders: Set<string>
+  next: number
+}
+
+const mockDubs = new Map<string, MockDub>()
+
+/** How many spans a mock transcription finds, whatever the captions say. */
+const MOCK_SEGMENT_COUNT = 3
+
+export function mockDubbingCreate(seconds: number): string {
+  const id = `mock-dub-${mockDubs.size + 1}`
+  const span = Math.max(0.2, seconds / MOCK_SEGMENT_COUNT)
+  const dub: MockDub = { seconds, segments: new Map(), renders: new Set(), next: 0 }
+  for (let index = 0; index < MOCK_SEGMENT_COUNT; index += 1) {
+    dub.segments.set(`mock-seg-${(dub.next += 1)}`, {
+      start: index * span,
+      end: Math.min(seconds, (index + 1) * span),
+      text: `mock transcription ${index + 1}`,
+    })
+  }
+  mockDubs.set(id, dub)
+  return id
+}
+
+function mockDub(id: string): MockDub {
+  const dub = mockDubs.get(id)
+  if (!dub) throw new Error(`No mock dub called ${id}.`)
+  return dub
+}
+
+export function mockDubbingResource(id: string) {
+  const dub = mockDub(id)
+  return {
+    id,
+    segments: [...dub.segments]
+      .map(([segmentId, segment]) => ({ id: segmentId, ...segment }))
+      .sort((a, b) => a.start - b.start),
+    speakers: [{ id: 'mock-speaker', segments: [...dub.segments.keys()] }],
+    renders: Object.fromEntries([...dub.renders].map((render) => [render, { status: 'complete' }])),
+    sourceLanguage: 'en',
+  }
+}
+
+export function mockDubbingUpdateSegment(
+  id: string,
+  segmentId: string,
+  edit: { start: number; end: number; text: string },
+): void {
+  mockDub(id).segments.set(segmentId, edit)
+}
+
+export function mockDubbingCreateSegment(
+  id: string,
+  edit: { start: number; end: number; text: string },
+): string {
+  const dub = mockDub(id)
+  const segmentId = `mock-seg-${(dub.next += 1)}`
+  dub.segments.set(segmentId, edit)
+  return segmentId
+}
+
+export function mockDubbingDeleteSegment(id: string, segmentId: string): void {
+  mockDub(id).segments.delete(segmentId)
+}
+
+export function mockDubbingRender(id: string): string {
+  const dub = mockDub(id)
+  const renderId = `mock-render-${dub.renders.size + 1}`
+  dub.renders.add(renderId)
+  return renderId
+}
+
+export function mockDubbingDelete(id: string): void {
+  mockDubs.delete(id)
 }
 
 /**
- * How fast the mock "speaks", in characters a second.
+ * Where the mock put every word, kept from the last track it rendered.
  *
- * Roughly a brisk read, so a fixed line comes back about as long as the clip it
- * is replacing. That length is the part that has to be real: it decides where
- * the audio ends on the timeline, whether it runs past its clip, and what the
- * export has to mix.
+ * Forced alignment is handed audio and text and nothing that identifies the job,
+ * so the mock cannot look the layout up — and inventing it again from the text
+ * alone would spread the words evenly across the track rather than inside the
+ * spans they were actually given, which is the one property of fixed generation
+ * worth exercising. Only one fix runs at a time (see `useAudioFixStore.ts`), so
+ * the last render is always the one being aligned.
  */
-const MOCK_SPEECH_CHARS_PER_SECOND = 14
+let mockAlignment: { text: string; start: number; end: number }[] = []
 
 /**
- * Mock speech: a warbling tone, as long as the text would take to say, with the
- * word timings the real endpoint would have returned.
+ * Mock dubbing: a warbling tone as long as the clip, with each segment's words
+ * laid inside that segment's own span.
  *
  * A tone rather than silence because every step downstream — probing the
  * duration, drawing the waveform, playing it under a muted clip, mixing it into
  * the MP4 — is only exercised by audio that is actually there. It sounds nothing
  * like a voice, which is the honest thing for a mock to sound like.
  *
- * The timings are the half that matters more here, and they are not invented
- * loosely: a word gets a share of the line in proportion to its length, so the
- * captions this drives really are re-timed to the audio it returns, and mock
- * mode exercises the alignment rather than a straight line through it.
+ * The timings are the half that matters more, and they are what a real fixed
+ * generation promises: a word is inside the caption it belongs to because the
+ * segment holding it was given that caption's span. Words share their span in
+ * proportion to their length, so the captions this drives really are re-timed to
+ * the audio it returns.
  */
-export async function mockSpeech(
-  text: string,
-): Promise<{ blob: Blob; words: { text: string; start: number; end: number }[] }> {
+export async function mockDubbingAudio(id: string): Promise<Blob> {
   await new Promise((resolve) => setTimeout(resolve, 700))
+  const dub = mockDub(id)
 
   const rate = COUNTDOWN_SPEC.sampleRate
-  const seconds = Math.max(0.6, text.trim().length / MOCK_SPEECH_CHARS_PER_SECOND)
-  const samples = new Float32Array(Math.round(seconds * rate))
-  for (let index = 0; index < samples.length; index += 1) {
-    const t = index / rate
-    // A syllable rate under a wandering pitch, so the result has the shape of
-    // speech on a waveform without pretending to be any.
-    const syllable = 0.5 + 0.5 * Math.sin(2 * Math.PI * 3.2 * t)
-    samples[index] = 0.3 * syllable * Math.sin(2 * Math.PI * (180 + 40 * Math.sin(t * 1.7)) * t)
-  }
+  const samples = new Float32Array(Math.round(Math.max(0.6, dub.seconds) * rate))
+  const spans = [...dub.segments.values()].sort((a, b) => a.start - b.start)
 
-  const tokens = text.trim().split(/\s+/).filter(Boolean)
-  const characters = tokens.reduce((total, token) => total + token.length, 0) || 1
-  let at = 0
-  const words = tokens.map((token) => {
-    const start = at
-    at += (token.length / characters) * seconds
-    return { text: token, start, end: at }
+  mockAlignment = spans.flatMap((span) => {
+    const tokens = span.text.trim().split(/\s+/).filter(Boolean)
+    const characters = tokens.reduce((total, token) => total + token.length, 0) || 1
+    const length = Math.max(0, span.end - span.start)
+    let at = span.start
+    return tokens.map((token) => {
+      const start = at
+      at += (token.length / characters) * length
+      return { text: token, start, end: at }
+    })
   })
 
-  return { blob: new Blob([encodeWav(samples, rate)], { type: WAV_MIME }), words }
+  for (const span of spans) {
+    const first = Math.max(0, Math.round(span.start * rate))
+    const last = Math.min(samples.length, Math.round(span.end * rate))
+    for (let index = first; index < last; index += 1) {
+      const t = index / rate
+      // A syllable rate under a wandering pitch, so the result has the shape of
+      // speech on a waveform without pretending to be any. Silence between the
+      // spans, because that is what a segmented track really sounds like.
+      const syllable = 0.5 + 0.5 * Math.sin(2 * Math.PI * 3.2 * t)
+      samples[index] = 0.3 * syllable * Math.sin(2 * Math.PI * (180 + 40 * Math.sin(t * 1.7)) * t)
+    }
+  }
+
+  return new Blob([encodeWav(samples, rate)], { type: WAV_MIME })
+}
+
+/** Mock forced alignment: where the last mock render put the words. */
+export async function mockDubbingAlign(): Promise<{ text: string; start: number; end: number }[]> {
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  return mockAlignment
 }
 
 /**
