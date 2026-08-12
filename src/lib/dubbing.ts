@@ -17,14 +17,21 @@
  * ## Which dubbing API
  *
  * The **project** API (`/v1/dubbing/project/…`), not the older dubbing
- * **resource** API (`/v1/dubbing/resource/…`). This was built against the
- * resource one first, and a run against a deploy preview answered
- * `401 no_dubbing_api_access` — "This API is in closed-beta and is only
- * available to workspaces that are granted access" — after the job had already
- * been created and reported itself as `editable`. The project API is the
- * documented, current one and models the same thing better: segment edits are
- * bulk in one request, and creating a language target does the dubbing and the
- * mixing in one step rather than needing a separate dub and render.
+ * **resource** API (`/v1/dubbing/resource/…`). The resource one was tried first
+ * and a run against a deploy preview answered `401 no_dubbing_api_access` after
+ * the job had already been created and reported itself as `editable`. The
+ * project API is the documented, current one and models the same thing better:
+ * segment edits are bulk in one request, and creating a language target does the
+ * dubbing and the mixing in one step rather than needing a separate dub and
+ * render.
+ *
+ * It is also gated, which a second live run settled: a project can be created
+ * and its transcript read, and the bulk segment rewrite answers
+ * `403 feature_not_available` — "Dubbing project editing is not enabled for your
+ * workspace." So on a workspace without that entitlement this feature cannot
+ * work through either API, and it cannot find out until it has already uploaded
+ * and transcribed the clip. See `refuseUnentitled`, which is what makes that
+ * legible instead of looking like a bug in the deployment.
  *
  * Two things follow from the segments being ours to set:
  *
@@ -216,7 +223,7 @@ async function project(projectId: string, signal?: AbortSignal): Promise<WirePro
 
   const response = await elevenFetch(`/v1/dubbing/project/${encodeURIComponent(projectId)}`, {
     signal,
-  }).catch(refuseClosedBeta)
+  }).catch(refuseUnentitled)
   return (await response.json()) as WireProject
 }
 
@@ -230,7 +237,7 @@ export async function dubbingTranscript(
   const response = await elevenFetch(
     `/v1/dubbing/project/${encodeURIComponent(projectId)}/transcript`,
     { signal },
-  ).catch(refuseClosedBeta)
+  ).catch(refuseUnentitled)
   const body = (await response.json()) as WireTranscript
 
   return {
@@ -329,7 +336,7 @@ export async function updateSegments(
     }),
     headers: { 'content-type': 'application/json' },
     signal,
-  })
+  }).catch(refuseUnentitled)
 }
 
 /** Adds a span the transcription missed, and returns its id. */
@@ -354,7 +361,7 @@ export async function createSegment(
       headers: { 'content-type': 'application/json' },
       signal,
     },
-  )
+  ).catch(refuseUnentitled)
   const body = (await response.json()) as { segment_id?: string; id?: string }
   const id = body.segment_id ?? body.id
   if (!id) throw new Error('ElevenLabs added a segment but did not name it.')
@@ -372,7 +379,7 @@ export async function deleteSegment(
   await elevenFetch(
     `/v1/dubbing/project/${encodeURIComponent(projectId)}/transcript/segment/${encodeURIComponent(segmentId)}`,
     { method: 'DELETE', signal },
-  )
+  ).catch(refuseUnentitled)
 }
 
 /* --- Saying it again ------------------------------------------------------ */
@@ -401,7 +408,7 @@ export async function createLanguageTarget(
       headers: { 'content-type': 'application/json' },
       signal,
     },
-  )
+  ).catch(refuseUnentitled)
   const body = (await response.json()) as WireLanguage
   if (!body.language_id)
     throw new Error('ElevenLabs started dubbing but did not name the language.')
@@ -473,7 +480,7 @@ async function languageTarget(
   const response = await elevenFetch(
     `/v1/dubbing/project/${encodeURIComponent(projectId)}/language/${encodeURIComponent(languageId)}`,
     { signal },
-  ).catch(refuseClosedBeta)
+  ).catch(refuseUnentitled)
   return (await response.json()) as WireLanguage
 }
 
@@ -565,35 +572,50 @@ export async function alignWords(
 /* --- Failures worth naming ------------------------------------------------ */
 
 /**
- * Turns "you are not in the beta" into a sentence that says so.
+ * Turns "your workspace does not have this" into a sentence that says so.
  *
- * Worth naming rather than passing on as another authorization error, because
- * it is the one failure on this path that no amount of retrying, re-signing-in
- * or key-checking will move — and because it is invisible until it happens.
- * This was confirmed against the live API on the *resource* API this file used
- * to call: creating the job answered 200 and reported `editable: true`, and only
- * reading its segments answered `401 no_dubbing_api_access`. The project API
- * called here is the documented current one and may well not be gated the same
- * way, but the failure shape is worth keeping either way — it costs one
- * predicate and it is the difference between a comprehensible message and being
- * told to sign in again about a closed beta.
+ * Both dubbing APIs gate the part this feature is built on, and both were met
+ * on a live run against a deploy preview. They gate it differently, which is why
+ * this matches on more than one string:
+ *
+ *  - the older **resource** API refused the whole thing at the first read, with
+ *    `401 no_dubbing_api_access` — "This API is in closed-beta and is only
+ *    available to workspaces that are granted access";
+ *  - the **project** API called here lets a project be created *and* its
+ *    transcript be read, and refuses only the edit:
+ *    `403 feature_not_available` — "Dubbing project editing is not enabled for
+ *    your workspace."
+ *
+ * The second is the more expensive shape and the more confusing one. Everything
+ * up to it succeeds, so the clip has been uploaded, transcribed and billed
+ * before anything says the feature is unavailable — and the raw answer is a 403,
+ * which is also what this app's own proxy says about an endpoint it will not
+ * forward. Left alone it reads as a bug in the deployment rather than as a
+ * missing entitlement.
+ *
+ * Matched on the message as well as the code because these are two different
+ * codes for one situation, and a third would be no surprise.
  */
-function isClosedBeta(error: unknown): boolean {
+function isNotEntitled(error: unknown): boolean {
   return (
     error instanceof ProviderError &&
-    /no_dubbing_api_access|closed[- ]beta/i.test(error.detail ?? '')
+    /no_dubbing_api_access|feature_not_available|closed[- ]beta|not enabled for your workspace/i.test(
+      error.detail ?? '',
+    )
   )
 }
 
-function refuseClosedBeta(cause: unknown): never {
-  if (!isClosedBeta(cause)) throw cause
+function refuseUnentitled(cause: unknown): never {
+  if (!isNotEntitled(cause)) throw cause
   throw new ProviderError(
     'ElevenLabs',
     403,
-    'This site’s ElevenLabs workspace has not been given access to the dubbing API.',
-    'Fixing a clip’s audio is built on editing a dub’s segments, and that API is in closed ' +
-      'beta for this workspace — any project it created has been deleted again. Whoever deployed ' +
-      'this site needs to ask ElevenLabs for dubbing API access. Nothing you can fix from here.',
+    'This site’s ElevenLabs workspace does not have dubbing project editing enabled.',
+    'Fixing a clip’s audio works by rewriting a dub’s segments so they say your captions, and ' +
+      'that is the part this workspace is not entitled to — the clip was uploaded and ' +
+      'transcribed before the refusal, and the project has been deleted again. Whoever deployed ' +
+      'this site needs to ask ElevenLabs to enable dubbing project editing. Nothing you can fix ' +
+      'from here.',
   )
 }
 

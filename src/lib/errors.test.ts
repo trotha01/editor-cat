@@ -148,7 +148,7 @@ describe('toDisplayMessage', () => {
   })
 })
 
-describe('a 401 from the provider is not a 401 from us', () => {
+describe('a refusal from the provider is not a refusal from us', () => {
   it('sends the user to sign in only when it was our own session check', () => {
     expect(explainStatus('ElevenLabs', 401)).toMatch(/sign in/i)
   })
@@ -159,6 +159,16 @@ describe('a 401 from the provider is not a 401 from us', () => {
     // in again cannot touch any of that.
     const message = explainStatus('ElevenLabs', 401, true)
     expect(message).not.toMatch(/sign in/i)
+    expect(message).toMatch(/nothing you can fix/i)
+  })
+
+  it('does not blame this site’s setup for a feature the workspace lacks', () => {
+    // Our proxy says 403 for an endpoint it will not forward, which is a
+    // deployment problem. ElevenLabs says 403 for a workspace not entitled to a
+    // feature — as it does for dubbing's segment editing — which is not.
+    expect(explainStatus('ElevenLabs', 403)).toMatch(/this site would not allow/i)
+    const message = explainStatus('ElevenLabs', 403, true)
+    expect(message).toMatch(/ElevenLabs refused/i)
     expect(message).toMatch(/nothing you can fix/i)
   })
 })

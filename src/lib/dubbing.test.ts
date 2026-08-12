@@ -311,8 +311,42 @@ describe('alignWords', () => {
   })
 })
 
-describe('when the workspace is not in the closed beta', () => {
-  it('says so, instead of telling the user to sign in again', async () => {
+describe('when the workspace is not entitled to segment editing', () => {
+  it('names the refusal the project API actually gives, on the call that gives it', async () => {
+    // Verbatim from a live run. This is the expensive shape: the project was
+    // created and its transcript read, both fine, and only the rewrite — the
+    // one call the whole feature is built on — came back refused. A bare 403
+    // reads as "this deployment is misconfigured", which is the wrong thing to
+    // go and check.
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            type: 'authorization_error',
+            code: 'feature_not_available',
+            message: 'Dubbing project editing is not enabled for your workspace.',
+            status: 'feature_not_available',
+          },
+        }),
+        {
+          status: 403,
+          headers: { 'content-type': 'application/json', 'x-elevenlabs-status': '403' },
+        },
+      ),
+    )
+
+    const error = await updateSegments('proj_1', {
+      seg_a: { start: 0, end: 1, text: 'Buenos días' },
+    }).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(toDisplayMessage(error)).toMatch(/does not have dubbing project editing enabled/i)
+    // What it cost, and what to do — neither of which is "try again".
+    expect(toDisplayMessage(error)).toMatch(/uploaded and transcribed before the refusal/i)
+    expect(toDisplayMessage(error)).toMatch(/enable dubbing project editing/i)
+  })
+
+  it('says so on the older API’s refusal too, instead of telling the user to sign in again', async () => {
     // Verbatim from a live run, including the `x-elevenlabs-status` the proxy
     // adds to say the 401 is ElevenLabs' and not this site's session check.
     fetchMock.mockResolvedValue(
@@ -339,9 +373,9 @@ describe('when the workspace is not in the closed beta', () => {
     const error = await dubbingTranscript('proj_1').catch((cause: unknown) => cause)
 
     expect(error).toBeInstanceOf(ProviderError)
-    expect(toDisplayMessage(error)).toMatch(/not been given access to the dubbing API/i)
+    expect(toDisplayMessage(error)).toMatch(/does not have dubbing project editing enabled/i)
     // And the way out, which is not "try again" and not "sign in".
-    expect(toDisplayMessage(error)).toMatch(/ask ElevenLabs for dubbing API access/i)
+    expect(toDisplayMessage(error)).toMatch(/enable dubbing project editing/i)
     expect(toDisplayMessage(error)).not.toMatch(/sign in/i)
   })
 

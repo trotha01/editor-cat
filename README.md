@@ -917,11 +917,13 @@ and **do not use IP allowlisting**, because these requests come from Netlify
 functions whose egress addresses are neither fixed nor published, so every one
 of them would come back 403.
 
-Scope is not the whole of it. The workspace also has to have been granted
-**dubbing API access**: without it a dubbing project can be created but its
-segments cannot be read or edited, which is the only part the audio fix uses,
-and the refusal arrives after the project has already been made. A live run met
-exactly that. Ask ElevenLabs for access before expecting the fix to work.
+Scope is not the whole of it. The workspace also has to have **dubbing project
+editing** enabled: without it a project can be created and its transcript read,
+and the rewrite that puts your captions into it comes back
+`403 feature_not_available`. That is the only part the audio fix uses, and the
+refusal arrives after the clip has been uploaded and transcribed — so it costs
+something to discover. Live runs met this on both of ElevenLabs' dubbing APIs.
+Ask ElevenLabs to enable it before expecting the fix to work.
 
 Then decide who is allowed to spend them. `/api/fal/*` and `/api/elevenlabs/*`
 both generate on your accounts, so both verify the caller's Auth0 access token
@@ -1546,14 +1548,16 @@ If your CI image ships its own browser, point the test at it with
   cross-origin isolation, which would block loading provider media in the page,
   and WebGPU would be a second execution path reachable on only some machines.
   Both are the same trade the exporter already makes.
-- **The dubbing API may need to be enabled for your workspace.** A run against
-  the older dubbing endpoints answered `401 no_dubbing_api_access` — "This API
-  is in closed-beta and is only available to workspaces that are granted
-  access" — after the job had already been created and reported itself as
-  editable. This uses the current dubbing **project** API instead, which may not
-  be gated the same way; if it is, the app says so plainly and deletes the
-  project it made. Ask ElevenLabs for dubbing API access if you meet that
-  message.
+- **Segment editing has to be enabled for your workspace, and on most it is
+  not.** This is the one that decides whether the feature works at all. Both
+  dubbing APIs gate it, and live runs met both: the older endpoints answer
+  `401 no_dubbing_api_access` at the first read, and the current **project** API
+  lets a project be created and its transcript be read and then answers
+  `403 feature_not_available` — "Dubbing project editing is not enabled for your
+  workspace" — on the rewrite. The second is the expensive one: the clip has
+  been uploaded and transcribed, and paid for, before anything says no. The app
+  names the refusal and deletes the project it made. Ask ElevenLabs to enable
+  dubbing project editing.
 - **No choice of voice.** Dubbing copies the speaker out of the clip and offers
   no way to name a different one, so the ready-made voices the voice changer
   offers are not available here. If the account's plan does not allow cloning,

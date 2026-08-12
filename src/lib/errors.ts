@@ -68,11 +68,15 @@ export function extractMessage(body: unknown): string | undefined {
  * fix. What is left is the same three sentences for both: your session, the
  * site's account, or the site's setup.
  *
- * A 403 has one more meaning than it used to, and it is deliberately not spelled
- * out here: our own proxies answer 403 for an account that is not on this
- * deployment's list, and for an endpoint it will not forward. Both arrive with a
- * `detail` saying exactly which, and `toDisplayMessage` prints it after this
- * line — so this stays the general case and the specific one speaks for itself.
+ * A 403 has three meanings and `fromProvider` separates the last from the first
+ * two: our own proxies answer 403 for an account that is not on this
+ * deployment's list and for an endpoint they will not forward, and the provider
+ * answers 403 for a workspace that is not entitled to a feature — which is what
+ * dubbing's segment editing gives. Ours arrive with a `detail` saying exactly
+ * which, and `toDisplayMessage` prints it after this line, so those two stay the
+ * general case and speak for themselves; the provider's needed distinguishing,
+ * because "this site would not allow that" describes a misconfiguration and the
+ * truth is an entitlement nobody here can grant.
  *
  * A 401 has two meanings and they need different sentences, which is what
  * `fromProvider` is for. Our own proxy answers 401 when the caller's session
@@ -93,7 +97,9 @@ export function explainStatus(
         ? `This site's ${provider} account was refused. Nothing you can fix from here — the details below say why.`
         : 'This site could not confirm that you are signed in. Sign in again, then retry.'
     case 403:
-      return 'This site would not allow that. The details below say why.'
+      return fromProvider
+        ? `${provider} refused that on this site's account. Nothing you can fix from here — the details below say why.`
+        : 'This site would not allow that. The details below say why.'
     case 402:
       return `This site's ${provider} account is out of credit, so this is paused. Nothing you can fix from here.`
     case 503:
