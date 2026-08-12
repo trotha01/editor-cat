@@ -505,6 +505,310 @@ describe('transitions reach storage, and carry the timeline with them', () => {
 })
 
 /**
+ * Laying a corrected line under a clip.
+ *
+ * The two halves of a fix — the new audio arriving and the clip's own sound
+ * going quiet — have to be one edit. Both playing together is the wrong line
+ * under the right one, which is worse than either failure on its own, and an
+ * undo that unpicked only half of it would leave a clip silent with nothing to
+ * replace what it used to say.
+ *
+ * The other rule is that nothing generated is ever thrown away: a second go
+ * lands on a lane of its own and quietens the one before it. Somebody paid for
+ * that first take, and "which of these two readings is better" is a question
+ * you can only answer with both of them still there.
+ */
+describe('fixed clip audio', () => {
+  const twoClips = () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+  }
+
+  const speech = (assetId: string, text: string) => ({
+    assetId,
+    useConverted: false,
+    startTime: 3,
+    inPoint: 0,
+    duration: 2.5,
+    label: 'Fixed: b.mp4',
+    speechFix: { text, language: 'es' },
+  })
+
+  it('places the speech, mutes the clip, and anchors the two together', () => {
+    twoClips()
+    const placement = useProjectStore
+      .getState()
+      .addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+
+    const laid = stored().audioClips
+    expect(laid).toHaveLength(1)
+    expect(laid[0]).toMatchObject({
+      assetId: 'fix-1',
+      anchorClipId: 'clip-2',
+      startTime: 3,
+      speechFix: { text: 'Hola', language: 'es' },
+    })
+    // On a voice lane, which is what the mixer treats as narration.
+    const track = stored().audioTracks.find((entry) => entry.id === laid[0]?.trackId)
+    expect(track?.kind).toBe('voice')
+    expect(placement.trackName).toBe(track?.name)
+    expect(placement.silenced).toBe(0)
+    // And the clip it stands in for is silent, or both would play at once.
+    expect(stored().clips.find((clip) => clip.id === 'clip-2')?.muted).toBe(true)
+    expect(stored().clips.find((clip) => clip.id === 'clip-1')?.muted).toBeUndefined()
+  })
+
+  it('is one step, so a single undo puts the clip’s own sound back', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.audioClips).toEqual([])
+    expect(
+      useProjectStore.getState().project.clips.find((clip) => clip.id === 'clip-2')?.muted,
+    ).toBeUndefined()
+  })
+
+  it('moves the captions onto the speech in the same edit as the audio', () => {
+    // The captions describe the audio that has just arrived. Re-timing them
+    // separately would mean an undo could take the audio away and leave the
+    // words timed to something that is no longer there.
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'Hola', start: 3, end: 3.4, source: { id: 'clip-2', label: 'b.mp4' } },
+      { text: 'amigo', start: 3.5, end: 3.9, source: { id: 'clip-2', label: 'b.mp4' } },
+    ])
+    const cueId = captionCuesOf(useProjectStore.getState().project)[0]!.id
+    const before = useProjectStore.getState().past.length
+
+    useProjectStore.getState().addFixedClipAudio(
+      'clip-2',
+      [{ ...speech('fix-1', 'Hola amigo'), startTime: 3 }],
+      [
+        {
+          cueId,
+          offset: 3,
+          words: [
+            { text: 'Hola', start: 0, end: 0.6 },
+            { text: 'amigo', start: 0.7, end: 1.4 },
+          ],
+        },
+      ],
+    )
+
+    const cue = captionCuesOf(stored())[0]!
+    expect(cue.words.map((word) => [word.start, word.end])).toEqual([
+      [3, 3.6],
+      [3.7, 4.4],
+    ])
+    // One step, so one undo returns the audio, the mute and the timings together.
+    expect(useProjectStore.getState().past.length).toBe(before + 1)
+    useProjectStore.getState().undo()
+    expect(captionCuesOf(useProjectStore.getState().project)[0]?.words[0]?.start).toBe(3)
+    expect(useProjectStore.getState().project.audioClips).toEqual([])
+  })
+
+  it('lets a caption follow its voice forward, past where its neighbour used to end', () => {
+    // Two captions of one sentence, back to back. The new reading of the first
+    // takes 1.5s where the performance took 2.5s, so the second line is spoken
+    // a second early to close the silence — and its caption has to come with
+    // it. Fitting each cue against where the others *were* would hold this one
+    // at 5.5, a second behind the voice saying it.
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    const word = (id: string, text: string, start: number, end: number) => ({
+      id,
+      text,
+      start,
+      end,
+    })
+    useProjectStore.setState({
+      project: {
+        ...useProjectStore.getState().project,
+        captionCues: [
+          {
+            id: 'cue-a',
+            trackId,
+            start: 3,
+            end: 5.5,
+            words: [word('w1', 'Hic', 3, 4), word('w2', 'bufo', 4, 5.5)],
+          },
+          {
+            id: 'cue-b',
+            trackId,
+            start: 5.5,
+            end: 7.5,
+            words: [word('w3', 'mirabilis', 5.5, 6.5), word('w4', 'saporis', 6.5, 7.5)],
+          },
+        ],
+      },
+    })
+
+    useProjectStore.getState().addFixedClipAudio(
+      'clip-2',
+      [
+        { ...speech('line-1', 'Hic bufo'), startTime: 3, duration: 1.5 },
+        { ...speech('line-2', 'mirabilis saporis'), startTime: 4.5, duration: 1.75 },
+      ],
+      [
+        {
+          cueId: 'cue-a',
+          offset: 3,
+          words: [
+            { text: 'Hic', start: 0, end: 0.5 },
+            { text: 'bufo', start: 0.5, end: 1.5 },
+          ],
+        },
+        {
+          cueId: 'cue-b',
+          offset: 4.5,
+          words: [
+            { text: 'mirabilis', start: 0, end: 1 },
+            { text: 'saporis', start: 1, end: 1.75 },
+          ],
+        },
+      ],
+    )
+
+    const [first, second] = captionCuesOf(stored())
+    expect([first?.start, first?.end]).toEqual([3, 4.5])
+    // On the voice, not a second behind it.
+    expect([second?.start, second?.end]).toEqual([4.5, 6.25])
+  })
+
+  it('saves every edited caption as one step, before anything is spoken', () => {
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'Hola', start: 3, end: 3.4 },
+      { text: 'amigo', start: 3.5, end: 3.9 },
+      { text: 'Adios', start: 6, end: 6.4 },
+    ])
+    const cues = captionCuesOf(useProjectStore.getState().project)
+    const before = useProjectStore.getState().past.length
+
+    useProjectStore.getState().setCueTexts([
+      { cueId: cues[0]!.id, text: 'Buenos días' },
+      // An emptied line is left as it was: this runs on the way to spending
+      // money on the others, and a caption that has gone would take its place
+      // in the script with it.
+      { cueId: cues[1]!.id, text: '   ' },
+    ])
+
+    const after = captionCuesOf(stored())
+    expect(after[0]?.words.map((word) => word.text)).toEqual(['Buenos', 'días'])
+    expect(after[1]?.words.map((word) => word.text)).toEqual(cues[1]?.words.map((w) => w.text))
+    // Typed together and pressed once, so undone once.
+    expect(useProjectStore.getState().past.length).toBe(before + 1)
+  })
+
+  it('puts every line of one fix on the same new lane', () => {
+    // A fix is one piece per caption, laid where each caption starts. They
+    // belong together: one lane, one mute, one undo.
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [
+      { ...speech('line-1', 'Hola'), startTime: 3 },
+      { ...speech('line-2', '¿Cómo estás?'), startTime: 5 },
+    ])
+
+    const laid = stored().audioClips
+    expect(laid.map((clip) => clip.assetId)).toEqual(['line-1', 'line-2'])
+    expect(new Set(laid.map((clip) => clip.trackId)).size).toBe(1)
+    expect(laid.every((clip) => clip.anchorClipId === 'clip-2')).toBe(true)
+    expect(laid.map((clip) => clip.startTime)).toEqual([3, 5])
+  })
+
+  it('keeps the first take and gives the second a lane of its own', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    const second = useProjectStore
+      .getState()
+      .addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    // Nothing generated is overwritten: both readings are still on the timeline.
+    expect(stored().audioClips.map((clip) => clip.assetId)).toEqual(['fix-1', 'fix-2'])
+    const lanes = stored().audioClips.map((clip) => clip.trackId)
+    expect(new Set(lanes).size).toBe(2)
+    expect(second.silenced).toBe(1)
+  })
+
+  it('mutes the lane the earlier take is on, so only the newest is heard', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    const laneOf = (assetId: string) =>
+      stored().audioTracks.find(
+        (track) =>
+          track.id === stored().audioClips.find((clip) => clip.assetId === assetId)?.trackId,
+      )
+    expect(laneOf('fix-1')?.muted).toBe(true)
+    expect(laneOf('fix-2')?.muted).toBe(false)
+  })
+
+  it('leaves a lane alone once something else is sharing it', () => {
+    // Muting is only ever safe on a lane holding nothing but fixes. Drag a take
+    // onto one and it stops being this feature's to silence.
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    const fixLane = stored().audioClips[0]!.trackId
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'recording',
+      useConverted: false,
+      startTime: 20,
+      inPoint: 0,
+      duration: 1,
+    })
+    useProjectStore
+      .getState()
+      .updateAudioClip(stored().audioClips.find((clip) => clip.assetId === 'recording')!.id, {
+        trackId: fixLane,
+      })
+
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    expect(stored().audioTracks.find((track) => track.id === fixLane)?.muted).toBe(false)
+  })
+
+  it('leaves a take that happens to be anchored to the same clip alone', () => {
+    twoClips()
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'recording',
+      useConverted: false,
+      startTime: 4,
+      inPoint: 0,
+      duration: 1,
+    })
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    // Somebody's recording is not a fix, however close it is sitting, so the
+    // lane it is on is never the one a later fix quietens.
+    const recordingLane = stored().audioClips.find((clip) => clip.assetId === 'recording')?.trackId
+    expect(stored().audioTracks.find((track) => track.id === recordingLane)?.muted).toBe(false)
+  })
+
+  it('carries the correction with the clip when the picture is rearranged', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+
+    // clip-2 now plays first, so its line has to move with it.
+    useProjectStore.getState().moveClip(1, 0)
+
+    expect(stored().audioClips[0]?.startTime).toBeCloseTo(0)
+  })
+})
+
+/**
  * Where a clip added from the library lands, and what has to come with it.
  *
  * Inserting into the middle of the run is the one clip edit that makes the

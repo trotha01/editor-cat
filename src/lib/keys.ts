@@ -1,31 +1,23 @@
 /**
- * Bring-your-own-key storage.
+ * What is left of bring-your-own-key: taking the last one back out again.
  *
- * One key lives here now: ElevenLabs. It belongs to the user and stays on their
- * device — sent per request to our proxy function, which forwards it once to
- * the provider and never writes it anywhere. Nothing here is ever included in
- * exported project data.
+ * Two provider keys were typed into this app in its time. fal went first, when
+ * generation moved onto the deployment's own account; ElevenLabs has now
+ * followed it, so nothing in the browser holds a provider credential at all and
+ * there is no field left to type one into.
  *
- * Persistence is opt-in: with "remember on this device" unticked, the key lives
- * in memory only and is gone on reload.
+ * That leaves the copies already written to local storage on the devices of
+ * everyone who ticked "remember on this device". They are live credentials that
+ * nothing will ever read again, and a key nobody can see is a key nobody
+ * rotates — so the app deletes them on the way past rather than leaving them to
+ * sit there.
  *
- * fal used to be stored alongside it. It is now paid for by the deployment and
- * never reaches the browser, so `loadKeys` erases any copy left behind rather
- * than leaving a live credential sitting in local storage forever.
+ * This module is expected to become deletable. It is worth one release of
+ * keeping, because "we stopped reading it" and "it is gone" are different
+ * promises, and only one of them is worth making to somebody about their key.
  */
 
-export interface KeyState {
-  elevenlabs: string
-  remember: boolean
-}
-
-const STORAGE_KEY = 'editor-cat.keys.v1'
-const REMEMBER_KEY = 'editor-cat.keys.remember.v1'
-
-const EMPTY: KeyState = { elevenlabs: '', remember: false }
-
-/** In-memory keys, used when the user has not opted into persistence. */
-let memory: KeyState = { ...EMPTY }
+const STORAGE_KEYS = ['editor-cat.keys.v1', 'editor-cat.keys.remember.v1']
 
 function safeLocalStorage(): Storage | null {
   try {
@@ -36,56 +28,19 @@ function safeLocalStorage(): Storage | null {
   }
 }
 
-export function loadKeys(): KeyState {
+/**
+ * Erases any provider key this app used to store, and says whether it found
+ * one — which the caller has no use for beyond a test, and a test is exactly
+ * what a deletion nobody can see needs.
+ */
+export function purgeStoredKeys(): boolean {
   const store = safeLocalStorage()
-  if (!store) return { ...memory }
+  if (!store) return false
 
-  const remember = store.getItem(REMEMBER_KEY) === '1'
-  if (!remember) return { ...memory, remember: false }
-
-  try {
-    const raw = store.getItem(STORAGE_KEY)
-    if (!raw) return { ...memory, remember: true }
-    const parsed = JSON.parse(raw) as Partial<KeyState> & { fal?: unknown }
-    memory = {
-      elevenlabs: typeof parsed.elevenlabs === 'string' ? parsed.elevenlabs : '',
-      remember: true,
-    }
-    // This is the only code that ever sees the old shape, so it is the only
-    // place that can clean it up.
-    if (parsed.fal !== undefined) saveKeys(memory)
-    return { ...memory }
-  } catch {
-    return { ...memory, remember: true }
+  let found = false
+  for (const key of STORAGE_KEYS) {
+    if (store.getItem(key) !== null) found = true
+    store.removeItem(key)
   }
-}
-
-export function saveKeys(next: KeyState): void {
-  memory = { ...next }
-  const store = safeLocalStorage()
-  if (!store) return
-
-  if (next.remember) {
-    store.setItem(REMEMBER_KEY, '1')
-    store.setItem(STORAGE_KEY, JSON.stringify({ elevenlabs: next.elevenlabs }))
-  } else {
-    // Turning "remember" off must actively erase what was already written.
-    store.removeItem(REMEMBER_KEY)
-    store.removeItem(STORAGE_KEY)
-  }
-}
-
-export function clearKeys(): void {
-  memory = { ...EMPTY }
-  const store = safeLocalStorage()
-  store?.removeItem(STORAGE_KEY)
-  store?.removeItem(REMEMBER_KEY)
-}
-
-/** Shows enough of a key to recognise it without revealing it. */
-export function maskKey(key: string): string {
-  const trimmed = key.trim()
-  if (!trimmed) return ''
-  if (trimmed.length <= 8) return '•'.repeat(trimmed.length)
-  return `${trimmed.slice(0, 4)}${'•'.repeat(Math.min(16, trimmed.length - 8))}${trimmed.slice(-4)}`
+  return found
 }

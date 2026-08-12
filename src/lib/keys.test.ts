@@ -1,89 +1,39 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { clearKeys, loadKeys, maskKey, saveKeys } from './keys'
+import { purgeStoredKeys } from './keys'
 
-describe('key storage', () => {
-  beforeEach(() => {
-    window.localStorage.clear()
-    clearKeys()
-  })
+/**
+ * Taking back the keys this app used to ask for.
+ *
+ * Worth a test of its own precisely because nothing on screen shows the result:
+ * the field is gone, so a purge that quietly stopped working would leave live
+ * provider credentials in local storage on every device that ever held one, and
+ * nobody would notice for as long as the app kept working — which it would.
+ */
 
-  it('does not write the key to storage unless remember is on', () => {
-    saveKeys({ elevenlabs: 'el-secret', remember: false })
-
-    // The whole point of the opt-out: nothing durable is left behind.
-    expect(JSON.stringify(window.localStorage)).not.toContain('el-secret')
-  })
-
-  it('keeps an unremembered key usable for the rest of the session', () => {
-    saveKeys({ elevenlabs: 'el-secret', remember: false })
-    expect(loadKeys().elevenlabs).toBe('el-secret')
-  })
-
-  it('persists and reloads the key when remember is on', () => {
-    saveKeys({ elevenlabs: 'el-secret', remember: true })
-    clearKeysFromMemoryOnly()
-
-    const loaded = loadKeys()
-    expect(loaded.elevenlabs).toBe('el-secret')
-    expect(loaded.remember).toBe(true)
-  })
-
-  it('erases an already-stored key when remember is turned off', () => {
-    saveKeys({ elevenlabs: 'el-secret', remember: true })
-    saveKeys({ elevenlabs: 'el-secret', remember: false })
-
-    // Turning the setting off has to clean up, not just stop writing.
-    expect(JSON.stringify(window.localStorage)).not.toContain('el-secret')
-  })
-
-  it('clearKeys removes everything', () => {
-    saveKeys({ elevenlabs: 'el-secret', remember: true })
-    clearKeys()
-    expect(loadKeys()).toEqual({ elevenlabs: '', remember: false })
-  })
-
-  it('erases a fal key left behind by the bring-your-own-key era', () => {
-    // Nothing reads it any more, so leaving it would strand a live credential
-    // in local storage forever.
-    window.localStorage.setItem('editor-cat.keys.remember.v1', '1')
-    window.localStorage.setItem(
-      'editor-cat.keys.v1',
-      JSON.stringify({ fal: 'fal-secret', elevenlabs: 'el-secret' }),
-    )
-
-    const loaded = loadKeys()
-
-    expect(loaded).toEqual({ elevenlabs: 'el-secret', remember: true })
-    expect(JSON.stringify(window.localStorage)).not.toContain('fal-secret')
-  })
-
-  it('survives corrupted storage instead of throwing', () => {
-    window.localStorage.setItem('editor-cat.keys.remember.v1', '1')
-    window.localStorage.setItem('editor-cat.keys.v1', '{not json')
-    expect(() => loadKeys()).not.toThrow()
-  })
+beforeEach(() => {
+  window.localStorage.clear()
 })
 
-/** Simulates a page reload: storage survives, module memory does not. */
-function clearKeysFromMemoryOnly() {
-  const remember = window.localStorage.getItem('editor-cat.keys.remember.v1')
-  const stored = window.localStorage.getItem('editor-cat.keys.v1')
-  clearKeys()
-  if (remember) window.localStorage.setItem('editor-cat.keys.remember.v1', remember)
-  if (stored) window.localStorage.setItem('editor-cat.keys.v1', stored)
-}
+describe('purgeStoredKeys', () => {
+  it('removes a remembered key and the flag that remembered it', () => {
+    window.localStorage.setItem('editor-cat.keys.v1', JSON.stringify({ elevenlabs: 'sk-secret' }))
+    window.localStorage.setItem('editor-cat.keys.remember.v1', '1')
 
-describe('maskKey', () => {
-  it('shows enough to recognise a key without revealing it', () => {
-    const masked = maskKey('abcd1234567890wxyz')
-    expect(masked.startsWith('abcd')).toBe(true)
-    expect(masked.endsWith('wxyz')).toBe(true)
-    expect(masked).not.toContain('1234567890')
+    expect(purgeStoredKeys()).toBe(true)
+
+    expect(window.localStorage.getItem('editor-cat.keys.v1')).toBeNull()
+    expect(window.localStorage.getItem('editor-cat.keys.remember.v1')).toBeNull()
   })
 
-  it('fully masks short keys and handles empty input', () => {
-    expect(maskKey('abc')).toBe('•••')
-    expect(maskKey('')).toBe('')
-    expect(maskKey('   ')).toBe('')
+  it('says so when there was nothing to take back', () => {
+    expect(purgeStoredKeys()).toBe(false)
+  })
+
+  it('leaves everything else this app stores alone', () => {
+    // Preferences and the sidebar state live in the same storage. A purge that
+    // reached them would log people out of their own layout.
+    window.localStorage.setItem('editor-cat.prefs.v1', '{"llmModel":"x"}')
+    purgeStoredKeys()
+    expect(window.localStorage.getItem('editor-cat.prefs.v1')).toBe('{"llmModel":"x"}')
   })
 })

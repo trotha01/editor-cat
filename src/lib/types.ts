@@ -179,6 +179,25 @@ export interface AudioTrack {
   volume: number
 }
 
+/**
+ * Why a piece of audio exists, when it exists to replace a clip's own sound.
+ *
+ * Generated speech laid under a clip is not a take somebody recorded: it was
+ * asked for in words, and the words are the thing you correct when the result
+ * is still wrong. Keeping them means a second go starts from the last spelling
+ * rather than from a blank box, and it is what tells the clip's menu that this
+ * clip has been fixed once already — which is the difference between "fix" and
+ * "redo", and between laying a second voice over the first and replacing it.
+ */
+export interface SpeechFix {
+  /** What ElevenLabs was asked to say. */
+  text: string
+  /** ISO-639-1 code, when a language was enforced rather than detected. */
+  language?: string
+  /** The voice it was said in, or the clip's own voice when it was cloned. */
+  voiceName?: string
+}
+
 /** A piece of audio placed at a point in time on a track. */
 export interface AudioClip {
   id: string
@@ -212,6 +231,12 @@ export interface AudioClip {
   voiceName?: string
   /** Display label, e.g. the music file's name. */
   label?: string
+  /**
+   * Set on speech generated to stand in for a clip's own sound, which is muted
+   * in the same edit. Absent on every recording, every music bed, and every
+   * count-in — read it as "this clip is a correction of the picture above it".
+   */
+  speechFix?: SpeechFix
 }
 
 /**
