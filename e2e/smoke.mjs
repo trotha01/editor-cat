@@ -657,6 +657,14 @@ try {
   // Retiming a word from the timeline itself, with the keyboard. Dragging gets a
   // word roughly right; this is the only way to place one exactly, and it is the
   // half of word timing a mouse-only lane does not offer at all.
+  // Zoomed in first. A word handle is sixteen pixels wide and centred on the
+  // word it marks, so two words a fifth of a second apart overlap at the default
+  // forty pixels a second — and the press lands on whichever is drawn on top,
+  // which is not the one this step means to retime. Zooming is what a person
+  // would do about that, and it is what the timeline is for.
+  await page.fill('#zoom', '160')
+  await page.waitForTimeout(100)
+
   const wordMark = page.locator(
     '[role="group"][aria-label^="Caption "] button[aria-label^="Word "]',
   )
