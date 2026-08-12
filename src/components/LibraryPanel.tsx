@@ -75,6 +75,14 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
+        {driveReady ? (
+          <Button onClick={() => void drive.start()} disabled={busy || drive.progress !== null}>
+            {drive.progress ? <Spinner /> : <span aria-hidden>📁</span>}{' '}
+            {drive.progress
+              ? `Importing ${drive.progress.done} of ${drive.progress.total}…`
+              : 'Import from Drive'}
+          </Button>
+        ) : null}
         <Button onClick={() => fileInput.current?.click()} disabled={busy}>
           <span aria-hidden>⬆️</span> Upload media
         </Button>
@@ -90,14 +98,6 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
           >
             <span aria-hidden>➕</span> Add all
             {pending.length > 0 ? ` (${pending.length})` : ''}
-          </Button>
-        ) : null}
-        {driveReady ? (
-          <Button onClick={() => void drive.start()} disabled={busy || drive.progress !== null}>
-            {drive.progress ? <Spinner /> : <span aria-hidden>📁</span>}{' '}
-            {drive.progress
-              ? `Importing ${drive.progress.done} of ${drive.progress.total}…`
-              : 'Import from Drive'}
           </Button>
         ) : null}
         <input
