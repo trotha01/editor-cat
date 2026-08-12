@@ -39,11 +39,17 @@ vi.mock('../lib/export/timelineRender', async (importOriginal) => {
 })
 
 // Enough of Mintspace to reach the publish button without a network.
-vi.mock('../lib/mintspace/client', () => ({ isMintspaceConfigured: () => true }))
+vi.mock('../lib/mintspace/client', () => ({
+  isMintspaceConfigured: () => true,
+  mintspaceSiteUrl: () => '',
+}))
 
-const publishVideo = vi
-  .fn()
-  .mockResolvedValue({ id: 'v1', videoUrl: 'https://cdn/v1.mp4', siteUrl: '' })
+const publishVideo = vi.fn().mockResolvedValue({
+  id: 'v1',
+  videoUrl: 'https://cdn/v1.mp4',
+  storagePath: 'uid-1/v1.mp4',
+  siteUrl: '',
+})
 
 vi.mock('../lib/mintspace/publish', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/mintspace/publish')>()
@@ -124,6 +130,24 @@ describe('the render itself', () => {
     fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
 
     await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(2))
+  })
+
+  it('records what it published on the project, and will not post it twice', async () => {
+    open()
+    fireEvent.change(screen.getByLabelText(/export to/i), { target: { value: 'mintspace' } })
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+    await waitFor(() => expect(publishVideo).toHaveBeenCalledTimes(1))
+
+    // On the project document, which is what syncs and what survives a reload.
+    const publications = useProjectStore.getState().project.publications ?? []
+    expect(publications).toHaveLength(1)
+    expect(publications[0]).toMatchObject({ videoId: 'v1', storagePath: 'uid-1/v1.mp4' })
+
+    // Pressing it again renders the same file, recognises it, and stops.
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+
+    expect(await screen.findByText(/the one already posted/i)).toBeInTheDocument()
+    expect(publishVideo).toHaveBeenCalledTimes(1)
   })
 
   it('reports a render that failed as a sentence', async () => {

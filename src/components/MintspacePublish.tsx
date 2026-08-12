@@ -10,22 +10,31 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Callout, Field, Spinner, TextArea, TextInput } from './ui'
 import { isAbort } from '../lib/errors'
-import { isMintspaceConfigured } from '../lib/mintspace/client'
+import { sha256Hex } from '../lib/digest'
+import { isMintspaceConfigured, mintspaceSiteUrl } from '../lib/mintspace/client'
+import { publicationsOf, publishedAs } from '../lib/mintspace/publications'
 import {
   CAPTION_MAX_LENGTH,
   currentAccount,
+  deleteVideo,
   mintspaceErrorMessage,
   publishVideo,
   signIn,
   signOut,
   signUp,
   type MintspaceAccount,
-  type PublishedVideo,
 } from '../lib/mintspace/publish'
+import type { Project, Publication } from '../lib/types'
 
 export interface MintspacePublishProps {
   /** Renders the timeline to an MP4 — or hands back one already rendered. */
   render: () => Promise<Blob>
+  /**
+   * The project being published, for the videos it is already up as. Whole
+   * rather than just the list, so the duplicate check reads it the same way
+   * everything else does.
+   */
+  project: Project
   /** True when there is nothing on the timeline to publish. */
   empty: boolean
   /** False for a 16:9 project, which the feed will letterbox. */
@@ -33,11 +42,14 @@ export interface MintspacePublishProps {
   /** True while the dialog is rendering, so the form does not invite a second. */
   busy: boolean
   onBusyChange: (busy: boolean) => void
+  onPublished: (publication: Publication) => void
+  onForget: (videoId: string) => void
   onClose: () => void
 }
 
 export function MintspacePublish(props: MintspacePublishProps) {
-  const { render, empty, vertical, busy, onBusyChange, onClose } = props
+  const { render, project, empty, vertical, busy, onBusyChange, onClose } = props
+  const { onPublished, onForget } = props
 
   const configured = isMintspaceConfigured()
   const [account, setAccount] = useState<MintspaceAccount | null>(null)
@@ -49,8 +61,17 @@ export function MintspacePublish(props: MintspacePublishProps) {
   // the dialog's own progress bar is not describing.
   const [working, setWorking] = useState(false)
   const [stage, setStage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [published, setPublished] = useState<PublishedVideo | null>(null)
+  // Titled as well as worded, because this one box now reports three quite
+  // different failures — a session, a publish, a delete — and "Could not
+  // publish" over a delete that failed is worse than no title at all.
+  const [error, setError] = useState<{ title: string; message: string } | null>(null)
+  /** The post just made, so the confirmation is about this press and no other. */
+  const [published, setPublished] = useState<Publication | null>(null)
+  /** The post a delete is being asked about, and the one being deleted. */
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  const publications = publicationsOf(project)
 
   // Restoring a session is a round trip, and it decides which of two completely
   // different forms is shown — so it happens as the panel opens rather than
@@ -67,7 +88,9 @@ export function MintspacePublish(props: MintspacePublishProps) {
         // A session that cannot be resolved is not an error to shout about: it
         // leaves the panel showing the sign-in form, which is the right next
         // step anyway.
-        if (!cancelled) setError(mintspaceErrorMessage(cause))
+        if (!cancelled) {
+          setError({ title: 'Could not reach Mintspace', message: mintspaceErrorMessage(cause) })
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -86,13 +109,45 @@ export function MintspacePublish(props: MintspacePublishProps) {
 
     try {
       const video = await render()
+
+      // Asked of the finished file rather than of the project, and asked before
+      // a byte is uploaded: this is the whole of "do not post the same video
+      // twice", and the answer is only knowable once there is a file to hash.
+      setStage('Checking it is not already up…')
+      const digest = await sha256Hex(video)
+      const already = publishedAs(project, digest)
+      if (already) {
+        // A refusal rather than a failure, so it is titled as one. Nothing has
+        // gone wrong: the video is where the user wanted it already.
+        setError({
+          title: 'This is already in the feed',
+          message: `The video this project exports is the one already posted${
+            already.caption ? ` as “${already.caption}”` : ''
+          }. Edit the project and publish that, or delete the one that is up first.`,
+        })
+        return
+      }
+
       const result = await publishVideo({ video, caption, onStage: setStage })
-      setPublished(result)
+      const publication: Publication = {
+        videoId: result.id,
+        storagePath: result.storagePath,
+        videoUrl: result.videoUrl,
+        digest: digest ?? '',
+        caption: caption.trim() || null,
+        publishedAt: new Date().toISOString(),
+        accountId: account?.id ?? '',
+        username: account?.username ?? '',
+      }
+      onPublished(publication)
+      setPublished(publication)
       setCaption('')
     } catch (cause) {
       // Cancelling the render is a decision, not a fault: the user pressed the
       // dialog's own cancel button and does not need telling what they did.
-      if (!isAbort(cause)) setError(mintspaceErrorMessage(cause))
+      if (!isAbort(cause)) {
+        setError({ title: 'Could not publish', message: mintspaceErrorMessage(cause) })
+      }
     } finally {
       setStage(null)
       setWorking(false)
@@ -100,7 +155,31 @@ export function MintspacePublish(props: MintspacePublishProps) {
     }
   }
 
-  const locked = busy || working
+  const remove = async (entry: Publication) => {
+    setError(null)
+    setConfirming(null)
+    setDeleting(entry.videoId)
+
+    try {
+      await deleteVideo({
+        videoId: entry.videoId,
+        storagePath: entry.storagePath,
+        accountId: entry.accountId,
+      })
+      // Forgotten whether or not there was still a row to delete. A post that
+      // had already gone — taken down in Mintspace itself, or from another
+      // machine — is exactly as absent from the feed as one deleted just now,
+      // and keeping it listed here would only offer to delete it again.
+      onForget(entry.videoId)
+      if (published?.videoId === entry.videoId) setPublished(null)
+    } catch (cause) {
+      setError({ title: 'Could not delete it', message: mintspaceErrorMessage(cause) })
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  const locked = busy || working || deleting !== null
 
   if (!configured) {
     return (
@@ -119,6 +198,77 @@ export function MintspacePublish(props: MintspacePublishProps) {
           Mintspace plays full-screen and vertical, so a 16:9 export sits in a letterbox with black
           above and below it. Switch the project to vertical above the preview to fill the screen.
         </Callout>
+      ) : null}
+
+      {/* Before the form rather than after it: whether this project is already
+          up is the first thing worth knowing on opening the panel, and knowing
+          it late is knowing it after a minute of rendering. */}
+      {publications.length > 0 ? (
+        <section className="flex flex-col gap-2 rounded-lg border border-line bg-surface-2/40 p-3">
+          <h3 className="text-xs font-semibold tracking-wide text-ink-dim uppercase">
+            Already in the feed
+          </h3>
+          {publications.map((entry) => (
+            <div
+              key={entry.videoId}
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+            >
+              <span className="[overflow-wrap:anywhere]">
+                {entry.caption ?? <span className="text-ink-dim">No caption</span>}
+              </span>
+              <span className="text-xs text-ink-dim">
+                @{entry.username} · {new Date(entry.publishedAt).toLocaleDateString()}
+              </span>
+              <span className="ml-auto flex items-center gap-2">
+                <VideoLink publication={entry} />
+                {/* Only offered to a session that could actually do it. The
+                    record is worth showing signed out; a button that can only
+                    fail is not. */}
+                {account ? (
+                  deleting === entry.videoId ? (
+                    <span className="flex items-center gap-1.5 text-xs text-ink-dim">
+                      <Spinner /> Deleting…
+                    </span>
+                  ) : confirming === entry.videoId ? (
+                    <>
+                      <Button
+                        variant="danger"
+                        className="px-2 py-1 text-xs"
+                        onClick={() => void remove(entry)}
+                      >
+                        Delete for good
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="px-2 py-1 text-xs"
+                        onClick={() => setConfirming(null)}
+                      >
+                        Keep it
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      className="px-2 py-1 text-xs"
+                      disabled={locked}
+                      aria-label={`Delete ${entry.caption ?? 'this video'} from Mintspace`}
+                      onClick={() => setConfirming(entry.videoId)}
+                    >
+                      🗑 Delete
+                    </Button>
+                  )
+                ) : null}
+              </span>
+              {confirming === entry.videoId ? (
+                <p className="w-full text-xs text-ink-dim">
+                  This takes the video out of the Mintspace feed and deletes the file. It cannot be
+                  undone, and anyone who has the link loses it. Your project and its media stay
+                  exactly as they are.
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {loading ? (
@@ -141,7 +291,10 @@ export function MintspacePublish(props: MintspacePublishProps) {
                     setAccount(null)
                     setPublished(null)
                   } catch (cause) {
-                    setError(mintspaceErrorMessage(cause))
+                    setError({
+                      title: 'Could not sign out',
+                      message: mintspaceErrorMessage(cause),
+                    })
                   }
                 })()
               }}
@@ -192,26 +345,39 @@ export function MintspacePublish(props: MintspacePublishProps) {
       ) : null}
 
       {error ? (
-        <Callout tone="error" title="Could not publish">
-          {error}
+        <Callout tone="error" title={error.title}>
+          {error.message}
         </Callout>
       ) : null}
 
       {published ? (
         <Callout tone="success" title="Published">
-          It is in the feed now.{' '}
-          <a
-            className="underline underline-offset-2"
-            href={published.siteUrl || published.videoUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {published.siteUrl ? 'Open Mintspace' : 'Open the video'}
-          </a>
-          .
+          It is in the feed now, and listed below so it cannot go up twice.{' '}
+          <VideoLink publication={published} />.
         </Callout>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * Where to go and watch a published video.
+ *
+ * The feed itself when this build knows where that is, and the file otherwise —
+ * Mintspace has no per-video route, so there is no third option that would land
+ * on the post itself.
+ */
+function VideoLink({ publication }: { publication: Publication }) {
+  const site = mintspaceSiteUrl()
+  return (
+    <a
+      className="underline underline-offset-2"
+      href={site || publication.videoUrl}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {site ? 'Open Mintspace' : 'Open the video'}
+    </a>
   )
 }
 
@@ -236,6 +402,8 @@ function SignInForm({
   const [password, setPassword] = useState('')
   const [username, setUsername] = useState('')
   const [working, setWorking] = useState(false)
+  // Untitled, unlike the panel's own: there is only one thing that can fail in
+  // here, and it sits directly under the two fields that caused it.
   const [error, setError] = useState<string | null>(null)
   const [confirmationSent, setConfirmationSent] = useState(false)
   const emailRef = useRef<HTMLInputElement>(null)

@@ -22,7 +22,7 @@ account, so visitors need **no key** for any of them. Voice conversion uses
 | **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                             |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ## What you need
@@ -705,6 +705,32 @@ added under **Project Settings → API → Exposed schemas**. Both are steps in 
 own README; getting either wrong is reported here as the specific thing that is
 missing rather than as a failed upload.
 
+### What is already up, and taking it down
+
+The dialog lists every video this project is live as in the feed, with what it
+was captioned, when it went up and whose account it belongs to. Each one has a
+**Delete** beside it, which takes the row out of the feed and the file out of the
+bucket — asked about first, because it cannot be undone and anyone holding the
+link loses it. Your project and its media are untouched either way.
+
+**The same video cannot go up twice.** The export is hashed before anything is
+uploaded and checked against what this project has already posted, so pressing
+publish a second time on an unchanged project is recognised and refused rather
+than filling the feed with copies. Edit the project and the export hashes
+differently, which is a new video and posts as one.
+
+That record lives on the project document, not in this browser, so it syncs with
+everything else: publish on a laptop and the phone knows about it too. It is
+deliberately kept out of the undo history — Ctrl+Z reaches back through your
+edits, not into a feed, and an undo that forgot a live video would be an undo
+that let it be posted again.
+
+Deleting is the one thing here that needs the _same_ Mintspace account that
+published it. A different account is refused by Mintspace itself, and quietly:
+row-level security answers a delete it will not allow with zero rows rather than
+an error, so the account is checked before anything is asked, and a video
+someone else published says so rather than appearing to vanish.
+
 ### Worth knowing
 
 - **Mintspace plays vertical.** A 16:9 project publishes fine but sits in a
@@ -718,9 +744,13 @@ missing rather than as a failed upload.
   encoded again, because then it genuinely is a different file.
 - **No thumbnail is uploaded.** The row's `poster_url` is left unset, and
   Mintspace shows the video's own first decoded frame instead.
+- **A video deleted in Mintspace itself** is noticed the next time you delete it
+  from here: the row has already gone, nothing fails, and the editor stops
+  listing it.
 
-The code is `src/lib/mintspace/` (the client and the publish flow) and
-`src/components/MintspacePublish.tsx` (the panel in the export dialog).
+The code is `src/lib/mintspace/` (the client, the publish and delete flows, and
+what a project has already posted) and `src/components/MintspacePublish.tsx`
+(the panel in the export dialog).
 
 ## Deploying to Netlify
 
@@ -1367,12 +1397,12 @@ If your CI image ships its own browser, point the test at it with
 - **Export uses the single-threaded ffmpeg build**, so a short project takes
   roughly 30–90 seconds. The multithreaded build needs cross-origin isolation
   (COOP/COEP), which would block loading provider media in the page.
-- **Publishing to Mintspace only goes one way.** The editor posts; it cannot
-  list, edit or delete what it has posted, and it does not remember which of
-  your exports went up. Publishing twice publishes twice. Managing what is in
-  the feed is Mintspace's own business, and taking something down means doing it
-  there. The success message links the feed rather than the post, because
-  Mintspace has no per-video route to link to.
+- **The editor knows only about its own posts.** It remembers what it published
+  and can delete those, but it cannot list what is in the feed, edit a caption
+  after the fact, or see a video posted from anywhere else. A post deleted in
+  Mintspace itself stays listed here until the next time you try to delete it.
+  The success message links the feed rather than the post, because Mintspace has
+  no per-video route to link to.
 - **A transition is capped at two seconds, and at the shorter of its clips.**
   Both of them give up that much material, so a boundary can only hold what its
   neighbours can spare — and a clip caught between two transitions has to cover

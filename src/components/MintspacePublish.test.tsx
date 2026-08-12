@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { MintspaceAccount, PublishedVideo } from '../lib/mintspace/publish'
+import type { Project, Publication } from '../lib/types'
 
 /**
  * The Mintspace panel in the export dialog.
@@ -16,15 +17,19 @@ import type { MintspaceAccount, PublishedVideo } from '../lib/mintspace/publish'
  */
 
 const configured = { value: true }
+const site = { value: '' }
 
 vi.mock('../lib/mintspace/client', () => ({
   isMintspaceConfigured: () => configured.value,
+  mintspaceSiteUrl: () => site.value,
 }))
 
 const currentAccount = vi.fn<() => Promise<MintspaceAccount | null>>()
 const signIn = vi.fn<(email: string, password: string) => Promise<MintspaceAccount>>()
 const signOut = vi.fn<() => Promise<void>>()
 const publishVideo = vi.fn<(request: unknown) => Promise<PublishedVideo>>()
+const deleteVideo =
+  vi.fn<(video: unknown) => Promise<{ rowDeleted: boolean; fileDeleted: boolean }>>()
 
 vi.mock('../lib/mintspace/publish', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/mintspace/publish')>()
@@ -37,21 +42,58 @@ vi.mock('../lib/mintspace/publish', async (importOriginal) => {
     signIn: (email: string, password: string) => signIn(email, password),
     signOut: () => signOut(),
     publishVideo: (request: unknown) => publishVideo(request),
+    deleteVideo: (video: unknown) => deleteVideo(video),
   }
 })
+
+// The digest is the duplicate check, so it is the shipped one — jsdom on Node
+// has WebCrypto. Only its *input* is stubbed, by handing back distinct blobs.
 
 const { MintspacePublish } = await import('./MintspacePublish')
 
 const ADA: MintspaceAccount = { id: 'uid-1', email: 'ada@example.com', username: 'ada' }
 const VIDEO = new Blob(['mp4'], { type: 'video/mp4' })
 
+const PROJECT: Project = {
+  id: 'p',
+  name: 'p',
+  clips: [],
+  audioTracks: [],
+  audioClips: [],
+  width: 720,
+  height: 1280,
+  fps: 30,
+}
+
+const POSTED: Publication = {
+  videoId: 'video-1',
+  storagePath: 'uid-1/export_fixed.mp4',
+  videoUrl: 'https://cdn.example/uid-1/export_fixed.mp4',
+  digest: 'deadbeef',
+  caption: 'declensions, hour 4',
+  publishedAt: '2026-08-11T12:00:00.000Z',
+  accountId: 'uid-1',
+  username: 'ada',
+}
+
+/** The digest of VIDEO, so a project can claim to have already posted it. */
+async function digestOfVideo(): Promise<string> {
+  const { sha256Hex } = await import('../lib/digest')
+  const digest = await sha256Hex(VIDEO)
+  if (!digest) throw new Error('this environment cannot hash, so the guard cannot be tested')
+  return digest
+}
+
 function setup(overrides: Partial<Parameters<typeof MintspacePublish>[0]> = {}) {
   const props = {
     render: vi.fn().mockResolvedValue(VIDEO),
+    project: PROJECT,
     empty: false,
     vertical: true,
     busy: false,
     onBusyChange: vi.fn(),
+    onPublished: vi.fn(),
+    onForget: vi.fn(),
     onClose: vi.fn(),
     ...overrides,
   }
@@ -62,12 +104,15 @@ function setup(overrides: Partial<Parameters<typeof MintspacePublish>[0]> = {}) 
 beforeEach(() => {
   vi.clearAllMocks()
   configured.value = true
+  site.value = ''
   currentAccount.mockResolvedValue(ADA)
   publishVideo.mockResolvedValue({
     id: 'video-1',
     videoUrl: 'https://cdn.example/uid-1/export.mp4',
+    storagePath: 'uid-1/export.mp4',
     siteUrl: '',
   })
+  deleteVideo.mockResolvedValue({ rowDeleted: true, fileDeleted: true })
 })
 
 describe('a deployment with no Mintspace behind it', () => {
@@ -160,12 +205,8 @@ describe('publishing', () => {
     expect(link).toHaveAttribute('href', 'https://cdn.example/uid-1/export.mp4')
   })
 
-  it('links the feed itself when it does know', async () => {
-    publishVideo.mockResolvedValue({
-      id: 'video-1',
-      videoUrl: 'https://cdn.example/uid-1/export.mp4',
-      siteUrl: 'https://mintspace.example.com',
-    })
+  it('links the feed itself when the build knows where it is', async () => {
+    site.value = 'https://mintspace.example.com'
     setup()
 
     fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
@@ -211,6 +252,129 @@ describe('publishing', () => {
     setup({ empty: true })
 
     expect(await screen.findByRole('button', { name: /publish to mintspace/i })).toBeDisabled()
+  })
+})
+
+describe('videos this project is already up as', () => {
+  const posted: Project = { ...PROJECT, publications: [POSTED] }
+
+  it('lists them, so it is known before a minute is spent rendering', async () => {
+    setup({ project: posted })
+
+    expect(await screen.findByText(/already in the feed/i)).toBeInTheDocument()
+    expect(screen.getByText('declensions, hour 4')).toBeInTheDocument()
+  })
+
+  it('refuses to post the same file a second time', async () => {
+    // A project claiming to have already published this exact export.
+    const project: Project = {
+      ...PROJECT,
+      publications: [{ ...POSTED, digest: await digestOfVideo() }],
+    }
+    const props = setup({ project })
+
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+
+    expect(await screen.findByText(/already in the feed/i)).toBeInTheDocument()
+    expect(publishVideo).not.toHaveBeenCalled()
+    expect(props.onPublished).not.toHaveBeenCalled()
+  })
+
+  it('posts an edited project, because that is a different video', async () => {
+    // Same project, a render that no longer hashes to what went up.
+    const props = setup({ project: posted })
+
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+
+    await waitFor(() => expect(publishVideo).toHaveBeenCalled())
+    expect(props.onPublished).toHaveBeenCalledWith(
+      expect.objectContaining({ videoId: 'video-1', storagePath: 'uid-1/export.mp4' }),
+    )
+  })
+
+  it('hands back everything needed to take it down again', async () => {
+    const onPublished = vi.fn<(publication: Publication) => void>()
+    setup({ onPublished })
+
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+
+    await waitFor(() => expect(onPublished).toHaveBeenCalled())
+    const publication = onPublished.mock.calls[0]![0]
+    expect(publication.accountId).toBe('uid-1')
+    expect(publication.storagePath).toBe('uid-1/export.mp4')
+    // Non-empty, or nothing downstream can recognise this file again.
+    expect(publication.digest).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('deleting a published video', () => {
+  const posted: Project = { ...PROJECT, publications: [POSTED] }
+
+  it('asks first, since it is gone from the feed for good', async () => {
+    setup({ project: posted })
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete .* from mintspace/i }))
+
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
+    expect(deleteVideo).not.toHaveBeenCalled()
+  })
+
+  it('takes the row and the file down together', async () => {
+    const props = setup({ project: posted })
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete .* from mintspace/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete for good/i }))
+
+    await waitFor(() => expect(deleteVideo).toHaveBeenCalled())
+    expect(deleteVideo).toHaveBeenCalledWith({
+      videoId: 'video-1',
+      storagePath: 'uid-1/export_fixed.mp4',
+      accountId: 'uid-1',
+    })
+    expect(props.onForget).toHaveBeenCalledWith('video-1')
+  })
+
+  it('leaves it alone when the question is answered the other way', async () => {
+    setup({ project: posted })
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete .* from mintspace/i }))
+    fireEvent.click(screen.getByRole('button', { name: /keep it/i }))
+
+    expect(deleteVideo).not.toHaveBeenCalled()
+    expect(screen.getByText('declensions, hour 4')).toBeInTheDocument()
+  })
+
+  it('keeps tracking a video it could not delete', async () => {
+    deleteVideo.mockRejectedValue(
+      new Error('This video was published from a different Mintspace account.'),
+    )
+    const props = setup({ project: posted })
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete .* from mintspace/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete for good/i }))
+
+    expect(await screen.findByText(/different Mintspace account/i)).toBeInTheDocument()
+    // Still up, so still tracked — forgetting it here would offer to post it again.
+    expect(props.onForget).not.toHaveBeenCalled()
+  })
+
+  it('forgets one that had already gone from the feed', async () => {
+    deleteVideo.mockResolvedValue({ rowDeleted: false, fileDeleted: true })
+    const props = setup({ project: posted })
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete .* from mintspace/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete for good/i }))
+
+    await waitFor(() => expect(props.onForget).toHaveBeenCalledWith('video-1'))
+  })
+
+  it('offers no delete button to a session that could not use one', async () => {
+    currentAccount.mockResolvedValue(null)
+    setup({ project: posted })
+
+    // The record is still worth showing; the button is not.
+    expect(await screen.findByText('declensions, hour 4')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
   })
 })
 

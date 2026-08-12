@@ -29,7 +29,14 @@ const state = {
   /** Keyed by extension, so a bucket that refuses the file is a case. */
   uploadErrors: {} as Record<string, unknown>,
   site: '',
+  /** Rows a delete matches. Empty is what row-level security returns. */
+  deleted: [{ id: 'video-1' }] as { id: string }[],
+  deleteError: null as unknown,
+  removeError: null as unknown,
 }
+
+const removed: string[][] = []
+const deletedIds: string[] = []
 
 const signInWithPassword = vi.fn(async () => ({ error: null as unknown }))
 const signUpWith = vi.fn(async () => ({ data: { session: {} as unknown }, error: null as unknown }))
@@ -55,9 +62,21 @@ const client = {
         return { error }
       },
       getPublicUrl: (path: string) => ({ data: { publicUrl: `https://cdn.example/${path}` } }),
+      remove: async (paths: string[]) => {
+        removed.push(paths)
+        return { error: state.removeError }
+      },
     }),
   },
   from: () => ({
+    delete: () => ({
+      eq: (_column: string, value: string) => ({
+        select: async () => {
+          deletedIds.push(value)
+          return { data: state.deleteError ? null : state.deleted, error: state.deleteError }
+        },
+      }),
+    }),
     insert: (row: Record<string, unknown>) => {
       inserted.push(row)
       return {
@@ -81,14 +100,26 @@ vi.mock('./client', () => ({
 // Fixed, so the paths below can be asserted exactly. The real one is a uuid.
 vi.mock('../media', () => ({ newId: (prefix: string) => `${prefix}_fixed` }))
 
-const { CAPTION_MAX_LENGTH, currentAccount, mintspaceErrorMessage, publishVideo, signIn, signUp } =
-  await import('./publish')
+const {
+  CAPTION_MAX_LENGTH,
+  currentAccount,
+  deleteVideo,
+  mintspaceErrorMessage,
+  publishVideo,
+  signIn,
+  signUp,
+} = await import('./publish')
 
 const VIDEO = new Blob(['mp4'], { type: 'video/mp4' })
 
 beforeEach(() => {
   uploads.length = 0
   inserted.length = 0
+  removed.length = 0
+  deletedIds.length = 0
+  state.deleted = [{ id: 'video-1' }]
+  state.deleteError = null
+  state.removeError = null
   state.session = { user: { id: 'uid-1', email: 'ada@example.com' } }
   state.profile = { id: 'uid-1', username: 'ada' }
   state.rpcError = null
@@ -197,6 +228,47 @@ describe('publishVideo', () => {
     await expect(publishVideo({ video: VIDEO, caption: 'hi' })).resolves.toMatchObject({
       siteUrl: 'https://mintspace.example.com',
     })
+  })
+})
+
+describe('deleteVideo', () => {
+  const MINE = { videoId: 'video-1', storagePath: 'uid-1/export_fixed.mp4', accountId: 'uid-1' }
+
+  it('takes the row out of the feed, then the file out of the bucket', async () => {
+    await expect(deleteVideo(MINE)).resolves.toEqual({ rowDeleted: true, fileDeleted: true })
+
+    expect(deletedIds).toEqual(['video-1'])
+    expect(removed).toEqual([['uid-1/export_fixed.mp4']])
+  })
+
+  it('refuses one published by another account, before touching anything', async () => {
+    // Row-level security would refuse this silently — zero rows, no error — so
+    // going ahead would report success over a video still in the feed.
+    await expect(deleteVideo({ ...MINE, accountId: 'somebody-else' })).rejects.toThrow(
+      /different Mintspace account/i,
+    )
+    expect(deletedIds).toHaveLength(0)
+    expect(removed).toHaveLength(0)
+  })
+
+  it('reports a row that had already gone, without calling it a failure', async () => {
+    state.deleted = []
+
+    await expect(deleteVideo(MINE)).resolves.toMatchObject({ rowDeleted: false })
+    // The file still goes: an object with no row is unreachable, not harmless.
+    expect(removed).toEqual([['uid-1/export_fixed.mp4']])
+  })
+
+  it('counts the post as gone even when its file would not delete', async () => {
+    state.removeError = { message: 'nope' }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(deleteVideo(MINE)).resolves.toEqual({ rowDeleted: true, fileDeleted: false })
+  })
+
+  it('needs a session, since it is somebody’s own video', async () => {
+    state.session = null
+    await expect(deleteVideo(MINE)).rejects.toThrow(/Sign in/i)
   })
 })
 

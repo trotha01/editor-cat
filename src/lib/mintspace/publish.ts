@@ -33,6 +33,8 @@ export interface PublishedVideo {
   id: string
   /** The public URL of the uploaded file, which plays on its own. */
   videoUrl: string
+  /** The object in the bucket, kept so the file can be deleted with the row. */
+  storagePath: string
   /** Where to send someone to see it in the feed, if this build knows. */
   siteUrl: string
 }
@@ -167,8 +169,71 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
   return {
     id: String((data as { id?: unknown })?.id ?? ''),
     videoUrl,
+    storagePath: videoPath,
     siteUrl: mintspaceSiteUrl(),
   }
+}
+
+/** What `deleteVideo` needs to find a post again and prove it may remove it. */
+export interface DeletableVideo {
+  videoId: string
+  storagePath: string
+  /** The account that published it; nobody else's session can delete it. */
+  accountId: string
+}
+
+export interface DeleteOutcome {
+  /**
+   * False when the row had already gone — deleted from Mintspace itself, or by
+   * another machine. Not a failure: the post is not in the feed either way, and
+   * the caller stops tracking it regardless.
+   */
+  rowDeleted: boolean
+  /** False when the row went but its file did not. Leaves an unseen orphan. */
+  fileDeleted: boolean
+}
+
+/**
+ * Takes a published video down: the row first, then the file.
+ *
+ * That order is the mirror of publishing, and for the same reason. The row is
+ * what puts a card in the feed, so removing it is what actually takes the post
+ * down; a file deleted first would leave the card up with nothing behind it,
+ * playing nothing, for however long the rest takes. Failing in between leaves
+ * an orphaned object nobody can reach — the harmless way round.
+ *
+ * The account check is done here rather than left to row-level security because
+ * of how that failure arrives: a delete refused by RLS is not an error, it is
+ * zero rows affected, and reporting "done" for a video still sitting in the
+ * feed is the one outcome worth ruling out.
+ */
+export async function deleteVideo(video: DeletableVideo): Promise<DeleteOutcome> {
+  const client = mintspace()
+
+  const account = await currentAccount()
+  if (!account) throw new Error('Sign in to Mintspace to delete this video.')
+  if (account.id !== video.accountId) {
+    throw new Error(
+      'This video was published from a different Mintspace account. Sign in as that account to delete it.',
+    )
+  }
+
+  // `.select()` is what makes this answerable: without it a delete that matched
+  // nothing looks exactly like one that matched a row.
+  const { data, error } = await client.from('videos').delete().eq('id', video.videoId).select('id')
+  if (error) throw error
+  const rowDeleted = Array.isArray(data) && data.length > 0
+
+  const { error: fileError } = await client.storage
+    .from(MINTSPACE_BUCKET)
+    .remove([video.storagePath])
+  if (fileError) {
+    // Worth reporting, not worth failing: the post is already out of the feed,
+    // and the file left behind is unreachable without the row that named it.
+    console.warn('Mintspace video row deleted, but its file remains', fileError)
+  }
+
+  return { rowDeleted, fileDeleted: !fileError }
 }
 
 /**

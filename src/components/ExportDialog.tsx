@@ -52,6 +52,8 @@ interface RenderedFile {
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const project = useProjectStore((state) => state.project)
   const setResolution = useProjectStore((state) => state.setResolution)
+  const recordPublication = useProjectStore((state) => state.recordPublication)
+  const forgetPublication = useProjectStore((state) => state.forgetPublication)
   const assets = useAssetStore((state) => state.assets)
 
   const [destination, setDestination] = useState<Destination>('download')
@@ -271,10 +273,13 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         {destination === 'mintspace' ? (
           <MintspacePublish
             render={render}
+            project={project}
             empty={project.clips.length === 0}
             vertical={vertical}
             busy={progress !== null}
             onBusyChange={setPublishing}
+            onPublished={recordPublication}
+            onForget={forgetPublication}
             onClose={onClose}
           />
         ) : busy ? null : (
