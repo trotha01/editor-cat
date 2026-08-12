@@ -267,15 +267,16 @@ const IDEA_TEMPLATES: ((word: string) => string)[] = [
 ]
 
 /**
- * Twenty mock scene ideas, so the "Idea" tab is exercisable offline too.
- * Cycled from a fixed template list rather than duplicating `IDEA_COUNT` here,
- * which would need importing `ideaGenerator.ts` and create a module cycle.
+ * Mock scene ideas, so the "Idea" tab is exercisable offline too.
+ * Cycled from a fixed template list rather than duplicating the tab's default
+ * count here, which would need importing `ideaGenerator.ts` and create a
+ * module cycle — the caller passes the count it asked Claude for instead.
  */
-export async function mockIdeas(word: string): Promise<string[]> {
+export async function mockIdeas(word: string, count = 20): Promise<string[]> {
   await new Promise((resolve) => setTimeout(resolve, 400))
   const trimmed = word.trim() || 'thing'
   return Array.from(
-    { length: 20 },
+    { length: Math.max(1, Math.round(count)) },
     (_, i) =>
       `${IDEA_TEMPLATES[i % IDEA_TEMPLATES.length]!(trimmed)} [mock idea — no LLM was called]`,
   )

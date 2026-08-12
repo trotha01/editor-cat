@@ -9,10 +9,17 @@ vi.mock('./claudeClient', () => ({
 }))
 vi.mock('./mock', () => ({
   isMockEnabled: () => isMockEnabled() as unknown,
-  mockIdeas: (word: string) => mockIdeas(word) as unknown,
+  mockIdeas: (word: string, count?: number) => mockIdeas(word, count) as unknown,
 }))
 
-const { IDEA_COUNT, IDEA_MODEL, generateIdeas, parseIdeas } = await import('./ideaGenerator')
+const {
+  DEFAULT_IDEA_COUNT,
+  IDEA_MODEL,
+  buildIdeaSystemPrompt,
+  generateIdeas,
+  ideaMaxTokens,
+  parseIdeas,
+} = await import('./ideaGenerator')
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -94,9 +101,28 @@ describe('parseIdeas', () => {
   })
 })
 
-describe('IDEA_COUNT', () => {
-  it('is the number of ideas requested from the model', () => {
-    expect(IDEA_COUNT).toBe(20)
+describe('DEFAULT_IDEA_COUNT', () => {
+  it('is the number of ideas requested when nobody picks one', () => {
+    expect(DEFAULT_IDEA_COUNT).toBe(20)
+  })
+})
+
+describe('buildIdeaSystemPrompt', () => {
+  it('asks for the given number of ideas, in the instruction and the output format', () => {
+    const prompt = buildIdeaSystemPrompt(7)
+    expect(prompt).toContain('Generate exactly 7 scene ideas')
+    expect(prompt).toContain('JSON array of exactly 7 strings')
+    expect(prompt).not.toContain('20')
+  })
+})
+
+describe('ideaMaxTokens', () => {
+  it('grows with the batch, so a long list is not cut off mid-array', () => {
+    expect(ideaMaxTokens(50)).toBeGreaterThan(ideaMaxTokens(20))
+  })
+
+  it('keeps a floor under a tiny batch', () => {
+    expect(ideaMaxTokens(1)).toBe(1024)
   })
 })
 
@@ -110,6 +136,39 @@ describe('generateIdeas', () => {
       expect.objectContaining({ model: IDEA_MODEL, prompt: 'umbrella' }),
     )
     expect(ideas).toEqual(['Idea one.', 'Idea two.'])
+  })
+
+  it('asks for the requested count, sizing the token budget with it', async () => {
+    createMessage.mockResolvedValue(JSON.stringify(['Idea one.']))
+
+    await generateIdeas({ word: 'umbrella', count: 5 })
+
+    expect(createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: buildIdeaSystemPrompt(5),
+        maxTokens: ideaMaxTokens(5),
+      }),
+    )
+  })
+
+  it('sends an edited system prompt verbatim, without patching the count into it', async () => {
+    createMessage.mockResolvedValue(JSON.stringify(['Idea one.']))
+
+    await generateIdeas({ word: 'umbrella', count: 5, systemPrompt: 'Write scenes set in 1890.' })
+
+    expect(createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ system: 'Write scenes set in 1890.' }),
+    )
+  })
+
+  it('falls back to the built prompt when the edited one has been blanked out', async () => {
+    createMessage.mockResolvedValue(JSON.stringify(['Idea one.']))
+
+    await generateIdeas({ word: 'umbrella', systemPrompt: '   ' })
+
+    expect(createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ system: buildIdeaSystemPrompt(DEFAULT_IDEA_COUNT) }),
+    )
   })
 
   it('rejects a blank word without calling Claude', async () => {
@@ -129,7 +188,7 @@ describe('generateIdeas', () => {
 
     const ideas = await generateIdeas({ word: 'umbrella' })
 
-    expect(mockIdeas).toHaveBeenCalledWith('umbrella')
+    expect(mockIdeas).toHaveBeenCalledWith('umbrella', DEFAULT_IDEA_COUNT)
     expect(createMessage).not.toHaveBeenCalled()
     expect(ideas).toEqual(['Mock idea.'])
   })

@@ -13,12 +13,29 @@ import { isMockEnabled, mockIdeas } from './mock'
 import { stripWrapping } from './promptEnhancer'
 
 export const IDEA_MODEL = 'claude-opus-5'
-export const IDEA_COUNT = 20
-export const IDEA_MAX_TOKENS = 4096
+export const DEFAULT_IDEA_COUNT = 20
+export const MIN_IDEA_COUNT = 1
+export const MAX_IDEA_COUNT = 50
 
-export const IDEA_SYSTEM_PROMPT = `You invent premises for extremely short film scenes, given a single word from the user.
+/**
+ * Enough room for the whole array to come back.
+ *
+ * 4096 tokens covered the fixed batch of 20 comfortably; now that the batch is
+ * the user's to pick, a fixed ceiling would cut a 50-idea response off
+ * mid-array. That truncation is exactly what `closeTrailingString` and the
+ * quoted-literal recovery below exist to salvage — better not to cause it in
+ * the first place. The floor keeps a one-idea request from asking for a
+ * budget too small to finish a sentence in.
+ */
+export function ideaMaxTokens(count: number): number {
+  return Math.max(1024, Math.round(count) * 250)
+}
 
-Generate exactly ${IDEA_COUNT} scene ideas that all use the given word. Every idea must:
+/** The prompt Claude is sent, which the Idea tab pre-fills an editable box with. */
+export function buildIdeaSystemPrompt(count: number): string {
+  return `You invent premises for extremely short film scenes, given a single word from the user.
+
+Generate exactly ${count} scene ideas that all use the given word. Every idea must:
 - Fit in 8-10 seconds of screen time — there is only room for one beat of action and a line or two of dialogue, so keep it tight.
 - Involve one or two characters, occasionally more. Characters need not be human — they can be animals, objects, machines, ghosts, anything at all.
 - Be a weird, absurd situation that would not happen in real life.
@@ -27,25 +44,39 @@ Generate exactly ${IDEA_COUNT} scene ideas that all use the given word. Every id
 - Keep it incidental all the same: it must not be the scene's main action, goal, or topic. It's a prop or detail in the background of a scene that's really about something else.
 - Be as succinct as possible — a sentence or two, never a paragraph.
 
-Output a JSON array of exactly ${IDEA_COUNT} strings and nothing else. No markdown, no numbering, no commentary.`
+Output a JSON array of exactly ${count} strings and nothing else. No markdown, no numbering, no commentary.`
+}
 
 export interface GenerateIdeasOptions {
   word: string
+  /** How many ideas to ask for. Sizes the token budget and the mock batch. */
+  count?: number
+  /**
+   * The system prompt to send, when the user has edited the pre-filled one.
+   * Sent verbatim: someone who rewrote the brief meant what they wrote, so
+   * nothing here patches the count back into their wording.
+   */
+  systemPrompt?: string
   signal?: AbortSignal
 }
 
 /** Asks Claude for a batch of scene ideas built around a single word. */
-export async function generateIdeas({ word, signal }: GenerateIdeasOptions): Promise<string[]> {
+export async function generateIdeas({
+  word,
+  count = DEFAULT_IDEA_COUNT,
+  systemPrompt,
+  signal,
+}: GenerateIdeasOptions): Promise<string[]> {
   const trimmed = word.trim()
   if (!trimmed) throw new Error('Type a word first, then generate ideas.')
 
-  if (isMockEnabled()) return mockIdeas(trimmed)
+  if (isMockEnabled()) return mockIdeas(trimmed, count)
 
   const text = await createMessage({
     model: IDEA_MODEL,
-    system: IDEA_SYSTEM_PROMPT,
+    system: systemPrompt?.trim() || buildIdeaSystemPrompt(count),
     prompt: trimmed,
-    maxTokens: IDEA_MAX_TOKENS,
+    maxTokens: ideaMaxTokens(count),
     signal,
   })
 
