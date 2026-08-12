@@ -2,13 +2,15 @@
 
 A small AI video editor that runs in your browser.
 
-Write a prompt → get images → animate one into a clip → arrange clips on a
-timeline → dissolve between them → layer voiceovers and music → swap your voice
-for another one → caption it karaoke-style → export an MP4.
+Brainstorm a scene idea → write a prompt → get images → animate one into a clip
+→ arrange clips on a timeline → dissolve between them → layer voiceovers and
+music → swap your voice for another one → caption it karaoke-style → export an
+MP4.
 
 Images, video and caption transcription run on the deployment's own fal.ai
-account, and the voice features on its own ElevenLabs one, so visitors need
-**no key at all**. Signing in is the whole of the way in.
+account, idea generation calls the Claude API directly on its own Anthropic
+account, and the voice features run on its own ElevenLabs one — so visitors
+need **no key at all**. Signing in is the whole of the way in.
 
 ---
 
@@ -16,27 +18,29 @@ account, and the voice features on its own ElevenLabs one, so visitors need
 
 | Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **1 · Idea**     | Type a single word and get 20 tiny, weird scene ideas back from Claude — one or two characters (not necessarily human), an absurd situation, and a line of dialogue that uses the word, all sized to the 8-10 seconds a clip actually gets. **Copy** any of them into the Image prompt to get started.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **2 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **3 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **Timeline**     | A clip added from the **Library** lands after the clip the playhead is on, so the next shot arrives where you are working rather than at the end of the track. Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, [say its captions again properly](#fixing-a-clip-that-says-it-wrong), silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. The mark between two clips opens a **transitions** picker — cross dissolve, dips, wipes, slides, blur and an iris — with a duration you can drag and an **Apply to all**. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. **Start**/**End** (or `I`/`O`) mark where an export of the timeline begins and ends at the playhead, drawn as a band across every lane with a handle on each edge to drag — the same range the export dialog opens onto, and either side stays in step with the other. |
 | **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **4 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **5 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## What you need
 
 **As a visitor:** a Google account, and nothing else. There is no key field
-anywhere in the app: every provider call — images, video, captions, changing a
-recorded voice, and [fixing a clip that pronounces its line
+anywhere in the app: every provider call — ideas, images, video, captions,
+changing a recorded voice, and [fixing a clip that pronounces its line
 wrong](#fixing-a-clip-that-says-it-wrong) — runs on the site's own accounts.
 
 **As whoever deploys it:** a [fal.ai](https://fal.ai/dashboard/keys) key as
-`FAL_KEY` and an [ElevenLabs](https://elevenlabs.io) key as
-`ELEVENLABS_API_KEY`, both in the site environment. Everyone who can sign in
-can spend both, so if this is not meant to be open to anyone with a Google
-account, narrow that in Auth0 rather than here. See
+`FAL_KEY`, an [Anthropic](https://console.anthropic.com/settings/keys) key as
+`ANTHROPIC_API_KEY`, and an [ElevenLabs](https://elevenlabs.io) key as
+`ELEVENLABS_API_KEY`, all in the site environment. Everyone who can sign in
+can spend all three, so if this is not meant to be open to anyone with a
+Google account, narrow that in Auth0 rather than here. See
 [Deploying to Netlify](#deploying-to-netlify).
 
 **Costs are real, and they land on the deployment.** Images are roughly
@@ -872,49 +876,52 @@ If you are using the Drive integration, set the `VITE_AUTH0_*` variables in the
 site's environment variables and add the deployed origin to the Auth0
 application's allowed callback, logout and web-origin lists.
 
-### The two secrets this needs
+### The secrets this needs
 
-Set **`FAL_KEY`** and **`ELEVENLABS_API_KEY`** in the site's environment
-variables, for **all deploy contexts** — scoped to production only, every deploy
-preview answers 503. No `VITE_` prefix on either: that would inline them into the
-browser bundle and publish them.
+Set **`FAL_KEY`**, **`ANTHROPIC_API_KEY`** and **`ELEVENLABS_API_KEY`** in the
+site's environment variables, for **all deploy contexts** — scoped to
+production only, every deploy preview answers 503. None takes a `VITE_`
+prefix: that would inline it into the browser bundle and publish it.
 
-The first pays for images, video and captions; the second for the voice
-features — changing a recorded voice, and [fixing a clip that says its line
+The first pays for images, video and captions; the second for the Idea tab,
+which calls the Claude API directly; the third for the voice features —
+changing a recorded voice, and [fixing a clip that says its line
 wrong](#fixing-a-clip-that-says-it-wrong). Only `FAL_KEY` is required for the
-editor to work at all: without the ElevenLabs one, everything else is unchanged
-and the voice controls say that half is not set up here.
+editor to work at all: without the other two, everything else is unchanged
+and the Idea tab and voice controls say that part is not set up here.
 
-Both keys travel the way each provider asks — fal's as `Authorization: Key …`,
-ElevenLabs' in an `xi-api-key` header — attached inside the function and never
-present in the browser. On the ElevenLabs key itself: **scope it** to text to
-speech, speech to speech, voices read, voices write and models read (it creates
-and deletes its own throwaway clones, so voices write is not optional); **set a
-credit quota**, which is the only hard ceiling on what a bad afternoon can cost;
-and **do not use IP allowlisting**, because these requests come from Netlify
-functions whose egress addresses are neither fixed nor published, so every one
-of them would come back 403.
+The ElevenLabs key travels the way the provider asks — in an `xi-api-key`
+header — attached inside the function and never present in the browser. On
+the ElevenLabs key itself: **scope it** to text to speech, speech to speech,
+voices read, voices write and models read (it creates and deletes its own
+throwaway clones, so voices write is not optional); **set a credit quota**,
+which is the only hard ceiling on what a bad afternoon can cost; and **do not
+use IP allowlisting**, because these requests come from Netlify functions
+whose egress addresses are neither fixed nor published, so every one of them
+would come back 403.
 
-Then decide who is allowed to spend them. `/api/fal/*` and `/api/elevenlabs/*`
-both generate on your accounts, so both verify the caller's Auth0 access token
-before attaching a key:
+Then decide who is allowed to spend them. `/api/fal/*`, `/api/anthropic/*`
+and `/api/elevenlabs/*` all generate on your accounts, so all three verify
+the caller's Auth0 access token before attaching a key:
 
 - **`AUTH0_DOMAIN` and `AUTH0_AUDIENCE`** are what it verifies against — the
   tenant whose published keys must have signed the token, and the API identifier
   its `aud` must include. Both fall back to their `VITE_` forms, which name the
   same tenant and API. Verification is local, with no round trip per request,
   which matters because a single video job polls for minutes.
-- **Without either the proxy refuses every request** rather than running open.
-  `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local `netlify dev`; setting
-  it on a deployed site hands your fal credits to anyone who finds the URL.
-  Netlify's own password protection or access controls are worth adding on top
-  if the site is not meant to be public at all.
-- **The ElevenLabs proxy is narrower than the fal one**, because a key that can
-  speak can also read the account and empty its voice library. On the site's own
-  key it forwards only the handful of endpoints this editor calls, refuses to
-  delete any voice this app did not create, and sweeps away its own abandoned
-  clones when the library fills up. Each rule and the reason for it is in
-  `netlify/lib/elevenlabs.ts`, where they are also tested.
+- **Without either, all three proxies refuse every request** rather than
+  running open. `FAL_PROXY_ALLOW_ANONYMOUS=1` overrides that for local
+  `netlify dev`; setting it on a deployed site hands your fal, Anthropic and
+  ElevenLabs credits to anyone who finds the URL. Netlify's own password
+  protection or access controls are worth adding on top if the site is not
+  meant to be public at all.
+- **The ElevenLabs proxy is narrower than the fal and Anthropic ones**,
+  because a key that can speak can also read the account and empty its voice
+  library. On the site's own key it forwards only the handful of endpoints
+  this editor calls, refuses to delete any voice this app did not create, and
+  sweeps away its own abandoned clones when the library fills up. Each rule
+  and the reason for it is in `netlify/lib/elevenlabs.ts`, where they are
+  also tested.
 
 The `VITE_AUTH0_*` and `VITE_SUPABASE_*` variables are build-time
 and not secret — the anon key is protected by row-level security, and the client
@@ -936,17 +943,19 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Settings  — one key, in memory or local          /api/fal/*        → queue.fal.run
   Generate  — images, then image → video             Auth0 token verified locally,
   Library   — blobs in IndexedDB                     site's key attached
-  Timeline  — picture + audio + caption lanes      /api/elevenlabs/* → api.elevenlabs.io
-  Captions  — words with their own timings           site's key on a verified session,
-                                                       or the caller's own if they have one
-  Speech    — audio decoded here, Scribe there     /api/media        → streams provider media
-  Sign-in   — Auth0 (auth0-spa-js)                 /api/google/*     → oauth2.googleapis.com
-  Projects  — timelines in Supabase (no media)       exchanges the caller's Auth0 token
-  Drive     — media in your own Drive                through Token Vault for a Google one
-  Preview   — custom player over <video>           /api/github/*     → api.github.com
-  Export    — ffmpeg.wasm → MP4, captions burnt in   files what the report form collected,
-  Publish   — that same MP4, into Mintspace           attributed to the verified session
-  Report    — bug reports, filed as issues
+  Idea      — scene ideas from Claude              /api/anthropic/*  → api.anthropic.com
+  Timeline  — picture + audio + caption lanes         Auth0 token verified locally,
+  Captions  — words with their own timings            site's key attached
+  Speech    — audio decoded here, Scribe there     /api/elevenlabs/* → api.elevenlabs.io
+  Sign-in   — Auth0 (auth0-spa-js)                    Auth0 token verified locally,
+  Projects  — timelines in Supabase (no media)         site's key attached
+  Drive     — media in your own Drive              /api/media        → streams provider media
+  Preview   — custom player over <video>           /api/google/*     → oauth2.googleapis.com
+  Export    — ffmpeg.wasm → MP4, captions burnt in    exchanges the caller's Auth0 token
+  Publish   — that same MP4, into Mintspace            through Token Vault for a Google one
+  Report    — bug reports, filed as issues          /api/github/*     → api.github.com
+                                                       files what the report form collected,
+                                                       attributed to the verified session
 
                                                  Supabase, Drive and Mintspace all talk to the
                                                  browser directly, not through us — Supabase
@@ -956,14 +965,15 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
 
 A few decisions worth knowing about:
 
-**Why proxy at all?** Secrecy first: both keys belong to the deployment and are
-attached on the way through, so neither exists in the browser. Reliability
-second — browser-direct calls depend on each provider's CORS policy, which
-changes without notice, and going through our own origin makes it deterministic.
-And a third payoff they share: provider media arrives same-origin, so it never
-taints the canvas during export. The ElevenLabs proxy carries one job the fal
-one does not — deciding what a visitor may do with the operator's voice library,
-which is why it has an allowlist rather than being a pass-through.
+**Why proxy at all?** Secrecy first: all three keys belong to the deployment
+and are attached on the way through, so none of them exists in the browser.
+Reliability second — browser-direct calls depend on each provider's CORS
+policy, which changes without notice, and going through our own origin makes
+it deterministic. And a third payoff they share: provider media arrives
+same-origin, so it never taints the canvas during export. The ElevenLabs
+proxy carries one job the others do not — deciding what a visitor may do with
+the operator's voice library, which is why it has an allowlist rather than
+being a pass-through.
 
 **Why the queue API, not the simple one?** A Netlify function may run for about
 ten seconds; video generation takes minutes. So the browser drives the job —

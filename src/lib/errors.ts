@@ -8,10 +8,15 @@
 
 export class ProviderError extends Error {
   readonly status: number
-  readonly provider: 'fal.ai' | 'ElevenLabs'
+  readonly provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic'
   readonly detail: string | undefined
 
-  constructor(provider: 'fal.ai' | 'ElevenLabs', status: number, message: string, detail?: string) {
+  constructor(
+    provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
+    status: number,
+    message: string,
+    detail?: string,
+  ) {
     super(message)
     this.name = 'ProviderError'
     this.provider = provider
@@ -29,6 +34,12 @@ export function extractMessage(body: unknown): string | undefined {
 
   if (typeof record.error === 'string') return record.error
   if (typeof record.message === 'string') return record.message
+
+  // Anthropic: { type: "error", error: { type, message } }
+  if (record.error && typeof record.error === 'object') {
+    const entry = record.error as { message?: unknown }
+    if (typeof entry.message === 'string') return entry.message
+  }
 
   // fal validation errors: { detail: [{ msg, loc }] }
   const detail = record.detail
@@ -60,12 +71,13 @@ export function extractMessage(body: unknown): string | undefined {
 /**
  * Maps a status code onto advice about what to actually do next.
  *
- * Both providers are reached with the deployment's own key now, which changed
- * what these codes mean. They used to differ: fal was the site's and ElevenLabs
- * was the user's, so a rejected ElevenLabs key was something the reader could go
- * and fix in Settings. There is no Settings field any more, and sending someone
- * to look for one is worse than telling them plainly that this is not theirs to
- * fix. What is left is the same three sentences for both: your session, the
+ * All three providers are reached with the deployment's own key now, which
+ * changed what these codes mean. ElevenLabs and fal used to differ from each
+ * other — fal was the site's and ElevenLabs was the user's, so a rejected
+ * ElevenLabs key was something the reader could go and fix in Settings. There
+ * is no Settings field for any of them any more, and sending someone to look
+ * for one is worse than telling them plainly that this is not theirs to fix.
+ * What is left is the same three sentences for all three: your session, the
  * site's account, or the site's setup.
  *
  * A 403 has one more meaning than it used to, and it is deliberately not spelled
@@ -74,7 +86,10 @@ export function extractMessage(body: unknown): string | undefined {
  * `detail` saying exactly which, and `toDisplayMessage` prints it after this
  * line — so this stays the general case and the specific one speaks for itself.
  */
-export function explainStatus(provider: 'fal.ai' | 'ElevenLabs', status: number): string {
+export function explainStatus(
+  provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
+  status: number,
+): string {
   switch (status) {
     case 401:
       return 'This site could not confirm that you are signed in. Sign in again, then retry.'
@@ -83,10 +98,10 @@ export function explainStatus(provider: 'fal.ai' | 'ElevenLabs', status: number)
     case 402:
       return `This site's ${provider} account is out of credit, so this is paused. Nothing you can fix from here.`
     case 503:
-      // Both proxies answer 503 when the deployment has not been given the key
-      // they need, so this is far more likely to be a setup problem than an
-      // outage at the provider.
-      return `This site is not set up for ${provider === 'fal.ai' ? 'generation' : 'voice generation'}. Whoever deployed it needs to add a ${provider} key to the site environment.`
+      // All three proxies answer 503 when the deployment has not been given
+      // the key they need, so this is far more likely to be a setup problem
+      // than an outage at the provider.
+      return `This site is not set up for ${provider === 'fal.ai' || provider === 'Anthropic' ? 'generation' : 'voice generation'}. Whoever deployed it needs to add a ${provider} key to the site environment.`
     case 404:
       return `That ${provider} model ID does not exist. Provider catalogues change often — pick another model, or set a custom ID in the model picker.`
     case 422:
@@ -186,7 +201,7 @@ export function isAbort(error: unknown): boolean {
 }
 
 export async function providerErrorFrom(
-  provider: 'fal.ai' | 'ElevenLabs',
+  provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
   response: Response,
 ): Promise<ProviderError> {
   let body: unknown

@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react'
+import { IdeaPanel } from './components/IdeaPanel'
 import { ImagePanel } from './components/ImagePanel'
 import { VideoPanel } from './components/VideoPanel'
 import { LibraryPanel } from './components/LibraryPanel'
@@ -31,11 +32,12 @@ import { recordAsset } from './lib/sync/assetSync'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
-  { id: 'image', label: '1 · Image', hint: 'Make images from a prompt' },
-  { id: 'video', label: '2 · Video', hint: 'Animate an image into a clip' },
+  { id: 'idea', label: '1 · Idea', hint: 'Brainstorm scene ideas from a word' },
+  { id: 'image', label: '2 · Image', hint: 'Make images from a prompt' },
+  { id: 'video', label: '3 · Video', hint: 'Animate an image into a clip' },
   { id: 'library', label: 'Library', hint: 'Everything you have made' },
-  { id: 'audio', label: '3 · Audio', hint: 'Record voiceovers, layer takes, add music' },
-  { id: 'captions', label: '4 · Captions', hint: 'Transcribe the audio into karaoke captions' },
+  { id: 'audio', label: '4 · Audio', hint: 'Record voiceovers, layer takes, add music' },
+  { id: 'captions', label: '5 · Captions', hint: 'Transcribe the audio into karaoke captions' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -46,7 +48,7 @@ const MAX_SIDEBAR_WIDTH = 640
 const DEFAULT_SIDEBAR_WIDTH = 416
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>('image')
+  const [tab, setTab] = useState<TabId>('idea')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
 
@@ -205,6 +207,7 @@ export default function App() {
             <DriveUploads />
 
             <div className="rounded-xl border border-line bg-surface p-4">
+              {tab === 'idea' ? <IdeaPanel /> : null}
               {tab === 'image' ? <ImagePanel /> : null}
               {tab === 'video' ? <VideoPanel /> : null}
               {tab === 'library' ? <LibraryPanel currentTime={playback.currentTime} /> : null}

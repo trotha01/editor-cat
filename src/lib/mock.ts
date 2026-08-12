@@ -243,6 +243,44 @@ function mockLlm(input: Record<string, unknown>): { output: string } {
   }
 }
 
+const IDEA_TEMPLATES: ((word: string) => string)[] = [
+  (w) =>
+    `A raccoon storms into a city council meeting to file a noise complaint, nearly knocking over a ${w} propped by the door. "Watch the ${w}," the mayor sighs, still writing.`,
+  (w) =>
+    `A vending machine and a fire hydrant split the last snack between them, a ${w} sitting untouched on the curb beside them. "Not in front of the ${w}," the hydrant hisses, nodding at it.`,
+  (w) =>
+    `Two houseplants stage a coup over the sunny windowsill, knocking a ${w} to the floor mid-scuffle. "Careful, that's someone's ${w}," one warns, still shoving.`,
+  (w) =>
+    `A ghost tries to return something it stole in 1987, setting a ${w} on the counter along with it. "Take the ${w} too, it's not mine," the shopkeeper says, not looking up.`,
+  (w) =>
+    `A traffic cone directs a marching band through a chaotic intersection, stepping over a dropped ${w} in the crosswalk. "Somebody grab that ${w}!" it barks, waving its arms.`,
+  (w) =>
+    `An umbrella refuses to open until someone apologises for something else entirely, a ${w} lying forgotten beside it in the rain. "This has nothing to do with the ${w}," it insists, still shut.`,
+  (w) =>
+    `A toaster interviews a loaf of bread for a job opening in accounting, a ${w} balanced on the desk between them. "Mind the ${w} on your way out," it says, shaking hands.`,
+  (w) =>
+    `A cloud sues a lawnmower over a stolen garden gnome, a ${w} entered into evidence on the table. "I saw it happen near the ${w}," a scarecrow tells the judge, pointing.`,
+  (w) =>
+    `A mailbox falls for a passer-by delivering flyers, one of them folded around a ${w}. "Sorry about the ${w}, it just fell out," they say, hurrying off.`,
+  (w) =>
+    `A stapler goes on strike after office supplies are cut, tossing a ${w} onto the picket-line pile. "Don't blame the ${w} for this," it clicks at the printer.`,
+]
+
+/**
+ * Twenty mock scene ideas, so the "Idea" tab is exercisable offline too.
+ * Cycled from a fixed template list rather than duplicating `IDEA_COUNT` here,
+ * which would need importing `ideaGenerator.ts` and create a module cycle.
+ */
+export async function mockIdeas(word: string): Promise<string[]> {
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const trimmed = word.trim() || 'thing'
+  return Array.from(
+    { length: 20 },
+    (_, i) =>
+      `${IDEA_TEMPLATES[i % IDEA_TEMPLATES.length]!(trimmed)} [mock idea — no LLM was called]`,
+  )
+}
+
 /** Routes a mock request by model ID, mimicking the real client's contract. */
 export async function mockFal<T>(
   modelId: string,
