@@ -15,10 +15,12 @@
  * and what is heard in it cannot disagree.
  *
  * Using them buys the timing as well as the words. A caption knows when its line
- * starts, because it was transcribed from the performance on screen; so each
- * line is spoken as its own request and laid at its own mark, and the new speech
- * tracks the mouth it is standing in for instead of drifting away from it over
- * the length of the clip. What comes back carries per-word timings, and those go
+ * starts and how long the performance took over it, because it was transcribed
+ * from that performance; so each line is spoken as its own request and laid at
+ * its own mark — give or take the room a quicker reading leaves for the next one
+ * to move into — and the new speech tracks the mouth it is standing in for
+ * instead of drifting away over the clip. What comes back carries per-word
+ * timings, and those go
  * the other way — onto the captions, so the highlight lands on the syllable
  * being spoken rather than on the one the old audio used to say there.
  *
@@ -312,30 +314,58 @@ export interface PlacedLine {
   start: number
   /** True when the line before it was still talking at its caption's mark. */
   pushed: boolean
+  /** True when it came forward to take up room the line before it left unused. */
+  pulled: boolean
 }
 
 /**
  * Lays the spoken lines out along the timeline.
  *
  * Each wants to start where its caption starts, which is where the picture says
- * it. Where the line before has not finished — the new reading is slower than
- * the old performance, or the captions were tight to begin with — it starts as
- * soon as that one stops instead.
+ * it. Two things stop that from being the whole rule, and they pull opposite
+ * ways.
  *
- * Overlapping them was the alternative and it is worse in every way: two voices
- * at once is unlistenable, and one lane cannot hold overlapping clips anyway.
- * Pushing is the honest failure, and the run says how many lines it happened to
- * so the drift is something the user knows about rather than notices later.
+ * **Late.** Where the line before has not finished — the new reading is slower
+ * than the old performance, or the captions were tight to begin with — this one
+ * starts as soon as that one stops. Overlapping was the alternative and it is
+ * worse in every way: two voices at once is unlistenable, and one lane cannot
+ * hold overlapping clips anyway.
+ *
+ * **Early.** A caption is as long as the performance took to say it, and a
+ * reading is very often quicker — the same words without the hesitation. Left
+ * alone, that leaves silence at the tail of the caption, and the next line
+ * waiting out a pause the speaker never took. Mid-sentence it does not sound
+ * like timing, it sounds like the audio dropped out. So a line may come forward
+ * into the room its predecessor did not use, by at most the amount unused.
+ *
+ * That bound is the point of measuring the shortfall against the caption's own
+ * span rather than against wherever the previous line actually landed. A line
+ * can be at most one predecessor's shortfall early, however many short readings
+ * came before it, so a long clip cannot walk away from its picture — which is
+ * the whole reason the lines are spoken and placed one at a time.
+ *
+ * The run reports both, because both are things to know before hunting for them
+ * by ear.
  */
 export function layoutSpokenLines(
-  lines: readonly { start: number; duration: number }[],
+  lines: readonly { start: number; end: number; duration: number }[],
 ): PlacedLine[] {
-  let cursor = -Infinity
+  let previous: { end: number; unused: number } | null = null
   return lines.map((line) => {
-    const pushed = line.start < cursor - TIMING_EPSILON
-    const start = pushed ? cursor : line.start
-    cursor = start + Math.max(0, line.duration)
-    return { start, pushed }
+    const duration = Math.max(0, line.duration)
+    const start = previous
+      ? Math.max(previous.end, line.start - previous.unused)
+      : // Nothing before it to be late for, and nothing to come forward into.
+        line.start
+    previous = {
+      end: start + duration,
+      unused: Math.max(0, Math.max(0, line.end - line.start) - duration),
+    }
+    return {
+      start,
+      pushed: start > line.start + TIMING_EPSILON,
+      pulled: start < line.start - TIMING_EPSILON,
+    }
   })
 }
 

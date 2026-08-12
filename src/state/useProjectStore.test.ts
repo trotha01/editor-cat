@@ -617,6 +617,74 @@ describe('fixed clip audio', () => {
     expect(useProjectStore.getState().project.audioClips).toEqual([])
   })
 
+  it('lets a caption follow its voice forward, past where its neighbour used to end', () => {
+    // Two captions of one sentence, back to back. The new reading of the first
+    // takes 1.5s where the performance took 2.5s, so the second line is spoken
+    // a second early to close the silence — and its caption has to come with
+    // it. Fitting each cue against where the others *were* would hold this one
+    // at 5.5, a second behind the voice saying it.
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    const word = (id: string, text: string, start: number, end: number) => ({
+      id,
+      text,
+      start,
+      end,
+    })
+    useProjectStore.setState({
+      project: {
+        ...useProjectStore.getState().project,
+        captionCues: [
+          {
+            id: 'cue-a',
+            trackId,
+            start: 3,
+            end: 5.5,
+            words: [word('w1', 'Hic', 3, 4), word('w2', 'bufo', 4, 5.5)],
+          },
+          {
+            id: 'cue-b',
+            trackId,
+            start: 5.5,
+            end: 7.5,
+            words: [word('w3', 'mirabilis', 5.5, 6.5), word('w4', 'saporis', 6.5, 7.5)],
+          },
+        ],
+      },
+    })
+
+    useProjectStore.getState().addFixedClipAudio(
+      'clip-2',
+      [
+        { ...speech('line-1', 'Hic bufo'), startTime: 3, duration: 1.5 },
+        { ...speech('line-2', 'mirabilis saporis'), startTime: 4.5, duration: 1.75 },
+      ],
+      [
+        {
+          cueId: 'cue-a',
+          offset: 3,
+          words: [
+            { text: 'Hic', start: 0, end: 0.5 },
+            { text: 'bufo', start: 0.5, end: 1.5 },
+          ],
+        },
+        {
+          cueId: 'cue-b',
+          offset: 4.5,
+          words: [
+            { text: 'mirabilis', start: 0, end: 1 },
+            { text: 'saporis', start: 1, end: 1.75 },
+          ],
+        },
+      ],
+    )
+
+    const [first, second] = captionCuesOf(stored())
+    expect([first?.start, first?.end]).toEqual([3, 4.5])
+    // On the voice, not a second behind it.
+    expect([second?.start, second?.end]).toEqual([4.5, 6.25])
+  })
+
   it('saves every edited caption as one step, before anything is spoken', () => {
     twoClips()
     const trackId = useProjectStore.getState().ensureCaptionTrack()

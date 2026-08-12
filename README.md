@@ -103,6 +103,13 @@ right and drifting away over the length of the clip. The lines either side go
 along as context — not spoken, not billed — which is what keeps a passage
 sounding like one person talking instead of a list of sentences.
 
+A reading is very often quicker than the performance was, and a line will **come
+forward into the room the one before it left unused** rather than wait out a
+pause the speaker never took — mid-sentence that silence does not sound like
+timing, it sounds like the audio dropping out. A line can be at most one
+predecessor's shortfall early, however many quick readings came before it, so
+this closes gaps without letting a long clip walk away from its picture.
+
 Then the timings come back the other way. ElevenLabs reports when it said every
 word, and **the captions are re-timed to that**, so the karaoke highlight lands
 on the syllable actually being spoken. Nothing can make a model say a word at a
@@ -1514,7 +1521,10 @@ If your CI image ships its own browser, point the test at it with
   but the mouth on screen is still shaping the words that were originally said.
   Nothing time-stretches the new reading either: a line that takes longer than
   the old one pushes the next line later, and the last line can run on past the
-  end of its clip. Shorten the text, or give the captions more room.
+  end of its clip. Shorten the text, or give the captions more room. A quicker
+  reading moves the next line earlier instead, by at most the room the quick one
+  left — so a line can sit slightly ahead of its caption's original mark, and the
+  run says how many did.
 - **Fixing a clip needs its captions to exist first**, or it falls back to one
   piece of audio at the head of the clip with no line-by-line timing at all. The
   captions carry the marks; without them there is nothing to lay the speech

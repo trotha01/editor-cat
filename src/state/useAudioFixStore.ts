@@ -14,7 +14,8 @@
  *     go to ElevenLabs and the words burnt into the video are the same words by
  *     construction rather than by the user remembering to update both.
  *  2. **Each line is spoken on its own**, so it can be laid where its caption
- *     starts — which is where the picture says it.
+ *     starts — which is where the picture says it, give or take the room a
+ *     quicker reading leaves for the line after it.
  *  3. **The captions are then re-timed to what came back**, word by word, so the
  *     karaoke highlight lands on the syllable actually being spoken.
  *
@@ -167,6 +168,10 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
           // The caption's own mark, or the head of the clip for a clip with no
           // captions to take a mark from.
           wanted: target.lines[index]?.start ?? target.startTime,
+          // Where the caption ended before any of this — how long the
+          // performance took over these words, which is what says whether the
+          // new reading leaves room behind it for the next line to move into.
+          wantedEnd: target.lines[index]?.end ?? target.startTime + target.duration,
           duration:
             fixed.duration && fixed.duration > 0
               ? fixed.duration
@@ -175,7 +180,11 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
       }
 
       const placed = layoutSpokenLines(
-        pieces.map((piece) => ({ start: piece.wanted, duration: piece.duration })),
+        pieces.map((piece) => ({
+          start: piece.wanted,
+          end: piece.wantedEnd,
+          duration: piece.duration,
+        })),
       )
       const clips: Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>[] = pieces.map(
         (piece, index) => ({
@@ -220,11 +229,17 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
 
       const spokenSeconds = pieces.reduce((total, piece) => total + piece.duration, 0)
       const pushed = placed.filter((entry) => entry.pushed).length
+      const pulled = placed.filter((entry) => entry.pulled).length
       const notes = [
         pushed > 0
           ? `${pushed} line${pushed === 1 ? '' : 's'} had to start late, because the line before ` +
             `${pushed === 1 ? 'it was' : 'them were'} still being said. Shorten the text, or give ` +
             `those captions more room, to bring ${pushed === 1 ? 'it' : 'them'} back onto the mark.`
+          : '',
+        pulled > 0
+          ? `${pulled} line${pulled === 1 ? '' : 's'} came in early, into room the reading before ` +
+            `${pulled === 1 ? 'it' : 'them'} finished ahead of. Left as silence that would sound ` +
+            `like the audio cutting out mid-sentence rather than like a pause.`
           : '',
         placement.silenced > 0
           ? `The earlier ${placement.silenced === 1 ? 'take is' : 'takes are'} still on ` +
@@ -240,7 +255,7 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
           text:
             `${target.label} now says your ${pieces.length === 1 ? 'line' : `${pieces.length} lines`} ` +
             `in ${voiceName} — ${formatTime(spokenSeconds)} of speech on ${placement.trackName}, ` +
-            `each starting where its caption does. The captions were re-timed to match, and the ` +
+            `on the captions’ own marks. The captions were re-timed to match, and the ` +
             `clip’s own sound is muted; one undo puts all of that back, and a second undo returns ` +
             `the captions to what they said before.`,
           ...(notes.length > 0 ? { detail: notes.join(' ') } : {}),

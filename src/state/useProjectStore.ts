@@ -732,17 +732,22 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         audioTracks: insertTrack(current.audioTracks, track).map((entry) =>
           olderFixLanes.has(entry.id) ? { ...entry, muted: true } : entry,
         ),
-        // Through `fitBetweenNeighbours` like every other caption edit: speech
-        // that runs longer than the caption had room for stops at the next one
-        // rather than covering it.
-        captionCues: captionCuesOf(current).map((cue) => {
-          const timing = timings.get(cue.id)
-          if (!timing) return cue
-          return fitBetweenNeighbours(
-            retimeWords(cue, timing.words, timing.offset),
-            captionCuesOf(current),
-          )
-        }),
+        // Moved first, fitted second, and fitted against the moved ones.
+        //
+        // Through `fitBetweenNeighbours` like every other caption edit, because
+        // speech that runs longer than the caption had room for has to stop at
+        // the next one rather than cover it. But these captions move as a group,
+        // and fitting each against where the others *used to be* is how a line
+        // ends up held back by a neighbour that is in the same breath about to
+        // get out of its way — the caption left behind by its own voice, which
+        // is the one thing this re-timing exists to prevent.
+        captionCues: (() => {
+          const moved = captionCuesOf(current).map((cue) => {
+            const timing = timings.get(cue.id)
+            return timing ? retimeWords(cue, timing.words, timing.offset) : cue
+          })
+          return moved.map((cue) => (timings.has(cue.id) ? fitBetweenNeighbours(cue, moved) : cue))
+        })(),
         // Anchored to the clip explicitly rather than by where each piece
         // starts: this audio *is* that clip's sound, so it follows the shot
         // wherever the shot goes, even if a transition pulled the starts apart.

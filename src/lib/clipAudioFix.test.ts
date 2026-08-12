@@ -211,16 +211,17 @@ describe('cloneNameFor', () => {
 
 describe('layoutSpokenLines', () => {
   it('starts every line where its caption starts', () => {
+    // Each reading fills its caption exactly, so nothing has to give either way.
     expect(
       layoutSpokenLines([
-        { start: 0, duration: 0.8 },
-        { start: 1, duration: 0.5 },
-        { start: 2, duration: 1 },
+        { start: 0, end: 0.8, duration: 0.8 },
+        { start: 1, end: 1.5, duration: 0.5 },
+        { start: 2, end: 3, duration: 1 },
       ]),
     ).toEqual([
-      { start: 0, pushed: false },
-      { start: 1, pushed: false },
-      { start: 2, pushed: false },
+      { start: 0, pushed: false, pulled: false },
+      { start: 1, pushed: false, pulled: false },
+      { start: 2, pushed: false, pulled: false },
     ])
   })
 
@@ -230,23 +231,66 @@ describe('layoutSpokenLines', () => {
     // so it waits — and says it waited.
     expect(
       layoutSpokenLines([
-        { start: 0, duration: 1.5 },
-        { start: 1, duration: 0.5 },
-        { start: 3, duration: 0.5 },
+        { start: 0, end: 1.5, duration: 1.5 },
+        { start: 1, end: 1.5, duration: 0.5 },
+        { start: 3, end: 3.5, duration: 0.5 },
       ]),
     ).toEqual([
-      { start: 0, pushed: false },
-      { start: 1.5, pushed: true },
-      { start: 3, pushed: false },
+      { start: 0, pushed: false, pulled: false },
+      { start: 1.5, pushed: true, pulled: false },
+      { start: 3, pushed: false, pulled: false },
     ])
   })
 
-  it('does not call a rounding error a push', () => {
+  it('closes the silence a quicker reading leaves mid-sentence', () => {
+    // One sentence across two captions, with no pause between them: the speaker
+    // took 2.5s over the first half, the reading takes 1.5s. Waiting out the
+    // spare second before the second half does not sound like timing, it sounds
+    // like the audio dropped out — which is exactly what it was reported as.
     const placed = layoutSpokenLines([
-      { start: 0, duration: 1 },
-      { start: 0.9999, duration: 1 },
+      { start: 0, end: 2.5, duration: 1.5 },
+      { start: 2.5, end: 4.25, duration: 1.75 },
     ])
-    expect(placed[1]).toEqual({ start: 0.9999, pushed: false })
+    expect(placed).toEqual([
+      { start: 0, pushed: false, pulled: false },
+      // Straight after the first, which is where the sentence carries on.
+      { start: 1.5, pushed: false, pulled: true },
+    ])
+  })
+
+  it('lets a line come forward no further than the room actually left', () => {
+    // A real pause stays a real pause. Only the half-second the reading before
+    // it did not use is available to move into, not the gap the speaker took.
+    const placed = layoutSpokenLines([
+      { start: 10, end: 12, duration: 1.5 },
+      { start: 15, end: 17, duration: 1.5 },
+    ])
+    expect(placed[1]).toEqual({ start: 14.5, pushed: false, pulled: true })
+  })
+
+  it('does not let early starts pile up over a run', () => {
+    // Every reading here comes in half a second short. If each line chased the
+    // one before it, the third would be 1.5s early and the tenth would be off
+    // the picture entirely — so what a line may take is its predecessor's own
+    // shortfall, measured against that caption, not the drift so far.
+    const placed = layoutSpokenLines([
+      { start: 0, end: 2, duration: 1.5 },
+      { start: 5, end: 7, duration: 1.5 },
+      { start: 10, end: 12, duration: 1.5 },
+      { start: 15, end: 17, duration: 1.5 },
+    ])
+    expect(placed.map((line) => line.start)).toEqual([0, 4.5, 9.5, 14.5])
+  })
+
+  it('does not call a rounding error a push, or a pull', () => {
+    const placed = layoutSpokenLines([
+      { start: 0, end: 1, duration: 1 },
+      // A hair inside the line before it. Laid at the cursor rather than at the
+      // mark, because a lane cannot hold two clips at once however small the
+      // overlap — but a tenth of a millisecond is not lateness worth reporting.
+      { start: 0.9999, end: 2, duration: 1 },
+    ])
+    expect(placed[1]).toEqual({ start: 1, pushed: false, pulled: false })
   })
 
   it('has nothing to say about nothing', () => {
