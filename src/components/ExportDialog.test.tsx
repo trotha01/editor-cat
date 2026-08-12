@@ -54,8 +54,6 @@ vi.mock('../lib/mintspace/publish', async (importOriginal) => {
   }
 })
 
-vi.mock('../lib/export/posterFrame', () => ({ posterFrame: () => Promise.resolve(null) }))
-
 const { ExportDialog } = await import('./ExportDialog')
 const { emptyProject, useProjectStore } = await import('../state/useProjectStore')
 const { useAssetStore } = await import('../state/useAssetStore')

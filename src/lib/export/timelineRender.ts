@@ -40,12 +40,6 @@ export interface ExportPlan {
   positioned: PositionedClip[]
   /** How long the finished file runs, sound included. */
   outputDuration: number
-  /**
-   * A good second to take a thumbnail from: just inside the picture, never in
-   * the lead-in — a project that opens on two seconds of black would otherwise
-   * be represented in a feed by two seconds of black.
-   */
-  posterTime: number
   /** Audio clips that will be encoded; muted tracks are not among them. */
   audibleClips: AudioClip[]
   /** How many audio clips are left out for sitting on a muted track. */
@@ -86,15 +80,10 @@ export function exportPlan(project: Project, assets: Asset[]): ExportPlan {
     captionTracks.some((track) => track.id === cue.trackId),
   )
 
-  // A second in, or halfway through a shorter picture than that.
-  const picture = Math.max(0, visualDuration - leadIn)
-  const posterTime = leadIn + Math.min(1, picture / 2)
-
   return {
     leadIn,
     positioned,
     outputDuration: Math.max(visualDuration, audioEnd(project.audioClips)),
-    posterTime,
     audibleClips,
     mutedCount: project.audioClips.length - audibleClips.length,
     videoClips,

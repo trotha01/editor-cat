@@ -3,15 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 /**
  * Publishing an export into Mintspace.
  *
- * Four things are worth holding down here, and all four are about what a
+ * Three things are worth holding down here, and all three are about what a
  * *stranger* sees in a feed. The upload has to land in the publisher's own
  * folder, because Mintspace's storage policy refuses anything else and a
  * refusal at that point has already cost a render. The row must never point at
  * an upload that failed, which is the one ordering here that produces a broken
- * card rather than an invisible orphan. A thumbnail that could not be uploaded
- * must not take the video down with it, since it is decoration on a nullable
- * column. And a caption nobody wrote must arrive as null rather than as a
- * caption that happens to say nothing.
+ * card rather than an invisible orphan. And a caption nobody wrote must arrive
+ * as null rather than as a caption that happens to say nothing.
  */
 
 interface Upload {
@@ -28,7 +26,7 @@ const state = {
   profile: null as Record<string, unknown> | null,
   rpcError: null as unknown,
   insertError: null as unknown,
-  /** Keyed by extension, so a bucket that takes video but not stills is a case. */
+  /** Keyed by extension, so a bucket that refuses the file is a case. */
   uploadErrors: {} as Record<string, unknown>,
   site: '',
 }
@@ -87,7 +85,6 @@ const { CAPTION_MAX_LENGTH, currentAccount, mintspaceErrorMessage, publishVideo,
   await import('./publish')
 
 const VIDEO = new Blob(['mp4'], { type: 'video/mp4' })
-const POSTER = new Blob(['jpeg'], { type: 'image/jpeg' })
 
 beforeEach(() => {
   uploads.length = 0
@@ -137,38 +134,30 @@ describe('publishVideo', () => {
   })
 
   it('adds the row that puts it in the feed, pointing at the uploaded file', async () => {
-    const result = await publishVideo({ video: VIDEO, poster: POSTER, caption: 'hello' })
+    const result = await publishVideo({ video: VIDEO, caption: 'hello' })
 
     expect(inserted).toEqual([
       {
         user_id: 'uid-1',
         caption: 'hello',
         video_url: 'https://cdn.example/uid-1/export_fixed.mp4',
-        poster_url: 'https://cdn.example/uid-1/export_fixed.jpg',
       },
     ])
     expect(result).toMatchObject({ id: 'video-1' })
   })
 
-  it('keeps the thumbnail beside its video, under one name', async () => {
-    await publishVideo({ video: VIDEO, poster: POSTER, caption: '' })
+  it('leaves poster_url off the row rather than sending null for it', async () => {
+    // The feed falls back to the video's own first frame, so a column left
+    // alone says the same thing a null would and takes no view on the future.
+    await publishVideo({ video: VIDEO, caption: 'hello' })
 
-    expect(uploads.map((entry) => entry.path)).toEqual([
-      'uid-1/export_fixed.mp4',
-      'uid-1/export_fixed.jpg',
-    ])
-    expect(uploads[1]?.options?.contentType).toBe('image/jpeg')
+    expect(inserted[0]).not.toHaveProperty('poster_url')
   })
 
-  it('publishes without a thumbnail rather than failing over one', async () => {
-    // What a Mintspace project whose bucket predates poster support answers.
-    state.uploadErrors.jpg = { message: 'mime type image/jpeg is not supported' }
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('uploads one file, since a post is only ever a video', async () => {
+    await publishVideo({ video: VIDEO, caption: '' })
 
-    await expect(
-      publishVideo({ video: VIDEO, poster: POSTER, caption: 'hi' }),
-    ).resolves.toMatchObject({ id: 'video-1' })
-    expect(inserted[0]?.poster_url).toBeNull()
+    expect(uploads.map((entry) => entry.path)).toEqual(['uid-1/export_fixed.mp4'])
   })
 
   it('never adds a row for an upload that failed', async () => {
@@ -197,14 +186,9 @@ describe('publishVideo', () => {
 
   it('reports each stage, since the whole thing outlasts a spinner’s welcome', async () => {
     const stages: string[] = []
-    await publishVideo({
-      video: VIDEO,
-      poster: POSTER,
-      caption: 'hi',
-      onStage: (s) => stages.push(s),
-    })
+    await publishVideo({ video: VIDEO, caption: 'hi', onStage: (s) => stages.push(s) })
 
-    expect(stages).toHaveLength(3)
+    expect(stages).toHaveLength(2)
     expect(stages[0]).toMatch(/video/i)
   })
 

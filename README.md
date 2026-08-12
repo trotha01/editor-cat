@@ -662,8 +662,8 @@ to Mintspace**, write a caption, and the export goes into the feed.
 
 The render is unchanged and still runs in this tab. Your source media — the
 generations, the recordings, the takes you did not use — never leaves the
-machine. What is uploaded is the finished MP4 and a thumbnail taken from it, to
-a bucket anyone can read, because that is what being in a feed means.
+machine. What is uploaded is the finished MP4, and only that, to a bucket anyone
+can read, because that is what being in a feed means.
 
 ### Two accounts, and why
 
@@ -716,10 +716,8 @@ missing rather than as a failed upload.
   publish it, and the file that goes up is the one you checked — not a second
   render at the same settings. Change the resolution or the quality and it is
   encoded again, because then it genuinely is a different file.
-- **The thumbnail is best-effort.** It is grabbed from the finished MP4, just
-  inside the picture so a lead-in of black is not what represents the video in a
-  feed. If it cannot be drawn or the bucket will not take it, the video is
-  published without one and Mintspace falls back to the first decoded frame.
+- **No thumbnail is uploaded.** The row's `poster_url` is left unset, and
+  Mintspace shows the video's own first decoded frame instead.
 
 The code is `src/lib/mintspace/` (the client and the publish flow) and
 `src/components/MintspacePublish.tsx` (the panel in the export dialog).

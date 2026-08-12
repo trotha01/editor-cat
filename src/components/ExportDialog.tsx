@@ -225,7 +225,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           <Callout tone="info" title="Rendered here, then uploaded">
             The render still runs in this tab with ffmpeg compiled to WebAssembly, so your source
             media never leaves the machine — expect roughly a minute for a short project. Only the
-            finished MP4 and a thumbnail go to Mintspace, where anyone can watch them.
+            finished MP4 goes to Mintspace, where anyone can watch it.
           </Callout>
         )}
 
@@ -271,7 +271,6 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         {destination === 'mintspace' ? (
           <MintspacePublish
             render={render}
-            posterAt={plan.posterTime}
             empty={project.clips.length === 0}
             vertical={vertical}
             busy={progress !== null}

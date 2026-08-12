@@ -109,12 +109,6 @@ export async function signOut(): Promise<void> {
 export interface PublishRequest {
   /** The rendered MP4. */
   video: Blob
-  /**
-   * A still to show before the video plays. Best-effort in every sense: it is
-   * optional on the row, and a Mintspace project whose bucket predates poster
-   * support rejects the upload, which is caught and shrugged off below.
-   */
-  poster?: Blob | null
   caption: string
   onStage?: (stage: string) => void
 }
@@ -130,7 +124,7 @@ export interface PublishRequest {
  * to get wrong.
  */
 export async function publishVideo(request: PublishRequest): Promise<PublishedVideo> {
-  const { video, poster, caption, onStage } = request
+  const { video, caption, onStage } = request
   const client = mintspace()
 
   const account = await currentAccount()
@@ -140,39 +134,23 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
 
   const storage = client.storage.from(MINTSPACE_BUCKET)
   // Namespaced by account id, which is what Mintspace's storage policy checks:
-  // the first folder segment has to be your own uid. The poster sits alongside
-  // its video under the same name, so the pair is obvious in the bucket.
-  const base = `${account.id}/${newId('export')}`
+  // the first folder segment has to be your own uid.
+  const videoPath = `${account.id}/${newId('export')}.mp4`
 
   onStage?.('Uploading the video…')
-  const videoPath = `${base}.mp4`
   const { error: uploadError } = await storage.upload(videoPath, video, {
     contentType: 'video/mp4',
     upsert: false,
   })
   if (uploadError) throw uploadError
 
-  let posterUrl: string | null = null
-  if (poster) {
-    onStage?.('Uploading the thumbnail…')
-    const posterPath = `${base}.jpg`
-    const { error: posterError } = await storage.upload(posterPath, poster, {
-      contentType: 'image/jpeg',
-      upsert: false,
-    })
-    // Never fatal. A feed card with no poster shows a black frame for a moment;
-    // a publish that fell over at the last step shows nothing at all.
-    if (posterError) {
-      console.warn('Mintspace poster upload failed; publishing without one', posterError)
-    } else {
-      posterUrl = storage.getPublicUrl(posterPath).data.publicUrl
-    }
-  }
-
   const videoUrl = storage.getPublicUrl(videoPath).data.publicUrl
 
   onStage?.('Adding it to the feed…')
   const trimmed = caption.trim()
+  // `poster_url` is left off entirely rather than sent as null: Mintspace shows
+  // the video's own first frame when there is none, which is the whole of what
+  // a poster would have bought here.
   const { data, error } = await client
     .from('videos')
     .insert({
@@ -181,7 +159,6 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
       // an empty string would be a caption that happens to say nothing.
       caption: trimmed.length > 0 ? trimmed : null,
       video_url: videoUrl,
-      poster_url: posterUrl,
     })
     .select('id')
     .single()

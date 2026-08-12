@@ -9,9 +9,8 @@ import type { Asset, AudioClip, AudioTrack, CaptionTrack, Clip, Project } from '
  * CPU, *and* the set of decisions the encoder is then handed — deliberately the
  * same derivation, because a summary computed separately from the render is a
  * summary free to be wrong about it. So what is checked here is mostly
- * subtraction: the audio that will not be encoded, the captions that will not
- * be burnt in, and the frame a feed will show, which must not be one of the
- * black ones a lead-in puts at the front.
+ * subtraction: the audio that will not be encoded, and the captions that will
+ * not be burnt in.
  */
 
 const clip = (id: string, inPoint: number, outPoint: number, assetId = 'a-vid'): Clip => ({
@@ -94,25 +93,6 @@ describe('exportPlan', () => {
 
   it('counts a lead-in as part of the file, since it is encoded', () => {
     expect(exportPlan({ ...base, leadIn: 2 }, assets).outputDuration).toBe(6)
-  })
-
-  describe('the thumbnail frame', () => {
-    it('is taken from the picture, never from the black in front of it', () => {
-      const plan = exportPlan({ ...base, leadIn: 2 }, assets)
-      expect(plan.posterTime).toBeGreaterThan(2)
-    })
-
-    it('is a second in, which is past most fades', () => {
-      expect(exportPlan(base, assets).posterTime).toBe(1)
-    })
-
-    it('is halfway through a picture shorter than that', () => {
-      expect(exportPlan({ ...base, clips: [clip('1', 0, 0.5)] }, assets).posterTime).toBe(0.25)
-    })
-
-    it('stays at the very start of a project with nothing in it', () => {
-      expect(exportPlan({ ...base, clips: [] }, assets).posterTime).toBe(0)
-    })
   })
 
   describe('sound', () => {

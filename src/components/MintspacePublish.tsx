@@ -10,7 +10,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Callout, Field, Spinner, TextArea, TextInput } from './ui'
 import { isAbort } from '../lib/errors'
-import { posterFrame } from '../lib/export/posterFrame'
 import { isMintspaceConfigured } from '../lib/mintspace/client'
 import {
   CAPTION_MAX_LENGTH,
@@ -27,11 +26,6 @@ import {
 export interface MintspacePublishProps {
   /** Renders the timeline to an MP4 — or hands back one already rendered. */
   render: () => Promise<Blob>
-  /**
-   * Where in the finished file to take the thumbnail from, in seconds. Past the
-   * lead-in, so a project that opens on black is not posterised with it.
-   */
-  posterAt: number
   /** True when there is nothing on the timeline to publish. */
   empty: boolean
   /** False for a 16:9 project, which the feed will letterbox. */
@@ -43,7 +37,7 @@ export interface MintspacePublishProps {
 }
 
 export function MintspacePublish(props: MintspacePublishProps) {
-  const { render, posterAt, empty, vertical, busy, onBusyChange, onClose } = props
+  const { render, empty, vertical, busy, onBusyChange, onClose } = props
 
   const configured = isMintspaceConfigured()
   const [account, setAccount] = useState<MintspaceAccount | null>(null)
@@ -92,13 +86,7 @@ export function MintspacePublish(props: MintspacePublishProps) {
 
     try {
       const video = await render()
-
-      // Best-effort, and deliberately not awaited into the failure path: a
-      // thumbnail that could not be drawn publishes a video without one.
-      setStage('Grabbing a thumbnail…')
-      const poster = await posterFrame(video, { at: posterAt })
-
-      const result = await publishVideo({ video, poster, caption, onStage: setStage })
+      const result = await publishVideo({ video, caption, onStage: setStage })
       setPublished(result)
       setCaption('')
     } catch (cause) {

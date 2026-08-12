@@ -40,19 +40,14 @@ vi.mock('../lib/mintspace/publish', async (importOriginal) => {
   }
 })
 
-const posterFrame = vi.fn<() => Promise<Blob | null>>()
-vi.mock('../lib/export/posterFrame', () => ({ posterFrame: () => posterFrame() }))
-
 const { MintspacePublish } = await import('./MintspacePublish')
 
 const ADA: MintspaceAccount = { id: 'uid-1', email: 'ada@example.com', username: 'ada' }
 const VIDEO = new Blob(['mp4'], { type: 'video/mp4' })
-const POSTER = new Blob(['jpeg'], { type: 'image/jpeg' })
 
 function setup(overrides: Partial<Parameters<typeof MintspacePublish>[0]> = {}) {
   const props = {
     render: vi.fn().mockResolvedValue(VIDEO),
-    posterAt: 1,
     empty: false,
     vertical: true,
     busy: false,
@@ -68,7 +63,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   configured.value = true
   currentAccount.mockResolvedValue(ADA)
-  posterFrame.mockResolvedValue(POSTER)
   publishVideo.mockResolvedValue({
     id: 'video-1',
     videoUrl: 'https://cdn.example/uid-1/export.mp4',
@@ -142,7 +136,7 @@ describe('signing in', () => {
 })
 
 describe('publishing', () => {
-  it('renders, grabs a thumbnail, and posts the caption', async () => {
+  it('renders the export and posts it with the caption', async () => {
     const props = setup()
 
     fireEvent.change(await screen.findByLabelText(/caption/i), {
@@ -153,7 +147,7 @@ describe('publishing', () => {
     await waitFor(() => expect(publishVideo).toHaveBeenCalled())
     expect(props.render).toHaveBeenCalled()
     expect(publishVideo).toHaveBeenCalledWith(
-      expect.objectContaining({ video: VIDEO, poster: POSTER, caption: 'declensions, hour 4' }),
+      expect.objectContaining({ video: VIDEO, caption: 'declensions, hour 4' }),
     )
   })
 
