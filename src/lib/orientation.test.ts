@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_PRESET,
   EXPORT_PRESETS,
   aspectRatioFor,
   dimensionsFor,
@@ -69,5 +70,23 @@ describe('EXPORT_PRESETS', () => {
   it('offers the same three tiers in both orientations', () => {
     expect(exportPresetsFor('vertical').map((p) => p.label)).toEqual(['480p', '720p', '1080p'])
     expect(exportPresetsFor('horizontal').map((p) => p.label)).toEqual(['480p', '720p', '1080p'])
+  })
+})
+
+describe('DEFAULT_PRESET', () => {
+  it('starts a project on the smallest tier, which is the quickest to render', () => {
+    expect(DEFAULT_PRESET.label).toBe('480p')
+    expect(DEFAULT_PRESET).toEqual({
+      label: '480p',
+      orientation: 'vertical',
+      width: 480,
+      height: 854,
+    })
+  })
+
+  it('is one of the offered presets, so the export dialog has it to select', () => {
+    // A default sitting outside this list would open the dialog on an extra
+    // "Current" option rather than on the tier it means.
+    expect(EXPORT_PRESETS).toContain(DEFAULT_PRESET)
   })
 })

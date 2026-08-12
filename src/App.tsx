@@ -11,17 +11,21 @@ import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { SettingsDialog } from './components/SettingsDialog'
 import { ExportDialog } from './components/ExportDialog'
+import { FeedbackBubble } from './components/FeedbackBubble'
 import { DriveUploads } from './components/DriveUploads'
 import { HydrationStatus } from './components/HydrationStatus'
 import { ProjectPicker } from './components/ProjectPicker'
+import { ProjectsError } from './components/ProjectsError'
 import { SyncStatus } from './components/SyncStatus'
 import { Button } from './components/ui'
 import { usePersistedState } from './hooks/usePersistedState'
 import { usePlayback } from './hooks/usePlayback'
+import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
 import { useAssetStore } from './state/useAssetStore'
 import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
 import { installFlushOnExit, useProjectsStore } from './state/useProjectsStore'
+import { useSettingsStore } from './state/useSettingsStore'
 import { setIngestListener } from './lib/media'
 import { recordAsset } from './lib/sync/assetSync'
 import { isMockEnabled } from './lib/mock'
@@ -59,14 +63,21 @@ export default function App() {
   const duration = useProjectStore((state) => state.duration())
   const fps = useProjectStore((state) => state.project.fps)
   const clipCount = useProjectStore((state) => state.project.clips.length)
+  const canUndo = useProjectStore((state) => state.canUndo())
+  const canRedo = useProjectStore((state) => state.canRedo())
 
   const playback = usePlayback(duration)
+  useUndoRedoShortcut()
 
   useEffect(() => {
     void loadAssets()
     // Loads the project list and opens one, or falls back to the single local
     // project when there is no account behind this build.
     void useProjectsStore.getState().start()
+    // Whether this deployment pays for the voice features or asks the visitor
+    // for a key. Every voice control on screen reads the answer, so it is asked
+    // once here rather than by each of them.
+    void useSettingsStore.getState().loadElevenLabsSupport()
 
     return installFlushOnExit()
   }, [loadAssets])
@@ -90,7 +101,7 @@ export default function App() {
         </span>
         <h1 className="text-sm font-semibold">editor-cat</h1>
 
-        <ProjectPicker />
+        <ProjectPicker onOpenSettings={() => setSettingsOpen(true)} />
 
         <SyncStatus />
 
@@ -100,6 +111,23 @@ export default function App() {
           </span>
         ) : null}
 
+        <Button
+          onClick={() => useProjectStore.getState().undo()}
+          disabled={!canUndo}
+          title="Undo (Ctrl/Cmd+Z)"
+          aria-label="Undo"
+        >
+          <span aria-hidden>↶</span>
+        </Button>
+        <Button
+          onClick={() => useProjectStore.getState().redo()}
+          disabled={!canRedo}
+          title="Redo (Ctrl/Cmd+Shift+Z)"
+          aria-label="Redo"
+        >
+          <span aria-hidden>↷</span>
+        </Button>
+
         <Button onClick={() => setSettingsOpen(true)}>
           <span aria-hidden>⚙️</span> Settings
         </Button>
@@ -107,6 +135,11 @@ export default function App() {
           <span aria-hidden>⬇️</span> Export
         </Button>
       </header>
+
+      {/* Outside the sidebar and above the tabs: a project list that never
+          arrived is not about whichever panel happens to be open, and the
+          sidebar can be collapsed. */}
+      <ProjectsError />
 
       {/* Stacked, this scrolls as one column. Side by side it must not: the two
           columns are then as tall as the window, and each scrolls on its own —
@@ -225,6 +258,10 @@ export default function App() {
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
+
+      {/* Fixed to the corner of the window rather than placed in the layout, so
+          it is reachable from every step without taking room from any of them. */}
+      <FeedbackBubble />
     </div>
   )
 }

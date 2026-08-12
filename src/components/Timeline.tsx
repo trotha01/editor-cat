@@ -15,7 +15,7 @@
  * Widths are proportional to duration, with a pixels-per-second zoom, so what
  * you see matches what you get.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   PointerSensor,
@@ -29,13 +29,16 @@ import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dn
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
+import { AudioFixStatus } from './AudioFixStatus'
 import { CaptionJobStatus } from './CaptionJobStatus'
 import { ClipMenu } from './ClipMenu'
 import { ClipReadinessBar } from './ClipReadinessBar'
-import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
+import { FixAudioDialog } from './FixAudioDialog'
+import { captionClipItem, fixAudioItem, type ClipMenuItem } from './clipMenuItems'
 import {
   MAX_LEAD_IN,
   MIN_CLIP_DURATION,
+  clamp,
   clipAtTime,
   clipDuration,
   clipGain,
@@ -47,12 +50,14 @@ import {
   leadInOf,
   snapToFrame,
   totalDuration,
+  zoomFromPinch,
 } from '../lib/timeline'
 import { audioEnd } from '../lib/audioTracks'
 import { transitionRoomAt } from '../lib/transitions'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
+import { fixTargets, type FixTarget } from '../lib/clipAudioFix'
 import { isTypingTarget } from '../lib/shortcuts'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
@@ -60,8 +65,11 @@ import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
 import { TransitionMarker } from './TransitionMarker'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
+import { useAudioFixStore } from '../state/useAudioFixStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
+import { useProjectsStore } from '../state/useProjectsStore'
+import { canUseElevenLabs, useSettingsStore } from '../state/useSettingsStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
 /**
@@ -113,22 +121,33 @@ function frameGrid(pixels: number, overMedia: boolean): string {
 function ClipCard({
   entry,
   asset,
+  mediaLoading,
   zoom,
   width,
   pull,
   selected,
   cutAtStart,
   target,
+  fixTarget,
+  canFixAudio,
   captioning,
+  fixing,
   onSelect,
   onTrim,
   onRemove,
   onJoin,
   onCaption,
+  onFixAudio,
   onToggleMute,
 }: {
   entry: PositionedClip
   asset: Asset | undefined
+  /**
+   * True while this project's media is still being restored from Drive, so an
+   * asset that has not shown up in the library yet is still on its way rather
+   * than gone.
+   */
+  mediaLoading: boolean
   zoom: number
   /** Drawn width, which has a floor so a very short clip stays clickable. */
   width: number
@@ -139,12 +158,19 @@ function ClipCard({
   cutAtStart: boolean
   /** Set when this clip has speech worth transcribing. Absent for a still. */
   target: CaptionTarget | undefined
+  /** Set when this clip carries sound that could be said again. */
+  fixTarget: FixTarget | undefined
+  /** Whether the voice features can run: this site's key, or the user's own. */
+  canFixAudio: boolean
   captioning: boolean
+  /** True while this clip's line is being said again. */
+  fixing: boolean
   onSelect: () => void
   onTrim: (edge: 'start' | 'end', seconds: number) => void
   onRemove: () => void
   onJoin: () => void
   onCaption: (target: CaptionTarget) => void
+  onFixAudio: (target: FixTarget) => void
   onToggleMute: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -200,6 +226,10 @@ function ClipCard({
           },
         ]
       : []),
+    // Under the caption row on purpose: the captions are where the words come
+    // from, so "read what it said, then fix how it said it" reads down the menu
+    // in the order it is done.
+    ...(fixTarget ? [fixAudioItem(fixTarget, canFixAudio, () => onFixAudio(fixTarget))] : []),
     ...(isImage
       ? []
       : [
@@ -223,7 +253,13 @@ function ClipCard({
           },
         ]
       : []),
-    { icon: '🗑', label: 'Remove clip from the timeline', onSelect: onRemove, danger: true },
+    {
+      icon: '🗑',
+      label: 'Remove clip from the timeline',
+      note: 'Delete',
+      onSelect: onRemove,
+      danger: true,
+    },
   ]
 
   return (
@@ -264,6 +300,10 @@ function ClipCard({
       >
         {asset ? (
           <AssetThumb asset={asset} className="size-full rounded-none border-0" />
+        ) : mediaLoading ? (
+          <span className="flex size-full items-center justify-center text-xs text-ink-dim">
+            media loading
+          </span>
         ) : (
           <span className="flex size-full items-center justify-center text-xs text-red-700">
             media missing
@@ -333,7 +373,7 @@ function ClipCard({
       <ClipMenu
         label={name}
         items={items}
-        busy={captioning}
+        busy={captioning || fixing}
         className="absolute top-1 right-1 size-5 bg-black/70 text-xs text-white opacity-80 transition hover:opacity-100"
       />
 
@@ -433,6 +473,69 @@ function LeadInBlock({
   )
 }
 
+/**
+ * One edge of the marked export range.
+ *
+ * Drawn the full height of the timeline, not just the ruler, so it stays
+ * grabbable wherever the pointer happens to be — over the clips, the audio
+ * lanes, anywhere. Only this narrow strip takes the pointer; the highlighted
+ * band it bounds does not, so everything under it is still reachable exactly
+ * as it was.
+ */
+function ExportRangeHandle({
+  seconds,
+  zoom,
+  label,
+  onChange,
+}: {
+  seconds: number
+  zoom: number
+  label: string
+  onChange: (seconds: number) => void
+}) {
+  const dragState = useRef<{ startX: number; origin: number } | null>(null)
+
+  const beginDrag = (event: React.PointerEvent) => {
+    if (event.button !== 0) return
+    const target = event.currentTarget as HTMLElement
+    target.setPointerCapture(event.pointerId)
+    dragState.current = { startX: event.clientX, origin: seconds }
+  }
+
+  const moveDrag = (event: React.PointerEvent) => {
+    const state = dragState.current
+    if (!state) return
+    onChange(state.origin + (event.clientX - state.startX) / zoom)
+  }
+
+  const endDrag = (event: React.PointerEvent) => {
+    if (!dragState.current) return
+    dragState.current = null
+    const target = event.currentTarget as HTMLElement
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
+  }
+
+  return (
+    <div
+      role="slider"
+      tabIndex={0}
+      aria-label={label}
+      aria-valuenow={Math.round(seconds * 10) / 10}
+      title={`${label} — ${formatTime(Math.max(0, seconds))}`}
+      onPointerDown={beginDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onKeyDown={(event) => {
+        if (event.key === 'ArrowLeft') onChange(seconds - 0.1)
+        if (event.key === 'ArrowRight') onChange(seconds + 0.1)
+      }}
+      style={{ left: seconds * zoom }}
+      className="pointer-events-auto absolute top-0 bottom-0 z-20 w-2 -translate-x-1/2 cursor-ew-resize bg-accent/70 transition hover:bg-accent focus-visible:bg-accent"
+    />
+  )
+}
+
 /** Whether the clip at `index` begins at a cut rather than at its own start. */
 function cutBefore(positioned: readonly PositionedClip[], index: number): boolean {
   const previous = positioned[index - 1]?.clip
@@ -452,12 +555,29 @@ export function Timeline({
   const selectClip = useProjectStore((state) => state.selectClip)
   const moveClip = useProjectStore((state) => state.moveClip)
   const removeClip = useProjectStore((state) => state.removeClip)
+  // Read alongside the picture track's own selection so one Delete-key
+  // handler below can cover every lane, not just this one.
+  const selectedVideoClipId = useProjectStore((state) => state.selectedVideoClipId)
+  const removeVideoClip = useProjectStore((state) => state.removeVideoClip)
+  const selectedAudioClipId = useProjectStore((state) => state.selectedAudioClipId)
+  const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
   const trim = useProjectStore((state) => state.trim)
   const cutAt = useProjectStore((state) => state.cutAt)
   const removeCut = useProjectStore((state) => state.removeCut)
+  const exportRange = useProjectStore((state) => state.exportRange)
+  const setExportRange = useProjectStore((state) => state.setExportRange)
+  const markExportStart = useProjectStore((state) => state.markExportStart)
+  const markExportEnd = useProjectStore((state) => state.markExportEnd)
   const setTransition = useProjectStore((state) => state.setTransition)
   const setAllTransitions = useProjectStore((state) => state.setAllTransitions)
   const assets = useAssetStore((state) => state.assets)
+  const assetsLoading = useAssetStore((state) => state.loading)
+  const hydrating = useProjectsStore((state) => state.hydration !== null)
+  // While either of these is true, a clip whose asset has not shown up yet is
+  // still on its way rather than actually gone — the library's own first load
+  // and a project's media coming back from Drive both leave a gap here before
+  // the asset appears.
+  const mediaLoading = assetsLoading || hydrating
 
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
 
@@ -468,6 +588,13 @@ export function Timeline({
   const captionClip = useCaptionJobStore((state) => state.captionClip)
   const captioningClipId = useCaptionJobStore((state) => state.clipId)
 
+  const fixingClipId = useAudioFixStore((state) => state.clipId)
+  const canFixAudio = useSettingsStore(canUseElevenLabs)
+  // Which clip the fix dialog is about. Held here rather than in the dialog
+  // because the menu that opens it is inside a card that re-renders constantly,
+  // and the dialog outlives the menu — the menu closes on the click.
+  const [fixingTarget, setFixingTarget] = useState<FixTarget | null>(null)
+
   const [zoom, setZoom] = useState(40)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -477,6 +604,12 @@ export function Timeline({
   const positioned = useMemo(() => layoutClips(project.clips, leadIn), [project.clips, leadIn])
   const visualDuration = totalDuration(project.clips)
   const pictureEndTime = leadIn + visualDuration
+  const audioEndTime = audioEnd(project.audioClips)
+  // What the export dialog calls `outputDuration` — the picture or the sound,
+  // whichever runs longer. Marking a range against this rather than the
+  // picture track alone is what keeps "End" reachable on a project that is
+  // carried by a voiceover running past the last clip.
+  const exportDuration = Math.max(pictureEndTime, audioEndTime)
 
   // Where each card really lands, which is not simply its start times a zoom:
   // a card has a floor on its width so a very short clip stays clickable, and
@@ -528,6 +661,12 @@ export function Timeline({
   // question of it.
   const targets = useMemo(() => captionTargets(project, assets), [project, assets])
 
+  // The same question for the other thing a clip's sound can have done to it.
+  // A separate join because it answers differently: a clip that has already been
+  // silenced is out of the captioning list and still very much in this one —
+  // silencing it is what fixing it did.
+  const fixable = useMemo(() => fixTargets(project, assets), [project, assets])
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   // Where a cut would land, and whether one can land there at all. Recomputed
@@ -547,18 +686,57 @@ export function Timeline({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 's' && event.key !== 'S') return
       // Leave the browser's own Ctrl/Cmd-S and friends alone.
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (isTypingTarget(event.target)) return
-      event.preventDefault()
-      // Already a no-op where nothing can be cut, so it needs no guard here.
-      cutAt(playheadRef.current)
+      if (event.key === 's' || event.key === 'S') {
+        event.preventDefault()
+        // Already a no-op where nothing can be cut, so it needs no guard here.
+        cutAt(playheadRef.current)
+      } else if (event.key === 'i' || event.key === 'I') {
+        // In point, same letter editors from Premiere to iMovie use for it.
+        event.preventDefault()
+        markExportStart(playheadRef.current, exportDuration)
+      } else if (event.key === 'o' || event.key === 'O') {
+        event.preventDefault()
+        markExportEnd(playheadRef.current)
+      }
     }
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cutAt])
+  }, [cutAt, markExportStart, markExportEnd, exportDuration])
+
+  // Picture, overlay video and audio clips each keep their own selection, so
+  // this checks all three rather than just the picture track's — Delete is
+  // expected to work on whichever clip is currently highlighted, wherever it
+  // lives on the timeline.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (isTypingTarget(event.target)) return
+      if (selectedClipId) {
+        event.preventDefault()
+        removeClip(selectedClipId)
+      } else if (selectedVideoClipId) {
+        event.preventDefault()
+        removeVideoClip(selectedVideoClipId)
+      } else if (selectedAudioClipId) {
+        event.preventDefault()
+        removeAudioClip(selectedAudioClipId)
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [
+    selectedClipId,
+    removeClip,
+    selectedVideoClipId,
+    removeVideoClip,
+    selectedAudioClipId,
+    removeAudioClip,
+  ])
 
   const framePx = framePixels(zoom, project.fps)
   const frameLines = framePx >= MIN_FRAME_LINE_PX
@@ -581,20 +759,76 @@ export function Timeline({
     [project.clips, moveClip],
   )
 
-  const scrub = (event: React.MouseEvent<HTMLDivElement>) => {
-    const ruler = trackRef.current
-    if (!ruler) return
-    // The ruler moves with the scroll container, so its own bounding box
-    // already accounts for the scroll offset.
-    const rect = ruler.getBoundingClientRect()
-    // Snapped, so the playhead parks on a frame line rather than a pixel — the
-    // cut is going to land on one of those anyway, and it should land on the
-    // one you clicked.
-    onSeek(snapToFrame((event.clientX - rect.left) / zoom, project.fps))
+  // Where to re-anchor the scroll position once a pinch changes the zoom,
+  // filled in by onWheelZoom and consumed by the layout effect below. It has
+  // to wait for that effect because the scrollable content is only as wide as
+  // the zoom that is about to replace this one — setting scrollLeft before the
+  // resize lands just gets clamped back by the browser.
+  const pinchAnchor = useRef<{ pointerX: number; secondsAtPointer: number } | null>(null)
+
+  useLayoutEffect(() => {
+    const anchor = pinchAnchor.current
+    const container = scrollRef.current
+    if (!anchor || !container) return
+    pinchAnchor.current = null
+    container.scrollLeft = anchor.secondsAtPointer * zoom - anchor.pointerX
+  }, [zoom])
+
+  // A trackpad pinch has no event of its own on the web — browsers report it as
+  // a wheel event with ctrlKey set, which is also what an actual Ctrl+wheel
+  // looks like, so this catches both for free. preventDefault stops it from
+  // also zooming the whole page.
+  const onWheelZoom = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey) return
+    event.preventDefault()
+    const container = scrollRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const pointerX = event.clientX - rect.left
+    // The instant under the cursor, so it is what stays under the cursor once
+    // the zoom changes — without this a pinch in the middle of a long timeline
+    // sends the picture sliding out from under your fingers.
+    pinchAnchor.current = { pointerX, secondsAtPointer: (container.scrollLeft + pointerX) / zoom }
+    // Pinch deltaY is negative when spreading fingers apart, same sign as
+    // scrolling up, so this reads as zoom in.
+    setZoom(zoomFromPinch(zoom, event.deltaY, MIN_ZOOM, MAX_ZOOM))
+  }
+
+  const scrubAt = useCallback(
+    (clientX: number) => {
+      const ruler = trackRef.current
+      if (!ruler) return
+      // The ruler moves with the scroll container, so its own bounding box
+      // already accounts for the scroll offset.
+      const rect = ruler.getBoundingClientRect()
+      // Snapped, so the playhead parks on a frame line rather than a pixel — the
+      // cut is going to land on one of those anyway, and it should land on the
+      // one you clicked.
+      onSeek(snapToFrame((clientX - rect.left) / zoom, project.fps))
+    },
+    [onSeek, zoom, project.fps],
+  )
+
+  // Pointer capture, same as the trim handles above, so the drag keeps
+  // tracking the playhead even once the cursor has left the thin ruler strip
+  // — which it will, the moment you drag down towards the clips.
+  const beginScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    scrubAt(event.clientX)
+  }
+
+  const moveScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    scrubAt(event.clientX)
+  }
+
+  const endScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.currentTarget
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
   }
 
   const playheadX = currentTime * zoom
-  const audioEndTime = audioEnd(project.audioClips)
   // The lanes must span the audio and the captions too — a music bed longer
   // than the picture still has to be reachable and scrubbable, and a caption
   // dragged past the end has to stay visible enough to drag back.
@@ -608,6 +842,12 @@ export function Timeline({
       videoLayersEnd(videoClipsOf(project)),
       captionsEnd(captionCuesOf(project)),
     ) * zoom
+
+  // Fitted to the timeline as it stands, same as the export dialog fits it
+  // before rendering — a range left over from a longer edit is drawn against
+  // what is actually there rather than running off the end of it.
+  const rangeStart = exportRange ? clamp(exportRange.start, 0, exportDuration) : null
+  const rangeEnd = exportRange ? clamp(exportRange.end, rangeStart ?? 0, exportDuration) : null
 
   // Never shrinks. Beside the panels the preview above is what gives way to make
   // room, because a timeline squeezed to a few pixels is not a timeline, and
@@ -625,11 +865,41 @@ export function Timeline({
                 project.audioTracks.length === 1 ? '' : 's'
               }`
             : ''}
+          {/* Only what an export would actually cut — a range fitted back to
+              covering the whole thing is the same as no range at all. */}
+          {rangeStart !== null && rangeEnd !== null && (rangeStart > 0 || rangeEnd < exportDuration)
+            ? ` · export ${formatTime(rangeStart)}–${formatTime(rangeEnd)}`
+            : ''}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <Button onClick={() => cutAt(currentTime)} disabled={!cutTarget} title={cutTitle}>
             <span aria-hidden>✂</span> Cut
           </Button>
+          {/* Marks where an export of the timeline starts or ends, at the
+              playhead — the direct way to choose one, versus typing seconds
+              into the export dialog, which now opens onto whatever is marked
+              here. */}
+          <Button
+            onClick={() => markExportStart(currentTime, exportDuration)}
+            title="Mark where an export of this timeline starts, at the playhead (I)"
+          >
+            <span aria-hidden>[</span> Start
+          </Button>
+          <Button
+            onClick={() => markExportEnd(currentTime)}
+            title="Mark where an export of this timeline ends, at the playhead (O)"
+          >
+            <span aria-hidden>]</span> End
+          </Button>
+          {exportRange ? (
+            <Button
+              variant="ghost"
+              onClick={() => setExportRange(null)}
+              title="Export the whole video again"
+            >
+              Clear range
+            </Button>
+          ) : null}
           {/* One button, because a voice lane and a music lane are both audio
               lanes — what a lane carries is set on the lane itself, where you
               can also change your mind about it later. */}
@@ -679,6 +949,12 @@ export function Timeline({
           style={{ width: TRACK_GUTTER_WIDTH }}
         >
           <div className="mb-2 h-6" aria-hidden />
+
+          {/* Video lanes lay over the picture, so their headers sit over the
+              picture's own in the gutter too — the stacking order the lanes
+              draw in, read top to bottom. */}
+          <VideoTrackHeaders />
+
           {/* The picture track's own controls, in the same gutter the audio
               tracks keep theirs in. Lead-in lives here because it is a property
               of the track rather than of any one clip — and because at zero
@@ -715,21 +991,26 @@ export function Timeline({
             </div>
           ) : null}
 
-          <VideoTrackHeaders />
-
           <AudioTrackHeaders />
 
           <CaptionTrackHeaders />
         </div>
 
-        <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto p-3 pl-2">
+        <div
+          ref={scrollRef}
+          onWheel={onWheelZoom}
+          className="min-w-0 flex-1 overflow-x-auto p-3 pl-2"
+        >
           <div className="relative min-w-full" style={{ width: Math.max(contentWidth, 320) }}>
             {/* Ruler doubles as the scrub bar, and carries the frame grid: the
                 lines run straight down into the picture track below, so the
                 playhead can be parked on the frame you mean to cut. */}
             <div
               ref={trackRef}
-              onClick={scrub}
+              onPointerDown={beginScrub}
+              onPointerMove={moveScrub}
+              onPointerUp={endScrub}
+              onPointerCancel={endScrub}
               className="relative mb-2 h-6 cursor-pointer rounded bg-surface-2"
               style={frameLines ? { backgroundImage: frameGrid(framePx, false) } : undefined}
               role="presentation"
@@ -744,6 +1025,10 @@ export function Timeline({
                 </span>
               ))}
             </div>
+
+            {/* Above the picture it is laid over, matching the headers in the
+                gutter: the lanes read up the screen in the order they stack in. */}
+            <VideoTrackLanes zoom={zoom} />
 
             <div className="relative">
               <DndContext
@@ -774,13 +1059,17 @@ export function Timeline({
                           key={entry.clip.id}
                           entry={entry}
                           asset={assetById.get(entry.clip.assetId)}
+                          mediaLoading={mediaLoading}
                           zoom={zoom}
                           width={width}
                           pull={pull}
                           selected={entry.clip.id === selectedClipId}
                           cutAtStart={cutBefore(positioned, entry.index)}
                           target={targets.get(entry.clip.id)}
+                          fixTarget={fixable.get(entry.clip.id)}
+                          canFixAudio={canFixAudio}
                           captioning={captioningClipId === entry.clip.id}
+                          fixing={fixingClipId === entry.clip.id}
                           onSelect={() => selectClip(entry.clip.id)}
                           onTrim={(edge, seconds) =>
                             trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
@@ -788,6 +1077,7 @@ export function Timeline({
                           onRemove={() => removeClip(entry.clip.id)}
                           onJoin={() => removeCut(entry.clip.id)}
                           onCaption={(target) => void captionClip(target.source)}
+                          onFixAudio={setFixingTarget}
                           onToggleMute={() =>
                             setClipAudio(entry.clip.id, { muted: !entry.clip.muted })
                           }
@@ -845,14 +1135,37 @@ export function Timeline({
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
 
-            {/* Directly under the picture it is laid over, and above the sound:
-                the lanes read up the screen in the order they stack in. */}
-            <VideoTrackLanes zoom={zoom} />
-
             <AudioTrackLanes zoom={zoom} targets={targets} />
 
             {/* Captions last, under the audio they were transcribed from. */}
             <CaptionLanes zoom={zoom} onSeek={onSeek} />
+
+            {/* The marked export range, spanning the ruler down through every
+                lane so it reads as one stretch of the whole timeline rather
+                than a mark on any single track. The band takes no pointer of
+                its own — only its two edges do — so everything under it stays
+                exactly as reachable as it was. */}
+            {exportRange && rangeStart !== null && rangeEnd !== null ? (
+              <>
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute top-0 bottom-0 border-x-2 border-accent bg-accent/10"
+                  style={{ left: rangeStart * zoom, width: (rangeEnd - rangeStart) * zoom }}
+                />
+                <ExportRangeHandle
+                  seconds={exportRange.start}
+                  zoom={zoom}
+                  label="Export start"
+                  onChange={(seconds) => setExportRange({ start: seconds, end: exportRange.end })}
+                />
+                <ExportRangeHandle
+                  seconds={exportRange.end}
+                  zoom={zoom}
+                  label="Export end"
+                  onChange={(seconds) => setExportRange({ start: exportRange.start, end: seconds })}
+                />
+              </>
+            ) : null}
 
             {contentWidth > 0 ? (
               <div
@@ -866,8 +1179,21 @@ export function Timeline({
       </div>
 
       {/* Captioning one clip is started from that clip's own menu, so it reports
-          here rather than four panels away in the Captions step. */}
-      <CaptionJobStatus />
+          here rather than four panels away in the Captions step.
+
+          The padding is for the report bubble, which is fixed to that corner of
+          the window (see FeedbackBubble.tsx) and otherwise lands squarely on this
+          banner's Cancel and Dismiss buttons — this is the bottom-right of the
+          screen in the normal full-height layout. Nothing else in the editor
+          puts a control there. */}
+      <div className="flex flex-col gap-2 pr-12">
+        <CaptionJobStatus />
+        {/* Fixing a clip's audio is started from the same menu and reports the
+            same way, for the same reason. */}
+        <AudioFixStatus />
+      </div>
+
+      <FixAudioDialog target={fixingTarget} onClose={() => setFixingTarget(null)} />
 
       <SelectedClipControls />
     </section>
@@ -955,7 +1281,12 @@ function SelectedClipControls() {
         </div>
       ) : null}
 
-      <Button variant="danger" className="ml-auto" onClick={() => removeClip(clip.id)}>
+      <Button
+        variant="danger"
+        className="ml-auto"
+        onClick={() => removeClip(clip.id)}
+        title="Remove clip from the timeline (Delete)"
+      >
         Remove clip
       </Button>
     </div>

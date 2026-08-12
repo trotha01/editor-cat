@@ -15,7 +15,7 @@ const auth0Token = vi.fn<() => Promise<string | null>>()
 vi.mock('./auth0/client', () => ({ auth0Token: () => auth0Token() }))
 vi.mock('./mock', () => ({ isMockEnabled: () => false, mockFal: vi.fn() }))
 
-const { submit, toProxyPath } = await import('./falClient')
+const { sleep, submit, toProxyPath } = await import('./falClient')
 
 function serve(): { url: string; init?: RequestInit }[] {
   const calls: { url: string; init?: RequestInit }[] = []
@@ -107,5 +107,66 @@ describe('toProxyPath', () => {
   it('falls back sanely for a relative or malformed value', () => {
     expect(toProxyPath('fal-ai/flux/requests/abc')).toBe('/api/fal/fal-ai/flux/requests/abc')
     expect(toProxyPath('/fal-ai/flux')).toBe('/api/fal/fal-ai/flux')
+  })
+})
+
+/**
+ * The one deliberate pause everything in this app waits on: the poll interval
+ * here, and the backoff between transcription attempts in `scribe.ts`.
+ *
+ * Worth its own tests because both of its callers are loops that a person is
+ * watching with a Cancel button in front of them, and the failure mode is not a
+ * wrong answer — it is a button that appears to do nothing until the timer
+ * happens to come round. On fake timers, so the suite does not wait out the
+ * very delays it is asserting.
+ */
+describe('sleep', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('waits the whole delay out', async () => {
+    const done = vi.fn()
+    void sleep(1000).then(done)
+
+    await vi.advanceTimersByTimeAsync(999)
+    expect(done).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(done).toHaveBeenCalled()
+  })
+
+  it('ends when Cancel is pressed, not when the timer comes round', async () => {
+    const controller = new AbortController()
+    const waiting = sleep(60_000, controller.signal).then(
+      () => 'finished',
+      (cause: unknown) => cause,
+    )
+
+    await vi.advanceTimersByTimeAsync(10)
+    controller.abort()
+
+    const cause = await waiting
+    expect(cause).toBeInstanceOf(DOMException)
+    expect((cause as DOMException).name).toBe('AbortError')
+  })
+
+  it('does not wait out a signal that had already been aborted', async () => {
+    // No timers are advanced here, deliberately. `abort` has already fired by
+    // the time this is called and will not fire again, so a signal that arrives
+    // spent has to be noticed up front — miss it and the next poll of a job the
+    // user cancelled a moment ago still costs the full interval.
+    const controller = new AbortController()
+    controller.abort()
+
+    const cause = await sleep(60_000, controller.signal).then(
+      () => 'finished',
+      (reason: unknown) => reason,
+    )
+    expect((cause as DOMException).name).toBe('AbortError')
   })
 })

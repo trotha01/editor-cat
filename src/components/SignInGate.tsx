@@ -112,6 +112,12 @@ const DEFAULT_FOLDER_NAME = 'editor-cat'
  * them is the primary action all the same — most people have no existing folder
  * in mind, and hunting for one through the Picker to answer a question they did
  * not ask is a poor first minute.
+ *
+ * Asked once per account, not once per sign-in. The answer is kept against the
+ * account rather than in this browser, so `restore` has it in hand by the time
+ * the connection comes back and this screen never draws again — on a second
+ * machine either. It used to live in localStorage alone, where signing out
+ * cleared it and every login asked the question over.
  */
 function ChooseFolderStep() {
   const setFolder = useDriveStore((state) => state.setFolder)
@@ -247,7 +253,8 @@ function SignInScreen() {
       <p className="text-xs leading-relaxed text-ink-dim">
         Signing in tells us who you are. Saving your media needs one more permission after it, for a
         folder in your own Google Drive — this site only ever sees that folder and the files it puts
-        there. Your API keys stay in this browser and are never part of your account.
+        there. There are no API keys to enter: everything the editor generates runs on this
+        site&apos;s own accounts.
       </p>
     </Panel>
   )

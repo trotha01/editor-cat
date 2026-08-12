@@ -11,7 +11,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyProject, useProjectStore } from './useProjectStore'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
-import type { Project } from '../lib/types'
+import type { Asset, Project, Publication } from '../lib/types'
+
+const PUBLICATION: Publication = {
+  videoId: 'video-1',
+  storagePath: 'uid-1/export_fixed.mp4',
+  videoUrl: 'https://cdn.example/uid-1/export_fixed.mp4',
+  digest: 'deadbeef',
+  caption: 'hello',
+  publishedAt: '2026-08-11T12:00:00.000Z',
+  accountId: 'uid-1',
+  username: 'ada',
+}
 
 const saveProject = vi.fn<(project: Project) => Promise<void>>()
 
@@ -45,7 +56,7 @@ function withCaptions(): { trackId: string } {
 beforeEach(() => {
   saveProject.mockClear()
   saveProject.mockResolvedValue(undefined)
-  useProjectStore.setState({ project: emptyProject(), selectedCaption: null })
+  useProjectStore.setState({ project: emptyProject(), selectedCaption: null, past: [], future: [] })
 })
 
 describe('captions reach storage', () => {
@@ -490,5 +501,735 @@ describe('transitions reach storage, and carry the timeline with them', () => {
     useProjectStore.getState().setTransition('clip-2', { kind: 'dissolve', duration: 0.5 })
 
     expect(stored().audioClips[0]?.startTime).toBeCloseTo(5.5)
+  })
+})
+
+/**
+ * Laying a corrected line under a clip.
+ *
+ * The two halves of a fix — the new audio arriving and the clip's own sound
+ * going quiet — have to be one edit. Both playing together is the wrong line
+ * under the right one, which is worse than either failure on its own, and an
+ * undo that unpicked only half of it would leave a clip silent with nothing to
+ * replace what it used to say.
+ *
+ * The other rule is that nothing generated is ever thrown away: a second go
+ * lands on a lane of its own and quietens the one before it. Somebody paid for
+ * that first take, and "which of these two readings is better" is a question
+ * you can only answer with both of them still there.
+ */
+describe('fixed clip audio', () => {
+  const twoClips = () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 3 },
+          { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 5 },
+        ],
+      },
+    })
+  }
+
+  const speech = (assetId: string, text: string) => ({
+    assetId,
+    useConverted: false,
+    startTime: 3,
+    inPoint: 0,
+    duration: 2.5,
+    label: 'Fixed: b.mp4',
+    speechFix: { text, language: 'es' },
+  })
+
+  it('places the speech, mutes the clip, and anchors the two together', () => {
+    twoClips()
+    const placement = useProjectStore
+      .getState()
+      .addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+
+    const laid = stored().audioClips
+    expect(laid).toHaveLength(1)
+    expect(laid[0]).toMatchObject({
+      assetId: 'fix-1',
+      anchorClipId: 'clip-2',
+      startTime: 3,
+      speechFix: { text: 'Hola', language: 'es' },
+    })
+    // On a voice lane, which is what the mixer treats as narration.
+    const track = stored().audioTracks.find((entry) => entry.id === laid[0]?.trackId)
+    expect(track?.kind).toBe('voice')
+    expect(placement.trackName).toBe(track?.name)
+    expect(placement.silenced).toBe(0)
+    // And the clip it stands in for is silent, or both would play at once.
+    expect(stored().clips.find((clip) => clip.id === 'clip-2')?.muted).toBe(true)
+    expect(stored().clips.find((clip) => clip.id === 'clip-1')?.muted).toBeUndefined()
+  })
+
+  it('is one step, so a single undo puts the clip’s own sound back', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.audioClips).toEqual([])
+    expect(
+      useProjectStore.getState().project.clips.find((clip) => clip.id === 'clip-2')?.muted,
+    ).toBeUndefined()
+  })
+
+  it('moves the captions onto the speech in the same edit as the audio', () => {
+    // The captions describe the audio that has just arrived. Re-timing them
+    // separately would mean an undo could take the audio away and leave the
+    // words timed to something that is no longer there.
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'Hola', start: 3, end: 3.4, source: { id: 'clip-2', label: 'b.mp4' } },
+      { text: 'amigo', start: 3.5, end: 3.9, source: { id: 'clip-2', label: 'b.mp4' } },
+    ])
+    const cueId = captionCuesOf(useProjectStore.getState().project)[0]!.id
+    const before = useProjectStore.getState().past.length
+
+    useProjectStore.getState().addFixedClipAudio(
+      'clip-2',
+      [{ ...speech('fix-1', 'Hola amigo'), startTime: 3 }],
+      [
+        {
+          cueId,
+          offset: 3,
+          words: [
+            { text: 'Hola', start: 0, end: 0.6 },
+            { text: 'amigo', start: 0.7, end: 1.4 },
+          ],
+        },
+      ],
+    )
+
+    const cue = captionCuesOf(stored())[0]!
+    expect(cue.words.map((word) => [word.start, word.end])).toEqual([
+      [3, 3.6],
+      [3.7, 4.4],
+    ])
+    // One step, so one undo returns the audio, the mute and the timings together.
+    expect(useProjectStore.getState().past.length).toBe(before + 1)
+    useProjectStore.getState().undo()
+    expect(captionCuesOf(useProjectStore.getState().project)[0]?.words[0]?.start).toBe(3)
+    expect(useProjectStore.getState().project.audioClips).toEqual([])
+  })
+
+  it('lets a caption follow its voice forward, past where its neighbour used to end', () => {
+    // Two captions of one sentence, back to back. The new reading of the first
+    // takes 1.5s where the performance took 2.5s, so the second line is spoken
+    // a second early to close the silence — and its caption has to come with
+    // it. Fitting each cue against where the others *were* would hold this one
+    // at 5.5, a second behind the voice saying it.
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    const word = (id: string, text: string, start: number, end: number) => ({
+      id,
+      text,
+      start,
+      end,
+    })
+    useProjectStore.setState({
+      project: {
+        ...useProjectStore.getState().project,
+        captionCues: [
+          {
+            id: 'cue-a',
+            trackId,
+            start: 3,
+            end: 5.5,
+            words: [word('w1', 'Hic', 3, 4), word('w2', 'bufo', 4, 5.5)],
+          },
+          {
+            id: 'cue-b',
+            trackId,
+            start: 5.5,
+            end: 7.5,
+            words: [word('w3', 'mirabilis', 5.5, 6.5), word('w4', 'saporis', 6.5, 7.5)],
+          },
+        ],
+      },
+    })
+
+    useProjectStore.getState().addFixedClipAudio(
+      'clip-2',
+      [
+        { ...speech('line-1', 'Hic bufo'), startTime: 3, duration: 1.5 },
+        { ...speech('line-2', 'mirabilis saporis'), startTime: 4.5, duration: 1.75 },
+      ],
+      [
+        {
+          cueId: 'cue-a',
+          offset: 3,
+          words: [
+            { text: 'Hic', start: 0, end: 0.5 },
+            { text: 'bufo', start: 0.5, end: 1.5 },
+          ],
+        },
+        {
+          cueId: 'cue-b',
+          offset: 4.5,
+          words: [
+            { text: 'mirabilis', start: 0, end: 1 },
+            { text: 'saporis', start: 1, end: 1.75 },
+          ],
+        },
+      ],
+    )
+
+    const [first, second] = captionCuesOf(stored())
+    expect([first?.start, first?.end]).toEqual([3, 4.5])
+    // On the voice, not a second behind it.
+    expect([second?.start, second?.end]).toEqual([4.5, 6.25])
+  })
+
+  it('saves every edited caption as one step, before anything is spoken', () => {
+    twoClips()
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'Hola', start: 3, end: 3.4 },
+      { text: 'amigo', start: 3.5, end: 3.9 },
+      { text: 'Adios', start: 6, end: 6.4 },
+    ])
+    const cues = captionCuesOf(useProjectStore.getState().project)
+    const before = useProjectStore.getState().past.length
+
+    useProjectStore.getState().setCueTexts([
+      { cueId: cues[0]!.id, text: 'Buenos días' },
+      // An emptied line is left as it was: this runs on the way to spending
+      // money on the others, and a caption that has gone would take its place
+      // in the script with it.
+      { cueId: cues[1]!.id, text: '   ' },
+    ])
+
+    const after = captionCuesOf(stored())
+    expect(after[0]?.words.map((word) => word.text)).toEqual(['Buenos', 'días'])
+    expect(after[1]?.words.map((word) => word.text)).toEqual(cues[1]?.words.map((w) => w.text))
+    // Typed together and pressed once, so undone once.
+    expect(useProjectStore.getState().past.length).toBe(before + 1)
+  })
+
+  it('puts every line of one fix on the same new lane', () => {
+    // A fix is one piece per caption, laid where each caption starts. They
+    // belong together: one lane, one mute, one undo.
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [
+      { ...speech('line-1', 'Hola'), startTime: 3 },
+      { ...speech('line-2', '¿Cómo estás?'), startTime: 5 },
+    ])
+
+    const laid = stored().audioClips
+    expect(laid.map((clip) => clip.assetId)).toEqual(['line-1', 'line-2'])
+    expect(new Set(laid.map((clip) => clip.trackId)).size).toBe(1)
+    expect(laid.every((clip) => clip.anchorClipId === 'clip-2')).toBe(true)
+    expect(laid.map((clip) => clip.startTime)).toEqual([3, 5])
+  })
+
+  it('keeps the first take and gives the second a lane of its own', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    const second = useProjectStore
+      .getState()
+      .addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    // Nothing generated is overwritten: both readings are still on the timeline.
+    expect(stored().audioClips.map((clip) => clip.assetId)).toEqual(['fix-1', 'fix-2'])
+    const lanes = stored().audioClips.map((clip) => clip.trackId)
+    expect(new Set(lanes).size).toBe(2)
+    expect(second.silenced).toBe(1)
+  })
+
+  it('mutes the lane the earlier take is on, so only the newest is heard', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    const laneOf = (assetId: string) =>
+      stored().audioTracks.find(
+        (track) =>
+          track.id === stored().audioClips.find((clip) => clip.assetId === assetId)?.trackId,
+      )
+    expect(laneOf('fix-1')?.muted).toBe(true)
+    expect(laneOf('fix-2')?.muted).toBe(false)
+  })
+
+  it('leaves a lane alone once something else is sharing it', () => {
+    // Muting is only ever safe on a lane holding nothing but fixes. Drag a take
+    // onto one and it stops being this feature's to silence.
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    const fixLane = stored().audioClips[0]!.trackId
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'recording',
+      useConverted: false,
+      startTime: 20,
+      inPoint: 0,
+      duration: 1,
+    })
+    useProjectStore
+      .getState()
+      .updateAudioClip(stored().audioClips.find((clip) => clip.assetId === 'recording')!.id, {
+        trackId: fixLane,
+      })
+
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    expect(stored().audioTracks.find((track) => track.id === fixLane)?.muted).toBe(false)
+  })
+
+  it('leaves a take that happens to be anchored to the same clip alone', () => {
+    twoClips()
+    useProjectStore.getState().addAudioClip('voice', {
+      assetId: 'recording',
+      useConverted: false,
+      startTime: 4,
+      inPoint: 0,
+      duration: 1,
+    })
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-2', 'Buenos días')])
+
+    // Somebody's recording is not a fix, however close it is sitting, so the
+    // lane it is on is never the one a later fix quietens.
+    const recordingLane = stored().audioClips.find((clip) => clip.assetId === 'recording')?.trackId
+    expect(stored().audioTracks.find((track) => track.id === recordingLane)?.muted).toBe(false)
+  })
+
+  it('carries the correction with the clip when the picture is rearranged', () => {
+    twoClips()
+    useProjectStore.getState().addFixedClipAudio('clip-2', [speech('fix-1', 'Hola')])
+
+    // clip-2 now plays first, so its line has to move with it.
+    useProjectStore.getState().moveClip(1, 0)
+
+    expect(stored().audioClips[0]?.startTime).toBeCloseTo(0)
+  })
+})
+
+/**
+ * Where a clip added from the library lands, and what has to come with it.
+ *
+ * Inserting into the middle of the run is the one clip edit that makes the
+ * picture longer as well as rearranging it, so everything past the insertion
+ * point that is timed in absolute seconds — captions, and the takes anchored to
+ * a shot — has to be carried by exactly the length of what was inserted. The
+ * failure this is here to catch is the sound staying put while the picture
+ * slides out from under it, which is silent until you play the thing back.
+ */
+describe('a clip added at the playhead', () => {
+  const asset: Asset = {
+    id: 'a-new',
+    kind: 'video',
+    blobKey: 'b-new',
+    mimeType: 'video/mp4',
+    name: 'new.mp4',
+    duration: 4,
+    createdAt: 0,
+  }
+
+  /** Three shots of 2s, 3s and 5s, so they run 0–2, 2–5 and 5–10. */
+  const threeShots = (): Project => ({
+    ...emptyProject(),
+    clips: [
+      { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+      { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+      { id: 'clip-3', assetId: 'c', inPoint: 0, outPoint: 5 },
+    ],
+  })
+
+  /** What was inserted, which is whatever is not one of the three shots. */
+  const added = () => stored().clips.filter((clip) => !clip.id.startsWith('clip-'))
+
+  it('lands after the clip the playhead is over rather than on the end', () => {
+    useProjectStore.setState({ project: threeShots() })
+
+    // A second into the first shot.
+    useProjectStore.getState().addClip(asset, 1)
+
+    const order = stored().clips.map((clip) => (clip.id.startsWith('clip-') ? clip.id : 'added'))
+    expect(order).toEqual(['clip-1', 'added', 'clip-2', 'clip-3'])
+    // Selected, so the next edit lands on what was just added.
+    expect(useProjectStore.getState().selectedClipId).toBe(added()[0]?.id)
+  })
+
+  it('carries the captions behind it by the length of what was inserted', () => {
+    useProjectStore.setState({ project: threeShots() })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'One.', start: 0.5, end: 0.9, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'Two.', start: 2.5, end: 2.9, source: { id: 'clip-2', label: 'b.mp4' } },
+      { text: 'Three.', start: 5.5, end: 5.9, source: { id: 'clip-3', label: 'c.mp4' } },
+    ])
+
+    useProjectStore.getState().addClip(asset, 1)
+
+    const startFor = (clipId: string) =>
+      captionCuesOf(stored()).find((cue) => cue.source?.id === clipId)?.start ?? NaN
+    // Four seconds of new picture between the first shot and the second. The
+    // line spoken over the first is in front of it and does not move; the two
+    // behind it move by exactly that much, each keeping its offset into its own
+    // shot — half a second in.
+    expect(startFor('clip-1')).toBeCloseTo(0.5)
+    expect(startFor('clip-2')).toBeCloseTo(6.5)
+    expect(startFor('clip-3')).toBeCloseTo(9.5)
+  })
+
+  it('carries the takes anchored behind it, and leaves the music where it was laid', () => {
+    useProjectStore.setState({ project: threeShots() })
+    const base = { assetId: 'rec', useConverted: false, inPoint: 0, duration: 1 }
+    // A line read half a second into the second shot, a count-in leading into
+    // the third, and a bed under the whole piece.
+    useProjectStore.getState().addAudioClip('voice', { ...base, startTime: 2.5 })
+    useProjectStore.getState().addAudioClip('countdown', { ...base, startTime: 6 })
+    useProjectStore.getState().addAudioClip('music', { ...base, startTime: 0, duration: 10 })
+
+    useProjectStore.getState().addClip(asset, 1)
+
+    const startFor = (anchorClipId: string) =>
+      stored().audioClips.find((clip) => clip.anchorClipId === anchorClipId)?.startTime ?? NaN
+    expect(startFor('clip-2')).toBeCloseTo(6.5)
+    expect(startFor('clip-3')).toBeCloseTo(10)
+    // The bed belongs to the piece rather than to a shot, so four more seconds
+    // of picture in front of it change nothing about where it starts.
+    const music = stored().audioClips.find((clip) => clip.duration === 10)
+    expect(music?.anchorClipId).toBeUndefined()
+    expect(music?.startTime).toBe(0)
+  })
+
+  it('goes on the end from past the picture, and from inside a lead-in', () => {
+    useProjectStore.setState({ project: threeShots() })
+    useProjectStore.getState().addClip(asset, 99)
+    expect(stored().clips.at(-1)?.id).toBe(added()[0]?.id)
+
+    // The black in front of the first clip is not a position in the run: there
+    // is no clip there to be after, and putting one in the gap would only close
+    // it.
+    useProjectStore.setState({ project: { ...threeShots(), leadIn: 4 } })
+    useProjectStore.getState().addClip(asset, 2)
+    expect(stored().clips).toHaveLength(4)
+    expect(stored().clips.at(-1)?.id).toBe(added()[0]?.id)
+  })
+
+  it('goes on the end when nothing says where', () => {
+    // What the Image and Video steps do: a clip generated there arrives with no
+    // playhead to place it at, and lands where it always has.
+    useProjectStore.setState({ project: threeShots() })
+
+    useProjectStore.getState().addClip(asset)
+
+    expect(
+      stored()
+        .clips.map((clip) => clip.id)
+        .slice(0, 3),
+    ).toEqual(['clip-1', 'clip-2', 'clip-3'])
+    expect(stored().clips).toHaveLength(4)
+  })
+})
+
+/**
+ * The video lane stack: which lane a new layer lands on, and moving lanes along
+ * the order afterwards.
+ *
+ * The order of `videoTracks` is the only record of what covers what — nothing on
+ * a lane says where it sits — so an action that restacks without going through
+ * `mutate` would look right until the project was reloaded and then quietly draw
+ * the frame the other way up. That is why the order is read back out of storage
+ * here rather than off the live store.
+ */
+describe('the video lane stack', () => {
+  const still: Asset = {
+    id: 'a-still',
+    kind: 'image',
+    blobKey: 'b',
+    mimeType: 'image/png',
+    name: 'logo.png',
+    createdAt: 0,
+  }
+
+  /** A project with `count` empty lanes, bottom of the stack first. */
+  const withLanes = (count: number) => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        videoTracks: Array.from({ length: count }, (_unused, index) => ({
+          id: `v${index + 1}`,
+          name: `Video ${index + 1}`,
+          hidden: false,
+          opacity: 1,
+        })),
+        videoClips: [],
+      },
+      selectedVideoClipId: null,
+    })
+  }
+
+  const laneIds = () => (stored().videoTracks ?? []).map((track) => track.id)
+
+  it('moves a lane up the stack and writes the new order down', () => {
+    withLanes(3)
+    useProjectStore.getState().moveVideoTrack('v1', 'up')
+
+    expect(laneIds()).toEqual(['v2', 'v1', 'v3'])
+  })
+
+  it('moves one back down again', () => {
+    withLanes(3)
+    useProjectStore.getState().moveVideoTrack('v3', 'down')
+
+    expect(laneIds()).toEqual(['v1', 'v3', 'v2'])
+  })
+
+  it('leaves the top of the stack alone when it is pushed further up', () => {
+    withLanes(2)
+    useProjectStore.getState().moveVideoTrack('v2', 'up')
+
+    expect(laneIds()).toEqual(['v1', 'v2'])
+  })
+
+  it('leaves every layer on the lane it was on', () => {
+    // Restacking moves lanes, not their contents. A clip that changed lanes
+    // would be a layer that moved in time as well as in depth.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+    const before = (stored().videoClips ?? []).map((clip) => [clip.id, clip.trackId])
+
+    useProjectStore.getState().moveVideoTrack('v1', 'up')
+
+    expect((stored().videoClips ?? []).map((clip) => [clip.id, clip.trackId])).toEqual(before)
+  })
+
+  it('puts a new layer on the highest lane with room, not the lowest', () => {
+    // The bug this fixes: the lane search ran up the array, which is up from
+    // the bottom of the stack, so a new layer landed under everything.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+
+    expect(stored().videoClips?.[0]?.trackId).toBe('v2')
+  })
+
+  it('makes a lane on top of the stack when every candidate is busy', () => {
+    withLanes(1)
+    useProjectStore.getState().addVideoClip(still, 0)
+    useProjectStore.setState({ selectedVideoClipId: null })
+    useProjectStore.getState().addVideoClip(still, 0)
+
+    const lanes = laneIds()
+    expect(lanes).toHaveLength(2)
+    // The lane was made because there was nowhere high enough to put the layer,
+    // so it has to be the last of them — anything else hands back the placement
+    // it was made to avoid.
+    expect(stored().videoClips?.[1]?.trackId).toBe(lanes[1])
+  })
+
+  it('never puts a layer under the one that is selected', () => {
+    // The lower lane is free at that moment and the selected layer's lane is
+    // not, so first-fit would slide the new layer in underneath it. Picking a
+    // layer and then adding one means "over this".
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+    expect(useProjectStore.getState().selectedVideoClipId).toBe(stored().videoClips?.[0]?.id)
+
+    useProjectStore.getState().addVideoClip(still, 1)
+
+    const lanes = laneIds()
+    expect(lanes.indexOf(stored().videoClips?.[1]?.trackId ?? '')).toBeGreaterThan(
+      lanes.indexOf('v2'),
+    )
+  })
+
+  it('keeps using the selected layer’s own lane where there is room on it', () => {
+    // Dropping a layer selects it, so without this every drop after the first
+    // would spawn a lane and a row of stills would be a staircase of lanes.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0)
+    useProjectStore.getState().addVideoClip(still, 10)
+
+    expect(laneIds()).toEqual(['v1', 'v2'])
+    expect(stored().videoClips?.map((clip) => clip.trackId)).toEqual(['v2', 'v2'])
+  })
+
+  it('still refuses an explicitly named lane that has no room', () => {
+    // A drop onto a lane is a request, not a suggestion, and the search that
+    // now prefers the top of the stack must not start quietly answering it.
+    withLanes(2)
+    useProjectStore.getState().addVideoClip(still, 0, 'v1')
+
+    expect(useProjectStore.getState().addVideoClip(still, 0, 'v1')).toBeNull()
+    expect(stored().videoClips).toHaveLength(1)
+  })
+})
+
+describe('published videos', () => {
+  it('remembers one, and writes it down', () => {
+    useProjectStore.getState().recordPublication(PUBLICATION)
+
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+    expect(stored().publications).toEqual([PUBLICATION])
+  })
+
+  it('keeps them in the order they went up', () => {
+    const second = { ...PUBLICATION, videoId: 'video-2', digest: 'cafe' }
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().recordPublication(second)
+
+    expect(useProjectStore.getState().project.publications?.map((entry) => entry.videoId)).toEqual([
+      'video-1',
+      'video-2',
+    ])
+  })
+
+  it('forgets one that has been deleted from the feed', () => {
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().forgetPublication('video-1')
+
+    expect(useProjectStore.getState().project.publications).toEqual([])
+    expect(stored().publications).toEqual([])
+  })
+
+  it('does nothing for a video it was never tracking', () => {
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    const before = useProjectStore.getState().project
+
+    useProjectStore.getState().forgetPublication('never-heard-of-it')
+
+    // The same object, so nothing downstream treats this as an edit to push.
+    expect(useProjectStore.getState().project).toBe(before)
+  })
+})
+
+describe('undo and redo', () => {
+  const asset: Asset = {
+    id: 'a-clip',
+    kind: 'video',
+    blobKey: 'b',
+    mimeType: 'video/webm',
+    name: 'take.webm',
+    createdAt: 0,
+  }
+
+  it('is a no-op with nothing to undo or redo', () => {
+    const before = useProjectStore.getState().project
+    useProjectStore.getState().undo()
+    useProjectStore.getState().redo()
+    expect(useProjectStore.getState().project).toBe(before)
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('steps an edit back and forward again', () => {
+    useProjectStore.getState().addClip(asset)
+    const withOneClip = useProjectStore.getState().project
+    useProjectStore.getState().addClip(asset)
+    const withTwoClips = useProjectStore.getState().project
+
+    expect(useProjectStore.getState().canUndo()).toBe(true)
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project).toBe(withOneClip)
+    expect(useProjectStore.getState().canRedo()).toBe(true)
+
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project.clips).toEqual([])
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+
+    useProjectStore.getState().redo()
+    expect(useProjectStore.getState().project).toBe(withOneClip)
+    useProjectStore.getState().redo()
+    expect(useProjectStore.getState().project).toBe(withTwoClips)
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('saves the project an undo restores, so a reload does not resurrect the edit', () => {
+    useProjectStore.getState().addClip(asset)
+    saveProject.mockClear()
+
+    useProjectStore.getState().undo()
+
+    expect(stored().clips).toEqual([])
+  })
+
+  it('drops the redo branch once a fresh edit is made', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().canRedo()).toBe(true)
+
+    useProjectStore.getState().addClip(asset)
+
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('does not record a step for an edit that hands back the same project', () => {
+    useProjectStore.getState().addClip(asset)
+    const before = useProjectStore.getState().past.length
+
+    // No video clip has this id, so the trim is refused and the project
+    // handed back by `mutate`'s callback is the very one it was given.
+    useProjectStore.getState().trimVideoClipEdge('missing-id', undefined, 'start', 1)
+
+    expect(useProjectStore.getState().past.length).toBe(before)
+  })
+
+  it('clears history when a different project is opened', async () => {
+    useProjectStore.getState().addClip(asset)
+    expect(useProjectStore.getState().canUndo()).toBe(true)
+
+    await useProjectStore.getState().open('another-project')
+
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('does not forget a published video by stepping back past it', () => {
+    // The history holds whole projects, so the step taken before publishing
+    // still carries the empty list. Restoring it verbatim would forget a video
+    // that is still in the feed — and forgetting it is what would let it be
+    // posted a second time.
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().addClip(asset)
+
+    useProjectStore.getState().undo()
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+    expect(stored().publications).toEqual([PUBLICATION])
+  })
+
+  it('does not forget one by stepping forward again either', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().undo()
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().redo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+  })
+
+  it('leaves publishing off the undo stack, since Ctrl+Z cannot unpublish', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().recordPublication(PUBLICATION)
+
+    // One edit, so one step: the publish did not add one of its own.
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+  })
+
+  it('drops a selection an undo brings back to nothing', () => {
+    useProjectStore.getState().addClip(asset)
+    const clipId = useProjectStore.getState().project.clips[0]!.id
+    useProjectStore.getState().selectClip(clipId)
+    useProjectStore.getState().removeClip(clipId)
+    expect(useProjectStore.getState().selectedClipId).toBeNull()
+
+    // Undoing the removal brings the clip back, but the selection was cleared
+    // when it vanished and an undo does not go rummaging for it again.
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().selectedClipId).toBeNull()
   })
 })

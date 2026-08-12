@@ -560,6 +560,84 @@ try {
   // look away from, and the count is the only confirmation the words changed.
   await page.getByRole('button', { name: /^Dismiss the captioning result/ }).click()
 
+  // --- Fixing what a clip says, from the same menu -------------------------
+  // A generated clip that says a foreign word with an English mouth cannot be
+  // repaired by a voice changer: the delivery is the part that is wrong. So the
+  // captions are the script — corrected here, saved, then said back a line at a
+  // time and laid on the mark each caption sits on, with the captions re-timed
+  // to the new voice afterwards. Everything about that is only real in a
+  // browser: the audio has to decode for its length to be known at all.
+  const fixItem = page.getByRole('menuitem', { name: /Fix this clip’s audio/ })
+  let fixedClip = ''
+  for (const [index, name] of menuNames.entries()) {
+    await menus.nth(index).click()
+    if ((await fixItem.count()) > 0) {
+      // Nothing here is gated on a key: mock mode has none, and a greyed-out
+      // item would mean the whole flow below is unreachable in this build.
+      if (await fixItem.isDisabled()) fail(`${name} offers the fix but will not run it`)
+      fixedClip = /^Actions for (.+)$/.exec(name)?.[1] ?? ''
+      break
+    }
+    await page.keyboard.press('Escape')
+  }
+  if (!fixedClip) fail(`no clip offered to fix its audio, out of ${menuNames.length}`)
+
+  const mutedBefore = await page.locator('[aria-label="sound muted"]').count()
+  await fixItem.click()
+  await page.waitForSelector('text=Fix the audio on', { timeout: 20000 })
+
+  // The captions themselves, one row each — not a copy to correct separately.
+  const captionRows = page.locator('dialog[open] input[aria-label^="Caption at "]')
+  const rowCount = await captionRows.count()
+  if (rowCount === 0) fail('the fix dialog should open with this clip’s captions in it')
+  step(`fix dialog opens for ${fixedClip} with its ${rowCount} captions, each on its own mark`)
+
+  // Editing a line has to reach the captions as well as the speech: that is the
+  // whole point of the captions being the script rather than a suggestion.
+  const CORRECTED = 'Buongiorno amico mio'
+  await captionRows.first().fill(CORRECTED)
+  await page.getByRole('button', { name: /Save captions and fix the audio/ }).click()
+  await page.waitForSelector('text=/now says your/', { timeout: 180000 })
+
+  const laid = page.locator('[role="group"][aria-label^="Fixed"]')
+  const laidCount = await laid.count()
+  if (laidCount !== rowCount) {
+    fail(`expected one piece of audio per caption: ${laidCount} for ${rowCount} captions`)
+  }
+  const laidLabel = await laid.first().getAttribute('aria-label')
+  if (!/on Voice /.test(laidLabel ?? '')) fail(`the fix landed off the voice lanes: "${laidLabel}"`)
+  const mutedAfter = await page.locator('[aria-label="sound muted"]').count()
+  if (mutedAfter !== mutedBefore + 1) {
+    fail(`the fixed clip should be muted: ${mutedBefore} silent clips before, ${mutedAfter} after`)
+  }
+  // By role rather than a raw attribute selector: the label quotes the caption
+  // text, and quoting that inside a CSS selector is a way to write an invalid one.
+  const correctedCaption = page.getByRole('group', { name: new RegExp(`Caption "${CORRECTED}"`) })
+  if ((await correctedCaption.count()) === 0) {
+    fail('the edited line did not reach the caption on the timeline')
+  }
+  step(
+    `${laidCount} lines spoken under ${fixedClip}, the clip muted, and the edit saved to the ` +
+      `caption itself`,
+  )
+
+  // Both halves of the landing are one edit, so one undo has to put them back —
+  // and it leaves the timeline as the rest of this walk-through expects it.
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await page.waitForTimeout(200)
+  if ((await laid.count()) !== 0) fail('undo left the corrected lines on the timeline')
+  if ((await page.locator('[aria-label="sound muted"]').count()) !== mutedBefore) {
+    fail('undo left the clip silent after taking its replacement away')
+  }
+  // A second undo backs out the caption edit, which is deliberately its own step.
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await page.waitForTimeout(200)
+  if ((await correctedCaption.count()) !== 0) {
+    fail('a second undo should return the caption to what it said before')
+  }
+  await page.getByRole('button', { name: /^Dismiss the audio fix result/ }).click()
+  step('one undo takes the audio and the timings back, a second returns the words')
+
   // Retiming one word is the other half of the job, and the part that makes this
   // karaoke rather than subtitles. Asking for an absurd time is deliberate: a
   // word must move, and must stop short of overtaking the one after it, so this
@@ -581,6 +659,14 @@ try {
   // Retiming a word from the timeline itself, with the keyboard. Dragging gets a
   // word roughly right; this is the only way to place one exactly, and it is the
   // half of word timing a mouse-only lane does not offer at all.
+  // Zoomed in first. A word handle is sixteen pixels wide and centred on the
+  // word it marks, so two words a fifth of a second apart overlap at the default
+  // forty pixels a second — and the press lands on whichever is drawn on top,
+  // which is not the one this step means to retime. Zooming is what a person
+  // would do about that, and it is what the timeline is for.
+  await page.fill('#zoom', '160')
+  await page.waitForTimeout(100)
+
   const wordMark = page.locator(
     '[role="group"][aria-label^="Caption "] button[aria-label^="Word "]',
   )
@@ -942,6 +1028,38 @@ try {
     `export verified: ${mp4.durationSeconds.toFixed(2)}s, ${mp4.width}x${mp4.height}, ` +
       `video+audio, faststart`,
   )
+
+  // --- The report bubble ---------------------------------------------------
+  // Last, and deliberately so: it is the one thing here that floats over the
+  // editor, and a 48px button in the corner is exactly the sort of thing that
+  // starts intercepting clicks meant for the timeline. Everything above has
+  // already run with it on the page.
+  //
+  // The export dialog is still open at this point, and a modal <dialog> makes
+  // everything behind it inert — including the bubble.
+  await page.getByRole('dialog').getByLabel('Close').click()
+
+  await page.getByRole('button', { name: 'Report a problem or suggest a feature' }).click()
+  await page.getByRole('dialog', { name: 'Report a problem' }).waitFor()
+  step('report bubble opens')
+
+  await page.getByRole('textbox', { name: 'Title' }).fill('The export stops at 40%')
+  await page.getByRole('textbox', { name: 'Details' }).fill('It hangs there every time.')
+
+  // What the issue will carry has to be visible before it is posted — the
+  // reporter's own address included, since this goes to a public tracker.
+  await page.getByText('What gets attached').click()
+  const attached = await page.locator('.fixed pre').first().innerText()
+  for (const expected of ['Reported by:', 'Build:', 'Project:']) {
+    if (!attached.includes(expected)) {
+      fail(`the preview does not show "${expected}": ${attached}`)
+    }
+  }
+  step('the form shows what filing would publish, address included')
+
+  await page.getByRole('button', { name: /^Post/ }).click()
+  await page.getByText(/Nothing was posted/).waitFor({ timeout: 15000 })
+  step('posting in mock mode files nothing and says so')
 
   if (pageErrors.length) fail(`console errors during the run:\n    ${pageErrors.join('\n    ')}`)
   step('no console errors')

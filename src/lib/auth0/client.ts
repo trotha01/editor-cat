@@ -29,7 +29,7 @@
  * makes deploy previews work without a registered redirect URI of their own, and
  * it is why nothing here relocates the browser between hosts.
  */
-import { Auth0Client, type User } from '@auth0/auth0-spa-js'
+import { Auth0Client, type IdToken, type User } from '@auth0/auth0-spa-js'
 
 /**
  * The connection Auth0 knows Google by. Fixed rather than configurable: it is
@@ -94,6 +94,21 @@ export class Auth0RedirectError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'Auth0RedirectError'
+  }
+}
+
+/**
+ * Raised when a renewal came back with an ID token that has already expired.
+ *
+ * Its own class because it is neither of the two failures around it: Auth0 was
+ * reachable and it did not refuse, it simply answered with a credential nothing
+ * downstream will accept. The only thing left that can be, from here, is a
+ * session that has ended.
+ */
+export class Auth0IdTokenExpiredError extends Error {
+  constructor() {
+    super('Your session expired. Sign in again to continue.')
+    this.name = 'Auth0IdTokenExpiredError'
   }
 }
 
@@ -321,6 +336,28 @@ export async function auth0Token(): Promise<string | null> {
 }
 
 /**
+ * How close to its own expiry an ID token is renewed rather than sent.
+ *
+ * PostgREST reads `exp` when the request arrives rather than when it left, so a
+ * token with a second on it is a query that fails after the round trip.
+ */
+const ID_TOKEN_RENEW_WITHIN_SECONDS = 60
+
+/**
+ * Whether these claims have run out — optionally counting the next few seconds
+ * as run out too.
+ *
+ * Claims with no `exp` count as current. Auth0 always sends one and the SDK
+ * refuses a token without it, so this is the shape of an empty cache rather
+ * than of a real token, and reading it as expired would put a forced network
+ * refresh in front of every query on the page.
+ */
+function hasExpired(claims: IdToken | undefined, withinSeconds = 0): boolean {
+  if (typeof claims?.exp !== 'number') return false
+  return claims.exp - withinSeconds <= Math.floor(Date.now() / 1000)
+}
+
+/**
  * The raw ID token, which is the one Supabase accepts.
  *
  * PostgREST switches to the Postgres role named in the JWT's `role` claim, and
@@ -332,18 +369,47 @@ export async function auth0Token(): Promise<string | null> {
  * PostgREST reads. Supabase's own Auth0 guide says the same thing and passes the
  * ID token for exactly this reason. See the README for the Action.
  *
- * `getTokenSilently` first, and not for the value it returns. `getIdTokenClaims`
- * is a synchronous read of the SDK's cache dressed as a promise; the refresh is
- * what puts a current entry there, since Auth0 returns a fresh `id_token`
- * alongside every refreshed access token. Without it a tab left open past the ID
- * token's lifetime would go on handing PostgREST an expired credential — and
- * refusing to refresh is also how an exhausted refresh token announces itself,
- * which is the throw the caller turns into "sign in again".
+ * The expiry check below is the whole reason this is not a one-liner, and it is
+ * there because the obvious one-liner is wrong. `getIdTokenClaims` is a
+ * synchronous read of the SDK's cache dressed as a promise, and
+ * `getTokenSilently` renews on the *access* token's clock alone: auth0-spa-js
+ * stores a cache entry's expiry as `now + expires_in` from the token response
+ * and never consults the ID token's own `exp`, while the ID token it hands back
+ * comes from a separate per-client entry that carries no expiry at all and is
+ * only ever overwritten by a renewal that happens for some other reason.
+ *
+ * Auth0's defaults put ten hours on an ID token and twenty-four on an API
+ * access token. For the fourteen hours between them the cached access token is
+ * current, so no renewal runs, so the ID token beside it is never replaced —
+ * and every Supabase query goes out with a credential that expired hours ago.
+ * PostgREST answers `PGRST303 / "JWT expired"`, which is a sentence about a
+ * database on behalf of a session that is perfectly alive.
+ *
+ * So the token actually being sent is the one whose expiry gets checked, and a
+ * stale one is renewed with the cache turned off — the only way to make the SDK
+ * spend the refresh token when its own bookkeeping sees nothing wrong.
  */
 export async function auth0IdToken(): Promise<string | null> {
   if (!currentAccount()) return null
+
+  // Still first, for what it covers on its own: a cache with nothing in it, and
+  // a refresh token that has run out. The reject is how the second announces
+  // itself, and the caller turns that into "sign in again".
   await auth0().getTokenSilently()
-  return (await auth0().getIdTokenClaims())?.__raw ?? null
+
+  let claims = await auth0().getIdTokenClaims()
+  if (!hasExpired(claims, ID_TOKEN_RENEW_WITHIN_SECONDS)) return claims?.__raw ?? null
+
+  await auth0().getTokenSilently({ cacheMode: 'off' })
+  claims = await auth0().getIdTokenClaims()
+
+  // Renewed and still past `exp`. Measured without the margin above, so a
+  // tenant whose ID tokens are shorter-lived than the margin is not locked out
+  // of a session that is working: this is the token Auth0 just minted, and only
+  // a genuinely dead one is worth refusing to send.
+  if (hasExpired(claims)) throw new Auth0IdTokenExpiredError()
+
+  return claims?.__raw ?? null
 }
 
 export async function auth0SignOut(): Promise<void> {

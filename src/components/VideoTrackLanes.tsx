@@ -9,7 +9,8 @@
  *
  * Lanes are drawn bottom of the stack first, matching both the array order and
  * the order the exporter lays them on. What is lower in this list is lower in
- * the frame.
+ * the frame — and moving a lane along that order, from the controls in its
+ * header, is the whole of restacking the picture.
  */
 import { useRef, useState } from 'react'
 import { AssetThumb } from './AssetThumb'
@@ -19,6 +20,7 @@ import { formatTime } from '../lib/timeline'
 import { MIN_OVERLAY_DURATION } from '../lib/videoTracks'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
+import { useProjectsStore } from '../state/useProjectsStore'
 import { videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import type { Asset, VideoClip, VideoTrack } from '../lib/types'
 
@@ -44,6 +46,11 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
   const tracks = useProjectStore((state) => videoTracksOf(state.project))
   const clips = useProjectStore((state) => videoClipsOf(state.project))
   const assets = useAssetStore((state) => state.assets)
+  const assetsLoading = useAssetStore((state) => state.loading)
+  const hydrating = useProjectsStore((state) => state.hydration !== null)
+  // Mirrors the picture track: an asset absent from the library during either
+  // of these is still on its way, not gone.
+  const mediaLoading = assetsLoading || hydrating
   const moveVideoClipTo = useProjectStore((state) => state.moveVideoClipTo)
   const trimVideoClipEdge = useProjectStore((state) => state.trimVideoClipEdge)
   const removeVideoClip = useProjectStore((state) => state.removeVideoClip)
@@ -127,6 +134,7 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
                 clip={clip}
                 track={track}
                 asset={assetById.get(clip.assetId)}
+                mediaLoading={mediaLoading}
                 zoom={zoom}
                 selected={clip.id === selectedId}
                 blocked={blockedClipId === clip.id}
@@ -150,6 +158,7 @@ function LayerChip({
   clip,
   track,
   asset,
+  mediaLoading,
   zoom,
   selected,
   blocked,
@@ -163,6 +172,8 @@ function LayerChip({
   clip: VideoClip
   track: VideoTrack
   asset: Asset | undefined
+  /** True while an asset absent from the library might still be on its way. */
+  mediaLoading: boolean
   zoom: number
   selected: boolean
   blocked: boolean
@@ -174,7 +185,7 @@ function LayerChip({
   onToggleMute: () => void
 }) {
   const trimRef = useRef<{ edge: 'start' | 'end'; startX: number; origin: number } | null>(null)
-  const label = asset?.name ?? 'missing media'
+  const label = asset?.name ?? (mediaLoading ? 'media loading' : 'missing media')
   const isImage = asset?.kind === 'image'
 
   const beginTrim = (event: React.PointerEvent, edge: 'start' | 'end') => {
@@ -245,7 +256,13 @@ function LayerChip({
                   onSelect: onToggleMute,
                 },
               ]),
-          { icon: '🗑', label: `Remove ${label} from this lane`, onSelect: onRemove, danger: true },
+          {
+            icon: '🗑',
+            label: `Remove ${label} from this lane`,
+            note: 'Delete',
+            onSelect: onRemove,
+            danger: true,
+          },
         ]}
         className="ml-auto size-4 shrink-0 opacity-70 transition hover:opacity-100"
       />
@@ -299,6 +316,7 @@ export function VideoTrackHeaders() {
   const tracks = useProjectStore((state) => videoTracksOf(state.project))
   const clips = useProjectStore((state) => videoClipsOf(state.project))
   const updateVideoTrack = useProjectStore((state) => state.updateVideoTrack)
+  const moveVideoTrack = useProjectStore((state) => state.moveVideoTrack)
   const removeVideoTrack = useProjectStore((state) => state.removeVideoTrack)
 
   if (tracks.length === 0) return null
@@ -307,6 +325,11 @@ export function VideoTrackHeaders() {
     <div className="mt-2 flex flex-col gap-1">
       {[...tracks].reverse().map((track) => {
         const count = clips.filter((clip) => clip.trackId === track.id).length
+        // Read off the array rather than off this reversed list, so that which
+        // end of the stack a lane is at does not depend on the flip: the array
+        // is bottom-first, so its last entry is the top of the stack.
+        const atTop = tracks[tracks.length - 1]?.id === track.id
+        const atBottom = tracks[0]?.id === track.id
         return (
           <div
             key={track.id}
@@ -342,6 +365,42 @@ export function VideoTrackHeaders() {
                 title={`Opacity ${Math.round(track.opacity * 100)}%`}
                 className="h-1 w-full"
               />
+            </div>
+
+            {/* Up and down the stack, which is what decides what covers what.
+                The direction is the one thing here that is easy to get wrong:
+                this list is drawn reversed so the top of the stack is at the
+                top of the screen, so the button that moves a lane up the screen
+                has to move it *later* in the array, not earlier. */}
+            <div className="flex shrink-0 flex-col">
+              <Button
+                variant="ghost"
+                className="!px-1 !py-0 text-[10px] leading-none"
+                disabled={atTop}
+                onClick={() => moveVideoTrack(track.id, 'up')}
+                aria-label={`Move ${track.name} up`}
+                title={
+                  atTop
+                    ? 'Already at the top of the stack'
+                    : 'Move this lane up, over the one above it'
+                }
+              >
+                ▲
+              </Button>
+              <Button
+                variant="ghost"
+                className="!px-1 !py-0 text-[10px] leading-none"
+                disabled={atBottom}
+                onClick={() => moveVideoTrack(track.id, 'down')}
+                aria-label={`Move ${track.name} down`}
+                title={
+                  atBottom
+                    ? 'Already at the bottom of the stack'
+                    : 'Move this lane down, under the one below it'
+                }
+              >
+                ▼
+              </Button>
             </div>
 
             <Button

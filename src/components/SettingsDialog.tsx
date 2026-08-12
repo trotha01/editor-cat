@@ -1,53 +1,40 @@
 /**
- * API keys and storage.
+ * Preferences and storage.
  *
- * One key is entered here, and it belongs to the user: ElevenLabs. It is sent
- * per request to our own proxy function, forwarded once to the provider, and
- * never written to a server. The copy in this browser is the only copy, which
- * is why "remember" is a choice rather than a default.
+ * There are no API keys here any more, and their absence is the feature: images,
+ * video and captions run on the deployment's fal.ai account, and the voice
+ * features on its ElevenLabs one. Nothing a visitor can type would be spent, so
+ * nothing asks them to type it — a field that only ever produced a second way to
+ * pay for the same thing is worse than no field.
  *
- * Image and video generation used to need a second key. It now runs on a
- * fal.ai account belonging to this deployment, so there is nothing here for it.
+ * What is left is what genuinely belongs to this browser: which models the
+ * prompt improver uses, the account, Drive, and the media stored on this device.
  */
 import { useEffect, useState } from 'react'
-import { Button, Callout, Field, Modal, Spinner, TextInput } from './ui'
+import { Button, Callout, Modal } from './ui'
 import { LLM_MODELS } from '../lib/models'
 import { ModelPicker } from './ModelPicker'
 import { AccountSettings } from './AccountSettings'
 import { DriveSettings } from './DriveSettings'
-import { verifyKey } from '../lib/elevenlabs'
+import { ProjectSettings } from './ProjectSettings'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
-import { toDisplayMessage } from '../lib/errors'
 import { isMockEnabled } from '../lib/mock'
 import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { releaseAllAssetUrls } from '../state/useAssetStore'
 
-type TestState = 'idle' | 'testing' | 'ok' | 'fail'
-
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useSettingsStore()
+  // Whether the voice features are set up here at all. Nothing a visitor can do
+  // changes it, so this only decides which half of one sentence is true.
+  const siteEleven = settings.siteElevenLabs
   const loadAssets = useAssetStore((state) => state.load)
 
-  const [elevenTest, setElevenTest] = useState<TestState>('idle')
-  const [testError, setTestError] = useState<string | null>(null)
   const [usage, setUsage] = useState<{ used: number; quota: number } | null>(null)
 
   useEffect(() => {
     if (open) void estimateUsage().then(setUsage)
   }, [open])
-
-  const testEleven = async () => {
-    setElevenTest('testing')
-    setTestError(null)
-    try {
-      await verifyKey(settings.elevenlabs)
-      setElevenTest('ok')
-    } catch (cause) {
-      setElevenTest('fail')
-      setTestError(toDisplayMessage(cause))
-    }
-  }
 
   const wipe = async () => {
     if (
@@ -62,15 +49,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     window.location.reload()
   }
 
-  const badge = (state: TestState) =>
-    state === 'testing' ? (
-      <Spinner />
-    ) : state === 'ok' ? (
-      <span className="text-xs text-emerald-700">✓ working</span>
-    ) : state === 'fail' ? (
-      <span className="text-xs text-red-700">✕ failed</span>
-    ) : null
-
   return (
     <Modal open={open} onClose={onClose} title="Settings" wide>
       <div className="flex flex-col gap-5">
@@ -81,64 +59,16 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </Callout>
         ) : null}
 
-        <Callout tone="info" title="Your key stays yours">
-          Your ElevenLabs key is held in this browser and attached to each request as it passes
-          through this site&apos;s proxy on its way to the provider. It is never stored on a server.
-          Image and video generation and caption transcription need no key from you — they run on
-          this site&apos;s own fal.ai account.
+        <ProjectSettings />
+
+        <Callout tone="info" title="No keys needed">
+          Everything runs on this site&apos;s own accounts: images, video and captions on its fal.ai
+          account, and the voice features — changing a recorded voice, and fixing a clip that
+          mispronounces its line — on its ElevenLabs one.{' '}
+          {siteEleven
+            ? 'Nothing is asked of you and nothing is stored in this browser.'
+            : 'Voice generation is not set up on this deployment, so those two are unavailable until whoever runs it sets ELEVENLABS_API_KEY.'}
         </Callout>
-
-        <Field
-          label="ElevenLabs API key"
-          hint={
-            <>
-              Used only to change your recorded voice into another one. Create one at{' '}
-              <span className="text-ink">elevenlabs.io</span> under Profile → API keys.
-            </>
-          }
-          htmlFor="eleven-key"
-        >
-          <TextInput
-            id="eleven-key"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="Paste your ElevenLabs key"
-            value={settings.elevenlabs}
-            onChange={(event) => settings.setElevenLabsKey(event.target.value)}
-          />
-        </Field>
-        <div className="-mt-3 flex items-center gap-3">
-          <Button
-            onClick={testEleven}
-            disabled={!settings.elevenlabs.trim() || elevenTest === 'testing'}
-          >
-            Test connection
-          </Button>
-          {badge(elevenTest)}
-        </div>
-
-        {testError ? (
-          <Callout tone="error" title="Connection test failed">
-            {testError}
-          </Callout>
-        ) : null}
-
-        <label className="flex items-start gap-3 rounded-lg border border-line bg-surface p-3">
-          <input
-            type="checkbox"
-            checked={settings.remember}
-            onChange={(event) => settings.setRemember(event.target.checked)}
-            className="mt-0.5 size-4"
-          />
-          <span className="text-sm">
-            Remember this key on this device
-            <span className="mt-0.5 block text-xs text-ink-dim">
-              Saves it in this browser&apos;s local storage so you do not retype it. Leave it off on
-              a shared machine — the key will then be forgotten when you close the tab.
-            </span>
-          </span>
-        </label>
 
         <ModelPicker
           label="Prompt-improvement model"
@@ -162,9 +92,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           <div className="flex flex-wrap gap-2">
             <Button variant="danger" onClick={wipe}>
               Delete all stored media
-            </Button>
-            <Button variant="ghost" onClick={() => settings.forgetKeys()}>
-              Forget API key
             </Button>
           </div>
         </div>

@@ -18,6 +18,7 @@ import {
   cuesUnderClips,
   recreditCuesAfterCut,
   recreditCuesAfterJoin,
+  retimeWords,
   splitBoundary,
   splitCue,
   spreadWordsEvenly,
@@ -170,6 +171,68 @@ describe('cuesFromWords', () => {
     )
     expect(cues).toHaveLength(1)
     expect(cues[0]?.source?.id).toBe('clip-1')
+  })
+})
+
+describe('retimeWords', () => {
+  const line = () => cue([word('Buon', 0.5, 0.8), word('giorno', 0.9, 1.2)], 0.5, 1.4)
+
+  it('moves every word onto when it was actually said', () => {
+    // The line was spoken from this very caption, so the words are the same
+    // words — what changes is when each one lands. The offset is where the
+    // audio sits on the timeline; the timings come back relative to it.
+    const retimed = retimeWords(
+      line(),
+      [
+        { text: 'Buon', start: 0, end: 0.4 },
+        { text: 'giorno', start: 0.45, end: 1 },
+      ],
+      2,
+    )
+
+    expect(retimed.words.map((entry) => [entry.start, entry.end])).toEqual([
+      [2, 2.4],
+      [2.45, 3],
+    ])
+    // And the caption itself covers exactly what is being said.
+    expect(retimed.start).toBe(2)
+    expect(retimed.end).toBe(3)
+  })
+
+  it('keeps the words themselves, ids and all', () => {
+    // The highlight follows word ids, and the selection in the editor is one.
+    const before = line()
+    const after = retimeWords(
+      before,
+      [
+        { text: 'ignored', start: 0, end: 0.4 },
+        { text: 'entirely', start: 0.5, end: 1 },
+      ],
+      0,
+    )
+
+    expect(after.words.map((entry) => entry.text)).toEqual(['Buon', 'giorno'])
+    expect(after.words.map((entry) => entry.id)).toEqual(before.words.map((entry) => entry.id))
+  })
+
+  it('spreads the line evenly when the model came back with a different count', () => {
+    // Normalisation: "€5" can be read as three words. Not an error, and not a
+    // reason to leave the caption sitting on the old performance either.
+    const retimed = retimeWords(line(), [{ text: 'Buongiorno', start: 0, end: 1 }], 4)
+
+    expect(retimed.start).toBe(4)
+    expect(retimed.end).toBe(5)
+    expect(retimed.words.map((entry) => entry.start)).toEqual([4, 4.5])
+  })
+
+  it('leaves the caption alone when nothing came back to time it against', () => {
+    const before = line()
+    expect(retimeWords(before, [], 3)).toBe(before)
+  })
+
+  it('never leaves a caption too short to read', () => {
+    const retimed = retimeWords(cue([word('Sì', 0, 1)]), [{ text: 'Sì', start: 0, end: 0.01 }], 0)
+    expect(retimed.end - retimed.start).toBeGreaterThanOrEqual(0.2)
   })
 })
 

@@ -35,6 +35,7 @@ import {
   splitBoundary,
 } from '../lib/captions'
 import { speechSources } from '../lib/captionSources'
+import { TRANSCRIBE_ATTEMPTS } from '../lib/scribe'
 import { formatCost, speechCost } from '../lib/models'
 import { transcribeTimeline, type TranscribeProgress } from '../lib/transcribeTimeline'
 import { formatTime } from '../lib/timeline'
@@ -164,6 +165,15 @@ export function CaptionsPanel({
                     (progress.detail ? ` · ${progress.detail}` : '')
                   : 'Getting the audio ready'}
               </span>
+              {/* Set apart from the line rather than appended to it: a retry is
+                  the one thing reported here that is not progress, and the
+                  reason to say it at all is that a job which has gone quiet for
+                  a couple of seconds is waiting rather than stuck. */}
+              {progress?.attempt ? (
+                <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-800">
+                  retrying ({progress.attempt} of {TRANSCRIBE_ATTEMPTS})
+                </span>
+              ) : null}
               <Button variant="ghost" onClick={() => abortRef.current?.abort()}>
                 Cancel
               </Button>

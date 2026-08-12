@@ -125,6 +125,18 @@ export interface ExportSpec {
    * scripts/copy-caption-font.mjs.
    */
   captions?: { file: string; fontsDir: string }
+  /**
+   * The stretch of the finished timeline to keep, in absolute seconds. Absent
+   * is all of it.
+   *
+   * Cut at the end of the graph rather than by moving the clips, because every
+   * other time in here — a layer's start, a caption's cue, the lead-in — is
+   * dated from the timeline, and re-dating all of them to a new zero is four
+   * chances to put one of them a second out. The cost is honest and worth
+   * saying: ffmpeg still decodes everything up to `start`, so exporting the
+   * last ten seconds of a long project is not ten seconds of work.
+   */
+  range?: { start: number; end: number }
   /** 18 is visually lossless, 28 is small. 23 is a good middle. */
   crf?: number
   preset?: string
@@ -284,7 +296,18 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // count here as well as sound: a layer held past the last clip needs
   // something under it, and black would be the picture ending early.
   const contentEnd = Math.max(audioEnd, overlayEnd)
-  const outputDuration = Math.max(visualEnd, contentEnd)
+  const timelineEnd = Math.max(visualEnd, contentEnd)
+
+  // Fitted to what there is to cut from, so a range left over from a longer
+  // edit asks for picture that no longer exists.
+  const rangeStart = Math.max(0, Math.min(spec.range?.start ?? 0, timelineEnd))
+  const rangeEnd = Math.min(spec.range?.end ?? timelineEnd, timelineEnd)
+  const outputDuration = rangeEnd - rangeStart
+  if (outputDuration <= 0) {
+    throw new Error('The chosen start and end leave nothing to export.')
+  }
+  // Anything under a millisecond is float noise, not an edit — see range.ts.
+  const trimming = rangeStart > 0.001 || rangeEnd < timelineEnd - 0.001
 
   const args: string[] = []
 
@@ -347,7 +370,7 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // [vout] itself, rather than every export ending with a relabelling filter
   // that exists only because the graph was built without looking ahead.
   let pending = leadIn > 0 || contentEnd > visualEnd + 0.01 ? 1 : 0
-  pending += overlays.length + (spec.captions ? 1 : 0)
+  pending += overlays.length + (spec.captions ? 1 : 0) + (trimming ? 1 : 0)
   const nextStage = (label: string): string => {
     pending -= 1
     return pending === 0 ? '[vout]' : label
@@ -431,8 +454,19 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // would put every caption late by the length of it — and lose outright any
   // caption written over it.
   if (spec.captions) {
+    const out = nextStage('[vass]')
     chains.push(
-      `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${nextStage('[vass]')}`,
+      `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${out}`,
+    )
+    stage = out
+  }
+
+  // The cut to the chosen range, after everything that is dated from the
+  // timeline has been laid on it. `setpts` rebases what is left to zero, since
+  // an mp4 that starts at 0:42 is one most players open on a blank frame.
+  if (trimming) {
+    chains.push(
+      `${stage}trim=start=${sec(rangeStart)}:end=${sec(rangeEnd)},setpts=PTS-STARTPTS${nextStage('[vcut]')}`,
     )
   }
 
@@ -479,13 +513,24 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   })
 
   const hasAudio = placed.length > 0
+  // Without a range the mix is the output, so an untrimmed export keeps the
+  // graph it always had rather than gaining a filter that does nothing.
+  const mixOut = trimming ? '[amix]' : '[aout]'
   if (placed.length === 1) {
-    chains.push(`${placed[0]}anull[aout]`)
+    chains.push(`${placed[0]}anull${mixOut}`)
   } else if (placed.length > 1) {
     // normalize=0 keeps every clip at its own level; the default would quietly
     // divide the volume by the number of inputs, so adding a music bed would
     // duck the narration it is supposed to sit under.
-    chains.push(`${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0[aout]`)
+    chains.push(
+      `${placed.join('')}amix=inputs=${placed.length}:duration=longest:normalize=0${mixOut}`,
+    )
+  }
+  // The same cut as the picture, so the sound cannot end up a range of its own.
+  if (hasAudio && trimming) {
+    chains.push(
+      `${mixOut}atrim=start=${sec(rangeStart)}:end=${sec(rangeEnd)},asetpts=PTS-STARTPTS[aout]`,
+    )
   }
 
   args.push('-filter_complex', chains.join(';'))

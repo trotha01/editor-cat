@@ -114,15 +114,21 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
               <div className="flex shrink-0 flex-col gap-1">
                 {asset.kind !== 'audio' ? (
                   <>
+                    {/* Into the run of clips, after the one the playhead is
+                        over. The shot you are parked on is the shot you are
+                        working on, so it is where the next one belongs; the end
+                        of the track is somewhere you would only have to drag it
+                        back from. */}
                     <Button
-                      onClick={() => addClip(asset)}
-                      title="Add to the end of the picture track"
+                      onClick={() => addClip(asset, currentTime)}
+                      title="Add to the picture track, after the clip at the playhead"
                     >
                       Add
                     </Button>
-                    {/* The other place picture can go. Dropped at the playhead
-                        rather than at the end, because a layer is placed to hit
-                        a moment — the end of the timeline is never that moment. */}
+                    {/* The other place picture can go. Both of these land at the
+                        playhead — that is the moment being aimed at either way —
+                        but this one is laid *over* the picture on a track of its
+                        own rather than into the run of clips. */}
                     <Button
                       variant="ghost"
                       onClick={() => addVideoClip(asset, currentTime)}

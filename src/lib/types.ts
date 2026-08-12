@@ -117,7 +117,11 @@ export interface Clip {
  * over black as happily as over a clip.
  *
  * Later tracks draw over earlier ones, which is the only stacking rule there
- * is: the order in this array is the order up the screen.
+ * is: the order in this array is the order up the screen. Nothing on the track
+ * itself records where it sits, so restacking the picture is only ever moving a
+ * lane along this array — and everything that draws the lanes reverses it, so
+ * that the last entry, the top of the stack, is the one nearest the top of the
+ * screen.
  */
 export interface VideoTrack {
   id: string
@@ -175,6 +179,25 @@ export interface AudioTrack {
   volume: number
 }
 
+/**
+ * Why a piece of audio exists, when it exists to replace a clip's own sound.
+ *
+ * Generated speech laid under a clip is not a take somebody recorded: it was
+ * asked for in words, and the words are the thing you correct when the result
+ * is still wrong. Keeping them means a second go starts from the last spelling
+ * rather than from a blank box, and it is what tells the clip's menu that this
+ * clip has been fixed once already — which is the difference between "fix" and
+ * "redo", and between laying a second voice over the first and replacing it.
+ */
+export interface SpeechFix {
+  /** What ElevenLabs was asked to say. */
+  text: string
+  /** ISO-639-1 code, when a language was enforced rather than detected. */
+  language?: string
+  /** The voice it was said in, or the clip's own voice when it was cloned. */
+  voiceName?: string
+}
+
 /** A piece of audio placed at a point in time on a track. */
 export interface AudioClip {
   id: string
@@ -208,6 +231,12 @@ export interface AudioClip {
   voiceName?: string
   /** Display label, e.g. the music file's name. */
   label?: string
+  /**
+   * Set on speech generated to stand in for a clip's own sound, which is muted
+   * in the same edit. Absent on every recording, every music bed, and every
+   * count-in — read it as "this clip is a correction of the picture above it".
+   */
+  speechFix?: SpeechFix
 }
 
 /**
@@ -356,8 +385,67 @@ export interface Project {
   width: number
   height: number
   fps: number
+  /**
+   * Mintspace posts this project has already been published as.
+   *
+   * On the project document, and therefore synced, because the question it
+   * answers — "is this already up?" — is one a second machine has to be able to
+   * answer too. Kept out of the undo history for the opposite reason: it
+   * records something that happened in the world, and Ctrl+Z cannot unpublish
+   * a video. See `recordPublication` in state/useProjectStore.ts.
+   *
+   * Absent on everything saved before publishing existed, which is why it is
+   * optional and read through `publicationsOf`.
+   */
+  publications?: Publication[]
   /** Present only on projects saved before multitrack. Read by migrateProject. */
   voiceovers?: LegacyVoiceoverTake[]
+}
+
+/**
+ * One video of this project, live in the Mintspace feed.
+ *
+ * Everything needed to find it again and to take it down is held here rather
+ * than looked up, because taking it down needs two things Mintspace will not
+ * tell us later: the storage object behind the row, and which account may
+ * delete it. The row's id alone would leave the file orphaned in the bucket.
+ */
+export interface Publication {
+  /** The `mintspace.videos` row id. */
+  videoId: string
+  /** The object in the Mintspace bucket, so the file goes with the row. */
+  storagePath: string
+  /** Public URL of the file, which plays on its own. */
+  videoUrl: string
+  /**
+   * SHA-256 of the exported file, hex.
+   *
+   * What makes "the same video" an exact question rather than a guess: a
+   * project re-exported unchanged hashes the same and is refused, while one
+   * that has been edited hashes differently and is a new video, which is what
+   * it is. Empty when the browser would not hash it — see lib/digest.ts.
+   */
+  digest: string
+  /**
+   * Hash of what the video was *made from* — the timeline and the export
+   * settings — as opposed to `digest`, which is what it came out as.
+   *
+   * The two answer the same question at different moments. This one is
+   * knowable before anything is rendered, so the dialog can say "already in the
+   * feed" while the button is still unpressed rather than after a minute of
+   * encoding. The digest is the exact one and stays the final word, because a
+   * timeline can change in ways the picture does not: edit a hidden caption
+   * track and this differs while the file does not.
+   *
+   * Absent on anything recorded before it existed, which is why it is optional.
+   */
+  sourceKey?: string
+  caption: string | null
+  /** ISO 8601, as `new Date().toISOString()` writes it. */
+  publishedAt: string
+  /** The Mintspace account it belongs to, which is the only one that can delete it. */
+  accountId: string
+  username: string
 }
 
 /**
