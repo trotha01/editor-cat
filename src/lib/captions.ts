@@ -516,6 +516,50 @@ function withBounds(cue: CaptionCue, words: CaptionWord[]): CaptionCue {
 }
 
 /**
+ * Moves a caption onto the speech that is now saying it.
+ *
+ * The one direction this can work in. Nothing can make a model say a word at a
+ * chosen moment — there is no such parameter, and time-stretching the result
+ * would sound like time-stretching — but ElevenLabs will say precisely when it
+ * said each word, and a caption is free to move. So the line stays where the
+ * picture put it, the speech starts on that mark, and the words inside are
+ * pulled onto the syllables that are actually being spoken.
+ *
+ * `offset` is where the audio sits on the timeline, since the timings come back
+ * relative to the start of the piece.
+ *
+ * A count that does not match is not an error and not a reason to give up: the
+ * model normalises as it reads, so "€5" or "Dr." can come back as one word or
+ * three. The line is spread evenly across the same span instead — no worse than
+ * the caption was before, and still ending where the speech ends.
+ */
+export function retimeWords(
+  cue: CaptionCue,
+  spoken: readonly { text: string; start: number; end: number }[],
+  offset: number,
+): CaptionCue {
+  const first = spoken[0]
+  const last = spoken[spoken.length - 1]
+  if (!first || !last) return cue
+
+  const start = offset + first.start
+  const end = Math.max(offset + last.end, start + MIN_CUE_DURATION)
+
+  if (spoken.length !== cue.words.length) {
+    return spreadWordsEvenly({ ...cue, start, end })
+  }
+
+  const words = normalizeWords(
+    cue.words.map((word, index) => ({
+      ...word,
+      start: offset + (spoken[index]?.start ?? 0),
+      end: offset + (spoken[index]?.end ?? 0),
+    })),
+  )
+  return { ...cue, start, end, words }
+}
+
+/**
  * Retimes a word, clamped so it stays between its neighbours.
  *
  * Refusing to reorder is deliberate: dragging one word past the next would

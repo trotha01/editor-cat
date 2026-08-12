@@ -43,6 +43,7 @@ import {
   recaptionSource,
   recreditCuesAfterCut,
   recreditCuesAfterJoin,
+  retimeWords,
   setCueText,
   setWordTiming,
   splitCue,
@@ -109,6 +110,13 @@ export interface PlacementOutcome {
   trackId: string
   trackName: string
   createdTrack: boolean
+}
+
+/** A word and when it was said, relative to the start of its own audio. */
+export interface SpokenTiming {
+  text: string
+  start: number
+  end: number
 }
 
 /** The same, plus what a new fix did to the fixes already under that clip. */
@@ -205,6 +213,12 @@ interface ProjectState {
    * clip back exactly as it was rather than leaving it mute with the correction
    * gone — or the other way about.
    *
+   * A fix arrives as one piece per caption line, all of them onto the one new
+   * lane, because that is what keeps each line on the mark the picture says it.
+   * The captions those lines were spoken from move onto the speech in the same
+   * edit: they describe the audio that has just arrived, so an undo that took
+   * the audio away and left the captions timed to it would be half a step.
+   *
    * Every fix gets a **lane of its own**, and an earlier one is never deleted or
    * written over. Generated audio costs money and a second go is usually a
    * better spelling of the same line rather than a repudiation of the first —
@@ -214,7 +228,9 @@ interface ProjectState {
    */
   addFixedClipAudio: (
     clipId: string,
-    clip: Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>,
+    clips: readonly Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>[],
+    /** Captions to move onto the speech, in the same edit. */
+    retimed?: readonly { cueId: string; words: readonly SpokenTiming[]; offset: number }[],
   ) => FixPlacement
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
@@ -285,6 +301,14 @@ interface ProjectState {
   trimCueEdge: (cueId: string, edge: 'start' | 'end', value: number) => boolean
   setCueWordTiming: (cueId: string, wordId: string, patch: { start?: number; end?: number }) => void
   setCueTextAt: (cueId: string, text: string) => void
+  /**
+   * Rewrites several captions at once, as one edit.
+   *
+   * For saving the script before a clip's audio is fixed: they are typed
+   * together in one form and pressed once, so undoing them one line at a time
+   * would be undoing something nobody did.
+   */
+  setCueTexts: (edits: readonly { cueId: string; text: string }[]) => void
   splitCueAt: (cueId: string, wordIndex: number) => boolean
   /** Joins a caption onto the one before it on the same track. */
   mergeCueBack: (cueId: string) => boolean
@@ -641,9 +665,14 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
     },
 
-    addFixedClipAudio: (clipId, clip) => {
-      const id = newId('aclip')
+    addFixedClipAudio: (clipId, clips, retimed) => {
       const trackId = newId('track')
+      const laid = clips.map((clip) => ({
+        ...clip,
+        id: newId('aclip'),
+        trackId,
+        anchorClipId: clipId,
+      }))
       const { project } = get()
 
       // A lane of its own, always. `placeAudioClip` would happily drop this
@@ -666,20 +695,35 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           ),
       )
 
+      const timings = new Map((retimed ?? []).map((entry) => [entry.cueId, entry]))
+
       mutate((current) => ({
         ...current,
         audioTracks: insertTrack(current.audioTracks, track).map((entry) =>
           olderFixLanes.has(entry.id) ? { ...entry, muted: true } : entry,
         ),
-        // Anchored to the clip explicitly rather than by where it starts: this
-        // audio *is* that clip's sound, so it follows the shot wherever the
-        // shot goes, even if a transition has pulled the two starts apart.
-        audioClips: [...current.audioClips, { ...clip, id, trackId, anchorClipId: clipId }],
+        // Through `fitBetweenNeighbours` like every other caption edit: speech
+        // that runs longer than the caption had room for stops at the next one
+        // rather than covering it.
+        captionCues: captionCuesOf(current).map((cue) => {
+          const timing = timings.get(cue.id)
+          if (!timing) return cue
+          return fitBetweenNeighbours(
+            retimeWords(cue, timing.words, timing.offset),
+            captionCuesOf(current),
+          )
+        }),
+        // Anchored to the clip explicitly rather than by where each piece
+        // starts: this audio *is* that clip's sound, so it follows the shot
+        // wherever the shot goes, even if a transition pulled the starts apart.
+        audioClips: [...current.audioClips, ...laid],
         clips: current.clips.map((entry) =>
           entry.id === clipId ? { ...entry, muted: true } : entry,
         ),
       }))
-      set({ selectedAudioClipId: id })
+      // The first piece, which is the one to look at: it is where the fix
+      // begins, and the lane scrolls into view around it.
+      set({ selectedAudioClipId: laid[0]?.id ?? null })
 
       return {
         trackId,
@@ -1016,6 +1060,24 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       get().updateCue(cueId, (cue) => setWordTiming(cue, wordId, patch)),
 
     setCueTextAt: (cueId, text) => get().updateCue(cueId, (cue) => setCueText(cue, text, newId)),
+
+    setCueTexts: (edits) => {
+      const byId = new Map(edits.map((edit) => [edit.cueId, edit.text]))
+      if (byId.size === 0) return
+      mutate((project) => {
+        const cues = captionCuesOf(project)
+        const next = cues.map((cue) => {
+          const text = byId.get(cue.id)
+          // An emptied line is left as it was rather than deleted: this runs on
+          // the way to spending money on the others, and a caption that has
+          // gone would take its place in the script with it.
+          if (text === undefined || !text.trim()) return cue
+          const rewritten = setCueText(cue, text, newId)
+          return rewritten ? fitBetweenNeighbours(rewritten, cues) : cue
+        })
+        return { ...project, captionCues: next }
+      })
+    },
 
     splitCueAt: (cueId, wordIndex) => {
       const { project } = get()

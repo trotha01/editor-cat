@@ -112,7 +112,10 @@ export function isAllowedWithSiteKey(method: string, path: string): boolean {
   if (method === 'POST') {
     return (
       isCloneRequest(method, path) ||
-      /^v1\/text-to-speech\/[^/]+$/.test(path) ||
+      // With or without the timestamps suffix: the editor asks for timings so it
+      // can move the captions onto the speech, and the plain form is what a
+      // future caller here would reach for first.
+      /^v1\/text-to-speech\/[^/]+(\/with-timestamps)?$/.test(path) ||
       /^v1\/speech-to-speech\/[^/]+$/.test(path)
     )
   }

@@ -3,23 +3,33 @@
  *
  * A store rather than component state for the reason the caption job is one: a
  * run outlives the dialog that started it. Copying a voice and then speaking a
- * line is two round trips to ElevenLabs, and holding a modal open across both of
- * them would lock the editor for something the user has already finished
- * describing. The form closes on the press; this keeps the job, and
+ * line at a time is several round trips to ElevenLabs, and holding a modal open
+ * across all of them would lock the editor for something the user has already
+ * finished describing. The form closes on the press; this keeps the job, and
  * `AudioFixStatus` reports it beside the timeline.
  *
+ * The order below is the whole feature, and each step depends on the one before:
+ *
+ *  1. **The captions are saved first.** They are the script, so the words that
+ *     go to ElevenLabs and the words burnt into the video are the same words by
+ *     construction rather than by the user remembering to update both.
+ *  2. **Each line is spoken on its own**, so it can be laid where its caption
+ *     starts — which is where the picture says it.
+ *  3. **The captions are then re-timed to what came back**, word by word, so the
+ *     karaoke highlight lands on the syllable actually being spoken.
+ *
  * Only one runs at a time. Two would be two clones and two bills for a mistimed
- * double-click, and the second would land on a project the first had already
- * changed.
+ * double-click, and the second would land on captions the first had rewritten.
  */
 import { create } from 'zustand'
-import { fixClipAudio, type FixTarget } from '../lib/clipAudioFix'
+import { fixClipAudio, layoutSpokenLines, type FixTarget } from '../lib/clipAudioFix'
 import { getBlob } from '../lib/db'
 import { ingestBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
 import { toDisplayMessage } from '../lib/errors'
 import { useAssetStore } from './useAssetStore'
 import { useProjectStore } from './useProjectStore'
+import type { AudioClip } from '../lib/types'
 
 /** What a finished run has to say for itself. */
 export interface AudioFixOutcome {
@@ -31,10 +41,17 @@ export interface AudioFixOutcome {
   detail?: string
 }
 
+/** One line of the script, as the dialog left it. */
+export interface FixRequestLine {
+  /** The caption this came from. Absent on a clip that has none. */
+  cueId?: string
+  text: string
+}
+
 /** What the dialog collected before it closed. */
 export interface FixRequest {
-  /** What the clip should be saying. */
-  text: string
+  /** The lines to say, in order — the clip's captions, as edited. */
+  lines: FixRequestLine[]
   /** ISO-639-1, or empty to let the model read the language off the text. */
   language: string
   /** An ElevenLabs voice id, or empty to copy the clip's own voice. */
@@ -59,7 +76,7 @@ interface AudioFixState {
   clipId: string | null
   /** What that clip is called, so the status line can say so while it runs. */
   label: string
-  /** Which of the two round trips is in flight, in words. */
+  /** What is in flight, in words. */
   stage: string | null
   outcome: AudioFixOutcome | null
 
@@ -102,56 +119,112 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
     })
 
     try {
+      const lines = request.lines.filter((line) => line.text.trim())
       const asset = useAssetStore.getState().byId(target.assetId)
       if (!asset) throw new Error('This clip’s media is no longer in the library.')
       const media = await getBlob(asset.blobKey)
       if (!media) throw new Error('This clip’s media is no longer stored in this browser.')
 
-      const { blob, voiceName } = await fixClipAudio({
+      // The captions go down before anything is spent, in one edit. If the run
+      // fails at the next step the corrections the user typed are still saved —
+      // losing them to a network error would be losing the part they did by
+      // hand — and undoing them is one press rather than one press per line.
+      useProjectStore
+        .getState()
+        .setCueTexts(
+          lines.flatMap((line) => (line.cueId ? [{ cueId: line.cueId, text: line.text }] : [])),
+        )
+
+      const { spoken, voiceName } = await fixClipAudio({
         media,
         inPoint: target.inPoint,
         duration: target.duration,
-        text: request.text,
+        lines: lines.map((line) => line.text),
         language: request.language,
         voiceId: request.voiceId,
         voiceName: request.voiceName,
         label: target.label,
-        onStage: (stage) => set({ stage }),
+        onStage: (stage, done, total) =>
+          set({ stage: total > 1 ? `${stage} · ${done + 1} of ${total}` : stage }),
         signal: controller.signal,
       })
 
-      const fixed = await ingestBlob(blob, {
-        kind: 'audio',
-        name: `${target.label} — fixed audio`,
-      })
-      useAssetStore.getState().add(fixed)
+      // Ingested before they are laid out, because only a decoded file knows how
+      // long it really runs — and how long each line runs is what decides
+      // whether the one after it still fits where its caption starts.
+      const pieces = []
+      for (const [index, line] of spoken.entries()) {
+        const fixed = await ingestBlob(line.blob, {
+          kind: 'audio',
+          name: `${target.label} — fixed line ${index + 1}`,
+        })
+        useAssetStore.getState().add(fixed)
+        pieces.push({
+          asset: fixed,
+          words: line.words,
+          text: line.text,
+          cueId: lines[index]?.cueId,
+          // The caption's own mark, or the head of the clip for a clip with no
+          // captions to take a mark from.
+          wanted: target.lines[index]?.start ?? target.startTime,
+          duration:
+            fixed.duration && fixed.duration > 0
+              ? fixed.duration
+              : (line.words.at(-1)?.end ?? target.duration),
+        })
+      }
 
-      const spoken = fixed.duration && fixed.duration > 0 ? fixed.duration : target.duration
-      const placement = useProjectStore.getState().addFixedClipAudio(target.clipId, {
-        assetId: fixed.id,
-        useConverted: false,
-        startTime: target.startTime,
-        inPoint: 0,
-        duration: spoken,
-        // Labelled, which is also what keeps it out of the Audio step's list of
-        // recorded takes: this is not one, and the only thing offered there —
-        // changing the voice — is what has just been done to it.
-        label: `Fixed: ${target.label}`,
-        speechFix: {
-          text: request.text.trim(),
-          ...(request.language ? { language: request.language } : {}),
-          voiceName,
-        },
-      })
+      const placed = layoutSpokenLines(
+        pieces.map((piece) => ({ start: piece.wanted, duration: piece.duration })),
+      )
+      const clips: Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>[] = pieces.map(
+        (piece, index) => ({
+          assetId: piece.asset.id,
+          useConverted: false,
+          startTime: placed[index]?.start ?? piece.wanted,
+          inPoint: 0,
+          duration: piece.duration,
+          // Labelled, which is also what keeps these out of the Audio step's
+          // list of recorded takes: they are not takes, and the only thing
+          // offered there — changing the voice — is what has just been done.
+          label:
+            pieces.length > 1
+              ? `Fixed ${index + 1}/${pieces.length}: ${target.label}`
+              : `Fixed: ${target.label}`,
+          speechFix: {
+            text: piece.text,
+            ...(request.language ? { language: request.language } : {}),
+            voiceName,
+          },
+        }),
+      )
 
-      // Nothing stretches speech to fit a shot, so the one thing worth saying
-      // about a fix that worked is how it sits against the picture. The second
-      // is where the go before it went, since it is still there.
-      const overrun = spoken - target.duration
+      // The captions move onto the speech in the same edit as the audio
+      // arriving. That is what "the timing lines up" actually means — the words
+      // were spoken from these very captions, so the highlight follows the new
+      // voice exactly — and it has to be the same edit, or an undo would take
+      // the audio away and leave the captions timed to something that has gone.
+      const retimed = pieces.flatMap((piece, index) =>
+        piece.cueId && piece.words.length > 0
+          ? [
+              {
+                cueId: piece.cueId,
+                words: piece.words,
+                offset: placed[index]?.start ?? piece.wanted,
+              },
+            ]
+          : [],
+      )
+
+      const placement = useProjectStore.getState().addFixedClipAudio(target.clipId, clips, retimed)
+
+      const spokenSeconds = pieces.reduce((total, piece) => total + piece.duration, 0)
+      const pushed = placed.filter((entry) => entry.pushed).length
       const notes = [
-        overrun > 0.25
-          ? `The line runs ${formatTime(overrun)} past the end of the clip. Trim it on its ` +
-            `lane, hold the clip longer, or shorten the text and fix it again.`
+        pushed > 0
+          ? `${pushed} line${pushed === 1 ? '' : 's'} had to start late, because the line before ` +
+            `${pushed === 1 ? 'it was' : 'them were'} still being said. Shorten the text, or give ` +
+            `those captions more room, to bring ${pushed === 1 ? 'it' : 'them'} back onto the mark.`
           : '',
         placement.silenced > 0
           ? `The earlier ${placement.silenced === 1 ? 'take is' : 'takes are'} still on ` +
@@ -162,12 +235,14 @@ export const useAudioFixStore = create<AudioFixState>((set, get) => ({
 
       set({
         outcome: {
-          tone: overrun > 0.25 ? 'warn' : 'success',
+          tone: pushed > 0 ? 'warn' : 'success',
           label: target.label,
           text:
-            `${target.label} now says your line in ${voiceName} — ${formatTime(spoken)} of ` +
-            `speech under a ${formatTime(target.duration)} clip, on ${placement.trackName}. ` +
-            `The clip’s own sound is muted; undo puts it back.`,
+            `${target.label} now says your ${pieces.length === 1 ? 'line' : `${pieces.length} lines`} ` +
+            `in ${voiceName} — ${formatTime(spokenSeconds)} of speech on ${placement.trackName}, ` +
+            `each starting where its caption does. The captions were re-timed to match, and the ` +
+            `clip’s own sound is muted; one undo puts all of that back, and a second undo returns ` +
+            `the captions to what they said before.`,
           ...(notes.length > 0 ? { detail: notes.join(' ') } : {}),
         },
       })

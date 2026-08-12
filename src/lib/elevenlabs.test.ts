@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cloneVoice, deleteVoice, findSpeechModel, speak, siteProvidesKey } from './elevenlabs'
+import {
+  cloneVoice,
+  deleteVoice,
+  findSpeechModel,
+  speak,
+  siteProvidesKey,
+  wordsFromAlignment,
+} from './elevenlabs'
 
 vi.mock('./auth0/client', () => ({ auth0Token: () => Promise.resolve('session-token') }))
 
@@ -22,7 +29,19 @@ beforeEach(() => {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
-const audio = () => new Response('mp3-bytes', { headers: { 'content-type': 'audio/mpeg' } })
+/**
+ * The with-timestamps endpoint's shape: base64 audio, plus a start and an end
+ * for every character in the text as it was sent.
+ */
+const spoken = (text = 'Hi there', from = 0, step = 0.1) =>
+  json({
+    audio_base64: btoa('mp3-bytes'),
+    alignment: {
+      characters: [...text],
+      character_start_times_seconds: [...text].map((_, index) => from + index * step),
+      character_end_times_seconds: [...text].map((_, index) => from + (index + 1) * step),
+    },
+  })
 
 /** The models list as ElevenLabs returns it, trimmed to what is read. */
 const MODELS = [
@@ -98,25 +117,77 @@ describe('findSpeechModel', () => {
   })
 })
 
-describe('speak', () => {
-  it('sends the line, the model and the language, and asks for MP3 back', async () => {
-    fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(audio())
+describe('wordsFromAlignment', () => {
+  it('groups characters into words and leaves the spaces to nobody', () => {
+    const words = wordsFromAlignment({
+      characters: ['H', 'i', ' ', 'y', 'o', 'u'],
+      character_start_times_seconds: [0, 0.1, 0.2, 0.3, 0.4, 0.5],
+      character_end_times_seconds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    })
 
-    const result = await speak({ voiceId: 'v1', text: 'Buongiorno', languageCode: 'it' })
+    expect(words).toEqual([
+      { text: 'Hi', start: 0, end: 0.2 },
+      { text: 'you', start: 0.3, end: 0.6 },
+    ])
+  })
+
+  it('keeps punctuation on the word it follows, as the caption spells it', () => {
+    const characters = [...'Ciao, bella!']
+    const words = wordsFromAlignment({
+      characters,
+      character_start_times_seconds: characters.map((_, index) => index * 0.1),
+      character_end_times_seconds: characters.map((_, index) => (index + 1) * 0.1),
+    })
+    expect(words.map((word) => word.text)).toEqual(['Ciao,', 'bella!'])
+  })
+
+  it('says nothing rather than guessing when there is no alignment', () => {
+    expect(wordsFromAlignment(undefined)).toEqual([])
+    expect(wordsFromAlignment({})).toEqual([])
+  })
+})
+
+describe('speak', () => {
+  it('asks the timestamps endpoint, and returns the audio with its word timings', async () => {
+    fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(spoken('Ciao bella'))
+
+    const result = await speak({ voiceId: 'v1', text: 'Ciao bella', languageCode: 'it' })
 
     const [url, init] = fetchMock.mock.calls.at(-1) ?? []
-    expect(url).toContain('/api/elevenlabs/v1/text-to-speech/v1')
+    // The timings are the whole point: without them the captions cannot be
+    // moved onto the speech afterwards.
+    expect(url).toContain('/api/elevenlabs/v1/text-to-speech/v1/with-timestamps')
     expect(url).toContain('output_format=mp3')
     expect(JSON.parse(String(init?.body))).toEqual({
-      text: 'Buongiorno',
+      text: 'Ciao bella',
       model_id: 'eleven_turbo_v2_5',
       language_code: 'it',
     })
-    expect(result.type).toBe('audio/mpeg')
+    expect(result.blob.type).toBe('audio/mpeg')
+    expect(result.words.map((word) => word.text)).toEqual(['Ciao', 'bella'])
+    expect(result.words[0]?.start).toBe(0)
+  })
+
+  it('carries the lines either side, so a passage does not read as a list', async () => {
+    fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(spoken())
+
+    await speak({
+      voiceId: 'v1',
+      text: 'And then?',
+      previousText: 'It was raining.',
+      nextText: 'Nothing at all.',
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(body.previous_text).toBe('It was raining.')
+    expect(body.next_text).toBe('Nothing at all.')
   })
 
   it('leaves the language out entirely when none was chosen', async () => {
-    fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(audio())
+    fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(spoken())
 
     await speak({ voiceId: 'v1', text: 'Hello' })
 
@@ -125,14 +196,21 @@ describe('speak', () => {
       unknown
     >
     expect(body).not.toHaveProperty('language_code')
+    expect(body).not.toHaveProperty('previous_text')
   })
 
   it('spends no request on finding a model when it was given one', async () => {
-    fetchMock.mockResolvedValue(audio())
+    fetchMock.mockResolvedValue(spoken())
 
     await speak({ voiceId: 'v1', text: 'Hello', modelId: 'eleven_flash_v2_5' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a reply with no audio in it rather than laying down silence', async () => {
+    fetchMock.mockResolvedValueOnce(json(MODELS)).mockResolvedValueOnce(json({ alignment: {} }))
+
+    await expect(speak({ voiceId: 'v1', text: 'Hello' })).rejects.toThrow(/no audio/i)
   })
 })
 

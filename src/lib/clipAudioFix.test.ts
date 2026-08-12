@@ -1,16 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cloneNameFor, fixClipAudio, fixTargets } from './clipAudioFix'
+import { cloneNameFor, fixClipAudio, fixTargets, layoutSpokenLines } from './clipAudioFix'
 import { isAppClone } from '../../netlify/lib/elevenlabs'
 import type { Asset, AudioClip, CaptionCue, Clip, Project } from './types'
 
 const cloneVoice = vi.fn<(options: { name: string; sample: Blob }) => Promise<string>>()
-const speak =
-  vi.fn<(options: { voiceId: string; text: string; languageCode?: string }) => Promise<Blob>>()
+interface SpeakArgs {
+  voiceId: string
+  text: string
+  languageCode?: string
+  previousText?: string
+  nextText?: string
+}
+const speak = vi.fn<(options: SpeakArgs) => Promise<{ blob: Blob; words: unknown[] }>>()
 const deleteVoice = vi.fn<(voiceId: string) => Promise<void>>()
 
 vi.mock('./elevenlabs', () => ({
   cloneVoice: (options: { name: string; sample: Blob }) => cloneVoice(options),
-  speak: (options: { voiceId: string; text: string; languageCode?: string }) => speak(options),
+  speak: (options: SpeakArgs) => speak(options),
   deleteVoice: (voiceId: string) => deleteVoice(voiceId),
 }))
 
@@ -121,7 +127,7 @@ describe('fixTargets', () => {
     expect(targets.get('c2')?.startTime).toBeCloseTo(5)
   })
 
-  it('starts the text from this clip’s captions, in the order they are spoken', () => {
+  it('takes this clip’s captions as the script, in the order they are spoken', () => {
     const targets = fixTargets(
       project({
         clips: [clip('c1', 'v1')],
@@ -133,21 +139,27 @@ describe('fixTargets', () => {
       }),
       [asset('v1', 'video')],
     )
+    // One line per caption, each with the mark the picture says it on — which
+    // is the whole reason the captions are the script rather than a hint.
+    expect(targets.get('c1')?.lines).toEqual([
+      { cueId: 'a', start: 0, end: 1, text: 'buenos dias' },
+      { cueId: 'b', start: 1, end: 2, text: 'como estas' },
+    ])
     expect(targets.get('c1')?.text).toBe('buenos dias como estas')
   })
 
-  it('prefers the last correction over the captions, and names the audio it left', () => {
+  it('lets the captions overrule an older correction, since they are where it was written', () => {
     const targets = fixTargets(
       project({
         clips: [clip('c1', 'v1')],
-        captionCues: [cue('a', 'c1', 'whatever was heard', 0)],
+        captionCues: [cue('a', 'c1', 'Buenos días', 0)],
         audioClips: [
           audioClip('fixed', {
             anchorClipId: 'c1',
-            speechFix: { text: 'Buenos días', language: 'es' },
+            speechFix: { text: 'something older', language: 'es' },
           }),
           // Anchored to the same clip but not a fix: a line somebody recorded
-          // over the shot is not the thing a redo replaces.
+          // over the shot is not what a redo starts from.
           audioClip('take', { anchorClipId: 'c1' }),
         ],
       }),
@@ -160,10 +172,23 @@ describe('fixTargets', () => {
     })
   })
 
+  it('falls back to the last correction where there are no captions at all', () => {
+    const targets = fixTargets(
+      project({
+        clips: [clip('c1', 'v1')],
+        audioClips: [audioClip('fixed', { anchorClipId: 'c1', speechFix: { text: 'Buongiorno' } })],
+      }),
+      [asset('v1', 'video')],
+    )
+    expect(targets.get('c1')?.lines).toEqual([])
+    expect(targets.get('c1')?.text).toBe('Buongiorno')
+  })
+
   it('says nothing has been fixed when nothing has', () => {
     const targets = fixTargets(project({ clips: [clip('c1', 'v1')] }), [asset('v1', 'video')])
     expect(targets.get('c1')?.fixedAudioClipId).toBeUndefined()
     expect(targets.get('c1')?.text).toBe('')
+    expect(targets.get('c1')?.lines).toEqual([])
   })
 })
 
@@ -184,19 +209,69 @@ describe('cloneNameFor', () => {
   })
 })
 
+describe('layoutSpokenLines', () => {
+  it('starts every line where its caption starts', () => {
+    expect(
+      layoutSpokenLines([
+        { start: 0, duration: 0.8 },
+        { start: 1, duration: 0.5 },
+        { start: 2, duration: 1 },
+      ]),
+    ).toEqual([
+      { start: 0, pushed: false },
+      { start: 1, pushed: false },
+      { start: 2, pushed: false },
+    ])
+  })
+
+  it('pushes a line that would land on the one still being said', () => {
+    // The new reading is slower than the performance it replaces. Two voices at
+    // once is unlistenable, and one lane cannot hold overlapping clips anyway,
+    // so it waits — and says it waited.
+    expect(
+      layoutSpokenLines([
+        { start: 0, duration: 1.5 },
+        { start: 1, duration: 0.5 },
+        { start: 3, duration: 0.5 },
+      ]),
+    ).toEqual([
+      { start: 0, pushed: false },
+      { start: 1.5, pushed: true },
+      { start: 3, pushed: false },
+    ])
+  })
+
+  it('does not call a rounding error a push', () => {
+    const placed = layoutSpokenLines([
+      { start: 0, duration: 1 },
+      { start: 0.9999, duration: 1 },
+    ])
+    expect(placed[1]).toEqual({ start: 0.9999, pushed: false })
+  })
+
+  it('has nothing to say about nothing', () => {
+    expect(layoutSpokenLines([])).toEqual([])
+  })
+})
+
 describe('fixClipAudio', () => {
   const media = new Blob(['media'], { type: 'video/mp4' })
   const request = {
     media,
     inPoint: 1,
     duration: 4,
-    text: '  Buongiorno  ',
+    lines: ['  Buongiorno  '],
     label: 'lighthouse.mp4',
   }
 
   beforeEach(() => {
     cloneVoice.mockReset().mockResolvedValue('cloned-voice')
-    speak.mockReset().mockResolvedValue(new Blob(['mp3'], { type: 'audio/mpeg' }))
+    speak.mockReset().mockImplementation(({ text }) =>
+      Promise.resolve({
+        blob: new Blob([text], { type: 'audio/mpeg' }),
+        words: [{ text, start: 0, end: 0.5 }],
+      }),
+    )
     deleteVoice.mockReset().mockResolvedValue(undefined)
     monoWav.mockReset().mockResolvedValue(new Blob(['wav'], { type: 'audio/wav' }))
   })
@@ -211,9 +286,44 @@ describe('fixClipAudio', () => {
     expect(speak).toHaveBeenCalledWith(
       expect.objectContaining({ voiceId: 'cloned-voice', text: 'Buongiorno', languageCode: 'it' }),
     )
-    // A voice left in the account counts against the user's own slots.
+    // A voice left in the account counts against the site's own slots.
     expect(deleteVoice).toHaveBeenCalledWith('cloned-voice')
-    expect(result.blob.type).toBe('audio/mpeg')
+    expect(result.spoken).toHaveLength(1)
+    expect(result.spoken[0]?.words).toEqual([{ text: 'Buongiorno', start: 0, end: 0.5 }])
+  })
+
+  it('says each caption on its own, and hands the neighbours over for context', async () => {
+    // One request per line is what lets each one be laid on its own mark. The
+    // neighbours are not spoken; without them every line lands on a full stop
+    // and the clip comes back sounding like a list.
+    const result = await fixClipAudio({
+      ...request,
+      lines: ['Buongiorno.', 'Come stai?', 'Bene, grazie.'],
+    })
+
+    expect(speak).toHaveBeenCalledTimes(3)
+    expect(speak.mock.calls.map((call) => call[0].text)).toEqual([
+      'Buongiorno.',
+      'Come stai?',
+      'Bene, grazie.',
+    ])
+    expect(speak.mock.calls[1]?.[0]).toMatchObject({
+      previousText: 'Buongiorno.',
+      nextText: 'Bene, grazie.',
+    })
+    expect(speak.mock.calls[0]?.[0].previousText).toBeUndefined()
+    expect(speak.mock.calls[2]?.[0].nextText).toBeUndefined()
+    expect(result.spoken.map((line) => line.text)).toEqual([
+      'Buongiorno.',
+      'Come stai?',
+      'Bene, grazie.',
+    ])
+  })
+
+  it('copies the voice once, however many lines there are', async () => {
+    await fixClipAudio({ ...request, lines: ['One.', 'Two.', 'Three.'] })
+    expect(cloneVoice).toHaveBeenCalledTimes(1)
+    expect(deleteVoice).toHaveBeenCalledTimes(1)
   })
 
   it('never sends a language when none was chosen', async () => {
@@ -237,21 +347,30 @@ describe('fixClipAudio', () => {
     expect(result.voiceName).toBe('Rachel')
   })
 
-  it('deletes the copy even when saying the line fails', async () => {
+  it('deletes the copy even when saying a line fails', async () => {
     speak.mockRejectedValue(new Error('out of credit'))
     await expect(fixClipAudio(request)).rejects.toThrow('out of credit')
     expect(deleteVoice).toHaveBeenCalledWith('cloned-voice')
   })
 
-  it('refuses an empty line rather than spending a request on it', async () => {
-    await expect(fixClipAudio({ ...request, text: '   ' })).rejects.toThrow(/nothing to say/)
+  it('refuses an empty script rather than spending a request on it', async () => {
+    await expect(fixClipAudio({ ...request, lines: ['   ', ''] })).rejects.toThrow(/nothing to say/)
     expect(cloneVoice).not.toHaveBeenCalled()
     expect(speak).not.toHaveBeenCalled()
   })
 
-  it('reports each stage in the order it happens', async () => {
+  it('reports each stage, and how far through the lines it is', async () => {
     const stages: string[] = []
-    await fixClipAudio({ ...request, onStage: (stage) => stages.push(stage) })
-    expect(stages).toEqual(['listening to the clip', 'copying the voice', 'saying the line'])
+    await fixClipAudio({
+      ...request,
+      lines: ['One.', 'Two.'],
+      onStage: (stage, done, total) => stages.push(`${stage} ${done}/${total}`),
+    })
+    expect(stages).toEqual([
+      'listening to the clip 0/2',
+      'copying the voice 0/2',
+      'saying the lines 0/2',
+      'saying the lines 1/2',
+    ])
   })
 })

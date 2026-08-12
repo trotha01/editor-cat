@@ -240,41 +240,149 @@ export interface SpeakOptions {
   modelId?: string
   /** ISO-639-1. Leave unset to let the model read the language off the text. */
   languageCode?: string
+  /**
+   * The lines either side of this one, when a passage is being spoken a line at
+   * a time.
+   *
+   * Not spoken and not billed — read for context only. Without them each line is
+   * performed as if it were the whole utterance, so every one lands on a full
+   * stop and the passage comes back as a list rather than as speech. This is
+   * ElevenLabs' own answer to that, and it is why a clip cut into caption lines
+   * still sounds like one person talking.
+   */
+  previousText?: string
+  nextText?: string
   signal?: AbortSignal
 }
 
+/** A word, and when it was said, in seconds from the start of the audio. */
+export interface SpokenWord {
+  text: string
+  start: number
+  end: number
+}
+
+export interface Speech {
+  /** The line, as MP3. */
+  blob: Blob
+  /**
+   * When each word in it was said.
+   *
+   * The whole reason this endpoint is used rather than the plain one: nothing
+   * can make a model say a word at a chosen moment, but it will say exactly when
+   * it said each one — and that is enough to move the captions onto the speech
+   * afterwards. See `retimeWords` in `captions.ts`.
+   */
+  words: SpokenWord[]
+}
+
+/** Per-character timings, as the with-timestamps endpoint returns them. */
+interface Alignment {
+  characters?: string[]
+  character_start_times_seconds?: number[]
+  character_end_times_seconds?: number[]
+}
+
+interface SpeechResponse {
+  audio_base64?: string
+  /** Aligned to the text as it was sent. */
+  alignment?: Alignment
+  /** Aligned to the text after the model's own normalisation. */
+  normalized_alignment?: Alignment
+}
+
 /**
- * Says a line, returning the audio.
+ * Groups a per-character alignment into words.
  *
- * MP3 at 44.1kHz: the timeline mixes and exports it like any other audio, and
- * this is the format every browser this app runs in can decode without help.
+ * ElevenLabs times characters, which is finer than anything here needs and
+ * awkward in exactly one way: whitespace belongs to neither word. A word runs
+ * from the start of its first character to the end of its last, and the spaces
+ * between them are nobody's. Punctuation stays attached to the word it follows,
+ * because that is how the caption it will be re-timing spells it too.
+ */
+export function wordsFromAlignment(alignment: Alignment | undefined): SpokenWord[] {
+  const characters = alignment?.characters ?? []
+  const starts = alignment?.character_start_times_seconds ?? []
+  const ends = alignment?.character_end_times_seconds ?? []
+
+  const words: SpokenWord[] = []
+  let current: SpokenWord | null = null
+
+  for (const [index, character] of characters.entries()) {
+    if (/\s/.test(character)) {
+      current = null
+      continue
+    }
+    const start: number = starts[index] ?? current?.end ?? 0
+    const end = ends[index] ?? start
+    if (current) {
+      current.text += character
+      current.end = Math.max(current.end, end)
+    } else {
+      current = { text: character, start, end: Math.max(start, end) }
+      words.push(current)
+    }
+  }
+
+  return words
+}
+
+/** Base64 audio to bytes, which is how this endpoint returns it. */
+function decodeAudioBase64(base64: string): Blob {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return new Blob([bytes], { type: 'audio/mpeg' })
+}
+
+/**
+ * Says a line, returning the audio and when each word in it was said.
+ *
+ * The with-timestamps endpoint rather than the plain one, which costs a base64
+ * round trip and buys the only thing that can make generated speech agree with
+ * captions: knowing where the words landed. MP3 at 44.1kHz, because the timeline
+ * mixes and exports it like any other audio and every browser this app runs in
+ * decodes that without help.
  */
 export async function speak({
   voiceId,
   text,
   modelId,
   languageCode,
+  previousText,
+  nextText,
   signal,
-}: SpeakOptions): Promise<Blob> {
+}: SpeakOptions): Promise<Speech> {
   if (isMockEnabled()) return mockSpeech(text)
 
   const model = modelId ?? (await findSpeechModel(languageCode, signal))
 
   const response = await elevenFetch(
-    `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
+    `/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps?output_format=mp3_44100_128`,
     {
       method: 'POST',
       body: JSON.stringify({
         text,
         model_id: model,
         ...(languageCode ? { language_code: languageCode } : {}),
+        ...(previousText ? { previous_text: previousText } : {}),
+        ...(nextText ? { next_text: nextText } : {}),
       }),
-      headers: { 'content-type': 'application/json', accept: 'audio/mpeg' },
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
       signal,
     },
   )
 
-  return await response.blob()
+  const body = (await response.json()) as SpeechResponse
+  if (!body.audio_base64) throw new Error('ElevenLabs returned no audio for that line.')
+
+  return {
+    blob: decodeAudioBase64(body.audio_base64),
+    // The un-normalised alignment first: it is spelled the way the caption is,
+    // so its words line up with the ones about to be re-timed. The normalised
+    // one spells numbers and symbols out, which would put the words out of step.
+    words: wordsFromAlignment(body.alignment ?? body.normalized_alignment),
+  }
 }
 
 export interface CloneOptions {

@@ -14,16 +14,16 @@ account, and the voice features on its own ElevenLabs one, so visitors need
 
 ## What it does
 
-| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **Timeline**     | A clip added from the **Library** lands after the clip the playhead is on, so the next shot arrives where you are working rather than at the end of the track. Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, [fix what it says](#fixing-a-clip-that-says-it-wrong), silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. The mark between two clips opens a **transitions** picker — cross dissolve, dips, wipes, slides, blur and an iris — with a duration you can drag and an **Apply to all**. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. |
-| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                    |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **2 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Timeline**     | A clip added from the **Library** lands after the clip the playhead is on, so the next shot arrives where you are working rather than at the end of the track. Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, [say its captions again properly](#fixing-a-clip-that-says-it-wrong), silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. The mark between two clips opens a **transitions** picker — cross dissolve, dips, wipes, slides, blur and an iris — with a duration you can drag and an **Apply to all**. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. |
+| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                   |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## What you need
 
@@ -70,19 +70,23 @@ the voice changer keeps the delivery it is given, which is exactly the part that
 needs replacing, and generating the shot again rolls the dice on everything else
 in it.
 
-So the line is said again. **⋯ menu on the clip → Fix this clip's audio**, and:
+So the line is said again — and **the captions are the script**.
 
-1. **What it should say** opens with whatever this clip's captions heard, so the
-   usual job is correcting a word rather than typing a line. Caption the clip
-   first — it is the item directly above in the same menu — and the box fills
-   itself. Spell it the way it should be said; this is exactly what gets spoken.
+**Caption the clip first** (the item directly above in the same ⋯ menu), then
+**⋯ menu on the clip → Fix this clip's audio**. The dialog holds this clip's
+captions, one row each with the moment the picture says it:
+
+1. **Correct the lines.** These are the real captions, not a copy: pressing the
+   button saves your edits to them and then says them, so the subtitle and the
+   voice cannot drift apart. Spell a word the way it should be pronounced and
+   both follow.
 2. **Language** stays on _detect from the text_ by default, which is the right
    answer for the clips this exists for: a line that says it in English and then
    again in Italian is two languages in one breath, and naming either one makes
    the model read the other with the wrong mouth. Name a language when the whole
    line is in it and you want it enforced.
 3. **Voice** defaults to _copy this clip's own voice_. ElevenLabs is handed up to
-   30 seconds of the clip's own audio, copies the voice from it, says your line
+   30 seconds of the clip's own audio, copies the voice from it, says your lines
    in that copy, and the copy is deleted again on the way out. Pick a ready-made
    voice instead if you would rather, or if the account's plan does not include
    cloning.
@@ -91,21 +95,39 @@ None of this asks the visitor for anything: it runs on the key the deployment
 sets as `ELEVENLABS_API_KEY`, the same arrangement image and video generation
 already have with fal. There is no key field in the app at all.
 
+### Why a line at a time
+
+Each caption is spoken as its own request and laid **on that caption's mark**, so
+the new speech tracks the performance it is standing in for rather than starting
+right and drifting away over the length of the clip. The lines either side go
+along as context — not spoken, not billed — which is what keeps a passage
+sounding like one person talking instead of a list of sentences.
+
+Then the timings come back the other way. ElevenLabs reports when it said every
+word, and **the captions are re-timed to that**, so the karaoke highlight lands
+on the syllable actually being spoken. Nothing can make a model say a word at a
+chosen moment — there is no such parameter, and stretching the audio would sound
+like stretched audio — but a caption is free to move, and moving it is exact.
+
 What comes back is laid on a **voice track under the clip** and the clip's own
-sound is **muted** — as one edit, so a single undo puts both back. The audio is
-anchored to the clip, so it follows that shot around the timeline like a
-voiceover recorded against it, and it is mixed into the preview and burnt into
-the export like any other audio.
+sound is **muted**. The audio is anchored to the clip, so it follows that shot
+around the timeline like a voiceover recorded against it, and it is mixed into
+the preview and burnt into the export like any other audio. One undo takes the
+audio, the mute and the new timings back together; your caption edits are a step
+of their own, so a second undo is what returns the words.
 
 Fixing the same clip again **never overwrites** what is already there. The new
-line lands on a row of its own and the row before it is muted, so only the
-newest plays — but every take you have paid for is still on the timeline, one
-per lane, and un-muting a lane is one click if the earlier reading was better.
+reading lands on a row of its own and the row before it is muted, so only the
+newest plays — but every take you have paid for is still on the timeline, one per
+lane, and un-muting a lane is one click if the earlier reading was better.
 
-Nothing stretches speech to fit a shot, so the result says how the two compare —
-"1.6s of speech under a 5.0s clip" — and warns when the line runs past the end
-of the clip it belongs to. Trim it on its lane, hold the clip longer, or say
-less.
+A clip with **no captions** still works: one text box, one piece of audio at the
+head of the clip, and none of the line-by-line timing above. The dialog says so.
+
+Nothing stretches speech to fit a shot, so a line that takes longer to say than
+its caption had room for pushes the line after it later rather than talking over
+it. The result says how many that happened to, which is the cue to shorten the
+text or give those captions more room.
 
 ## Reporting bugs from inside the app
 
@@ -1293,10 +1315,10 @@ request body.
 `e2e/smoke.mjs` walks the whole product — including recording two overlapping
 takes and checking that the second one lands on a new track, cutting a clip and
 reloading the page to see the cut come back, putting a count-in in front of the
-video and then dragging both it and the picture's lead-in, fixing a clip's
-pronunciation from its own menu and undoing it in one press, and counting the
-inked pixels in the waveform lane, since an undecoded file leaves a canvas that
-looks fine and shows nothing — then parses the
+video and then dragging both it and the picture's lead-in, correcting a clip's
+captions and having them said back a line at a time on their own marks, and
+counting the inked pixels in the waveform lane, since an undecoded file leaves a
+canvas that looks fine and shows nothing — then parses the
 exported MP4 to confirm it has the tracks it should and runs for exactly as long
 as the export dialog promised, which is how the black at the head is known to
 have been encoded rather than merely requested. It earns its keep: it is
@@ -1366,12 +1388,16 @@ If your CI image ships its own browser, point the test at it with
   cross-origin isolation, which would block loading provider media in the page,
   and WebGPU would be a second execution path reachable on only some machines.
   Both are the same trade the exporter already makes.
-- **A fixed line is not lip-synced, and not stretched to fit.** The picture is
-  untouched, so the mouth on screen is still moving to the rhythm of the line
-  that was originally said — close enough to watch at ordinary clip lengths, and
-  visibly not on a long one. Nothing time-stretches the new line either: if it
-  comes back longer than the clip it belongs to, it runs on over the next shot
-  until you trim it, hold the clip longer, or say less.
+- **A fixed line is not lip-synced, and not stretched to fit.** Each line starts
+  where its caption starts, which keeps the new speech tracking the performance,
+  but the mouth on screen is still shaping the words that were originally said.
+  Nothing time-stretches the new reading either: a line that takes longer than
+  the old one pushes the next line later, and the last line can run on past the
+  end of its clip. Shorten the text, or give the captions more room.
+- **Fixing a clip needs its captions to exist first**, or it falls back to one
+  piece of audio at the head of the clip with no line-by-line timing at all. The
+  captions carry the marks; without them there is nothing to lay the speech
+  against.
 - **Copying a clip's voice needs an ElevenLabs plan that allows cloning.** An
   account that refuses says so, and the answer is to pick a ready-made voice in
   the same dialog — a stranger's voice under the clip, but the right words in it.

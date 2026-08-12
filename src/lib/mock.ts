@@ -303,14 +303,22 @@ export function mockClonedVoiceId(): string {
 const MOCK_SPEECH_CHARS_PER_SECOND = 14
 
 /**
- * Mock speech: a warbling tone, as long as the text would take to say.
+ * Mock speech: a warbling tone, as long as the text would take to say, with the
+ * word timings the real endpoint would have returned.
  *
  * A tone rather than silence because every step downstream — probing the
  * duration, drawing the waveform, playing it under a muted clip, mixing it into
  * the MP4 — is only exercised by audio that is actually there. It sounds nothing
  * like a voice, which is the honest thing for a mock to sound like.
+ *
+ * The timings are the half that matters more here, and they are not invented
+ * loosely: a word gets a share of the line in proportion to its length, so the
+ * captions this drives really are re-timed to the audio it returns, and mock
+ * mode exercises the alignment rather than a straight line through it.
  */
-export async function mockSpeech(text: string): Promise<Blob> {
+export async function mockSpeech(
+  text: string,
+): Promise<{ blob: Blob; words: { text: string; start: number; end: number }[] }> {
   await new Promise((resolve) => setTimeout(resolve, 700))
 
   const rate = COUNTDOWN_SPEC.sampleRate
@@ -323,7 +331,17 @@ export async function mockSpeech(text: string): Promise<Blob> {
     const syllable = 0.5 + 0.5 * Math.sin(2 * Math.PI * 3.2 * t)
     samples[index] = 0.3 * syllable * Math.sin(2 * Math.PI * (180 + 40 * Math.sin(t * 1.7)) * t)
   }
-  return new Blob([encodeWav(samples, rate)], { type: WAV_MIME })
+
+  const tokens = text.trim().split(/\s+/).filter(Boolean)
+  const characters = tokens.reduce((total, token) => total + token.length, 0) || 1
+  let at = 0
+  const words = tokens.map((token) => {
+    const start = at
+    at += (token.length / characters) * seconds
+    return { text: token, start, end: at }
+  })
+
+  return { blob: new Blob([encodeWav(samples, rate)], { type: WAV_MIME }), words }
 }
 
 /**

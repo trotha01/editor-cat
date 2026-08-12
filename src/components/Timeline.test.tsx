@@ -173,15 +173,17 @@ describe('fixing a clip’s audio', () => {
 
   it('calls it a redo once there is a corrected line under the clip already', () => {
     timelineWith([video])
-    useProjectStore.getState().addFixedClipAudio('c1', {
-      assetId: 'fixed-1',
-      useConverted: false,
-      startTime: 0,
-      inPoint: 0,
-      duration: 3,
-      label: 'Fixed: lighthouse.mp4',
-      speechFix: { text: 'Buongiorno' },
-    })
+    useProjectStore.getState().addFixedClipAudio('c1', [
+      {
+        assetId: 'fixed-1',
+        useConverted: false,
+        startTime: 0,
+        inPoint: 0,
+        duration: 3,
+        label: 'Fixed: lighthouse.mp4',
+        speechFix: { text: 'Buongiorno' },
+      },
+    ])
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for lighthouse.mp4' }))
 
