@@ -929,6 +929,92 @@ describe('a clip added at the playhead', () => {
 })
 
 /**
+ * A whole library added at once, which is what "Add all" does.
+ *
+ * The point of it being its own action rather than a loop over `addClip` is
+ * that it is a single edit: pressing undo once has to put the timeline back the
+ * way it was before the button, not peel the shots off one at a time. The rest
+ * is the arrangement — the order they were handed over in, all of them at the
+ * one insertion point — and the sound behind them being carried by the whole
+ * length that arrived rather than by the length of the last shot in.
+ */
+describe('a run of clips added at once', () => {
+  /** Stills, which are four seconds each. */
+  const stills = (count: number) =>
+    Array.from({ length: count }, (_, index): Asset => ({
+      id: `a-${index + 1}`,
+      kind: 'image',
+      blobKey: `b-${index + 1}`,
+      mimeType: 'image/png',
+      name: `${index + 1}.png`,
+      createdAt: index,
+    }))
+
+  /** Two shots of 2s and 3s, so they run 0–2 and 2–5. */
+  const twoShots = (): Project => ({
+    ...emptyProject(),
+    clips: [
+      { id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 2 },
+      { id: 'clip-2', assetId: 'b', inPoint: 0, outPoint: 3 },
+    ],
+  })
+
+  it('goes in in the order given, after the clip the playhead is over', () => {
+    useProjectStore.setState({ project: twoShots() })
+
+    // A second into the first shot.
+    useProjectStore.getState().addClips(stills(3), 1)
+
+    const order = stored().clips.map((clip) => clip.assetId)
+    expect(order).toEqual(['a', 'a-1', 'a-2', 'a-3', 'b'])
+    // The last one in, so the next edit lands at the end of what arrived.
+    const last = stored().clips.find((clip) => clip.assetId === 'a-3')
+    expect(useProjectStore.getState().selectedClipId).toBe(last?.id)
+  })
+
+  it('is one step for undo however many shots it was', () => {
+    useProjectStore.setState({ project: twoShots() })
+
+    useProjectStore.getState().addClips(stills(3), 1)
+    expect(useProjectStore.getState().project.clips).toHaveLength(5)
+
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips.map((clip) => clip.assetId)).toEqual(['a', 'b'])
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+  })
+
+  it('carries the captions behind it by the whole length that arrived', () => {
+    useProjectStore.setState({ project: twoShots() })
+    const trackId = useProjectStore.getState().ensureCaptionTrack()
+    useProjectStore.getState().setCaptionsFromWords(trackId, [
+      { text: 'One.', start: 0.5, end: 0.9, source: { id: 'clip-1', label: 'a.mp4' } },
+      { text: 'Two.', start: 2.5, end: 2.9, source: { id: 'clip-2', label: 'b.mp4' } },
+    ])
+
+    useProjectStore.getState().addClips(stills(3), 1)
+
+    const startFor = (clipId: string) =>
+      captionCuesOf(stored()).find((cue) => cue.source?.id === clipId)?.start ?? NaN
+    // Twelve seconds of stills between the two shots: the line over the first
+    // does not move, and the one over the second is carried by all of it rather
+    // than by the four seconds of the last still in.
+    expect(startFor('clip-1')).toBeCloseTo(0.5)
+    expect(startFor('clip-2')).toBeCloseTo(14.5)
+  })
+
+  it('leaves the timeline alone when there is nothing to add', () => {
+    useProjectStore.setState({ project: twoShots() })
+
+    useProjectStore.getState().addClips([], 1)
+
+    // Not an edit, so there is nothing for undo to walk back through.
+    expect(useProjectStore.getState().project.clips).toHaveLength(2)
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+  })
+})
+
+/**
  * The video lane stack: which lane a new layer lands on, and moving lanes along
  * the order afterwards.
  *
