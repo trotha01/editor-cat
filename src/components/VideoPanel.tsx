@@ -1,4 +1,4 @@
-/** Step 2: animate one of your images into a clip. */
+/** Step 3: animate one of your images into a clip. */
 import { useMemo, useRef, useState } from 'react'
 import { PromptField } from './PromptField'
 import { ModelPicker } from './ModelPicker'

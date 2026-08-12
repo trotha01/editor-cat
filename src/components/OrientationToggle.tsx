@@ -3,8 +3,8 @@
  *
  * Sits directly above the preview because that is the thing whose shape it
  * changes — the feedback is immediate and needs no explaining. It lives outside
- * the tab panels on purpose: it drives the image shape on step 1, the video
- * model's aspect ratio on step 2, and the export frame at the end, so it would
+ * the tab panels on purpose: it drives the image shape on step 2, the video
+ * model's aspect ratio on step 3, and the export frame at the end, so it would
  * be wrong to hide it inside any one of them.
  */
 import { dimensionsFor, orientationOf, type Orientation } from '../lib/orientation'

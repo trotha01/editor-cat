@@ -1,5 +1,5 @@
 /**
- * Step 3: layer voiceovers, lay music under them, and count yourself in.
+ * Step 5: layer voiceovers, lay music under them, and count yourself in.
  *
  * Recording starts playback at the playhead so you narrate to picture, and the
  * take is pinned where you started. Takes are placed automatically: onto an

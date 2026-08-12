@@ -36,8 +36,8 @@ const TABS = [
   { id: 'image', label: '2 · Image', hint: 'Make images from a prompt' },
   { id: 'video', label: '3 · Video', hint: 'Animate an image into a clip' },
   { id: 'library', label: 'Library', hint: 'Everything you have made' },
-  { id: 'audio', label: '4 · Audio', hint: 'Record voiceovers, layer takes, add music' },
-  { id: 'captions', label: '5 · Captions', hint: 'Transcribe the audio into karaoke captions' },
+  { id: 'captions', label: '4 · Captions', hint: 'Transcribe the audio into karaoke captions' },
+  { id: 'audio', label: '5 · Audio', hint: 'Record voiceovers, layer takes, add music' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']

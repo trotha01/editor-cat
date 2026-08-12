@@ -1,4 +1,4 @@
-/** Step 1: turn a prompt into images. */
+/** Step 2: turn a prompt into images. */
 import { useMemo, useRef, useState } from 'react'
 import { PromptField } from './PromptField'
 import { ModelPicker } from './ModelPicker'
