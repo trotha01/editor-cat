@@ -491,6 +491,77 @@ describe('fixClipAudio', () => {
     })
   })
 
+  it('sends the caption’s word, never the one the transcriber misheard', async () => {
+    // The real thing, from a live run on `latin-1-toadburger.mp4`. The
+    // transcriber heard the clip as two sentences and misheard "toad" as
+    // "boaf"; the clip's captions are four lines and say "toad", because
+    // somebody corrected them. Numbers are the ones the API and the project
+    // document actually carried, clip start included, because the arithmetic
+    // that turns timeline seconds into media seconds is the part that would
+    // silently put the right words in the wrong places.
+    const CLIP_START = 49.78351562499999
+    dub.segments = [
+      {
+        id: 'seg_latin',
+        text: 'Hic bufo cum sinapi mirabile sapere posset.',
+        speakerId: 'speaker_0',
+        start: 0.099,
+        end: 4.059,
+      },
+      {
+        id: 'seg_english',
+        text: 'This boaf would taste amazing with mustard.',
+        speakerId: 'speaker_0',
+        start: 5.559,
+        end: 7.799,
+      },
+    ]
+
+    await fixClipAudio({
+      ...request,
+      duration: 8.08,
+      clipStart: CLIP_START,
+      language: 'en',
+      lines: [
+        { start: 49.88251562499999, end: 51.27551562499999, text: 'Hic bufo cum sinapi' },
+        { start: 52.023515624999995, end: 54.391515625, text: 'mirabilis saporis esset.' },
+        { start: 55.36251562499999, end: 56.477073624999996, text: 'This toad would taste' },
+        { start: 56.477073624999996, end: 58.010073625, text: 'amazing with mustard.' },
+      ],
+    })
+
+    // The two spans the transcriber found are rewritten to the first two
+    // captions, on those captions' own marks measured from the head of the clip.
+    const [, edits] = updateSegments.mock.calls[0] ?? []
+    expect(edits?.seg_latin?.text).toBe('Hic bufo cum sinapi')
+    expect(edits?.seg_latin?.start).toBeCloseTo(0.099, 3)
+    expect(edits?.seg_latin?.end).toBeCloseTo(1.492, 3)
+    expect(edits?.seg_english?.text).toBe('mirabilis saporis esset.')
+    expect(edits?.seg_english?.start).toBeCloseTo(2.24, 3)
+
+    // The other two captions have no span to sit on — the transcriber found
+    // two and there are four — so they are created. "toad" travels in one of
+    // these, which is why a run that dies on the rewrite never sends it at all.
+    expect(createSegment.mock.calls.map((call) => call[2].text)).toEqual([
+      'This toad would taste',
+      'amazing with mustard.',
+    ])
+    expect(createSegment.mock.calls[0]?.[2].start).toBeCloseTo(5.579, 3)
+    // The last caption overhangs the end of the shot, and a segment may not.
+    expect(createSegment.mock.calls[1]?.[2].end).toBeCloseTo(8.08, 3)
+
+    // The whole point, stated the blunt way round: nothing the transcriber
+    // invented reaches ElevenLabs, in any call, in any field.
+    const everythingSent = JSON.stringify([
+      updateSegments.mock.calls,
+      createSegment.mock.calls,
+      deleteSegment.mock.calls,
+    ])
+    expect(everythingSent).toContain('toad')
+    expect(everythingSent).not.toContain('boaf')
+    expect(everythingSent).not.toContain('mirabile sapere posset')
+  })
+
   it('empties the spare spans only after the kept ones are rewritten', async () => {
     // A transcript with nothing in it is one dubbing may decide is empty, and
     // refilling it afterwards would pass through that state every time the
