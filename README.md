@@ -713,12 +713,19 @@ was captioned, when it went up and whose account it belongs to. Each one has a
 bucket — asked about first, because it cannot be undone and anyone holding the
 link loses it. Your project and its media are untouched either way.
 
+That list is one block that reads three ways, and never two at once. Straight
+after a publish it is **Published**, because that is news. Reopen the dialog and
+the same fact is a record: **Already in the feed**, or **Already in the Mintspace
+feed** when the export you are about to make is the one that is up. The rows are
+the same in all three, so deleting is always to hand. Once a project has
+anything in the feed the button reads **Render and republish to Mintspace**,
+since that is what any further publish would be.
+
 **The same video cannot go up twice**, and you are told before you press
 anything. Opening the panel fingerprints the timeline and the export settings
 and compares that against what this project has already posted: if it matches,
-**Already in the Mintspace feed** appears and the publish button is off. Edit the
-project, change the size or quality, or delete the post that is up, and it comes
-back on.
+the block above says so and the publish button is off. Edit the project, change
+the size or quality, or delete the post that is up, and it comes back on.
 
 That check is a prediction — it says the export would be made from the same
 things, not that the bytes will match — so the finished file is hashed as well,

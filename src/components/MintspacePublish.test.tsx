@@ -202,8 +202,33 @@ describe('publishing', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
 
+    expect(await screen.findByText('Published')).toBeInTheDocument()
     const link = await screen.findByRole('link', { name: /open the video/i })
     expect(link).toHaveAttribute('href', 'https://cdn.example/uid-1/export.mp4')
+  })
+
+  it('says it is published without also calling it already published', async () => {
+    // The two say the same thing, and one of them is news. Right after a
+    // publish only the news is worth the room.
+    setup()
+
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+
+    expect(await screen.findByText('Published')).toBeInTheDocument()
+    expect(screen.queryByText(/already in the/i)).not.toBeInTheDocument()
+  })
+
+  it('is a record rather than news the next time the panel is opened', async () => {
+    // Which is what closing and reopening the dialog does: the panel is only
+    // mounted while it is up.
+    const project: Project = {
+      ...PROJECT,
+      publications: [{ ...POSTED, sourceKey: 'not-this-export' }],
+    }
+    setup({ project })
+
+    expect(await screen.findByText(/already in the feed/i)).toBeInTheDocument()
+    expect(screen.queryByText('Published')).not.toBeInTheDocument()
   })
 
   it('links the feed itself when the build knows where it is', async () => {
@@ -216,6 +241,26 @@ describe('publishing', () => {
       'href',
       'https://mintspace.example.com',
     )
+  })
+
+  it('offers to republish once this project has something in the feed', async () => {
+    const project: Project = {
+      ...PROJECT,
+      publications: [{ ...POSTED, sourceKey: 'not-this-export' }],
+    }
+    setup({ project })
+
+    expect(
+      await screen.findByRole('button', { name: /render and republish to mintspace/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('offers to publish, not republish, when nothing of this project is up', async () => {
+    setup()
+
+    expect(
+      await screen.findByRole('button', { name: /render and publish to mintspace/i }),
+    ).toBeInTheDocument()
   })
 
   it('reports a bucket that will not take the file, and what to change about it', async () => {
@@ -262,7 +307,7 @@ describe('videos this project is already up as', () => {
   it('lists them, so it is known before a minute is spent rendering', async () => {
     setup({ project: posted })
 
-    expect(await screen.findByText(/published from this project/i)).toBeInTheDocument()
+    expect(await screen.findByText(/already in the feed/i)).toBeInTheDocument()
     expect(screen.getByText('declensions, hour 4')).toBeInTheDocument()
   })
 

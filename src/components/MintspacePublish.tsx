@@ -211,6 +211,75 @@ export function MintspacePublish(props: MintspacePublishProps) {
 
   const locked = busy || working || deleting !== null
 
+  /**
+   * Published videos, as rows.
+   *
+   * A function returning markup rather than a component of its own: it is the
+   * same markup under all three headings above and depends on half this
+   * component's state, so as a component it would need eight props — and as a
+   * *nested* component it would remount on every keystroke in the caption.
+   */
+  const rowsFor = (entries: Publication[]) => (
+    <div className="flex flex-col gap-2">
+      {entries.map((entry) => (
+        <div key={entry.videoId} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+          <span className="[overflow-wrap:anywhere]">
+            {entry.caption ?? <span className="text-ink-dim">No caption</span>}
+          </span>
+          <span className="text-xs text-ink-dim">
+            @{entry.username} · {new Date(entry.publishedAt).toLocaleDateString()}
+          </span>
+          <span className="ml-auto flex items-center gap-2">
+            <VideoLink publication={entry} />
+            {/* Only offered to a session that could actually do it. The record
+                is worth showing signed out; a button that can only fail is not. */}
+            {account ? (
+              deleting === entry.videoId ? (
+                <span className="flex items-center gap-1.5 text-xs text-ink-dim">
+                  <Spinner /> Deleting…
+                </span>
+              ) : confirming === entry.videoId ? (
+                <>
+                  <Button
+                    variant="danger"
+                    className="px-2 py-1 text-xs"
+                    onClick={() => void remove(entry)}
+                  >
+                    Delete for good
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="px-2 py-1 text-xs"
+                    onClick={() => setConfirming(null)}
+                  >
+                    Keep it
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="ghost"
+                  className="px-2 py-1 text-xs"
+                  disabled={locked}
+                  aria-label={`Delete ${entry.caption ?? 'this video'} from Mintspace`}
+                  onClick={() => setConfirming(entry.videoId)}
+                >
+                  🗑 Delete
+                </Button>
+              )
+            ) : null}
+          </span>
+          {confirming === entry.videoId ? (
+            <p className="w-full text-xs text-ink-dim">
+              This takes the video out of the Mintspace feed and deletes the file. It cannot be
+              undone, and anyone who has the link loses it. Your project and its media stay exactly
+              as they are.
+            </p>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
+
   if (!configured) {
     return (
       <Callout tone="warn" title="No Mintspace behind this site">
@@ -230,74 +299,42 @@ export function MintspacePublish(props: MintspacePublishProps) {
         </Callout>
       ) : null}
 
-      {/* Before the form rather than after it: whether this project is already
-          up is the first thing worth knowing on opening the panel, and knowing
-          it late is knowing it after a minute of rendering. */}
-      {publications.length > 0 ? (
+      {/* One slot, three occupants, never two at once.
+
+          Before the form rather than after it, because whether this project is
+          already up is the first thing worth knowing on opening the panel, and
+          knowing it late is knowing it after a minute of rendering. What it
+          says depends on how you got here: a publish you just made is news and
+          reads as news; the same fact on the next visit is a record. The list
+          itself is the same either way, so deleting is always to hand. */}
+      {published ? (
+        <Callout tone="success" title="Published">
+          <p className="mb-2">
+            It is in the feed now. Publishing stays off until the project changes, so the same video
+            cannot go up twice.
+          </p>
+          {/* The post just made, from this component's own state rather than
+              from the list, so the confirmation is about the press that caused
+              it and cannot be empty for a parent that has yet to re-render. */}
+          {rowsFor([published])}
+        </Callout>
+      ) : alreadyUp ? (
+        <Callout tone="warn" title="Already in the Mintspace feed">
+          <p className="mb-2">
+            This project, at these settings, is what went up
+            {alreadyUp.caption ? ` as “${alreadyUp.caption}”` : ''} on{' '}
+            {new Date(alreadyUp.publishedAt).toLocaleDateString()}. Publishing again would put a
+            second copy in the feed, so the button is off — edit the project, change the size or
+            quality, or delete the post below.
+          </p>
+          {rowsFor(publications)}
+        </Callout>
+      ) : publications.length > 0 ? (
         <section className="flex flex-col gap-2 rounded-lg border border-line bg-surface-2/40 p-3">
           <h3 className="text-xs font-semibold tracking-wide text-ink-dim uppercase">
-            Published from this project
+            Already in the feed
           </h3>
-          {publications.map((entry) => (
-            <div
-              key={entry.videoId}
-              className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
-            >
-              <span className="[overflow-wrap:anywhere]">
-                {entry.caption ?? <span className="text-ink-dim">No caption</span>}
-              </span>
-              <span className="text-xs text-ink-dim">
-                @{entry.username} · {new Date(entry.publishedAt).toLocaleDateString()}
-              </span>
-              <span className="ml-auto flex items-center gap-2">
-                <VideoLink publication={entry} />
-                {/* Only offered to a session that could actually do it. The
-                    record is worth showing signed out; a button that can only
-                    fail is not. */}
-                {account ? (
-                  deleting === entry.videoId ? (
-                    <span className="flex items-center gap-1.5 text-xs text-ink-dim">
-                      <Spinner /> Deleting…
-                    </span>
-                  ) : confirming === entry.videoId ? (
-                    <>
-                      <Button
-                        variant="danger"
-                        className="px-2 py-1 text-xs"
-                        onClick={() => void remove(entry)}
-                      >
-                        Delete for good
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        className="px-2 py-1 text-xs"
-                        onClick={() => setConfirming(null)}
-                      >
-                        Keep it
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      className="px-2 py-1 text-xs"
-                      disabled={locked}
-                      aria-label={`Delete ${entry.caption ?? 'this video'} from Mintspace`}
-                      onClick={() => setConfirming(entry.videoId)}
-                    >
-                      🗑 Delete
-                    </Button>
-                  )
-                ) : null}
-              </span>
-              {confirming === entry.videoId ? (
-                <p className="w-full text-xs text-ink-dim">
-                  This takes the video out of the Mintspace feed and deletes the file. It cannot be
-                  undone, and anyone who has the link loses it. Your project and its media stay
-                  exactly as they are.
-                </p>
-              ) : null}
-            </div>
-          ))}
+          {rowsFor(publications)}
         </section>
       ) : null}
 
@@ -359,20 +396,6 @@ export function MintspacePublish(props: MintspacePublishProps) {
         />
       )}
 
-      {/* Before the button rather than after the render, which is the whole
-          point of keeping a fingerprint of the source as well as of the file:
-          being told a video is a duplicate is worth much more a minute of
-          encoding earlier. */}
-      {alreadyUp ? (
-        <Callout tone="warn" title="Already in the Mintspace feed">
-          This project, at these settings, is what went up
-          {alreadyUp.caption ? ` as “${alreadyUp.caption}”` : ''} on{' '}
-          {new Date(alreadyUp.publishedAt).toLocaleDateString()}. Publishing again would put a
-          second copy in the feed, so the button is off — edit the project, change the size or
-          quality, or delete the post above.
-        </Callout>
-      ) : null}
-
       {stage ? (
         <p className="flex items-center gap-2 text-sm">
           <Spinner /> {stage}
@@ -384,7 +407,8 @@ export function MintspacePublish(props: MintspacePublishProps) {
             onClick={() => void publish()}
             disabled={empty || Boolean(alreadyUp)}
           >
-            <span aria-hidden>📤</span> Render and publish to Mintspace
+            <span aria-hidden>📤</span> Render and{' '}
+            {publications.length > 0 ? 'republish' : 'publish'} to Mintspace
           </Button>
           <Button variant="ghost" onClick={onClose}>
             Close
@@ -395,13 +419,6 @@ export function MintspacePublish(props: MintspacePublishProps) {
       {error ? (
         <Callout tone="error" title={error.title}>
           {error.message}
-        </Callout>
-      ) : null}
-
-      {published ? (
-        <Callout tone="success" title="Published">
-          It is in the feed now, and listed below so it cannot go up twice.{' '}
-          <VideoLink publication={published} />.
         </Callout>
       ) : null}
     </div>

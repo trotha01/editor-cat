@@ -78,7 +78,13 @@ beforeEach(() => {
 })
 
 function open() {
-  render(<ExportDialog open onClose={() => {}} />)
+  return render(<ExportDialog open onClose={() => {}} />)
+}
+
+/** Closing and reopening the dialog, which is what unmounts the panel. */
+function reopen(view: ReturnType<typeof open>) {
+  view.rerender(<ExportDialog open={false} onClose={() => {}} />)
+  view.rerender(<ExportDialog open onClose={() => {}} />)
 }
 
 describe('choosing where an export goes', () => {
@@ -188,14 +194,29 @@ describe('the render itself', () => {
     expect(publications).toHaveLength(1)
     expect(publications[0]).toMatchObject({ videoId: 'v1', storagePath: 'uid-1/v1.mp4' })
 
-    // And it says so without being asked: the button is off and the reason is
-    // on screen, rather than waiting for a second render to find out.
-    expect(await screen.findByText(/already in the mintspace feed/i)).toBeInTheDocument()
+    // Straight after, it reads as news and says nothing about being already up.
+    expect(await screen.findByText('Published')).toBeInTheDocument()
+    expect(screen.queryByText(/already in the/i)).not.toBeInTheDocument()
+
+    // And it cannot go again, without being asked and without a second render.
     const button = screen.getByRole('button', { name: /publish to mintspace/i })
     expect(button).toBeDisabled()
-
     fireEvent.click(button)
     expect(publishVideo).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns the confirmation into a record once the dialog has been reopened', async () => {
+    const view = open()
+    fireEvent.change(screen.getByLabelText(/export to/i), { target: { value: 'mintspace' } })
+    fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
+    await waitFor(() => expect(publishVideo).toHaveBeenCalledTimes(1))
+    await screen.findByText('Published')
+
+    reopen(view)
+
+    expect(await screen.findByText(/already in the mintspace feed/i)).toBeInTheDocument()
+    expect(screen.queryByText('Published')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /render and republish/i })).toBeDisabled()
   })
 
   it('reports a render that failed as a sentence', async () => {
