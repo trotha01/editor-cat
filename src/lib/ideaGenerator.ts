@@ -22,8 +22,7 @@ Generate exactly ${IDEA_COUNT} scene ideas that all use the given word. Every id
 - Fit in 8-10 seconds of screen time — there is only room for one beat of action and a line or two of dialogue, so keep it tight.
 - Involve one or two characters, occasionally more. Characters need not be human — they can be animals, objects, machines, ghosts, anything at all.
 - Be a weird, absurd situation that would not happen in real life.
-- Include a short line of dialogue, in quotes.
-- Use the given word at least once, in the description or the dialogue.
+- Include a short line of dialogue, in quotes, and the dialogue itself must use the given word at least once — not just the surrounding description.
 - Be as succinct as possible — a sentence or two, never a paragraph.
 
 Output a JSON array of exactly ${IDEA_COUNT} strings and nothing else. No markdown, no numbering, no commentary.`

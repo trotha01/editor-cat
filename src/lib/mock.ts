@@ -245,24 +245,23 @@ function mockLlm(input: Record<string, unknown>): { output: string } {
 
 const IDEA_TEMPLATES: ((word: string) => string)[] = [
   (w) =>
-    `A raccoon files a noise complaint against the moon for being too "${w}." "Take it up with the tide," the moon says.`,
+    `A raccoon files a noise complaint against the moon. "Take it up with the ${w}," the moon says.`,
   (w) =>
-    `A vending machine and a fire hydrant split the last ${w} between them. "Fair is fair," the hydrant hisses.`,
+    `A vending machine and a fire hydrant split the last snack between them. "Fair is fair about the ${w}," the hydrant hisses.`,
   (w) =>
-    `Two houseplants stage a coup over the sunny windowsill and a ${w}. "It's mine by right," one snaps.`,
+    `Two houseplants stage a coup over the sunny windowsill. "The ${w} is mine by right," one snaps.`,
   (w) =>
-    `A ghost tries to return a ${w} it stole in 1987. "Keep the receipt," the shopkeeper deadpans.`,
+    `A ghost tries to return something it stole in 1987. "Keep the ${w}," the shopkeeper deadpans.`,
+  (w) => `A traffic cone directs a marching band. "Left, then ${w}!" it barks.`,
   (w) =>
-    `A traffic cone directs a marching band made of nothing but ${w}. "Left, then ${w}!" it barks.`,
+    `An umbrella refuses to open until someone apologises. "Say sorry for the ${w} first," it insists.`,
   (w) =>
-    `An umbrella refuses to open until someone apologises for the ${w}. "Say sorry first," it insists.`,
+    `A toaster interviews a loaf of bread for a job opening. "You're overqualified for ${w}," it says.`,
   (w) =>
-    `A toaster interviews a loaf of bread for the job of "${w}." "You're overqualified," it says.`,
+    `A cloud sues a lawnmower over something stolen. "The evidence is in the ${w}," the cloud rumbles.`,
+  (w) => `A mailbox falls for a passer-by. "Write back about the ${w}," it whispers.`,
   (w) =>
-    `A cloud sues a lawnmower over a stolen ${w}. "The evidence is in the grass," the cloud rumbles.`,
-  (w) => `A mailbox falls for a passing ${w}. "Write back," it whispers.`,
-  (w) =>
-    `A stapler goes on strike until the office admits the ${w} was rigged. "Never again," it clicks.`,
+    `A stapler goes on strike until the office admits it was rigged. "Never trust a ${w} again," it clicks.`,
 ]
 
 /**
