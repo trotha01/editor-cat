@@ -19,8 +19,8 @@ import { ClipMenu } from './ClipMenu'
 import { formatTime } from '../lib/timeline'
 import { MIN_OVERLAY_DURATION } from '../lib/videoTracks'
 import { useAssetStore } from '../state/useAssetStore'
+import { useMediaLoading } from '../hooks/useMediaLoading'
 import { useProjectStore } from '../state/useProjectStore'
-import { useProjectsStore } from '../state/useProjectsStore'
 import { videoClipsOf, videoTracksOf } from '../lib/videoTracks'
 import type { Asset, VideoClip, VideoTrack } from '../lib/types'
 
@@ -46,11 +46,7 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
   const tracks = useProjectStore((state) => videoTracksOf(state.project))
   const clips = useProjectStore((state) => videoClipsOf(state.project))
   const assets = useAssetStore((state) => state.assets)
-  const assetsLoading = useAssetStore((state) => state.loading)
-  const hydrating = useProjectsStore((state) => state.hydration !== null)
-  // Mirrors the picture track: an asset absent from the library during either
-  // of these is still on its way, not gone.
-  const mediaLoading = assetsLoading || hydrating
+  const mediaLoading = useMediaLoading()
   const moveVideoClipTo = useProjectStore((state) => state.moveVideoClipTo)
   const trimVideoClipEdge = useProjectStore((state) => state.trimVideoClipEdge)
   const removeVideoClip = useProjectStore((state) => state.removeVideoClip)

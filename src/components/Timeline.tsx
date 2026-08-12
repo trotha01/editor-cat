@@ -62,8 +62,8 @@ import { TransitionMarker } from './TransitionMarker'
 import { ClipWaveformLane, WAVEFORM_LANE_HEIGHT, type WaveformEntry } from './ClipWaveforms'
 import { useAssetStore } from '../state/useAssetStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
+import { useMediaLoading } from '../hooks/useMediaLoading'
 import { useProjectStore } from '../state/useProjectStore'
-import { useProjectsStore } from '../state/useProjectsStore'
 import type { Asset, Clip, PositionedClip } from '../lib/types'
 
 /**
@@ -483,13 +483,7 @@ export function Timeline({
   const setTransition = useProjectStore((state) => state.setTransition)
   const setAllTransitions = useProjectStore((state) => state.setAllTransitions)
   const assets = useAssetStore((state) => state.assets)
-  const assetsLoading = useAssetStore((state) => state.loading)
-  const hydrating = useProjectsStore((state) => state.hydration !== null)
-  // While either of these is true, a clip whose asset has not shown up yet is
-  // still on its way rather than actually gone — the library's own first load
-  // and a project's media coming back from Drive both leave a gap here before
-  // the asset appears.
-  const mediaLoading = assetsLoading || hydrating
+  const mediaLoading = useMediaLoading()
 
   const setClipAudio = useProjectStore((state) => state.setClipAudio)
 

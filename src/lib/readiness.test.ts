@@ -142,6 +142,14 @@ describe('the summary over the picture', () => {
     expect(summary.stalled).toBe(true)
   })
 
+  it('counts an asset that has not arrived as loading, not as missing', () => {
+    // Otherwise a project being restored from Drive spends the restore
+    // accusing itself, in red, of having lost the media it is fetching.
+    const summary = summarise(['a', 'b'], { a: { state: 'pending', buffered: 0 }, b: loading })
+
+    expect(summary).toMatchObject({ missing: 0, loading: 2, stalled: false })
+  })
+
   it('counts missing media separately from slow media', () => {
     const summary = summarise(['a', 'b'], { a: missing, b: loading })
 

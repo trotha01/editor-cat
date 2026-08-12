@@ -32,6 +32,15 @@ export type ReadinessState =
   /** The media is gone, or the element gave up trying to load it. */
   | 'missing'
   /**
+   * The clip points at an asset the library has not got *yet*: the library is
+   * still doing its first load, or the project's media is still coming back
+   * from Drive. Kept apart from `missing` because the two look identical from
+   * here and are opposites to the person watching — one is a wait and the other
+   * is a fault — and apart from `loading` because there is no element to
+   * measure, so there is no progress to report either.
+   */
+  | 'pending'
+  /**
    * Not fetched yet, and not meant to be: this clip is far enough from the
    * playhead that we have deliberately not asked for it. Kept apart from
    * `loading` so a long timeline does not sit there reporting most of itself as
@@ -143,7 +152,10 @@ export function quantise(readiness: ClipReadiness): ClipReadiness {
 export interface ReadinessSummary {
   /** Clips whose media could not be loaded at all. */
   missing: number
-  /** Clips fetching now. Includes the stalled one, which is also still fetching. */
+  /**
+   * Clips fetching now. Includes the stalled one, which is also still fetching,
+   * and the ones still waiting on their asset to turn up at all.
+   */
   loading: number
   /** Clips deliberately not fetched yet. Not a problem, so not counted above. */
   idle: number
@@ -171,7 +183,10 @@ export function summarise(
         loading += 1
         stalled = true
         break
+      // An asset that has not arrived is media on its way like any other, so
+      // `pending` is counted here rather than accused of being absent.
       case 'loading':
+      case 'pending':
         loading += 1
         break
       case 'idle':

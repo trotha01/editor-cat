@@ -22,6 +22,7 @@ interface Options {
   to?: number
   wanted?: boolean
   warm?: boolean
+  mediaLoading?: boolean
   imageLoaded?: boolean
   imageBroken?: boolean
 }
@@ -39,6 +40,7 @@ function Harness({ clipId, options }: { clipId: string; options: Options }) {
     to: 4,
     wanted: false,
     warm: true,
+    mediaLoading: false,
     imageLoaded: false,
     imageBroken: false,
     ...options,
@@ -144,6 +146,22 @@ describe('reporting what a video element knows', () => {
 
   it('reports a clip whose asset is gone from the library as missing', () => {
     mount({ kind: undefined })
+
+    expect(readingFor()).toEqual({ state: 'missing', buffered: 0 })
+  })
+
+  it('reports an asset that has not arrived yet as pending, not as gone', () => {
+    // The clip card says "media loading" here. A missing reading would put a
+    // red bar over that wording, which reads as a fault rather than a wait.
+    mount({ kind: undefined, mediaLoading: true })
+
+    expect(readingFor()).toEqual({ state: 'pending', buffered: 0 })
+  })
+
+  it('still reports a failed source as missing while other media is loading', () => {
+    // Something else arriving says nothing about this clip: its source has been
+    // resolved and there is nothing left to wait for.
+    mount({ failed: true, mediaLoading: true })
 
     expect(readingFor()).toEqual({ state: 'missing', buffered: 0 })
   })

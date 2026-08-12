@@ -46,6 +46,7 @@ function settledReadiness({
   url,
   failed,
   warm,
+  mediaLoading,
   imageLoaded,
   imageBroken,
 }: {
@@ -53,10 +54,16 @@ function settledReadiness({
   url: string | null
   failed: boolean
   warm: boolean
+  mediaLoading: boolean
   imageLoaded: boolean
   imageBroken: boolean
 }): ClipReadiness | null {
-  if (!kind || failed) return { state: 'missing', buffered: 0 }
+  // An asset missing from the library while the library is still filling has
+  // not gone anywhere — it is one of the ones still coming. The clip card
+  // already says "media loading" for this, and a red bar over that wording
+  // reads as a fault the editor is not actually reporting.
+  if (!kind) return { state: mediaLoading ? 'pending' : 'missing', buffered: 0 }
+  if (failed) return { state: 'missing', buffered: 0 }
   if (!url) return { state: 'loading', buffered: 0 }
   if (kind === 'video') return null
   if (imageBroken) return { state: 'missing', buffered: 0 }
@@ -74,12 +81,13 @@ export function useReportReadiness({
   to,
   wanted,
   warm,
+  mediaLoading,
   imageLoaded,
   imageBroken,
 }: {
   clipId: string
   videoRef: RefObject<HTMLVideoElement | null>
-  /** Undefined when the clip points at an asset that is no longer in the library. */
+  /** Undefined when the clip points at an asset that is not in the library. */
   kind: AssetKind | undefined
   /** Null while the blob is still being read. */
   url: string | null
@@ -93,13 +101,23 @@ export function useReportReadiness({
   wanted: boolean
   /** True when the clip is near enough the playhead to be worth fetching. */
   warm: boolean
+  /** True while an asset absent from the library might still be on its way. */
+  mediaLoading: boolean
   imageLoaded: boolean
   imageBroken: boolean
 }): void {
   const report = useClipReadiness((state) => state.report)
   const forget = useClipReadiness((state) => state.forget)
 
-  const settled = settledReadiness({ kind, url, failed, warm, imageLoaded, imageBroken })
+  const settled = settledReadiness({
+    kind,
+    url,
+    failed,
+    warm,
+    mediaLoading,
+    imageLoaded,
+    imageBroken,
+  })
   // Carried as primitives so the effects below can depend on the answer itself
   // rather than on an object rebuilt every render.
   const settledState = settled?.state ?? null

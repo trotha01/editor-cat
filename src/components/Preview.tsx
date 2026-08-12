@@ -23,6 +23,7 @@ import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useAssetSource, useAssetUrl } from '../hooks/useAssetUrl'
 import { useFullscreen } from '../hooks/useFullscreen'
+import { useMediaLoading } from '../hooks/useMediaLoading'
 import { usePersistedState } from '../hooks/usePersistedState'
 import { useReportReadiness } from '../hooks/useReportReadiness'
 import { ReadinessBanner } from './ReadinessBanner'
@@ -63,6 +64,7 @@ function ClipLayer({
   active,
   incoming,
   warm,
+  mediaLoading,
   currentTime,
   playing,
   start,
@@ -80,6 +82,8 @@ function ClipLayer({
   incoming: boolean
   /** Near enough the playhead to be worth fetching in full ahead of time. */
   warm: boolean
+  /** True while an asset absent from the library might still be on its way. */
+  mediaLoading: boolean
   currentTime: number
   playing: boolean
   start: number
@@ -113,6 +117,7 @@ function ClipLayer({
     // rest are merely not loaded yet, which is expected and not worth an alarm.
     wanted: active && playing,
     warm: active || warm,
+    mediaLoading,
     imageLoaded,
     imageBroken,
   })
@@ -352,6 +357,7 @@ export function Preview({
 }) {
   const project = useProjectStore((state) => state.project)
   const assets = useAssetStore((state) => state.assets)
+  const mediaLoading = useMediaLoading()
 
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const leadIn = leadInOf(project)
@@ -485,6 +491,7 @@ export function Preview({
                     active={active?.clip.id === entry.clip.id}
                     incoming={incoming}
                     warm={Math.abs(entry.index - (active?.index ?? 0)) <= WARM_CLIPS}
+                    mediaLoading={mediaLoading}
                     currentTime={currentTime}
                     playing={playing}
                     start={entry.start}

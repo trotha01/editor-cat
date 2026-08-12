@@ -19,11 +19,19 @@ const FILLS: Record<ReadinessState, string> = {
   ready: 'bg-emerald-500/70',
   loading: 'bg-amber-400',
   stalled: 'bg-amber-400 animate-pulse',
+  // Amber like the rest of the waiting, because that is what it is — the asset
+  // has not turned up yet. It pulses rather than filling because there is no
+  // element behind it to measure: how far along it is cannot be known, only
+  // that it is still going.
+  pending: 'bg-amber-400 animate-pulse',
   missing: 'bg-red-500',
   // Nothing has been fetched and nothing is meant to have been, so the fill is
   // empty and the track alone stands for it.
   idle: 'bg-transparent',
 }
+
+/** States with no progress to draw, where the width would only ever be nothing. */
+const INDETERMINATE = new Set<ReadinessState>(['missing', 'pending'])
 
 function describe(readiness: ClipReadiness): string {
   const percent = Math.round(readiness.buffered * 100)
@@ -32,6 +40,8 @@ function describe(readiness: ClipReadiness): string {
       return 'Loaded — this clip will play through'
     case 'stalled':
       return `Playback is waiting on this clip — ${percent}% loaded`
+    case 'pending':
+      return 'Waiting on this clip’s media to arrive'
     case 'missing':
       return 'This clip’s media could not be loaded'
     case 'idle':
@@ -55,9 +65,12 @@ export function ClipReadinessBar({ clipId }: { clipId: string }) {
       <span
         aria-hidden
         className={`block h-full transition-[width] duration-300 ${FILLS[readiness.state]}`}
-        // Missing media has nothing loaded, but a hairline of nothing says
-        // nothing — so the red runs the full width and the colour carries it.
-        style={{ width: readiness.state === 'missing' ? '100%' : `${readiness.buffered * 100}%` }}
+        // Neither of these has anything loaded, and a hairline of nothing says
+        // nothing — so the fill runs the full width and the colour carries it:
+        // red for media that is gone, amber for media still on its way.
+        style={{
+          width: INDETERMINATE.has(readiness.state) ? '100%' : `${readiness.buffered * 100}%`,
+        }}
       />
     </span>
   )
