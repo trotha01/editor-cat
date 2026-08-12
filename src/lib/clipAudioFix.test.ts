@@ -1,23 +1,68 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cloneNameFor, fixClipAudio, fixTargets, layoutSpokenLines } from './clipAudioFix'
-import { isAppClone } from '../../netlify/lib/elevenlabs'
+import {
+  dubbableSeconds,
+  dubNameFor,
+  fixClipAudio,
+  fixTargets,
+  hurriedLines,
+  planSegments,
+  splitAlignedWords,
+} from './clipAudioFix'
+import { isAppJob } from '../../netlify/lib/elevenlabs'
 import type { Asset, AudioClip, CaptionCue, Clip, Project } from './types'
 
-const cloneVoice = vi.fn<(options: { name: string; sample: Blob }) => Promise<string>>()
-interface SpeakArgs {
-  voiceId: string
-  text: string
-  languageCode?: string
-  previousText?: string
-  nextText?: string
+/**
+ * A fake dubbing project, held the way the real transcript is: segments the
+ * caller did not choose, which is the situation `planSegments` exists to
+ * resolve.
+ */
+const dub = {
+  segments: [] as { id: string; text: string; speakerId: string; start: number; end: number }[],
 }
-const speak = vi.fn<(options: SpeakArgs) => Promise<{ blob: Blob; words: unknown[] }>>()
-const deleteVoice = vi.fn<(voiceId: string) => Promise<void>>()
 
-vi.mock('./elevenlabs', () => ({
-  cloneVoice: (options: { name: string; sample: Blob }) => cloneVoice(options),
-  speak: (options: SpeakArgs) => speak(options),
-  deleteVoice: (voiceId: string) => deleteVoice(voiceId),
+const createDubbingProject =
+  vi.fn<(options: { reference: string; language: string }) => Promise<string>>()
+const updateSegments =
+  vi.fn<
+    (
+      id: string,
+      edits: Record<string, { start: number; end: number; text: string }>,
+    ) => Promise<void>
+  >()
+const createSegment =
+  vi.fn<
+    (
+      id: string,
+      speakerId: string,
+      edit: { start: number; end: number; text: string },
+    ) => Promise<string>
+  >()
+const deleteSegment = vi.fn<(id: string, segmentId: string) => Promise<void>>()
+const createLanguageTarget = vi.fn<(id: string, language: string) => Promise<string>>()
+const waitForDub = vi.fn<(id: string, languageId: string) => Promise<string>>()
+const dubbedAudio = vi.fn<(url: string) => Promise<Blob>>()
+const deleteDubbingProject = vi.fn<(id: string) => Promise<void>>()
+const alignWords = vi.fn<(audio: Blob, text: string) => Promise<unknown[]>>()
+
+vi.mock('./dubbing', () => ({
+  createDubbingProject: (options: { reference: string; language: string }) =>
+    createDubbingProject(options),
+  waitForTranscript: () => Promise.resolve({ segments: dub.segments, revision: 1 }),
+  updateSegments: (
+    id: string,
+    edits: Record<string, { start: number; end: number; text: string }>,
+  ) => updateSegments(id, edits),
+  createSegment: (
+    id: string,
+    speakerId: string,
+    edit: { start: number; end: number; text: string },
+  ) => createSegment(id, speakerId, edit),
+  deleteSegment: (id: string, segmentId: string) => deleteSegment(id, segmentId),
+  createLanguageTarget: (id: string, language: string) => createLanguageTarget(id, language),
+  waitForDub: (id: string, languageId: string) => waitForDub(id, languageId),
+  dubbedAudio: (url: string) => dubbedAudio(url),
+  deleteDubbingProject: (id: string) => deleteDubbingProject(id),
+  alignWords: (audio: Blob, text: string) => alignWords(audio, text),
 }))
 
 /**
@@ -192,10 +237,10 @@ describe('fixTargets', () => {
   })
 })
 
-describe('cloneNameFor', () => {
-  it('names the clip it copied, and stays inside ElevenLabs’ name limit', () => {
-    expect(cloneNameFor('lighthouse.mp4')).toContain('lighthouse.mp4')
-    expect(cloneNameFor('x'.repeat(300)).length).toBeLessThanOrEqual(100)
+describe('dubNameFor', () => {
+  it('names the clip it was made for, and stays inside ElevenLabs’ name limit', () => {
+    expect(dubNameFor('lighthouse.mp4')).toContain('lighthouse.mp4')
+    expect(dubNameFor('x'.repeat(300)).length).toBeLessThanOrEqual(100)
   })
 
   it('is a name the proxy will recognise as this app’s own', () => {
@@ -203,98 +248,147 @@ describe('cloneNameFor', () => {
     // compiled together — the functions build has no `src` in it — so this is
     // the one place both halves are imported and checked against each other.
     // The day they disagree is the day the proxy starts refusing to delete the
-    // app's own leftover clones, and voice slots quietly fill up.
-    expect(isAppClone(cloneNameFor('lighthouse.mp4'))).toBe(true)
-    expect(isAppClone(cloneNameFor('x'.repeat(300)))).toBe(true)
+    // app's own finished jobs, and the account fills up with copies of clips.
+    expect(isAppJob(dubNameFor('lighthouse.mp4'))).toBe(true)
+    expect(isAppJob(dubNameFor('x'.repeat(300)))).toBe(true)
   })
 })
 
-describe('layoutSpokenLines', () => {
-  it('starts every line where its caption starts', () => {
-    // Each reading fills its caption exactly, so nothing has to give either way.
-    expect(
-      layoutSpokenLines([
-        { start: 0, end: 0.8, duration: 0.8 },
-        { start: 1, end: 1.5, duration: 0.5 },
-        { start: 2, end: 3, duration: 1 },
-      ]),
-    ).toEqual([
-      { start: 0, pushed: false, pulled: false },
-      { start: 1, pushed: false, pulled: false },
-      { start: 2, pushed: false, pulled: false },
+describe('planSegments', () => {
+  const at = (clipStart: number, duration: number) => ({ clipStart, duration })
+
+  it('rewrites the segments it was given as the captions, on the captions’ own marks', () => {
+    // The whole design in one assertion. The transcriber split this clip into
+    // two spans of its own choosing; what comes out is those same two spans
+    // saying the user's words, over the stretches the user's captions cover.
+    const plan = planSegments(
+      [
+        { start: 10, end: 12, text: 'Buenos días' },
+        { start: 12.5, end: 15, text: '¿Cómo estás?' },
+      ],
+      [{ id: 'seg_a' }, { id: 'seg_b' }],
+      at(10, 6),
+    )
+
+    expect(plan.update).toEqual([
+      { id: 'seg_a', start: 0, end: 2, text: 'Buenos días' },
+      { id: 'seg_b', start: 2.5, end: 5, text: '¿Cómo estás?' },
+    ])
+    expect(plan.create).toEqual([])
+    expect(plan.remove).toEqual([])
+  })
+
+  it('deletes the spans the transcriber found and the captions do not have', () => {
+    // A caption is usually a sentence and a segment is usually a breath, so
+    // this is the ordinary case rather than the odd one. Left alone, a spare
+    // segment keeps the words the transcriber gave it and is then dubbed and
+    // rendered — the clip saying something nobody typed.
+    const plan = planSegments(
+      [{ start: 0, end: 4, text: 'One long line' }],
+      [{ id: 'seg_a' }, { id: 'seg_b' }, { id: 'seg_c' }],
+      at(0, 4),
+    )
+
+    expect(plan.update).toEqual([{ id: 'seg_a', start: 0, end: 4, text: 'One long line' }])
+    expect(plan.remove).toEqual(['seg_b', 'seg_c'])
+  })
+
+  it('creates the spans the transcriber missed', () => {
+    const plan = planSegments(
+      [
+        { start: 0, end: 1, text: 'One' },
+        { start: 1, end: 2, text: 'Two' },
+        { start: 2, end: 3, text: 'Three' },
+      ],
+      [{ id: 'seg_a' }],
+      at(0, 3),
+    )
+
+    expect(plan.update).toEqual([{ id: 'seg_a', start: 0, end: 1, text: 'One' }])
+    expect(plan.create).toEqual([
+      { start: 1, end: 2, text: 'Two' },
+      { start: 2, end: 3, text: 'Three' },
+    ])
+    expect(plan.remove).toEqual([])
+  })
+
+  it('moves the captions onto the clip’s own clock', () => {
+    // The uploaded audio is this clip and nothing else, so the two clocks differ
+    // by exactly where the clip starts. Getting this wrong puts every line of a
+    // clip late in the timeline outside its own media.
+    const plan = planSegments([{ start: 30, end: 32, text: 'Hola' }], [{ id: 'seg_a' }], at(30, 5))
+    expect(plan.update[0]).toMatchObject({ start: 0, end: 2 })
+  })
+
+  it('keeps a caption that runs past the end of its shot inside the clip', () => {
+    // A caption may legitimately overhang the clip it belongs to. A segment may
+    // not: there is no audio out there to put speech in.
+    const plan = planSegments([{ start: 0, end: 9, text: 'Hola' }], [{ id: 'seg_a' }], at(0, 4))
+    expect(plan.update[0]).toMatchObject({ start: 0, end: 4 })
+  })
+
+  it('gives a caption with no width something to be said in', () => {
+    const plan = planSegments([{ start: 1, end: 1, text: 'Hola' }], [{ id: 'seg_a' }], at(0, 4))
+    expect(plan.update[0]?.end).toBeGreaterThan(plan.update[0]?.start ?? 0)
+  })
+
+  it('has nothing to plan for nothing', () => {
+    expect(planSegments([], [], at(0, 4))).toEqual({ update: [], create: [], remove: [] })
+  })
+})
+
+describe('hurriedLines', () => {
+  it('says nothing about lines that fit the room they were given', () => {
+    expect(hurriedLines([{ start: 0, end: 3, text: 'Buenos días amigo' }]).count).toBe(0)
+  })
+
+  it('counts a line with more words than its caption has room for', () => {
+    // The price of fixed generation, and the thing that replaces "this line
+    // started late" as the warning worth giving. Nothing runs over; it gabbles.
+    const hurried = hurriedLines([
+      { start: 0, end: 1, text: 'Buenos días amigo, ¿cómo estás esta mañana tan bonita?' },
+      { start: 1, end: 4, text: 'Bien.' },
+    ])
+    expect(hurried.count).toBe(1)
+    expect(hurried.peak).toBeGreaterThan(17)
+  })
+
+  it('ignores an empty line rather than calling it infinitely fast', () => {
+    expect(hurriedLines([{ start: 0, end: 0, text: '' }])).toEqual({ count: 0, peak: 0 })
+  })
+})
+
+describe('splitAlignedWords', () => {
+  const words = 'a b c d e'
+    .split(' ')
+    .map((text, index) => ({ text, start: index, end: index + 1 }))
+
+  it('hands each line the words it asked for, in order', () => {
+    // The script was assembled from these very lines, so counting is exact —
+    // and no arithmetic on the timestamps could be more right than that.
+    expect(splitAlignedWords(['a b', 'c d e'], words)).toEqual([
+      [words[0], words[1]],
+      [words[2], words[3], words[4]],
     ])
   })
 
-  it('pushes a line that would land on the one still being said', () => {
-    // The new reading is slower than the performance it replaces. Two voices at
-    // once is unlistenable, and one lane cannot hold overlapping clips anyway,
-    // so it waits — and says it waited.
-    expect(
-      layoutSpokenLines([
-        { start: 0, end: 1.5, duration: 1.5 },
-        { start: 1, end: 1.5, duration: 0.5 },
-        { start: 3, end: 3.5, duration: 0.5 },
-      ]),
-    ).toEqual([
-      { start: 0, pushed: false, pulled: false },
-      { start: 1.5, pushed: true, pulled: false },
-      { start: 3, pushed: false, pulled: false },
+  it('leaves the lines it ran out of words for empty rather than wrong', () => {
+    // A short answer costs those lines their re-timing, which the caller reports
+    // and carries on from. Redistributing would cost every line its accuracy.
+    expect(splitAlignedWords(['a b', 'c d e'], words.slice(0, 2))).toEqual([
+      [words[0], words[1]],
+      [],
     ])
   })
+})
 
-  it('closes the silence a quicker reading leaves mid-sentence', () => {
-    // One sentence across two captions, with no pause between them: the speaker
-    // took 2.5s over the first half, the reading takes 1.5s. Waiting out the
-    // spare second before the second half does not sound like timing, it sounds
-    // like the audio dropped out — which is exactly what it was reported as.
-    const placed = layoutSpokenLines([
-      { start: 0, end: 2.5, duration: 1.5 },
-      { start: 2.5, end: 4.25, duration: 1.75 },
-    ])
-    expect(placed).toEqual([
-      { start: 0, pushed: false, pulled: false },
-      // Straight after the first, which is where the sentence carries on.
-      { start: 1.5, pushed: false, pulled: true },
-    ])
-  })
-
-  it('lets a line come forward no further than the room actually left', () => {
-    // A real pause stays a real pause. Only the half-second the reading before
-    // it did not use is available to move into, not the gap the speaker took.
-    const placed = layoutSpokenLines([
-      { start: 10, end: 12, duration: 1.5 },
-      { start: 15, end: 17, duration: 1.5 },
-    ])
-    expect(placed[1]).toEqual({ start: 14.5, pushed: false, pulled: true })
-  })
-
-  it('does not let early starts pile up over a run', () => {
-    // Every reading here comes in half a second short. If each line chased the
-    // one before it, the third would be 1.5s early and the tenth would be off
-    // the picture entirely — so what a line may take is its predecessor's own
-    // shortfall, measured against that caption, not the drift so far.
-    const placed = layoutSpokenLines([
-      { start: 0, end: 2, duration: 1.5 },
-      { start: 5, end: 7, duration: 1.5 },
-      { start: 10, end: 12, duration: 1.5 },
-      { start: 15, end: 17, duration: 1.5 },
-    ])
-    expect(placed.map((line) => line.start)).toEqual([0, 4.5, 9.5, 14.5])
-  })
-
-  it('does not call a rounding error a push, or a pull', () => {
-    const placed = layoutSpokenLines([
-      { start: 0, end: 1, duration: 1 },
-      // A hair inside the line before it. Laid at the cursor rather than at the
-      // mark, because a lane cannot hold two clips at once however small the
-      // overlap — but a tenth of a millisecond is not lateness worth reporting.
-      { start: 0.9999, end: 2, duration: 1 },
-    ])
-    expect(placed[1]).toEqual({ start: 1, pushed: false, pulled: false })
-  })
-
-  it('has nothing to say about nothing', () => {
-    expect(layoutSpokenLines([])).toEqual([])
+describe('dubbableSeconds', () => {
+  it('is the payload ceiling, in seconds of mono PCM', () => {
+    // Where the one hard limit of this approach comes from: the clip has to
+    // cross a serverless function to be dubbed at all.
+    expect(dubbableSeconds(44100)).toBe(53)
+    // A quieter source travels further, which is why the rate is not fixed.
+    expect(dubbableSeconds(16000)).toBe(147)
   })
 })
 
@@ -304,117 +398,252 @@ describe('fixClipAudio', () => {
     media,
     inPoint: 1,
     duration: 4,
-    lines: ['  Buongiorno  '],
+    clipStart: 0,
+    lines: [{ start: 0, end: 4, text: '  Buongiorno  ' }],
+    language: 'it',
     label: 'lighthouse.mp4',
   }
 
   beforeEach(() => {
-    cloneVoice.mockReset().mockResolvedValue('cloned-voice')
-    speak.mockReset().mockImplementation(({ text }) =>
-      Promise.resolve({
-        blob: new Blob([text], { type: 'audio/mpeg' }),
-        words: [{ text, start: 0, end: 0.5 }],
-      }),
-    )
-    deleteVoice.mockReset().mockResolvedValue(undefined)
+    dub.segments = [{ id: 'seg_a', text: 'whatever it heard', speakerId: 'sp_1', start: 0, end: 4 }]
+    createDubbingProject.mockReset().mockResolvedValue('proj_1')
+    updateSegments.mockReset().mockResolvedValue(undefined)
+    createSegment
+      .mockReset()
+      .mockImplementation((_id, _speaker, edit) => Promise.resolve(`seg_new_${edit.start}`))
+    deleteSegment.mockReset().mockResolvedValue(undefined)
+    createLanguageTarget.mockReset().mockResolvedValue('lang_1')
+    waitForDub.mockReset().mockResolvedValue('https://signed.example/dub.wav')
+    dubbedAudio.mockReset().mockResolvedValue(new Blob(['mp3'], { type: 'audio/mpeg' }))
+    deleteDubbingProject.mockReset().mockResolvedValue(undefined)
+    alignWords.mockReset().mockResolvedValue([{ text: 'Buongiorno', start: 0.2, end: 1 }])
     monoWav.mockReset().mockResolvedValue(new Blob(['wav'], { type: 'audio/wav' }))
   })
 
-  it('copies the clip’s voice, says the line in it, and deletes the copy again', async () => {
-    const result = await fixClipAudio({ ...request, language: 'it' })
+  it('sends the whole clip, writes the caption onto it, and brings back one track', async () => {
+    const result = await fixClipAudio(request)
 
+    // The whole clip, not a sample of it: this is the audio being re-voiced.
     expect(monoWav).toHaveBeenCalledWith(expect.anything(), { from: 1, to: 5 })
-    expect(cloneVoice).toHaveBeenCalledWith(
-      expect.objectContaining({ name: cloneNameFor('lighthouse.mp4') }),
+    expect(createDubbingProject).toHaveBeenCalledWith(
+      expect.objectContaining({ reference: dubNameFor('lighthouse.mp4'), language: 'it' }),
     )
-    expect(speak).toHaveBeenCalledWith(
-      expect.objectContaining({ voiceId: 'cloned-voice', text: 'Buongiorno', languageCode: 'it' }),
-    )
-    // A voice left in the account counts against the site's own slots.
-    expect(deleteVoice).toHaveBeenCalledWith('cloned-voice')
-    expect(result.spoken).toHaveLength(1)
-    expect(result.spoken[0]?.words).toEqual([{ text: 'Buongiorno', start: 0, end: 0.5 }])
+    expect(updateSegments).toHaveBeenCalledWith('proj_1', {
+      seg_a: { start: 0, end: 4, text: 'Buongiorno' },
+    })
+    expect(createLanguageTarget).toHaveBeenCalledWith('proj_1', 'it')
+    expect(dubbedAudio).toHaveBeenCalledWith('https://signed.example/dub.wav')
+    // One piece of audio for the clip, where the old path returned one per line.
+    expect(result.blob.type).toBe('audio/mpeg')
+    expect(result.lines).toEqual([
+      { text: 'Buongiorno', words: [{ text: 'Buongiorno', start: 0.2, end: 1 }] },
+    ])
+    // A project left behind holds a copy of the clip in the site's account.
+    expect(deleteDubbingProject).toHaveBeenCalledWith('proj_1')
   })
 
-  it('says each caption on its own, and hands the neighbours over for context', async () => {
-    // One request per line is what lets each one be laid on its own mark. The
-    // neighbours are not spoken; without them every line lands on a full stop
-    // and the clip comes back sounding like a list.
-    const result = await fixClipAudio({
-      ...request,
-      lines: ['Buongiorno.', 'Come stai?', 'Bene, grazie.'],
+  it('writes the script in before asking for it to be said', async () => {
+    // The order that matters most in the whole run. A language target created
+    // any earlier starts from the words the transcriber heard rather than the
+    // ones the user typed, and then goes stale the moment a segment is
+    // corrected.
+    const order: string[] = []
+    updateSegments.mockImplementation(() => {
+      order.push('script')
+      return Promise.resolve()
+    })
+    createLanguageTarget.mockImplementation(() => {
+      order.push('speak')
+      return Promise.resolve('lang_1')
     })
 
-    expect(speak).toHaveBeenCalledTimes(3)
-    expect(speak.mock.calls.map((call) => call[0].text)).toEqual([
-      'Buongiorno.',
-      'Come stai?',
-      'Bene, grazie.',
-    ])
-    expect(speak.mock.calls[1]?.[0]).toMatchObject({
-      previousText: 'Buongiorno.',
-      nextText: 'Bene, grazie.',
-    })
-    expect(speak.mock.calls[0]?.[0].previousText).toBeUndefined()
-    expect(speak.mock.calls[2]?.[0].nextText).toBeUndefined()
-    expect(result.spoken.map((line) => line.text)).toEqual([
-      'Buongiorno.',
-      'Come stai?',
-      'Bene, grazie.',
-    ])
-  })
-
-  it('copies the voice once, however many lines there are', async () => {
-    await fixClipAudio({ ...request, lines: ['One.', 'Two.', 'Three.'] })
-    expect(cloneVoice).toHaveBeenCalledTimes(1)
-    expect(deleteVoice).toHaveBeenCalledTimes(1)
-  })
-
-  it('never sends a language when none was chosen', async () => {
     await fixClipAudio(request)
-    expect(speak.mock.calls[0]?.[0].languageCode).toBeUndefined()
+
+    expect(order).toEqual(['script', 'speak'])
   })
 
-  it('takes no more of the clip than a clone needs', async () => {
-    await fixClipAudio({ ...request, inPoint: 0, duration: 600 })
-    // Capped at the sample length, and never past the end of the media either.
-    expect(monoWav).toHaveBeenCalledWith(expect.anything(), { from: 0, to: 12 })
+  it('reconciles a segmentation that disagrees with the captions', async () => {
+    // Three captions against two spans the transcriber found: two are rewritten
+    // and the third is created. This is the ordinary case, not the odd one.
+    dub.segments = [
+      { id: 'seg_a', text: 'heard one', speakerId: 'sp_1', start: 0, end: 2 },
+      { id: 'seg_b', text: 'heard two', speakerId: 'sp_1', start: 2, end: 4 },
+    ]
+
+    await fixClipAudio({
+      ...request,
+      lines: [
+        { start: 0, end: 1, text: 'One.' },
+        { start: 1, end: 2, text: 'Two.' },
+        { start: 2, end: 4, text: 'Three.' },
+      ],
+    })
+
+    expect(updateSegments).toHaveBeenCalledWith('proj_1', {
+      seg_a: { start: 0, end: 1, text: 'One.' },
+      seg_b: { start: 1, end: 2, text: 'Two.' },
+    })
+    // Under a speaker that already exists — a new segment has to name one.
+    expect(createSegment).toHaveBeenCalledWith('proj_1', 'sp_1', {
+      start: 2,
+      end: 4,
+      text: 'Three.',
+    })
   })
 
-  it('skips the copy entirely when a voice was chosen', async () => {
-    const result = await fixClipAudio({ ...request, voiceId: 'rachel', voiceName: 'Rachel' })
+  it('sends the caption’s word, never the one the transcriber misheard', async () => {
+    // The real thing, from a live run on `latin-1-toadburger.mp4`. The
+    // transcriber heard the clip as two sentences and misheard "toad" as
+    // "boaf"; the clip's captions are four lines and say "toad", because
+    // somebody corrected them. Numbers are the ones the API and the project
+    // document actually carried, clip start included, because the arithmetic
+    // that turns timeline seconds into media seconds is the part that would
+    // silently put the right words in the wrong places.
+    const CLIP_START = 49.78351562499999
+    dub.segments = [
+      {
+        id: 'seg_latin',
+        text: 'Hic bufo cum sinapi mirabile sapere posset.',
+        speakerId: 'speaker_0',
+        start: 0.099,
+        end: 4.059,
+      },
+      {
+        id: 'seg_english',
+        text: 'This boaf would taste amazing with mustard.',
+        speakerId: 'speaker_0',
+        start: 5.559,
+        end: 7.799,
+      },
+    ]
 
-    expect(cloneVoice).not.toHaveBeenCalled()
-    expect(deleteVoice).not.toHaveBeenCalled()
-    expect(speak.mock.calls[0]?.[0].voiceId).toBe('rachel')
-    // Named, so the report can say who said it rather than "a voice".
-    expect(result.voiceName).toBe('Rachel')
+    await fixClipAudio({
+      ...request,
+      duration: 8.08,
+      clipStart: CLIP_START,
+      language: 'en',
+      lines: [
+        { start: 49.88251562499999, end: 51.27551562499999, text: 'Hic bufo cum sinapi' },
+        { start: 52.023515624999995, end: 54.391515625, text: 'mirabilis saporis esset.' },
+        { start: 55.36251562499999, end: 56.477073624999996, text: 'This toad would taste' },
+        { start: 56.477073624999996, end: 58.010073625, text: 'amazing with mustard.' },
+      ],
+    })
+
+    // The two spans the transcriber found are rewritten to the first two
+    // captions, on those captions' own marks measured from the head of the clip.
+    const [, edits] = updateSegments.mock.calls[0] ?? []
+    expect(edits?.seg_latin?.text).toBe('Hic bufo cum sinapi')
+    expect(edits?.seg_latin?.start).toBeCloseTo(0.099, 3)
+    expect(edits?.seg_latin?.end).toBeCloseTo(1.492, 3)
+    expect(edits?.seg_english?.text).toBe('mirabilis saporis esset.')
+    expect(edits?.seg_english?.start).toBeCloseTo(2.24, 3)
+
+    // The other two captions have no span to sit on — the transcriber found
+    // two and there are four — so they are created. "toad" travels in one of
+    // these, which is why a run that dies on the rewrite never sends it at all.
+    expect(createSegment.mock.calls.map((call) => call[2].text)).toEqual([
+      'This toad would taste',
+      'amazing with mustard.',
+    ])
+    expect(createSegment.mock.calls[0]?.[2].start).toBeCloseTo(5.579, 3)
+    // The last caption overhangs the end of the shot, and a segment may not.
+    expect(createSegment.mock.calls[1]?.[2].end).toBeCloseTo(8.08, 3)
+
+    // The whole point, stated the blunt way round: nothing the transcriber
+    // invented reaches ElevenLabs, in any call, in any field.
+    const everythingSent = JSON.stringify([
+      updateSegments.mock.calls,
+      createSegment.mock.calls,
+      deleteSegment.mock.calls,
+    ])
+    expect(everythingSent).toContain('toad')
+    expect(everythingSent).not.toContain('boaf')
+    expect(everythingSent).not.toContain('mirabile sapere posset')
   })
 
-  it('deletes the copy even when saying a line fails', async () => {
-    speak.mockRejectedValue(new Error('out of credit'))
+  it('empties the spare spans only after the kept ones are rewritten', async () => {
+    // A transcript with nothing in it is one dubbing may decide is empty, and
+    // refilling it afterwards would pass through that state every time the
+    // captions are fewer than the transcriber's spans — which is most runs.
+    dub.segments = [
+      { id: 'seg_a', text: 'heard one', speakerId: 'sp_1', start: 0, end: 2 },
+      { id: 'seg_b', text: 'heard two', speakerId: 'sp_1', start: 2, end: 4 },
+    ]
+    const order: string[] = []
+    updateSegments.mockImplementation(() => {
+      order.push('update')
+      return Promise.resolve()
+    })
+    deleteSegment.mockImplementation(() => {
+      order.push('delete')
+      return Promise.resolve()
+    })
+
+    await fixClipAudio(request)
+
+    expect(order).toEqual(['update', 'delete'])
+    expect(deleteSegment).toHaveBeenCalledWith('proj_1', 'seg_b')
+  })
+
+  it('keeps the audio when only the word timings could not be had', async () => {
+    // The audio is made and paid for by then. Losing the karaoke highlight is
+    // worth far less than losing the fix.
+    alignWords.mockRejectedValue(new Error('alignment unavailable'))
+
+    const result = await fixClipAudio(request)
+
+    expect(result.blob.type).toBe('audio/mpeg')
+    expect(result.lines[0]?.words).toEqual([])
+  })
+
+  it('tidies the project away even when the dub fails', async () => {
+    waitForDub.mockRejectedValue(new Error('out of credit'))
     await expect(fixClipAudio(request)).rejects.toThrow('out of credit')
-    expect(deleteVoice).toHaveBeenCalledWith('cloned-voice')
+    expect(deleteDubbingProject).toHaveBeenCalledWith('proj_1')
   })
 
-  it('refuses an empty script rather than spending a request on it', async () => {
-    await expect(fixClipAudio({ ...request, lines: ['   ', ''] })).rejects.toThrow(/nothing to say/)
-    expect(cloneVoice).not.toHaveBeenCalled()
-    expect(speak).not.toHaveBeenCalled()
+  it('refuses a clip too long to fit through the proxy, before spending anything', async () => {
+    await expect(fixClipAudio({ ...request, duration: 600 })).rejects.toThrow(/has to be under/)
+    expect(createDubbingProject).not.toHaveBeenCalled()
+  })
+
+  it('refuses an empty script rather than dubbing silence', async () => {
+    await expect(
+      fixClipAudio({ ...request, lines: [{ start: 0, end: 1, text: '   ' }] }),
+    ).rejects.toThrow(/nothing to say/)
+    expect(createDubbingProject).not.toHaveBeenCalled()
+  })
+
+  it('refuses to guess a language, because a dub only has the one', async () => {
+    await expect(fixClipAudio({ ...request, language: '' })).rejects.toThrow(/Pick the language/)
+    expect(createDubbingProject).not.toHaveBeenCalled()
   })
 
   it('reports each stage, and how far through the lines it is', async () => {
     const stages: string[] = []
     await fixClipAudio({
       ...request,
-      lines: ['One.', 'Two.'],
+      lines: [
+        { start: 0, end: 2, text: 'One.' },
+        { start: 2, end: 4, text: 'Two.' },
+      ],
       onStage: (stage, done, total) => stages.push(`${stage} ${done}/${total}`),
     })
+
     expect(stages).toEqual([
       'listening to the clip 0/2',
-      'copying the voice 0/2',
-      'saying the lines 0/2',
-      'saying the lines 1/2',
+      'sending it to be dubbed 0/2',
+      'finding the lines in it 0/2',
+      'putting your words on them 0/2',
+      // One tick for the bulk rewrite, however many segments it carried, and
+      // then one per segment created afterwards — here the second line, which
+      // the transcriber's single span had no room for.
+      'putting your words on them 1/2',
+      'putting your words on them 2/2',
+      'saying them again 0/2',
+      'bringing it back 0/2',
+      'finding the words in it 0/2',
     ])
   })
 })

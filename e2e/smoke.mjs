@@ -36,6 +36,27 @@ const fail = (message) => {
   throw new Error(message)
 }
 
+/**
+ * Waits for a value to stop changing, then returns it.
+ *
+ * Retiming a word rewrites the caption it is in and then re-fits its neighbours
+ * against where it ended up, which is two renders — and a caption caught between
+ * them is briefly missing the words that are on their way back to it. A fixed
+ * sleep is a guess about how long that takes; this is the thing actually being
+ * waited for. Two identical reads in a row is the whole test, because the
+ * intermediate state never survives a frame.
+ */
+const settled = async (read, { tries = 40, gap = 50 } = {}) => {
+  let previous = await read()
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, gap))
+    const current = await read()
+    if (current === previous) return current
+    previous = current
+  }
+  return previous
+}
+
 /*
  * CHROMIUM_PATH lets this run against a browser that was provisioned outside
  * npm (some CI images ship one), where the build Playwright expects will not
@@ -563,10 +584,11 @@ try {
   // --- Fixing what a clip says, from the same menu -------------------------
   // A generated clip that says a foreign word with an English mouth cannot be
   // repaired by a voice changer: the delivery is the part that is wrong. So the
-  // captions are the script — corrected here, saved, then said back a line at a
-  // time and laid on the mark each caption sits on, with the captions re-timed
-  // to the new voice afterwards. Everything about that is only real in a
-  // browser: the audio has to decode for its length to be known at all.
+  // captions are the script — corrected here, saved, then handed to ElevenLabs
+  // as one dubbing segment per caption, each spanning exactly what that caption
+  // spans, and re-said to fit. What comes back is the whole clip as a single
+  // corrected track. Everything about that is only real in a browser: the audio
+  // has to decode for its length to be known at all.
   const fixItem = page.getByRole('menuitem', { name: /Fix this clip’s audio/ })
   let fixedClip = ''
   for (const [index, name] of menuNames.entries()) {
@@ -599,10 +621,16 @@ try {
   await page.getByRole('button', { name: /Save captions and fix the audio/ }).click()
   await page.waitForSelector('text=/now says your/', { timeout: 180000 })
 
+  // One track for the clip, however many captions it has — which is the whole
+  // difference from the text-to-speech implementation this replaced. There the
+  // count had to be one piece of audio per caption, because each line was said
+  // separately and then placed; here every line is already inside the render, on
+  // its own caption's mark, so a second piece of audio would mean the clip had
+  // been dubbed twice.
   const laid = page.locator('[role="group"][aria-label^="Fixed"]')
   const laidCount = await laid.count()
-  if (laidCount !== rowCount) {
-    fail(`expected one piece of audio per caption: ${laidCount} for ${rowCount} captions`)
+  if (laidCount !== 1) {
+    fail(`expected the clip to come back as one dubbed track, got ${laidCount}`)
   }
   const laidLabel = await laid.first().getAttribute('aria-label')
   if (!/on Voice /.test(laidLabel ?? '')) fail(`the fix landed off the voice lanes: "${laidLabel}"`)
@@ -617,15 +645,15 @@ try {
     fail('the edited line did not reach the caption on the timeline')
   }
   step(
-    `${laidCount} lines spoken under ${fixedClip}, the clip muted, and the edit saved to the ` +
-      `caption itself`,
+    `${fixedClip} re-dubbed as one track from its ${rowCount} captions, the clip muted, and the ` +
+      `edit saved to the caption itself`,
   )
 
   // Both halves of the landing are one edit, so one undo has to put them back —
   // and it leaves the timeline as the rest of this walk-through expects it.
   await page.getByRole('button', { name: 'Undo' }).click()
   await page.waitForTimeout(200)
-  if ((await laid.count()) !== 0) fail('undo left the corrected lines on the timeline')
+  if ((await laid.count()) !== 0) fail('undo left the corrected track on the timeline')
   if ((await page.locator('[aria-label="sound muted"]').count()) !== mutedBefore) {
     fail('undo left the clip silent after taking its replacement away')
   }
@@ -703,15 +731,17 @@ try {
   // without touching a word in it, and only a real browser exercises it.
   const firstBlock = page.locator('[role="group"][aria-label^="Caption "]').first()
   await firstBlock.scrollIntoViewIfNeeded()
+  // Settled first: the word retimes just above are still re-fitting neighbours,
+  // and grabbing the edge of a caption that is momentarily a fifth of a second
+  // wide is a drag that lands inside its own end and does nothing.
+  const beforeTrim = await settled(() => firstBlock.getAttribute('aria-label'))
   const blockBox = await firstBlock.boundingBox()
   if (!blockBox) fail('no caption block on the timeline to drag')
-  const beforeTrim = await firstBlock.getAttribute('aria-label')
   await page.mouse.move(blockBox.x + 2, blockBox.y + blockBox.height / 2)
   await page.mouse.down()
   await page.mouse.move(blockBox.x + 30, blockBox.y + blockBox.height / 2, { steps: 6 })
   await page.mouse.up()
-  await page.waitForTimeout(200)
-  const afterTrim = await firstBlock.getAttribute('aria-label')
+  const afterTrim = await settled(() => firstBlock.getAttribute('aria-label'))
   if (beforeTrim === afterTrim) fail(`dragging a caption's edge did nothing: "${afterTrim}"`)
   step(`a caption brought up later by dragging its edge (${beforeTrim} -> ${afterTrim})`)
 
