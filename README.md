@@ -851,12 +851,27 @@ towards a word list for a 30% premium — is absent rather than sent empty, so i
 stays a thing to add knowingly. `scribeInput` is pure and tested for exactly
 this: the defaults are the kind of thing that silently comes back.
 
-**The panel folds up around the transcript.** Setup and styling are cards you
-use once; the transcript is where the rest of the session happens. Both close
-themselves as soon as there is a transcript to make room for, and each keeps a
-summary in its header so the state is legible without opening it. Which card is
-open is a view preference and deliberately not saved — a fresh load starts
-compact however it was left.
+**The panel folds up around the transcript.** Styling is a card you use once;
+the transcript is where the rest of the session happens. It starts closed and
+keeps a summary in its header, so the state is legible without opening it.
+Whether it is open is a view preference and deliberately not saved — a fresh
+load starts compact however it was left.
+
+There is no setup card above it any more. It held a language picker, a paragraph
+on what Scribe is and a warning about what redoing replaces, none of which was
+read twice, all of which stood between the press and the words. What is left is
+the button and what pressing it will cost. The language went with it: Scribe
+detects one per clip, which is a better answer than a single project-wide
+setting for a timeline whose clips need not all be in the same language, so no
+`languageCode` is sent from either way in — the panel or a clip's ⋯ menu.
+
+**The style sliders print their values.** Size and height are fractions of the
+frame, and a slider on its own only says "about here" — which is no help when
+the job is to put a caption back exactly where it was, or to match one project
+to another. The number sits beside each slider and is also its `aria-valuetext`,
+so the raw `0.08` is not what gets announced either. Size is written to one
+decimal because it moves in half-percent steps, and a whole-percent readout
+would print 8% for two different sizes.
 
 The related bug is worth naming, because it is a trap: the transcript follows
 playback by scrolling the caption being spoken into view, and `scrollIntoView`
@@ -930,8 +945,6 @@ pointing at the wrong one.
 The job itself lives in `useCaptionJobStore` rather than in the menu, because it
 outlives it — the menu closes on the click and the words arrive seconds later, so
 the result is reported next to the timeline instead, where the press happened.
-That store also holds the spoken language, so a clip redone from the timeline
-cannot come back transcribed as a different language than the rest.
 
 **One highlight, one definition.** `wordSpans` in `src/lib/captions.ts` says
 which stretch of time each word owns; a word stays lit until the next one

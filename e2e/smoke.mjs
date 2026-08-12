@@ -430,22 +430,24 @@ try {
   await page.getByRole('button', { name: 'Add captions', exact: true }).click()
   await page.waitForSelector('text=/captions? from \\d+ words/', { timeout: 120000 })
 
-  // The setup card folds away once there is a transcript. Left open it pushes
-  // the words far enough down that following the playhead scrolls the page.
-  const setupToggle = page.getByRole('button', { name: 'Karaoke captions' })
-  if ((await setupToggle.getAttribute('aria-expanded')) !== 'false') {
-    fail('the setup section stayed open after captions were generated')
-  }
+  // Styling stays folded away until it is asked for. Left open it pushes the
+  // words far enough down that following the playhead scrolls the page.
   const lookToggle = page.getByRole('button', { name: 'Look' })
   if ((await lookToggle.getAttribute('aria-expanded')) !== 'false') {
     fail('the styling section was open before it was asked for')
   }
-  await setupToggle.click()
-  if ((await setupToggle.getAttribute('aria-expanded')) !== 'true') {
-    fail('the setup section would not open again')
+  await lookToggle.click()
+  if ((await lookToggle.getAttribute('aria-expanded')) !== 'true') {
+    fail('the styling section would not open')
   }
-  await setupToggle.click()
-  step('setup and styling fold away once there is a transcript, and open on request')
+  // Size and height say what they are set to, so a look can be reproduced
+  // rather than only approached.
+  const sizeReadout = await page.locator('label', { hasText: /^Size/ }).locator('span').innerText()
+  if (!/^\d+\.\d%$/.test(sizeReadout.trim())) {
+    fail(`expected the caption size to be printed beside its slider, got "${sizeReadout}"`)
+  }
+  await lookToggle.click()
+  step(`styling folds away and prints its numbers (size ${sizeReadout.trim()})`)
 
   // Provenance: each caption says which clip it was heard in, which is the only
   // way to tell layered takes apart once their words are on one lane.

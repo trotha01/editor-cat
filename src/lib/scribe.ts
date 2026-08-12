@@ -238,18 +238,3 @@ function toDataUrl(blob: Blob): Promise<string> {
     reader.readAsDataURL(blob)
   })
 }
-
-/** Where the UI lists languages: ISO-639-3, which is what Scribe takes. */
-export const SPEECH_LANGUAGES = [
-  { code: '', label: 'Detect automatically' },
-  { code: 'eng', label: 'English' },
-  { code: 'spa', label: 'Spanish' },
-  { code: 'por', label: 'Portuguese' },
-  { code: 'fra', label: 'French' },
-  { code: 'deu', label: 'German' },
-  { code: 'ita', label: 'Italian' },
-  { code: 'hin', label: 'Hindi' },
-  { code: 'jpn', label: 'Japanese' },
-  { code: 'kor', label: 'Korean' },
-  { code: 'cmn', label: 'Mandarin Chinese' },
-] as const

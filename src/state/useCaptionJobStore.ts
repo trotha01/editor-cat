@@ -30,17 +30,6 @@ export interface CaptionJobOutcome {
 }
 
 interface CaptionJobState {
-  /**
-   * Which language to transcribe as, or empty to let Scribe detect it.
-   *
-   * Shared with the Captions step rather than asked for twice: what is spoken is
-   * a property of the project's audio, not of the button that happens to be
-   * pressed, and a clip redone from the timeline must not quietly come back in
-   * another language than the rest.
-   */
-  language: string
-  setLanguage: (code: string) => void
-
   /** The clip being transcribed right now, or null when nothing is running. */
   clipId: string | null
   /** What that clip is called, so the status line can say so while it runs. */
@@ -61,9 +50,6 @@ interface CaptionJobState {
 let inFlight: AbortController | null = null
 
 export const useCaptionJobStore = create<CaptionJobState>((set, get) => ({
-  language: '',
-  setLanguage: (language) => set({ language }),
-
   clipId: null,
   label: '',
   progress: null,
@@ -80,12 +66,13 @@ export const useCaptionJobStore = create<CaptionJobState>((set, get) => ({
     set({ clipId: source.id, label: source.label, progress: null, outcome: null })
 
     try {
-      const { language } = get()
       const trackId = useProjectStore.getState().ensureCaptionTrack()
+      // No language is sent, here or from the Captions step: Scribe detects it
+      // per clip, so a clip redone from the timeline is heard the same way it
+      // was the first time without anyone having to remember a setting.
       const transcript = await transcribeTimeline({
         sources: [source],
         assets: useAssetStore.getState().assets,
-        ...(language ? { languageCode: language } : {}),
         onProgress: (progress) => set({ progress }),
         signal: controller.signal,
       })
