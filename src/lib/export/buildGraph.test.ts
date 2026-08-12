@@ -834,4 +834,145 @@ describe('buildExportPlan', () => {
       expect(graph).toContain('[vcat][ov0]overlay=')
     })
   })
+
+  /**
+   * Exporting part of the timeline rather than all of it.
+   *
+   * The cut goes on at the very end, after everything that is dated from the
+   * timeline has been laid on it, and the two claims worth pinning are that the
+   * sound is cut to the same stretch — a picture and a mix on different ranges
+   * is an export that drifts out of sync — and that an untrimmed export is
+   * still the graph it always was, filter for filter.
+   */
+  describe('a chosen start and end', () => {
+    it('leaves the graph alone when the range covers the whole timeline', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 4)],
+          audio: [aud('music.mp3', 0, 4)],
+          range: { start: 0, end: 4 },
+        }).args,
+      )
+
+      expect(graph).not.toContain('trim=')
+      expect(graph).toContain('anull[aout]')
+    })
+
+    it('cuts the picture to the range and rebases it to zero', () => {
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 10)],
+        audio: [],
+        range: { start: 2, end: 6 },
+      })
+
+      // Rebased, because an mp4 whose first frame claims to be at 0:02 is one
+      // most players open on a blank frame.
+      expect(graphOf(plan.args)).toContain('[vcat]trim=start=2:end=6,setpts=PTS-STARTPTS[vout]')
+      expect(plan.durationSeconds).toBe(4)
+      // The output -t, the last one on the line, bounds the file at the length
+      // that was asked for rather than at the length of the timeline.
+      expect(plan.args.at(-3)).toBe('-t')
+      expect(plan.args.at(-2)).toBe('4')
+    })
+
+    it('cuts the mix to the same stretch as the picture', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [aud('music.mp3', 0, 10), aud('vo.mp3', 1, 4)],
+          range: { start: 2, end: 6 },
+        }).args,
+      )
+
+      expect(graph).toContain('amix=inputs=2:duration=longest:normalize=0[amix]')
+      expect(graph).toContain('[amix]atrim=start=2:end=6,asetpts=PTS-STARTPTS[aout]')
+    })
+
+    it('cuts a single unmixed take too', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [aud('music.mp3', 0, 10)],
+          range: { start: 2, end: 6 },
+        }).args,
+      )
+
+      expect(graph).toContain('anull[amix]')
+      expect(graph).toContain('[amix]atrim=start=2:end=6,asetpts=PTS-STARTPTS[aout]')
+    })
+
+    it('adds no audio cut to an export that has no sound at all', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          range: { start: 2, end: 6 },
+        }).args,
+      )
+
+      expect(graph).not.toContain('atrim')
+      expect(graph).not.toContain('[aout]')
+    })
+
+    it('goes on after the captions, which are dated from the timeline', () => {
+      // Cutting first would leave every cue late by the length of what was
+      // dropped, and lose outright any written over it.
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          leadIn: 1,
+          captions: { file: 'captions.ass', fontsDir: '/fonts' },
+          range: { start: 3, end: 6 },
+        }).args,
+      )
+
+      expect(graph).toContain('[vpad]ass=filename=captions.ass:fontsdir=/fonts[vass]')
+      expect(graph).toContain('[vass]trim=start=3:end=6,setpts=PTS-STARTPTS[vout]')
+    })
+
+    it('goes on after the layers, for the same reason', () => {
+      const graph = graphOf(
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 10)],
+          audio: [],
+          overlays: [{ file: 'b.mp4', kind: 'video', inPoint: 0, startTime: 4, duration: 2 }],
+          range: { start: 3, end: 6 },
+        }).args,
+      )
+
+      expect(graph).toContain("enable='between(t,4,6)'[vov0]")
+      expect(graph).toContain('[vov0]trim=start=3:end=6,setpts=PTS-STARTPTS[vout]')
+    })
+
+    it('fits a range that outlives the timeline it was chosen against', () => {
+      const plan = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 4)],
+        audio: [],
+        range: { start: 1, end: 40 },
+      })
+
+      expect(graphOf(plan.args)).toContain('trim=start=1:end=4,setpts=PTS-STARTPTS')
+      expect(plan.durationSeconds).toBe(3)
+    })
+
+    it('refuses a range that names no video at all', () => {
+      expect(() =>
+        buildExportPlan({
+          ...base,
+          clips: [img('a.png', 4)],
+          audio: [],
+          range: { start: 3, end: 3 },
+        }),
+      ).toThrow(/nothing to export/i)
+    })
+  })
 })

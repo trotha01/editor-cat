@@ -8,6 +8,7 @@
  */
 import { formatCost, speechCost } from '../lib/models'
 import type { CaptionTarget } from '../lib/captionSources'
+import type { FixTarget } from '../lib/clipAudioFix'
 
 export interface ClipMenuItem {
   label: string
@@ -38,6 +39,36 @@ export function captionClipItem(target: CaptionTarget, onSelect: () => void): Cl
     icon: '💬',
     label: captions > 0 ? 'Redo captions for this clip' : 'Generate captions for this clip',
     note: formatCost(speechCost(source.duration)),
+    onSelect,
+  }
+}
+
+/**
+ * "Fix this clip's audio", which says its line again properly.
+ *
+ * No price on this one, unlike the captioning row above it, and the difference
+ * is real rather than an omission: ElevenLabs bills by the character, and the
+ * characters are the ones nobody has typed yet at the moment this menu is open.
+ * The count is shown in the dialog instead, beside the button that spends it.
+ *
+ * A deployment with no key at all still gets the row, greyed, for the same
+ * reason a muted clip still offers captioning it cannot do — "why is this not
+ * here" has an answer nowhere else on the timeline.
+ *
+ * "Redo" rather than "fix" once there is already a corrected line under the
+ * clip, because that line is what a second run replaces.
+ */
+export function fixAudioItem(
+  target: FixTarget,
+  available: boolean,
+  onSelect: () => void,
+): ClipMenuItem {
+  return {
+    icon: '🗣',
+    label: target.fixedAudioClipId
+      ? 'Redo this clip’s fixed audio'
+      : 'Fix this clip’s audio (pronunciation)',
+    ...(available ? {} : { note: 'no ElevenLabs key here', disabled: true }),
     onSelect,
   }
 }

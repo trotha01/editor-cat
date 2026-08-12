@@ -43,6 +43,7 @@ import {
   recaptionSource,
   recreditCuesAfterCut,
   recreditCuesAfterJoin,
+  retimeWords,
   setCueText,
   setWordTiming,
   splitCue,
@@ -51,6 +52,7 @@ import {
   type TimedWord,
 } from '../lib/captions'
 import { withTransition } from '../lib/transitions'
+import type { ExportRange } from '../lib/export/range'
 import {
   addVideoTrack,
   createVideoTrack,
@@ -63,6 +65,8 @@ import {
   videoTrackHasRoom,
   videoTracksOf,
 } from '../lib/videoTracks'
+import { publicationsOf } from '../lib/mintspace/publications'
+import { DEFAULT_PRESET } from '../lib/orientation'
 import { newId } from '../lib/media'
 import type {
   Asset,
@@ -75,6 +79,7 @@ import type {
   Clip,
   PositionedClip,
   Project,
+  Publication,
   Transition,
   VideoTrack,
 } from '../lib/types'
@@ -97,9 +102,11 @@ export function emptyProject(id = LOCAL_PROJECT_ID, name = 'Untitled project'): 
     audioClips: [],
     // Vertical by default: short-form is what most of these get made for, and
     // it is far easier to notice and flip than to discover afterwards that a
-    // 9:16 clip has been letterboxed into a landscape frame.
-    width: 720,
-    height: 1280,
+    // 9:16 clip has been letterboxed into a landscape frame. The tier that
+    // comes with it is the export dialog's starting resolution — see
+    // DEFAULT_PRESET for why it is the smallest one.
+    width: DEFAULT_PRESET.width,
+    height: DEFAULT_PRESET.height,
     fps: 30,
   }
 }
@@ -109,6 +116,19 @@ export interface PlacementOutcome {
   trackId: string
   trackName: string
   createdTrack: boolean
+}
+
+/** A word and when it was said, relative to the start of its own audio. */
+export interface SpokenTiming {
+  text: string
+  start: number
+  end: number
+}
+
+/** The same, plus what a new fix did to the fixes already under that clip. */
+export interface FixPlacement extends PlacementOutcome {
+  /** Earlier fixes for this clip whose lanes were muted, not removed. */
+  silenced: number
 }
 
 /** Which caption, and which word inside it, the editor is working on. */
@@ -124,6 +144,14 @@ interface ProjectState {
   selectedAudioClipId: string | null
   selectedVideoClipId: string | null
   selectedCaption: CaptionSelection | null
+  /**
+   * The stretch of the timeline an export will keep, marked there directly —
+   * with the Start/End buttons or the I/O keys — rather than only typed into
+   * the export dialog. Null is the whole video, same as an absent range
+   * everywhere else. Not part of the project: it describes this sitting, not
+   * the document, so it is never saved and never undone.
+   */
+  exportRange: ExportRange | null
   loaded: boolean
 
   /**
@@ -155,6 +183,19 @@ interface ProjectState {
    * over it, and nothing placed by hand should move on its own.
    */
   setLeadIn: (seconds: number) => void
+  /** Marks the stretch an export will keep. Null puts the whole video back. */
+  setExportRange: (range: ExportRange | null) => void
+  /**
+   * Marks where an export would start, at a given time. The other edge is left
+   * where it was, or put at `duration` if nothing has been marked there yet —
+   * marking only one edge should still describe a real range to export.
+   */
+  markExportStart: (seconds: number, duration: number) => void
+  /**
+   * Marks where an export would end, leaving the other edge where it was, or
+   * at the very start of the timeline if nothing has been marked there yet.
+   */
+  markExportEnd: (seconds: number) => void
 
   /**
    * Puts an asset on the picture track after the clip `atTime` falls in, which
@@ -190,6 +231,34 @@ interface ProjectState {
 
   /** Places audio, adding a track only if every existing one is busy there. */
   addAudioClip: (kind: AudioTrackKind, clip: Omit<AudioClip, 'id' | 'trackId'>) => PlacementOutcome
+  /**
+   * Lays generated speech under a picture clip and silences that clip's own
+   * sound, as one edit.
+   *
+   * One edit because it is one act: a corrected line playing over the wrong one
+   * is not a state anybody wants to pass through, and an undo should put the
+   * clip back exactly as it was rather than leaving it mute with the correction
+   * gone — or the other way about.
+   *
+   * A fix arrives as one piece per caption line, all of them onto the one new
+   * lane, because that is what keeps each line on the mark the picture says it.
+   * The captions those lines were spoken from move onto the speech in the same
+   * edit: they describe the audio that has just arrived, so an undo that took
+   * the audio away and left the captions timed to it would be half a step.
+   *
+   * Every fix gets a **lane of its own**, and an earlier one is never deleted or
+   * written over. Generated audio costs money and a second go is usually a
+   * better spelling of the same line rather than a repudiation of the first —
+   * so the earlier take stays exactly where it was, on its own row, and is
+   * muted rather than removed. Un-mute the row to hear it again, or delete it
+   * if it really was wrong; both are one click on a lane that is still there.
+   */
+  addFixedClipAudio: (
+    clipId: string,
+    clips: readonly Omit<AudioClip, 'id' | 'trackId' | 'anchorClipId'>[],
+    /** Captions to move onto the speech, in the same edit. */
+    retimed?: readonly { cueId: string; words: readonly SpokenTiming[]; offset: number }[],
+  ) => FixPlacement
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -259,6 +328,14 @@ interface ProjectState {
   trimCueEdge: (cueId: string, edge: 'start' | 'end', value: number) => boolean
   setCueWordTiming: (cueId: string, wordId: string, patch: { start?: number; end?: number }) => void
   setCueTextAt: (cueId: string, text: string) => void
+  /**
+   * Rewrites several captions at once, as one edit.
+   *
+   * For saving the script before a clip's audio is fixed: they are typed
+   * together in one form and pressed once, so undoing them one line at a time
+   * would be undoing something nobody did.
+   */
+  setCueTexts: (edits: readonly { cueId: string; text: string }[]) => void
   splitCueAt: (cueId: string, wordIndex: number) => boolean
   /** Joins a caption onto the one before it on the same track. */
   mergeCueBack: (cueId: string) => boolean
@@ -266,6 +343,19 @@ interface ProjectState {
   removeCue: (cueId: string) => void
 
   clearTimeline: () => void
+
+  /**
+   * Remembers a video this project is now live as in the Mintspace feed.
+   *
+   * Not an edit, and deliberately not on the undo stack: it records something
+   * that happened somewhere else, and Ctrl+Z does not reach into a feed and
+   * take a video down. Undoing back past a publish would only lose track of a
+   * video that is still up — which is the one state worth never being in, since
+   * what is tracked is what stops it being posted a second time.
+   */
+  recordPublication: (publication: Publication) => void
+  /** Forgets a post that is no longer in the feed. Not an edit either. */
+  forgetPublication: (videoId: string) => void
 
   positioned: () => PositionedClip[]
   duration: () => number
@@ -279,6 +369,19 @@ function persist(project: Project): void {
 
 /** How many edits back `undo` can reach before the oldest ones fall off. */
 const MAX_HISTORY = 100
+
+/**
+ * Carries the published-videos list across an undo or a redo.
+ *
+ * The history holds whole projects, so a step taken before a publish still
+ * carries the list as it was then — and restoring it verbatim would forget a
+ * video that is still in the feed, leaving nothing to stop it going up again.
+ * Publishing is not on the stack, so the live list is simply kept.
+ */
+function withPublications(restored: Project, current: Project): Project {
+  if (restored.publications === current.publications) return restored
+  return { ...restored, publications: current.publications }
+}
 
 /**
  * Drops a selection that no longer points at anything, the way jumping to a
@@ -365,6 +468,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     selectedAudioClipId: null,
     selectedVideoClipId: null,
     selectedCaption: null,
+    exportRange: null,
     loaded: false,
     past: [],
     future: [],
@@ -391,9 +495,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           // an undo here must not reach back into it.
           past: [],
           future: [],
+          // Nor does a range marked against the timeline just left — its
+          // seconds name a different video here.
+          exportRange: null,
         })
       } catch {
-        set({ project: emptyProject(id), loaded: true, past: [], future: [] })
+        set({ project: emptyProject(id), loaded: true, past: [], future: [], exportRange: null })
       }
     },
 
@@ -408,6 +515,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedCaption: null,
         past: [],
         future: [],
+        exportRange: null,
       })
     },
 
@@ -415,12 +523,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set((state) => {
         const previous = state.past.at(-1)
         if (!previous) return {}
-        persist(previous)
+        const restored = withPublications(previous, state.project)
+        persist(restored)
         return {
-          project: previous,
+          project: restored,
           past: state.past.slice(0, -1),
           future: [state.project, ...state.future],
-          ...prunedSelection(previous, state),
+          ...prunedSelection(restored, state),
         }
       })
     },
@@ -429,12 +538,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set((state) => {
         const next = state.future[0]
         if (!next) return {}
-        persist(next)
+        const restored = withPublications(next, state.project)
+        persist(restored)
         return {
-          project: next,
+          project: restored,
           past: [...state.past, state.project],
           future: state.future.slice(1),
-          ...prunedSelection(next, state),
+          ...prunedSelection(restored, state),
         }
       })
     },
@@ -448,6 +558,18 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setLeadIn: (seconds) =>
       mutate((project) => underClips(project, { ...project, leadIn: clampLeadIn(seconds) })),
+
+    setExportRange: (range) => set({ exportRange: range }),
+
+    markExportStart: (seconds, duration) =>
+      set((state) => ({
+        exportRange: { start: seconds, end: state.exportRange?.end ?? duration },
+      })),
+
+    markExportEnd: (seconds) =>
+      set((state) => ({
+        exportRange: { start: state.exportRange?.start ?? 0, end: seconds },
+      })),
 
     addClip: (asset, atTime) => {
       const clip = clipForAsset(asset, newId('clip'))
@@ -612,6 +734,79 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         trackId: result.trackId,
         trackName: track?.name ?? 'Track',
         createdTrack: result.createdTrack,
+      }
+    },
+
+    addFixedClipAudio: (clipId, clips, retimed) => {
+      const trackId = newId('track')
+      const laid = clips.map((clip) => ({
+        ...clip,
+        id: newId('aclip'),
+        trackId,
+        anchorClipId: clipId,
+      }))
+      const { project } = get()
+
+      // A lane of its own, always. `placeAudioClip` would happily drop this
+      // onto whichever voice track was free at that moment — which is right for
+      // a recording, and wrong here: a fix belongs beside the ones before it,
+      // one row each, where they can be told apart and switched between.
+      const track = { ...createTrack(trackId, 'voice', project.audioTracks), id: trackId }
+
+      // The lanes earlier fixes for this clip went onto. Silenced rather than
+      // emptied — but only where the lane holds nothing but fixes, so a row
+      // somebody has since dragged a take onto is left audible.
+      const olderFixLanes = new Set(
+        project.audioClips
+          .filter((entry) => entry.speechFix && entry.anchorClipId === clipId)
+          .map((entry) => entry.trackId)
+          .filter((lane) =>
+            project.audioClips
+              .filter((entry) => entry.trackId === lane)
+              .every((entry) => entry.speechFix),
+          ),
+      )
+
+      const timings = new Map((retimed ?? []).map((entry) => [entry.cueId, entry]))
+
+      mutate((current) => ({
+        ...current,
+        audioTracks: insertTrack(current.audioTracks, track).map((entry) =>
+          olderFixLanes.has(entry.id) ? { ...entry, muted: true } : entry,
+        ),
+        // Moved first, fitted second, and fitted against the moved ones.
+        //
+        // Through `fitBetweenNeighbours` like every other caption edit, because
+        // speech that runs longer than the caption had room for has to stop at
+        // the next one rather than cover it. But these captions move as a group,
+        // and fitting each against where the others *used to be* is how a line
+        // ends up held back by a neighbour that is in the same breath about to
+        // get out of its way — the caption left behind by its own voice, which
+        // is the one thing this re-timing exists to prevent.
+        captionCues: (() => {
+          const moved = captionCuesOf(current).map((cue) => {
+            const timing = timings.get(cue.id)
+            return timing ? retimeWords(cue, timing.words, timing.offset) : cue
+          })
+          return moved.map((cue) => (timings.has(cue.id) ? fitBetweenNeighbours(cue, moved) : cue))
+        })(),
+        // Anchored to the clip explicitly rather than by where each piece
+        // starts: this audio *is* that clip's sound, so it follows the shot
+        // wherever the shot goes, even if a transition pulled the starts apart.
+        audioClips: [...current.audioClips, ...laid],
+        clips: current.clips.map((entry) =>
+          entry.id === clipId ? { ...entry, muted: true } : entry,
+        ),
+      }))
+      // The first piece, which is the one to look at: it is where the fix
+      // begins, and the lane scrolls into view around it.
+      set({ selectedAudioClipId: laid[0]?.id ?? null })
+
+      return {
+        trackId,
+        trackName: track.name,
+        createdTrack: true,
+        silenced: olderFixLanes.size,
       }
     },
 
@@ -943,6 +1138,24 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setCueTextAt: (cueId, text) => get().updateCue(cueId, (cue) => setCueText(cue, text, newId)),
 
+    setCueTexts: (edits) => {
+      const byId = new Map(edits.map((edit) => [edit.cueId, edit.text]))
+      if (byId.size === 0) return
+      mutate((project) => {
+        const cues = captionCuesOf(project)
+        const next = cues.map((cue) => {
+          const text = byId.get(cue.id)
+          // An emptied line is left as it was rather than deleted: this runs on
+          // the way to spending money on the others, and a caption that has
+          // gone would take its place in the script with it.
+          if (text === undefined || !text.trim()) return cue
+          const rewritten = setCueText(cue, text, newId)
+          return rewritten ? fitBetweenNeighbours(rewritten, cues) : cue
+        })
+        return { ...project, captionCues: next }
+      })
+    },
+
     splitCueAt: (cueId, wordIndex) => {
       const { project } = get()
       const cue = captionCuesOf(project).find((entry) => entry.id === cueId)
@@ -996,6 +1209,30 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedAudioClipId: null,
         selectedVideoClipId: null,
         selectedCaption: null,
+      })
+    },
+
+    // Both of these persist without going through `mutate`, which is the whole
+    // point of them: `mutate` is what pushes an undo step, and neither of these
+    // is an edit to the timeline.
+    recordPublication: (publication) => {
+      set((state) => {
+        const next = {
+          ...state.project,
+          publications: [...publicationsOf(state.project), publication],
+        }
+        persist(next)
+        return { project: next }
+      })
+    },
+
+    forgetPublication: (videoId) => {
+      set((state) => {
+        const remaining = publicationsOf(state.project).filter((entry) => entry.videoId !== videoId)
+        if (remaining.length === publicationsOf(state.project).length) return {}
+        const next = { ...state.project, publications: remaining }
+        persist(next)
+        return { project: next }
       })
     },
 

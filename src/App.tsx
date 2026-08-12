@@ -26,6 +26,7 @@ import { useAssetStore } from './state/useAssetStore'
 import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
 import { installFlushOnExit, useProjectsStore } from './state/useProjectsStore'
+import { useSettingsStore } from './state/useSettingsStore'
 import { setIngestListener } from './lib/media'
 import { recordAsset } from './lib/sync/assetSync'
 import { isMockEnabled } from './lib/mock'
@@ -75,6 +76,10 @@ export default function App() {
     // Loads the project list and opens one, or falls back to the single local
     // project when there is no account behind this build.
     void useProjectsStore.getState().start()
+    // Whether this deployment pays for the voice features or asks the visitor
+    // for a key. Every voice control on screen reads the answer, so it is asked
+    // once here rather than by each of them.
+    void useSettingsStore.getState().loadElevenLabsSupport()
 
     return installFlushOnExit()
   }, [loadAssets])

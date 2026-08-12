@@ -1,6 +1,8 @@
 /** API keys and model preferences. */
 import { create } from 'zustand'
-import { clearKeys, loadKeys, saveKeys, type KeyState } from '../lib/keys'
+import { purgeStoredKeys } from '../lib/keys'
+import { siteProvidesKey } from '../lib/elevenlabs'
+import { isMockEnabled } from '../lib/mock'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
@@ -106,30 +108,37 @@ function persistPrefs(prefs: Prefs): void {
   }
 }
 
-interface SettingsState extends KeyState, Prefs {
-  setElevenLabsKey: (value: string) => void
-  setRemember: (remember: boolean) => void
+export interface SettingsState extends Prefs {
+  /**
+   * Whether this deployment provides an ElevenLabs key of its own, so nobody
+   * has to bring one.
+   *
+   * Starts false and is corrected by `loadElevenLabsSupport` on the first
+   * render. False is the safe direction to be wrong in for the moment it lasts:
+   * the voice controls are briefly offered as needing a key, rather than
+   * briefly promising to work on a deployment where they cannot.
+   */
+  siteElevenLabs: boolean
   setPref: <K extends keyof Prefs>(key: K, value: Prefs[K]) => void
-  forgetKeys: () => void
-  hasElevenLabs: () => boolean
+  /** Asks the proxy whether it has a key. Called once, at startup. */
+  loadElevenLabsSupport: () => Promise<void>
 }
 
-export const useSettingsStore = create<SettingsState>((set, get) => ({
-  ...loadKeys(),
+/**
+ * Whether the voice features can run at all.
+ *
+ * The one question every voice control on screen actually has — the clip menu,
+ * the fix dialog, the take cards — so it is answered in one place rather than
+ * three subtly different ones. In mock mode the answer is always yes, which is
+ * what keeps the whole flow walkable with no provider behind it at all.
+ */
+export function canUseElevenLabs(state: SettingsState): boolean {
+  return state.siteElevenLabs || isMockEnabled()
+}
+
+export const useSettingsStore = create<SettingsState>((set) => ({
   ...loadPrefs(),
-
-  setElevenLabsKey: (value) => {
-    set((state) => {
-      saveKeys({ elevenlabs: value, remember: state.remember })
-      return { elevenlabs: value }
-    })
-  },
-
-  setRemember: (remember) => {
-    const { elevenlabs } = get()
-    saveKeys({ elevenlabs, remember })
-    set({ remember })
-  },
+  siteElevenLabs: false,
 
   setPref: (key, value) => {
     set((state) => {
@@ -138,10 +147,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     })
   },
 
-  forgetKeys: () => {
-    clearKeys()
-    set({ elevenlabs: '', remember: false })
+  loadElevenLabsSupport: async () => {
+    // The moment to take out the credential nobody can spend any more: this
+    // runs once at startup, on every device that ever held one.
+    purgeStoredKeys()
+    set({ siteElevenLabs: await siteProvidesKey() })
   },
-
-  hasElevenLabs: () => get().elevenlabs.trim().length > 0,
 }))

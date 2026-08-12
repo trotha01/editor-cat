@@ -25,6 +25,18 @@ const FILLS: Record<ReadinessState, string> = {
   idle: 'bg-transparent',
 }
 
+/**
+ * True when there is no fraction worth drawing: nothing is loaded and nothing
+ * about how far along it is has been reported. That covers the media that is
+ * gone and the media that has not arrived yet — an asset the library is still
+ * fetching, or a blob still being read out of storage.
+ */
+function indeterminate(readiness: ClipReadiness): boolean {
+  return (
+    readiness.state === 'missing' || (readiness.state === 'loading' && readiness.buffered === 0)
+  )
+}
+
 function describe(readiness: ClipReadiness): string {
   const percent = Math.round(readiness.buffered * 100)
   switch (readiness.state) {
@@ -37,7 +49,11 @@ function describe(readiness: ClipReadiness): string {
     case 'idle':
       return 'Not loaded yet — this clip is fetched as the playhead gets near'
     default:
-      return `Loading — ${percent}% of what this clip uses`
+      // A full-width bar next to "0%" reads as a contradiction, so the one
+      // case with no progress to quote says what it is waiting on instead.
+      return indeterminate(readiness)
+        ? 'Loading — this clip’s media has not arrived yet'
+        : `Loading — ${percent}% of what this clip uses`
   }
 }
 
@@ -55,9 +71,12 @@ export function ClipReadinessBar({ clipId }: { clipId: string }) {
       <span
         aria-hidden
         className={`block h-full transition-[width] duration-300 ${FILLS[readiness.state]}`}
-        // Missing media has nothing loaded, but a hairline of nothing says
-        // nothing — so the red runs the full width and the colour carries it.
-        style={{ width: readiness.state === 'missing' ? '100%' : `${readiness.buffered * 100}%` }}
+        // Missing media has nothing loaded, and neither has a clip whose media
+        // has not turned up at all yet — but a hairline of nothing says nothing,
+        // so both run the full width and the colour carries it: red for gone,
+        // amber for still coming. Which is the difference worth seeing while a
+        // project is opening, when every clip is briefly in the second state.
+        style={{ width: indeterminate(readiness) ? '100%' : `${readiness.buffered * 100}%` }}
       />
     </span>
   )

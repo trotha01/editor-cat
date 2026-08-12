@@ -8,13 +8,16 @@
  * name). Keep netlify/functions/ to handlers only; esbuild bundles imports
  * from here into each one.
  *
- * Two kinds of key pass through here, and the difference matters:
+ * Provider keys belong to the deployment: fal and ElevenLabs are both read from
+ * the environment and never reach the browser at all. See `requireServerKey`,
+ * and `auth.ts` for who is allowed to spend one.
  *
- *  - ElevenLabs stays bring-your-own-key. The key is the user's own, lives in
- *    their browser, and is forwarded once and forgotten. See `requireKey`.
- *  - fal is paid for by the deployment, so its key is read from the
- *    environment and never reaches the browser at all. See `requireServerKey`,
- *    and `auth.ts` for who is allowed to spend it.
+ * ElevenLabs additionally accepts a key the caller brought, which takes
+ * precedence over the site's own — someone who would rather use their own quota
+ * and their own voice library can. That choice is made in the handler rather
+ * than here, deliberately: a shared helper that quietly substituted the site's
+ * credentials for a missing header would be a security surprise buried where
+ * nobody reviewing an endpoint would look for it.
  *
  * Routing through our own origin is what makes either kind reliable: we do not
  * depend on each provider's CORS policy (which we cannot control and which
@@ -130,30 +133,6 @@ export function redactHeaders(headers: Headers): Record<string, string> {
     out[key] = SECRET_HEADERS.has(key.toLowerCase()) ? '[redacted]' : value
   })
   return out
-}
-
-/**
- * Pulls a caller-supplied provider key off the request.
- *
- * For providers that stay bring-your-own-key: the browser sends the user's own
- * key per request, and we forward it once without ever reading one from the
- * environment. Deliberately has no environment fallback — a deployment key
- * quietly standing in for a missing header would be a security surprise buried
- * in a shared helper.
- */
-export function requireKey(
-  request: Request,
-  header: string,
-  label: string,
-): { ok: true; key: string } | { ok: false; response: Response } {
-  const key = request.headers.get(header)
-  if (!key || !key.trim()) {
-    return {
-      ok: false,
-      response: jsonError(401, `Missing ${label} API key. Add it in Settings.`),
-    }
-  }
-  return { ok: true, key: key.trim() }
 }
 
 /**

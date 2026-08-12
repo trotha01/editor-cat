@@ -24,6 +24,7 @@ interface Options {
   warm?: boolean
   imageLoaded?: boolean
   imageBroken?: boolean
+  mediaLoading?: boolean
 }
 
 function Harness({ clipId, options }: { clipId: string; options: Options }) {
@@ -41,6 +42,7 @@ function Harness({ clipId, options }: { clipId: string; options: Options }) {
     warm: true,
     imageLoaded: false,
     imageBroken: false,
+    mediaLoading: false,
     ...options,
   })
 
@@ -144,6 +146,21 @@ describe('reporting what a video element knows', () => {
 
   it('reports a clip whose asset is gone from the library as missing', () => {
     mount({ kind: undefined })
+
+    expect(readingFor()).toEqual({ state: 'missing', buffered: 0 })
+  })
+
+  it('waits on that asset instead while the library is still arriving', () => {
+    // The gap is the same one either way, and calling it missing while a
+    // project is still opening alarms about every clip in it at once.
+    mount({ kind: undefined, mediaLoading: true })
+
+    expect(readingFor()).toEqual({ state: 'loading', buffered: 0 })
+  })
+
+  it('still reports media that failed outright as missing while the library loads', () => {
+    // Nothing left to try is nothing left to wait for, whatever else is coming.
+    mount({ kind: undefined, failed: true, mediaLoading: true })
 
     expect(readingFor()).toEqual({ state: 'missing', buffered: 0 })
   })

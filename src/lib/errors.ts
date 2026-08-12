@@ -71,35 +71,37 @@ export function extractMessage(body: unknown): string | undefined {
 /**
  * Maps a status code onto advice about what to actually do next.
  *
- * ElevenLabs is bring-your-own-key, so a rejection is something the user can
- * fix in Settings. fal and Anthropic are reached with the site's own key, so
- * the same codes mean either "your session lapsed" or "the operator needs to
- * fix something" — and telling that user to check a Settings field they cannot
- * see is worse than saying nothing.
+ * All three providers are reached with the deployment's own key now, which
+ * changed what these codes mean. ElevenLabs and fal used to differ from each
+ * other — fal was the site's and ElevenLabs was the user's, so a rejected
+ * ElevenLabs key was something the reader could go and fix in Settings. There
+ * is no Settings field for any of them any more, and sending someone to look
+ * for one is worse than telling them plainly that this is not theirs to fix.
+ * What is left is the same three sentences for all three: your session, the
+ * site's account, or the site's setup.
+ *
+ * A 403 has one more meaning than it used to, and it is deliberately not spelled
+ * out here: our own proxies answer 403 for an account that is not on this
+ * deployment's list, and for an endpoint it will not forward. Both arrive with a
+ * `detail` saying exactly which, and `toDisplayMessage` prints it after this
+ * line — so this stays the general case and the specific one speaks for itself.
  */
 export function explainStatus(
   provider: 'fal.ai' | 'ElevenLabs' | 'Anthropic',
   status: number,
 ): string {
-  const siteOwnsKey = provider === 'fal.ai' || provider === 'Anthropic'
-
   switch (status) {
     case 401:
+      return 'This site could not confirm that you are signed in. Sign in again, then retry.'
     case 403:
-      return siteOwnsKey
-        ? 'This site could not confirm that you are signed in. Sign in again, then retry.'
-        : `Your ${provider} API key was rejected. Check it in Settings — keys are easy to paste with a trailing space.`
+      return 'This site would not allow that. The details below say why.'
     case 402:
-      return siteOwnsKey
-        ? `This site's ${provider} account is out of credit, so generation is paused. Nothing you can fix from here.`
-        : `Your ${provider} account is out of credit. Top it up and try again.`
+      return `This site's ${provider} account is out of credit, so this is paused. Nothing you can fix from here.`
     case 503:
-      // Our own proxy answers 503 when the deployment has no key for the
-      // provider, so for a site-owned key this is far more likely to be a
-      // setup problem than an outage.
-      return siteOwnsKey
-        ? `This site is not set up for generation. Whoever deployed it needs to add a ${provider} key to the site environment.`
-        : `${provider} had a server error. This is usually transient — try again.`
+      // All three proxies answer 503 when the deployment has not been given
+      // the key they need, so this is far more likely to be a setup problem
+      // than an outage at the provider.
+      return `This site is not set up for ${provider === 'fal.ai' || provider === 'Anthropic' ? 'generation' : 'voice generation'}. Whoever deployed it needs to add a ${provider} key to the site environment.`
     case 404:
       return `That ${provider} model ID does not exist. Provider catalogues change often — pick another model, or set a custom ID in the model picker.`
     case 422:
