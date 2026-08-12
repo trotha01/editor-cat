@@ -394,15 +394,25 @@ export interface CloneOptions {
 }
 
 /**
- * The current path for instant cloning, and the one it replaced.
+ * Where instant cloning lives, most likely first.
  *
- * Tried in this order because the newer endpoint is the documented one and the
- * older one is still answering for accounts and proxies that have not caught up.
- * Only a "no such endpoint" answer moves on to the next: a rejected key or a
+ * `/v1/voices/add` leads because it is the one that answers. The newer
+ * `/v1/voices/ivc/create` is what the current documentation names, and it was
+ * tried first until a deploy showed what that costs: a 405 on every single
+ * clone, followed by the older path doing the job. One wasted round trip per
+ * fix, and a red line in the network tab suggesting something was broken when
+ * nothing was.
+ *
+ * The other one stays as the fallback rather than being deleted, because the
+ * order of these two is a fact about ElevenLabs on a given day rather than
+ * about this app: `add` is the deprecated half, and when it finally goes the
+ * fallback is what keeps this working without a release.
+ *
+ * Only a "no such endpoint" answer moves on to the next. A rejected key or a
  * plan without cloning is a settled answer, and asking a second URL the same
- * question would only bury it behind a second error.
+ * question would bury it behind a second error.
  */
-const CLONE_PATHS = ['/v1/voices/ivc/create', '/v1/voices/add']
+const CLONE_PATHS = ['/v1/voices/add', '/v1/voices/ivc/create']
 
 /**
  * Copies a voice from a sample, returning the new voice's id.

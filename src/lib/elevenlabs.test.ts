@@ -224,24 +224,41 @@ describe('cloneVoice', () => {
     })
 
     expect(voiceId).toBe('cloned')
+    // One request, because the path tried first is the one that answers. It was
+    // the other way round until a deploy showed `ivc/create` answering 405 to
+    // every clone, which cost a wasted round trip on each one.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls.at(-1) ?? []
-    expect(url).toBe('/api/elevenlabs/v1/voices/ivc/create')
+    expect(url).toBe('/api/elevenlabs/v1/voices/add')
     const form = init?.body as FormData
     expect(form.get('name')).toBe('editor-cat fix · lighthouse.mp4')
     // The extension is what ElevenLabs sniffs the container from.
     expect((form.get('files') as File).name).toMatch(/\.wav$/)
   })
 
-  it('tries the endpoint this replaced when the current one is not there', async () => {
+  it('tries the other endpoint when the first one is not there', async () => {
+    // Either of these two can be the one that has gone: `add` is the deprecated
+    // half and `ivc/create` is the half that 405s today, so the fallback is not
+    // a nicety — it is what stops the order in this file from being a release.
     fetchMock
       .mockResolvedValueOnce(json({ detail: 'Not Found' }, 404))
       .mockResolvedValueOnce(json({ voice_id: 'cloned' }))
 
     expect(await cloneVoice({ name: 'n', sample: new Blob(['wav']) })).toBe('cloned')
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      '/api/elevenlabs/v1/voices/ivc/create',
       '/api/elevenlabs/v1/voices/add',
+      '/api/elevenlabs/v1/voices/ivc/create',
     ])
+  })
+
+  it('moves on from a 405 as readily as from a 404', async () => {
+    // The answer the live API actually gives for a path that is not there.
+    fetchMock
+      .mockResolvedValueOnce(json({ detail: 'Method Not Allowed' }, 405))
+      .mockResolvedValueOnce(json({ voice_id: 'cloned' }))
+
+    expect(await cloneVoice({ name: 'n', sample: new Blob(['wav']) })).toBe('cloned')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('does not ask a second URL about a rejected key', async () => {
