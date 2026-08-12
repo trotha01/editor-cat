@@ -385,8 +385,67 @@ export interface Project {
   width: number
   height: number
   fps: number
+  /**
+   * Mintspace posts this project has already been published as.
+   *
+   * On the project document, and therefore synced, because the question it
+   * answers — "is this already up?" — is one a second machine has to be able to
+   * answer too. Kept out of the undo history for the opposite reason: it
+   * records something that happened in the world, and Ctrl+Z cannot unpublish
+   * a video. See `recordPublication` in state/useProjectStore.ts.
+   *
+   * Absent on everything saved before publishing existed, which is why it is
+   * optional and read through `publicationsOf`.
+   */
+  publications?: Publication[]
   /** Present only on projects saved before multitrack. Read by migrateProject. */
   voiceovers?: LegacyVoiceoverTake[]
+}
+
+/**
+ * One video of this project, live in the Mintspace feed.
+ *
+ * Everything needed to find it again and to take it down is held here rather
+ * than looked up, because taking it down needs two things Mintspace will not
+ * tell us later: the storage object behind the row, and which account may
+ * delete it. The row's id alone would leave the file orphaned in the bucket.
+ */
+export interface Publication {
+  /** The `mintspace.videos` row id. */
+  videoId: string
+  /** The object in the Mintspace bucket, so the file goes with the row. */
+  storagePath: string
+  /** Public URL of the file, which plays on its own. */
+  videoUrl: string
+  /**
+   * SHA-256 of the exported file, hex.
+   *
+   * What makes "the same video" an exact question rather than a guess: a
+   * project re-exported unchanged hashes the same and is refused, while one
+   * that has been edited hashes differently and is a new video, which is what
+   * it is. Empty when the browser would not hash it — see lib/digest.ts.
+   */
+  digest: string
+  /**
+   * Hash of what the video was *made from* — the timeline and the export
+   * settings — as opposed to `digest`, which is what it came out as.
+   *
+   * The two answer the same question at different moments. This one is
+   * knowable before anything is rendered, so the dialog can say "already in the
+   * feed" while the button is still unpressed rather than after a minute of
+   * encoding. The digest is the exact one and stays the final word, because a
+   * timeline can change in ways the picture does not: edit a hidden caption
+   * track and this differs while the file does not.
+   *
+   * Absent on anything recorded before it existed, which is why it is optional.
+   */
+  sourceKey?: string
+  caption: string | null
+  /** ISO 8601, as `new Date().toISOString()` writes it. */
+  publishedAt: string
+  /** The Mintspace account it belongs to, which is the only one that can delete it. */
+  accountId: string
+  username: string
 }
 
 /**

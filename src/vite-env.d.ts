@@ -31,6 +31,16 @@ interface ImportMetaEnv {
    */
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
+  /**
+   * The Mintspace project exports can be published to, and optionally where
+   * the Mintspace site itself is served from so a finished post can be linked.
+   * Set both of the first two to offer publishing; leave them unset and the
+   * export dialog only downloads. May be the same project as the pair above —
+   * Mintspace namespaces everything it owns — or a different one entirely.
+   */
+  readonly VITE_MINTSPACE_SUPABASE_URL?: string
+  readonly VITE_MINTSPACE_SUPABASE_ANON_KEY?: string
+  readonly VITE_MINTSPACE_URL?: string
 }
 
 interface ImportMeta {

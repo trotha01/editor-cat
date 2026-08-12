@@ -11,7 +11,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyProject, useProjectStore } from './useProjectStore'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
-import type { Asset, Project } from '../lib/types'
+import type { Asset, Project, Publication } from '../lib/types'
+
+const PUBLICATION: Publication = {
+  videoId: 'video-1',
+  storagePath: 'uid-1/export_fixed.mp4',
+  videoUrl: 'https://cdn.example/uid-1/export_fixed.mp4',
+  digest: 'deadbeef',
+  caption: 'hello',
+  publishedAt: '2026-08-11T12:00:00.000Z',
+  accountId: 'uid-1',
+  username: 'ada',
+}
 
 const saveProject = vi.fn<(project: Project) => Promise<void>>()
 
@@ -982,6 +993,44 @@ describe('the video lane stack', () => {
   })
 })
 
+describe('published videos', () => {
+  it('remembers one, and writes it down', () => {
+    useProjectStore.getState().recordPublication(PUBLICATION)
+
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+    expect(stored().publications).toEqual([PUBLICATION])
+  })
+
+  it('keeps them in the order they went up', () => {
+    const second = { ...PUBLICATION, videoId: 'video-2', digest: 'cafe' }
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().recordPublication(second)
+
+    expect(useProjectStore.getState().project.publications?.map((entry) => entry.videoId)).toEqual([
+      'video-1',
+      'video-2',
+    ])
+  })
+
+  it('forgets one that has been deleted from the feed', () => {
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().forgetPublication('video-1')
+
+    expect(useProjectStore.getState().project.publications).toEqual([])
+    expect(stored().publications).toEqual([])
+  })
+
+  it('does nothing for a video it was never tracking', () => {
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    const before = useProjectStore.getState().project
+
+    useProjectStore.getState().forgetPublication('never-heard-of-it')
+
+    // The same object, so nothing downstream treats this as an edit to push.
+    expect(useProjectStore.getState().project).toBe(before)
+  })
+})
+
 describe('undo and redo', () => {
   const asset: Asset = {
     id: 'a-clip',
@@ -1061,6 +1110,44 @@ describe('undo and redo', () => {
 
     expect(useProjectStore.getState().canUndo()).toBe(false)
     expect(useProjectStore.getState().canRedo()).toBe(false)
+  })
+
+  it('does not forget a published video by stepping back past it', () => {
+    // The history holds whole projects, so the step taken before publishing
+    // still carries the empty list. Restoring it verbatim would forget a video
+    // that is still in the feed — and forgetting it is what would let it be
+    // posted a second time.
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().addClip(asset)
+
+    useProjectStore.getState().undo()
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+    expect(stored().publications).toEqual([PUBLICATION])
+  })
+
+  it('does not forget one by stepping forward again either', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().undo()
+    useProjectStore.getState().recordPublication(PUBLICATION)
+    useProjectStore.getState().redo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
+  })
+
+  it('leaves publishing off the undo stack, since Ctrl+Z cannot unpublish', () => {
+    useProjectStore.getState().addClip(asset)
+    useProjectStore.getState().recordPublication(PUBLICATION)
+
+    // One edit, so one step: the publish did not add one of its own.
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().canUndo()).toBe(false)
+    expect(useProjectStore.getState().project.publications).toEqual([PUBLICATION])
   })
 
   it('drops a selection an undo brings back to nothing', () => {

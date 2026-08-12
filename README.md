@@ -22,7 +22,7 @@ account, and the voice features on its own ElevenLabs one, so visitors need
 | **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **3 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                   |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Nothing is uploaded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## What you need
@@ -729,6 +729,125 @@ inside a folder you pick — only to the folder itself, and to files the app
 created or you selected. So import always goes through the Picker, and there is
 no way to enumerate a folder behind your back.
 
+## Publishing to Mintspace (optional)
+
+[Mintspace](https://github.com/trotha01/mintspace) is a vertical video feed —
+open the site, a video plays, scroll for the next one. With one configured, the
+export dialog offers it as a destination alongside the download: pick **Publish
+to Mintspace**, write a caption, and the export goes into the feed.
+
+The render is unchanged and still runs in this tab. Your source media — the
+generations, the recordings, the takes you did not use — never leaves the
+machine. What is uploaded is the finished MP4, and only that, to a bucket anyone
+can read, because that is what being in a feed means.
+
+### Two accounts, and why
+
+**Signing in to Mintspace is a separate act from signing in here.** This app's
+identity is Auth0; Mintspace's row level security is built on Supabase Auth,
+where `auth.uid()` casts the token's subject to a uuid — and an Auth0 subject
+(`google-oauth2|104372…`) does not survive that cast. So the export dialog asks
+for a Mintspace account of its own, and remembers it. It can make you one
+without leaving the page.
+
+Everything is written straight from the browser under Mintspace's own rules:
+uploads land in `mintspace-videos/<your-uid>/…`, the row carries
+`user_id = auth.uid()`, and anything else is refused by their database rather
+than by us. There is no endpoint here, no service key, and nothing server-side
+to configure — which also means a deployment cannot post as anybody.
+
+### Setting it up
+
+Point the site at Mintspace's Supabase project:
+
+```
+VITE_MINTSPACE_SUPABASE_URL=https://xxxxxxxx.supabase.co
+VITE_MINTSPACE_SUPABASE_ANON_KEY=eyJhbGciOi...
+VITE_MINTSPACE_URL=https://your-mintspace-site   # optional, for the "open it" link
+```
+
+Leave the first two unset and the export dialog never mentions Mintspace; it
+only downloads.
+
+That project may be the **same one** this app saves projects to, or a different
+one. Mintspace namespaces everything it owns — tables under a `mintspace`
+Postgres schema, storage under a bucket of the same name — so sharing a project
+is supported by design, and the two sign-ins stay independent either way (the
+Mintspace session gets a storage key of its own, so neither can clobber the
+other).
+
+On the Mintspace side it needs its `supabase/schema.sql` run, and `mintspace`
+added under **Project Settings → API → Exposed schemas**. Both are steps in its
+own README; getting either wrong is reported here as the specific thing that is
+missing rather than as a failed upload.
+
+### What is already up, and taking it down
+
+The dialog lists every video this project is live as in the feed, with what it
+was captioned, when it went up and whose account it belongs to. Each one has a
+**Delete** beside it, which takes the row out of the feed and the file out of the
+bucket — asked about first, because it cannot be undone and anyone holding the
+link loses it. Your project and its media are untouched either way.
+
+That list is one block that reads three ways, and never two at once. Straight
+after a publish it is **Published**, because that is news. Reopen the dialog and
+the same fact is a record: **Already in the feed**, or **Already in the Mintspace
+feed** when the export you are about to make is the one that is up. The rows are
+the same in all three, so deleting is always to hand. Once a project has
+anything in the feed the button reads **Render and republish to Mintspace**,
+since that is what any further publish would be.
+
+**The same video cannot go up twice**, and you are told before you press
+anything. Opening the panel fingerprints the timeline and the export settings
+and compares that against what this project has already posted: if it matches,
+the block above says so and the publish button is off. Edit the project, change
+the size or quality, or delete the post that is up, and it comes back on.
+
+That check is a prediction — it says the export would be made from the same
+things, not that the bytes will match — so the finished file is hashed as well,
+just before it is uploaded, and a duplicate is refused there too. Two
+fingerprints because they answer at different moments: one is knowable without
+rendering, the other is exact. The second catches what the first cannot, such as
+editing a caption on a hidden track, which changes the timeline but not one
+frame of the picture.
+
+That record lives on the project document, not in this browser, so it syncs with
+everything else: publish on a laptop and the phone knows about it too. It is
+deliberately kept out of the undo history — Ctrl+Z reaches back through your
+edits, not into a feed, and an undo that forgot a live video would be an undo
+that let it be posted again.
+
+Deleting is the one thing here that needs the _same_ Mintspace account that
+published it. A different account is refused by Mintspace itself, and quietly:
+row-level security answers a delete it will not allow with zero rows rather than
+an error, so the account is checked before anything is asked, and a video
+someone else published says so rather than appearing to vanish.
+
+### Worth knowing
+
+- **Mintspace plays vertical.** A 16:9 project publishes fine but sits in a
+  letterbox, so the dialog says so before you spend the render. The Orientation
+  toggle above the preview is what changes it.
+- **The bucket caps uploads at 100 MB** by default. A long project at 1080p can
+  pass that; the failure says so and suggests the setting to change.
+- **Rendering once covers both.** Download an export to check it and then
+  publish it, and the file that goes up is the one you checked — not a second
+  render at the same settings. Change the resolution or the quality and it is
+  encoded again, because then it genuinely is a different file.
+- **The destination and quality are remembered**, in this browser, so a second
+  video exports the way the first one did. The frame size is not among them: it
+  belongs to the project, where it also drives the preview and the orientation
+  toggle, so each project keeps its own.
+- **No thumbnail is uploaded.** The row's `poster_url` is left unset, and
+  Mintspace shows the video's own first decoded frame instead.
+- **A video deleted in Mintspace itself** is noticed the next time you delete it
+  from here: the row has already gone, nothing fails, and the editor stops
+  listing it.
+
+The code is `src/lib/mintspace/` (the client, the publish and delete flows, and
+what a project has already posted) and `src/components/MintspacePublish.tsx`
+(the panel in the export dialog).
+
 ## Deploying to Netlify
 
 The repo is deploy-ready; `netlify.toml` already declares the build command,
@@ -817,11 +936,13 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Drive     — media in your own Drive                through Token Vault for a Google one
   Preview   — custom player over <video>           /api/github/*     → api.github.com
   Export    — ffmpeg.wasm → MP4, captions burnt in   files what the report form collected,
-  Report    — bug reports, filed as issues            attributed to the verified session
+  Publish   — that same MP4, into Mintspace           attributed to the verified session
+  Report    — bug reports, filed as issues
 
-                                                 Supabase and Drive themselves talk to the
+                                                 Supabase, Drive and Mintspace all talk to the
                                                  browser directly, not through us — Supabase
-                                                 trusts the Auth0 token on its own.
+                                                 trusts the Auth0 token on its own, and
+                                                 Mintspace is signed in to separately.
 ```
 
 A few decisions worth knowing about:
@@ -1429,6 +1550,12 @@ If your CI image ships its own browser, point the test at it with
 - **Export uses the single-threaded ffmpeg build**, so a short project takes
   roughly 30–90 seconds. The multithreaded build needs cross-origin isolation
   (COOP/COEP), which would block loading provider media in the page.
+- **The editor knows only about its own posts.** It remembers what it published
+  and can delete those, but it cannot list what is in the feed, edit a caption
+  after the fact, or see a video posted from anywhere else. A post deleted in
+  Mintspace itself stays listed here until the next time you try to delete it.
+  The success message links the feed rather than the post, because Mintspace has
+  no per-video route to link to.
 - **A transition is capped at two seconds, and at the shorter of its clips.**
   Both of them give up that much material, so a boundary can only hold what its
   neighbours can spare — and a clip caught between two transitions has to cover

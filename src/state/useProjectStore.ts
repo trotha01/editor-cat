@@ -64,6 +64,7 @@ import {
   videoTrackHasRoom,
   videoTracksOf,
 } from '../lib/videoTracks'
+import { publicationsOf } from '../lib/mintspace/publications'
 import { newId } from '../lib/media'
 import type {
   Asset,
@@ -76,6 +77,7 @@ import type {
   Clip,
   PositionedClip,
   Project,
+  Publication,
   Transition,
   VideoTrack,
 } from '../lib/types'
@@ -317,6 +319,19 @@ interface ProjectState {
 
   clearTimeline: () => void
 
+  /**
+   * Remembers a video this project is now live as in the Mintspace feed.
+   *
+   * Not an edit, and deliberately not on the undo stack: it records something
+   * that happened somewhere else, and Ctrl+Z does not reach into a feed and
+   * take a video down. Undoing back past a publish would only lose track of a
+   * video that is still up — which is the one state worth never being in, since
+   * what is tracked is what stops it being posted a second time.
+   */
+  recordPublication: (publication: Publication) => void
+  /** Forgets a post that is no longer in the feed. Not an edit either. */
+  forgetPublication: (videoId: string) => void
+
   positioned: () => PositionedClip[]
   duration: () => number
 }
@@ -329,6 +344,19 @@ function persist(project: Project): void {
 
 /** How many edits back `undo` can reach before the oldest ones fall off. */
 const MAX_HISTORY = 100
+
+/**
+ * Carries the published-videos list across an undo or a redo.
+ *
+ * The history holds whole projects, so a step taken before a publish still
+ * carries the list as it was then — and restoring it verbatim would forget a
+ * video that is still in the feed, leaving nothing to stop it going up again.
+ * Publishing is not on the stack, so the live list is simply kept.
+ */
+function withPublications(restored: Project, current: Project): Project {
+  if (restored.publications === current.publications) return restored
+  return { ...restored, publications: current.publications }
+}
 
 /**
  * Drops a selection that no longer points at anything, the way jumping to a
@@ -465,12 +493,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set((state) => {
         const previous = state.past.at(-1)
         if (!previous) return {}
-        persist(previous)
+        const restored = withPublications(previous, state.project)
+        persist(restored)
         return {
-          project: previous,
+          project: restored,
           past: state.past.slice(0, -1),
           future: [state.project, ...state.future],
-          ...prunedSelection(previous, state),
+          ...prunedSelection(restored, state),
         }
       })
     },
@@ -479,12 +508,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set((state) => {
         const next = state.future[0]
         if (!next) return {}
-        persist(next)
+        const restored = withPublications(next, state.project)
+        persist(restored)
         return {
-          project: next,
+          project: restored,
           past: [...state.past, state.project],
           future: state.future.slice(1),
-          ...prunedSelection(next, state),
+          ...prunedSelection(restored, state),
         }
       })
     },
@@ -1132,6 +1162,30 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedAudioClipId: null,
         selectedVideoClipId: null,
         selectedCaption: null,
+      })
+    },
+
+    // Both of these persist without going through `mutate`, which is the whole
+    // point of them: `mutate` is what pushes an undo step, and neither of these
+    // is an edit to the timeline.
+    recordPublication: (publication) => {
+      set((state) => {
+        const next = {
+          ...state.project,
+          publications: [...publicationsOf(state.project), publication],
+        }
+        persist(next)
+        return { project: next }
+      })
+    },
+
+    forgetPublication: (videoId) => {
+      set((state) => {
+        const remaining = publicationsOf(state.project).filter((entry) => entry.videoId !== videoId)
+        if (remaining.length === publicationsOf(state.project).length) return {}
+        const next = { ...state.project, publications: remaining }
+        persist(next)
+        return { project: next }
       })
     },
 
