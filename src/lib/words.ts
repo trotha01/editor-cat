@@ -18,29 +18,31 @@ import { reorder } from './timeline'
 /**
  * What a video is doing in a word's run.
  *
- * `word` is the plain take of the word being said, and it is the only one a
- * word genuinely needs — the other two are the wrapper you put around it, and a
- * word may have any number of all three. The label is only ever a label: the
- * order videos play in is the order they are listed in, and nothing here
- * reshuffles a run to put the intro first. Somebody who wants the outro in the
- * middle for a moment gets to have it there.
+ * Two of the three are not anybody's decision: the take at the front of a run
+ * leads in to the word and the take at the back signs off after it, so `intro`
+ * and `outro` are read off the order rather than stored. Drag a different take
+ * to the front and it is the intro, because being first is the whole of what
+ * "intro" ever meant, and a label that could disagree with the order is a label
+ * that eventually does.
+ *
+ * `word` is the one that is a choice, and an optional one: the takes in between
+ * the ends may carry it or carry nothing at all.
  */
 export type WordVideoRole = 'intro' | 'word' | 'outro'
 
-/** The roles, in the order they are offered. */
+/** The roles, in the order a run wears them. */
 export const ROLES: { id: WordVideoRole; label: string; hint: string }[] = [
-  { id: 'intro', label: 'Intro', hint: 'Leads in to the word' },
+  { id: 'intro', label: 'Intro', hint: 'First in the run, so it leads in to the word' },
   { id: 'word', label: 'Word', hint: 'The word itself' },
-  { id: 'outro', label: 'Outro', hint: 'Signs off after it' },
+  { id: 'outro', label: 'Outro', hint: 'Last in the run, so it signs off after it' },
 ]
 
 /**
  * What an upload is until somebody says otherwise.
  *
  * The word itself, because that is what most of these are and what the page is
- * for. Guessing from the order files arrive in — first one is the intro, last
- * one the outro — would be right often enough to be trusted and wrong often
- * enough to hurt.
+ * for — and because it is the only label an upload could be given: where it
+ * lands in the run decides the other two, and it lands at the end.
  */
 export const DEFAULT_ROLE: WordVideoRole = 'word'
 
@@ -48,12 +50,44 @@ export function roleLabel(role: WordVideoRole): string {
   return ROLES.find((entry) => entry.id === role)?.label ?? role
 }
 
+/** Why a take carries that label, for the tooltip on it. */
+export function roleHint(role: WordVideoRole): string {
+  return ROLES.find((entry) => entry.id === role)?.hint ?? ''
+}
+
+/**
+ * What a take is labelled, given where it sits in the run.
+ *
+ * The ends answer for themselves. A run of one is neither end: a take that is at
+ * once the first and the last is not leading in to or signing off after
+ * anything, it is just the word. And in the middle only `word` still speaks —
+ * a take that was the intro until something else took the front is no longer
+ * introducing anything, so its stored label goes quiet rather than contradicting
+ * the two ends.
+ */
+export function roleInRun(
+  video: WordVideo,
+  index: number,
+  count: number,
+): WordVideoRole | undefined {
+  if (count > 1 && index === 0) return 'intro'
+  if (count > 1 && index === count - 1) return 'outro'
+  return video.role === 'word' ? 'word' : undefined
+}
+
 /** One take, pointing at the bytes in the asset catalogue. */
 export interface WordVideo {
   id: string
   /** The file in the catalogue. The bytes themselves live in IndexedDB. */
   assetId: string
-  role: WordVideoRole
+  /**
+   * The label somebody put on it, if they put one on it. Only ever `word` in
+   * practice — see `roleInRun`, which is what anything drawing a run should ask
+   * — but a run restored from a machine that labelled by hand may still hold an
+   * `intro` or an `outro`, and those read as no label once they are not at an
+   * end.
+   */
+  role?: WordVideoRole
   /**
    * What is said in it, typed by hand. Absent until somebody writes one, which
    * is different from an empty string only in that nothing was ever there.
@@ -431,7 +465,8 @@ export const SIDECAR_NAME = 'editor-cat.json'
 export interface SidecarEntry {
   /** The Drive file, which is what survives being renamed or re-catalogued. */
   driveFileId: string
-  role: WordVideoRole
+  /** Absent for an unlabelled take, exactly as on the take itself. */
+  role?: WordVideoRole
   transcript?: string
 }
 
@@ -466,9 +501,12 @@ export function parseSidecar(text: string): WordSidecar | null {
       if (typeof candidate.driveFileId !== 'string' || !candidate.driveFileId) continue
       videos.push({
         driveFileId: candidate.driveFileId,
-        role: ROLES.some((role) => role.id === candidate.role)
-          ? (candidate.role as WordVideoRole)
-          : DEFAULT_ROLE,
+        // Anything that is not one of the three reads as no label rather than as
+        // the default one: an unlabelled take is a thing somebody can mean now,
+        // so guessing on their behalf would put a word back that they took off.
+        ...(ROLES.some((role) => role.id === candidate.role)
+          ? { role: candidate.role as WordVideoRole }
+          : {}),
         ...(typeof candidate.transcript === 'string' ? { transcript: candidate.transcript } : {}),
       })
     }
@@ -661,13 +699,18 @@ function mergeVideos(
     taken.add(driveFileId)
 
     const existing = localByDriveId.get(driveFileId)
+    // Both taken from the sidecar wholesale where it names the take, absences
+    // included: a label somebody removed on another machine is written down as
+    // an absence, and falling back to what this browser still had would be how
+    // it came back.
     const transcript = entry ? entry.transcript : existing?.transcript
+    const role = entry ? entry.role : existing?.role
     run.push({
       // Kept where there is one, so a sync mid-edit does not pull the row out
       // from under a cursor that is in its transcript box.
       id: existing?.id ?? newId('wv'),
       assetId: discovered.assetId,
-      role: entry?.role ?? existing?.role ?? DEFAULT_ROLE,
+      ...(role ? { role } : {}),
       ...(transcript ? { transcript } : {}),
     })
   }

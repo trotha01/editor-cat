@@ -182,7 +182,12 @@ interface WordsState {
    * can say which and why.
    */
   addDriveVideos: (wordId: string, files: readonly DriveFile[]) => Promise<string[]>
-  setVideoRole: (wordId: string, videoId: string, role: WordVideoRole) => void
+  /**
+   * Labels one take, or takes its label off — `undefined` is a label somebody
+   * chose to remove, not a missing argument. Only the takes between the ends of
+   * a run have anything to say here; see `roleInRun`.
+   */
+  setVideoRole: (wordId: string, videoId: string, role: WordVideoRole | undefined) => void
   setTranscript: (wordId: string, videoId: string, transcript: string) => void
   moveVideo: (wordId: string, from: number, to: number) => void
   removeVideo: (wordId: string, videoId: string) => Promise<void>

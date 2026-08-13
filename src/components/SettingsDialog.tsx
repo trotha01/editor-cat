@@ -8,22 +8,22 @@
  * settings screen that answers a question nobody asked is just noise on the way
  * to the controls that are actually here.
  *
- * What is left is what genuinely belongs to this browser: which models the
- * prompt improver uses, the account, Drive, and the media stored on this device.
- * All of which is as much use on the word pages as in the editor — Drive most of
- * all, since the shelf lives in the folder this dialog names — so the same dialog
- * opens from both, minus the one section that is about a project.
+ * What is left is what genuinely belongs to this browser: the account, Drive,
+ * and the media stored on this device. All of which is as much use on the word
+ * pages as in the editor — Drive most of all, since the shelf lives in the folder
+ * this dialog names — so the same dialog opens from both, minus the one section
+ * that is about a project.
+ *
+ * "Improve with AI" no longer picks a model here either. Both prompt buttons go
+ * to Claude now (see `promptEnhancer.ts`), so there is nothing left to choose.
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout, Modal } from './ui'
-import { LLM_MODELS } from '../lib/models'
-import { ModelPicker } from './ModelPicker'
 import { AccountSettings } from './AccountSettings'
 import { DriveSettings } from './DriveSettings'
 import { ProjectSettings } from './ProjectSettings'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
 import { isMockEnabled } from '../lib/mock'
-import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { releaseAllAssetUrls } from '../state/useAssetStore'
 
@@ -43,7 +43,6 @@ export function SettingsDialog({
    */
   showProject?: boolean
 }) {
-  const settings = useSettingsStore()
   const loadAssets = useAssetStore((state) => state.load)
 
   const [usage, setUsage] = useState<{ used: number; quota: number } | null>(null)
@@ -76,14 +75,6 @@ export function SettingsDialog({
         ) : null}
 
         {showProject ? <ProjectSettings /> : null}
-
-        <ModelPicker
-          label="Video prompt-improvement model"
-          options={LLM_MODELS}
-          value={settings.llmModel}
-          onChange={(id) => settings.setPref('llmModel', id)}
-          hint="Routed through fal.ai, so it is covered by this site's own key. Cheaper models are perfectly good at rewriting prompts. The image prompt is not offered as a choice — it always goes to Claude, since every clip is built from it."
-        />
 
         <AccountSettings />
 

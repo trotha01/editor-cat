@@ -229,7 +229,13 @@ async function mockVideo(
   return { video: { url: URL.createObjectURL(blob), content_type: blob.type } }
 }
 
-function mockEnhancement(prompt: string): string {
+/**
+ * The mock rewrite behind both "Improve with AI" buttons, which call Claude
+ * directly and so never pass through `mockFal`.
+ */
+export async function mockImprovedPrompt(prompt: string): Promise<string> {
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
   // Echo back something clearly shaped like an enhanced prompt so the diff UI
   // has real content to show, while staying obviously fake.
   const subject = prompt.split('\n').at(-1)?.slice(0, 200) ?? prompt
@@ -238,20 +244,6 @@ function mockEnhancement(prompt: string): string {
     `shallow 35mm perspective, rich colour grading, fine surface detail, composed on the thirds. ` +
     `[mock enhancement — no LLM was called]`
   )
-}
-
-function mockLlm(input: Record<string, unknown>): { output: string } {
-  return { output: mockEnhancement(String(input.prompt ?? '')) }
-}
-
-/**
- * The mock rewrite behind "Improve with AI" on the image prompt, which calls
- * Claude directly and so never passes through `mockFal`. Same text as the
- * `any-llm` mock the video button gets, so the two behave alike offline.
- */
-export async function mockImprovedPrompt(prompt: string): Promise<string> {
-  await new Promise((resolve) => setTimeout(resolve, 400))
-  return mockEnhancement(prompt)
 }
 
 const IDEA_TEMPLATES: ((word: string) => string)[] = [
@@ -301,11 +293,6 @@ export async function mockFal<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   onProgress?.({ status: 'IN_QUEUE', elapsed: 0 })
-
-  if (modelId.includes('any-llm')) {
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    return mockLlm(input) as T
-  }
 
   if (modelId.includes('image-to-video') || modelId.includes('i2v') || modelId.includes('video')) {
     return (await mockVideo(input, onProgress, signal)) as T

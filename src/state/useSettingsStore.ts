@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { purgeStoredKeys } from '../lib/keys'
 import { siteProvidesKey } from '../lib/elevenlabs'
 import { isMockEnabled } from '../lib/mock'
-import { DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
+import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../lib/models'
 
 const PREFS_KEY = 'editor-cat.prefs.v1'
 
@@ -17,13 +17,11 @@ const PREFS_VERSION = 3
 interface Prefs {
   imageModel: string
   videoModel: string
-  llmModel: string
 }
 
 const DEFAULT_PREFS: Prefs = {
   imageModel: DEFAULT_IMAGE_MODEL,
   videoModel: DEFAULT_VIDEO_MODEL,
-  llmModel: DEFAULT_LLM_MODEL,
 }
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[]

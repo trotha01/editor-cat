@@ -20,6 +20,7 @@ import {
   mergeShelf,
   parseShelfDoc,
   parseSidecar,
+  roleInRun,
   roleLabel,
   sortedTiers,
   withMovedVideo,
@@ -171,6 +172,52 @@ describe('what a delete strands', () => {
   })
 })
 
+/**
+ * The rule the whole of the labelling now rests on, so it is pinned down here
+ * rather than only through the screen that draws it: the ends of a run are its
+ * intro and its outro because they are the ends, and moving a take is the only
+ * thing that can make one.
+ */
+describe('the label a take wears where it sits', () => {
+  const run = [video('v1', 'asset_a'), video('v2', 'asset_b'), video('v3', 'asset_c')]
+
+  it('reads the ends off the order, whatever is stored on them', () => {
+    expect(run.map((entry, index) => roleInRun(entry, index, run.length))).toEqual([
+      'intro',
+      'word',
+      'outro',
+    ])
+  })
+
+  it('follows a take dragged to the front', () => {
+    const moved = withMovedVideo(word('w1', SPANISH.id, 'gato', run), 2, 0).videos
+
+    expect(moved.map((entry, index) => roleInRun(entry, index, moved.length))).toEqual([
+      'intro',
+      'word',
+      'outro',
+    ])
+    // The same take, and it is the intro now purely by being first.
+    expect(moved[0]?.id).toBe('v3')
+  })
+
+  it('leaves an intro dragged inwards saying nothing rather than saying intro', () => {
+    const stored: WordVideo = { id: 'v1', assetId: 'asset_a', role: 'intro' }
+
+    expect(roleInRun(stored, 1, 3)).toBeUndefined()
+  })
+
+  it('gives the takes in between whatever label they carry, if any', () => {
+    expect(roleInRun({ id: 'v2', assetId: 'asset_b', role: 'word' }, 1, 3)).toBe('word')
+    expect(roleInRun({ id: 'v2', assetId: 'asset_b' }, 1, 3)).toBeUndefined()
+  })
+
+  it('makes a run of one neither end of anything', () => {
+    expect(roleInRun(video('v1', 'asset_a'), 0, 1)).toBe('word')
+    expect(roleInRun({ id: 'v1', assetId: 'asset_a' }, 0, 1)).toBeUndefined()
+  })
+})
+
 describe('roleLabel', () => {
   it('gives every role the name the picker shows', () => {
     expect([roleLabel('intro'), roleLabel('word'), roleLabel('outro')]).toEqual([
@@ -237,8 +284,10 @@ describe('reading the shelf back out of Drive', () => {
       driveFolderId: 'folder_gato',
       languageId: merged.languages[0]!.id,
     })
+    // No sidecar to label it and nothing here that had an opinion, so it arrives
+    // unlabelled — being the only take of the word, it is not an end of anything.
     expect(merged.words[0]?.videos).toEqual([
-      { id: expect.any(String) as string, assetId: 'asset_a', role: 'word' },
+      { id: expect.any(String) as string, assetId: 'asset_a' },
     ])
   })
 
@@ -338,8 +387,10 @@ describe('reading the shelf back out of Drive', () => {
       'asset_a',
       'asset_phone',
     ])
-    // Nothing to say what it is, so it is what most takes are.
-    expect(merged.words[0]?.videos[1]?.role).toBe('word')
+    // Nothing to say what it is, and nothing needs to: it lands at the end of
+    // the run, which is what makes it the outro.
+    expect(merged.words[0]?.videos[1]?.role).toBeUndefined()
+    expect(roleInRun(merged.words[0]!.videos[1]!, 1, 2)).toBe('outro')
   })
 
   it('drops a take whose file has gone from the folder, and keeps one still uploading', () => {
@@ -506,8 +557,9 @@ describe('the old file beside a word’s videos', () => {
     )
 
     // The entry with no file is unusable and goes; the one with an unknown label
-    // is a real take that simply gets the ordinary one.
-    expect(parsed?.videos).toEqual([{ driveFileId: 'f1', role: 'word' }])
+    // is a real take that simply arrives with no label, which is a thing a take
+    // is allowed to be.
+    expect(parsed?.videos).toEqual([{ driveFileId: 'f1' }])
   })
 })
 

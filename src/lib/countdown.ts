@@ -51,6 +51,17 @@ export const COUNTDOWN_ASSET_NAME = '3-beep countdown'
 /** What the clip is called on the timeline. */
 export const COUNTDOWN_LABEL = 'Countdown'
 
+/**
+ * What an auto-placed count-in is called on the timeline.
+ *
+ * Load-bearing, not decoration: it is how a second run finds the count-ins the
+ * last one laid, so the marks can be redone after a recaption instead of
+ * doubling up. See `addCountInBeeps`. The audio itself is the same three beeps
+ * as `COUNTDOWN_ASSET_NAME` — this only tells an auto-placed one apart from a
+ * count-in dropped by hand with the buttons above.
+ */
+export const BEEP_LABEL = 'Beep'
+
 export const WAV_MIME = 'audio/wav'
 
 /**

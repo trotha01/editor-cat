@@ -221,8 +221,3 @@ export interface ImageOutput {
 export interface VideoOutput {
   video?: { url: string; content_type?: string }
 }
-
-export interface LlmOutput {
-  output?: string
-  reasoning?: string | null
-}
