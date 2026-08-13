@@ -90,8 +90,14 @@ interface DriveState {
   setFolder: (folder: DriveFolder | null) => void
   clearError: () => void
 
-  /** Fire-and-forget upload of a freshly ingested asset. */
-  uploadAsset: (asset: Asset, blob: Blob) => void
+  /**
+   * Fire-and-forget upload of a freshly ingested asset.
+   *
+   * Into the folder the user chose, unless the caller names another one — which
+   * the word pages do, because a word's takes belong in the folder for that word
+   * rather than loose beside a project's media.
+   */
+  uploadAsset: (asset: Asset, blob: Blob, parentId?: string) => void
 }
 
 /** Whether a failure means "sign in again" rather than "that one went wrong". */
@@ -302,7 +308,7 @@ export const useDriveStore = create<DriveState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 
-  uploadAsset: (asset, blob) => {
+  uploadAsset: (asset, blob, parentId) => {
     const { status, folder } = get()
     // Already in Drive: this asset was imported from there in the first place.
     if (asset.driveFileId) return
@@ -322,7 +328,7 @@ export const useDriveStore = create<DriveState>((set, get) => ({
       try {
         const file = await uploadFile(blob, {
           name: asset.name,
-          parentId: folder.id,
+          parentId: parentId ?? folder.id,
           onProgress: (progress) => patch({ progress }),
         })
 

@@ -15,10 +15,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import { DriveUploads } from './components/DriveUploads'
 import { WordVideos } from './components/WordVideos'
-import { Button, EmptyState, LinkButton, TextInput } from './components/ui'
+import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
 import { EDITOR_HASH } from './lib/route'
 import { sortedLanguages, wordsInLanguage } from './lib/words'
+import { useDriveStore } from './state/useDriveStore'
 import { useWordsStore } from './state/useWordsStore'
+
+/**
+ * What deleting also does, when there is a folder in Drive to do it to.
+ *
+ * Said out loud because it is a departure from the rest of the app, where your
+ * Drive copy is always left alone. Here the folder is the shelf, so a delete
+ * that stopped at this browser would be undone by the next read.
+ */
+function binNote(inDrive: boolean): string {
+  return inDrive ? '\n\nThe folder goes to your Google Drive bin, where you can get it back.' : ''
+}
 
 export function WordsPage() {
   const languages = useWordsStore((state) => state.languages)
@@ -26,12 +38,23 @@ export function WordsPage() {
   const selectedLanguageId = useWordsStore((state) => state.selectedLanguageId)
   const selectedWordId = useWordsStore((state) => state.selectedWordId)
   const loading = useWordsStore((state) => state.loading)
+  const syncing = useWordsStore((state) => state.syncing)
+  const syncError = useWordsStore((state) => state.syncError)
+  const driveConnected = useDriveStore((state) => state.status === 'connected' && !!state.folder)
 
   useEffect(() => {
     // A second visit in the same session keeps what was open — see `load`, which
     // reads the stores once and then leaves the selection alone.
     void useWordsStore.getState().load()
   }, [])
+
+  useEffect(() => {
+    // Whenever there is a Drive to read, read it — which is not only on mount.
+    // A connection restored after the page was opened, or granted again after it
+    // lapsed, is the same event as arriving with one, and a shelf that only
+    // syncs on a reload would look like one that does not sync.
+    if (driveConnected) void useWordsStore.getState().syncFromDrive()
+  }, [driveConnected])
 
   const languageList = useMemo(() => sortedLanguages(languages), [languages])
   const wordList = useMemo(
@@ -52,8 +75,11 @@ export function WordsPage() {
             inside it should not answer to the same name. */}
         <h1 className="text-sm font-semibold">Word videos</h1>
         <p className="min-w-0 flex-1 truncate text-xs text-ink-dim">
-          Upload the videos for a word, order them, and watch them together.
+          {syncing
+            ? 'Reading your Drive…'
+            : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
+        {syncing ? <Spinner className="text-ink-dim" /> : null}
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
         </LinkButton>
@@ -72,7 +98,8 @@ export function WordsPage() {
             if (
               count > 0 &&
               !window.confirm(
-                `Delete "${doomed?.name}" and its ${count} word${count === 1 ? '' : 's'}?`,
+                `Delete "${doomed?.name}" and its ${count} word${count === 1 ? '' : 's'}?` +
+                  binNote(driveConnected && !!doomed?.driveFolderId),
               )
             ) {
               return
@@ -100,7 +127,8 @@ export function WordsPage() {
             if (
               count > 0 &&
               !window.confirm(
-                `Delete "${doomed?.text}" and its ${count} video${count === 1 ? '' : 's'}?`,
+                `Delete "${doomed?.text}" and its ${count} video${count === 1 ? '' : 's'}?` +
+                  binNote(driveConnected && !!doomed?.driveFolderId),
               )
             ) {
               return
@@ -127,11 +155,33 @@ export function WordsPage() {
               that could quietly go wrong on it. */}
           <DriveUploads />
 
+          {/* A failed read of Drive is worth saying and never worth blocking on:
+              what is on screen is this browser's copy of the shelf, which is
+              still a shelf. */}
+          {syncError ? (
+            <Callout tone="warn" title="Google Drive">
+              {syncError}
+            </Callout>
+          ) : null}
+
           {word ? (
             <>
               <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="text-lg font-semibold">{word.text}</h2>
                 {language ? <span className="text-sm text-ink-dim">{language.name}</span> : null}
+                {/* The other end of the link, made visible: these videos are in a
+                    folder the user owns, and the fastest way to believe that is
+                    to be able to open it. */}
+                {word.driveFolderId ? (
+                  <a
+                    href={`https://drive.google.com/drive/folders/${word.driveFolderId}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-ink-dim underline decoration-dotted hover:text-ink"
+                  >
+                    Open the Drive folder
+                  </a>
+                ) : null}
               </div>
               <WordVideos word={word} />
             </>

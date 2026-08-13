@@ -155,6 +155,14 @@ export interface IngestOptions {
   sourceUrl?: string
   /** Set when the media came from Drive, so it is not uploaded straight back. */
   driveFileId?: string
+  /**
+   * Which Drive folder to back this up into, when it is not the project's.
+   *
+   * Set by the word pages, whose files belong in the folder for their word (see
+   * lib/wordsDrive.ts). Absent everywhere else, which means the folder the user
+   * chose — the answer for anything belonging to a timeline.
+   */
+  driveParentId?: string
   signal?: AbortSignal
 }
 
@@ -166,7 +174,7 @@ export interface IngestOptions {
  * the app already calls `ingestBlob`, so registering one hook at startup backs
  * up all of them, and this module stays testable with no Google in sight.
  */
-export type IngestListener = (asset: Asset, blob: Blob) => void
+export type IngestListener = (asset: Asset, blob: Blob, options: IngestOptions) => void
 
 let listener: IngestListener | null = null
 
@@ -197,7 +205,7 @@ export async function ingestBlob(blob: Blob, options: IngestOptions): Promise<As
   await putAsset(asset)
 
   try {
-    listener?.(asset, blob)
+    listener?.(asset, blob, options)
   } catch {
     // A backup that cannot start must not fail the ingest: the asset is
     // already saved locally and usable.

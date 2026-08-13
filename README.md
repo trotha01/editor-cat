@@ -26,7 +26,7 @@ need **no key at all**. Signing in is the whole of the way in.
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **5 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Two navigation columns on the left — a language, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. **Watch together** plays the whole run back to back in one player, moving to the next take on its own and showing each one's transcript as it goes. Videos uploaded here are backed up to your Drive like everything else; the lists themselves stay in this browser.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Two navigation columns on the left — a language, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. **Watch together** plays the whole run back to back in one player, moving to the next take on its own and showing each one's transcript as it goes. The shelf **is a tree of folders in your Drive** — one per language, one per word inside it, that word's videos in that folder — so it opens the same on your next machine, a video dropped into a word's folder from your phone turns up in the app, and **Open the Drive folder** on any word takes you straight to it. See [The word shelf in your Drive](#the-word-shelf-in-your-drive).                                                                                                                                                                                                                                                                                                                             |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## What you need
@@ -1433,8 +1433,71 @@ that is what stops a generated file from ending up on the machine with nothing o
 screen to reach it by. A word's takes have somewhere else to be reached from, so
 they go through `adopt` instead and stay out of the project's library, where they
 would only be clutter. The bytes are cleared when the last word listing them is
-deleted (`isVideoAssetOrphaned`), and the copy in the user's Drive is never
-touched by any of it.
+deleted (`isVideoAssetOrphaned`).
+
+**The folder tree is the shelf.** See below — it is the one decision on that page
+big enough to deserve its own section.
+
+## The word shelf in your Drive
+
+The [word pages](#what-it-does) keep their shelf as folders in the Drive folder
+you chose, in the layout anybody would build by hand:
+
+```
+editor-cat/                     the folder you chose at sign-in
+  Spanish/                      a language
+    gato/                       a word
+      intro.mp4                 its takes, in the order the sidecar gives
+      gato.mp4
+      editor-cat.json           the order, the labels and the transcripts
+    perro/
+      ...
+  French/
+    chien/
+      ...
+```
+
+**Why folders rather than a table.** The obvious alternative was another Supabase
+table beside the projects one. Folders won because of what they cost and what
+they buy: no schema, no migration, no row-level security policy, and a shelf that
+is legible in Drive without this app — the videos for a word are where you would
+go looking for them from a phone, in a folder named after the word. Adding a
+language creates its folder there and then, so the place to drop takes into exists
+before there are any.
+
+**A folder cannot hold an order, so one small file does.** `editor-cat.json` in
+each word folder lists that word's takes by Drive file id, in order, with the
+label and transcript for each (`buildSidecar`/`parseSidecar` in
+`src/lib/words.ts`). The folder still says which videos there _are_ — drop one in
+from a phone and it joins the end of the run, labelled as the word itself — and
+the sidecar says what they are and what order they go in. A sidecar that has been
+mangled or will not download is read as absent: what is lost is the order and the
+labels, not the videos. It is rewritten a beat after the last edit rather than on
+every keystroke, and again when an upload finishes, since a take has no Drive id
+to be listed under until it is up there.
+
+**Reading it back is what makes it a link rather than a tidier upload.** Opening
+the page lists the folders, matches them against what this browser already had —
+by folder id first, then by name, so a language added offline adopts its folder
+rather than growing a second one — and folds in anything new (`mergeShelf`). Only
+the folder names and the sidecars come down at that point; a take's bytes are
+fetched when you open the word that has it, which is the same
+metadata-first-bytes-second order the editor hydrates a project in.
+
+**Deleting reaches Drive, which is a departure.** Everywhere else in this app your
+Drive copy is left alone. Here it cannot be: a take removed from a word and left
+sitting in that word's folder would simply be found again on the next read and
+come back from the dead. So removing a take trashes its file, and deleting a word
+or a language trashes the folder — Drive's own bin, where a mis-click is
+recoverable, and the confirmation says so. The same reasoning runs the other way:
+a word whose folder the read did not turn up has been deleted from another
+machine, and goes here too, or it would sit on this machine forever with no way
+to get rid of it. Nothing without a folder id is ever dropped — that is work made
+here that Drive has not been told about yet.
+
+**None of it is required.** With no Drive connection there are no folder ids, no
+reads and no writes, and the page is exactly the local one it would have been.
+That is one check (`driveRoot`) rather than a scattering of them.
 
 ## Testing
 
@@ -1515,12 +1578,23 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
-- **The word lists live in this browser.** The videos themselves are backed up
-  to your Drive as they are uploaded, like every other file the app takes in, but
-  the languages, the words, the order, the labels and the transcripts are kept in
-  IndexedDB and do not sync to your account the way a timeline does. So the shelf
-  is per machine: the same account on a second computer opens the words page
-  empty. Clearing this browser's data from Settings clears it too.
+- **A folder you made by hand is invisible to the word pages.** The app holds the
+  narrowest Drive scope there is — `drive.file`, per-file access to what it
+  created or you handed it — so it can see the language and word folders it made
+  and nothing else of your Drive. If you already have a `Spanish/gato/` tree in
+  there, the app cannot find it and will make its own; move your videos into the
+  folder it made, or drop them into it from Drive, and they turn up in the app on
+  the next visit. The alternative is `drive.readonly`, which puts "see and
+  download all your Google Drive files" on the consent screen.
+- **Deleting on the word pages deletes in Drive.** Unlike the Library, which
+  never touches your Drive copy, removing a take trashes its file and deleting a
+  word or language trashes the folder — because the folder _is_ the list, and
+  anything left in it comes back on the next read. It is Drive's bin rather than
+  a permanent delete, and the confirmation says so.
+- **Two machines editing the same word at once will not merge.** Each writes the
+  whole sidecar for that word, so the last write wins for the order and the
+  labels. The videos themselves are never lost this way — they are files in the
+  folder, and both machines see all of them.
 - **A filed report is one-way.** The issue carries the reporter's address so
   they can be answered, but nothing comes back into the editor — there is no
   inbox in the app, and someone who files a bug and closes the tab will only

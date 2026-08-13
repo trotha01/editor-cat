@@ -22,6 +22,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { WordSequencePlayer, type PlayableVideo } from './WordSequencePlayer'
 import { Button, Callout, EmptyState, Select, Spinner, TextArea } from './ui'
+import { useWordVideoBytes } from '../hooks/useWordVideoBytes'
 import { toDisplayMessage } from '../lib/errors'
 import { ingestBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
@@ -62,6 +63,10 @@ export function WordVideos({ word }: { word: Word }) {
     [entries],
   )
 
+  // The takes of the word that is open, fetched from Drive if this browser has
+  // never held them — which is every take of every word on a second machine.
+  const { fetching } = useWordVideoBytes(useMemo(() => playable.map((e) => e.asset), [playable]))
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const onDragEnd = (event: DragEndEvent) => {
@@ -85,13 +90,19 @@ export function WordVideos({ word }: { word: Word }) {
     setBusy({ done: 0, total: chosen.length })
     setError(null)
     try {
+      // Asked for once, before the first byte is read: it is the same folder for
+      // every file in this batch, and making it is what stops six uploads
+      // racing to create six of it. Null when there is no Drive to make it in,
+      // which sends the backup nowhere and the file nowhere but here.
+      const driveParentId = (await useWordsStore.getState().ensureWordFolder(word.id)) ?? undefined
+
       for (const [done, file] of chosen.entries()) {
         setBusy({ done, total: chosen.length })
         if (!file.type.startsWith('video/')) {
           setError(`"${file.name}" is not a video.`)
           continue
         }
-        const asset = await ingestBlob(file, { kind: 'video', name: file.name })
+        const asset = await ingestBlob(file, { kind: 'video', name: file.name, driveParentId })
         // Into the catalogue but into no project's library: this belongs to a
         // word, not to whatever timeline happens to be open.
         useAssetStore.getState().adopt(asset)
@@ -157,6 +168,7 @@ export function WordVideos({ word }: { word: Word }) {
                   wordId={word.id}
                   video={entry.video}
                   asset={entry.asset}
+                  fetching={entry.asset ? fetching.has(entry.asset.id) : false}
                   index={index}
                   count={entries.length}
                 />
@@ -173,13 +185,16 @@ function VideoRow({
   wordId,
   video,
   asset,
+  fetching,
   index,
   count,
 }: {
   wordId: string
   video: WordVideo
-  /** Absent when this browser does not hold the bytes. */
+  /** Absent when this browser has never heard of the file at all. */
   asset: Asset | undefined
+  /** True while its bytes are coming down from Drive. */
+  fetching: boolean
   index: number
   count: number
 }) {
@@ -226,12 +241,18 @@ function VideoRow({
 
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <p className="truncate text-sm font-medium">{name}</p>
-          <p className="text-xs text-ink-dim">
-            {asset
-              ? `${asset.duration ? formatTime(asset.duration) : 'video'}${
-                  asset.width ? ` · ${asset.width}×${asset.height}` : ''
-                }`
-              : 'The file for this one is not on this machine.'}
+          <p className="flex items-center gap-1.5 text-xs text-ink-dim">
+            {fetching ? (
+              <>
+                <Spinner className="size-3" /> Fetching from Drive…
+              </>
+            ) : asset ? (
+              `${asset.duration ? formatTime(asset.duration) : 'video'}${
+                asset.width ? ` · ${asset.width}×${asset.height}` : ''
+              }`
+            ) : (
+              'The file for this one is not on this machine.'
+            )}
           </p>
         </div>
 
@@ -284,7 +305,10 @@ function VideoRow({
           className="shrink-0"
           onClick={() => void removeVideo(wordId, video.id)}
           aria-label={`Remove ${name}`}
-          title="Remove this video. Your Drive copy is left alone."
+          // Unlike the Library, this does reach Drive — the word's folder is
+          // the word's list of takes, so one left in it would come back on the
+          // next read. Drive's bin is what makes that recoverable.
+          title="Remove this video. The file goes to your Google Drive bin."
         >
           <span aria-hidden>🗑</span>
         </Button>

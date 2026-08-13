@@ -28,9 +28,11 @@ export function Root() {
     // Every panel and page reaches durable storage through this one hook, so
     // generated images, rendered clips, recordings, manual uploads and the word
     // videos are all backed up and catalogued without any of them knowing Drive
-    // or Supabase exist.
-    setIngestListener((asset, blob) => {
-      useDriveStore.getState().uploadAsset(asset, blob)
+    // or Supabase exist. Where a file lands is the one thing a caller gets a say
+    // in: the word pages name the folder for their word, and everything else
+    // takes the folder the user chose.
+    setIngestListener((asset, blob, options) => {
+      useDriveStore.getState().uploadAsset(asset, blob, options.driveParentId)
       void recordAsset(asset, blob.size)
     })
     return () => setIngestListener(null)
