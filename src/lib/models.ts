@@ -60,11 +60,6 @@ export interface VideoModel {
   durationFormat: DurationFormat
 }
 
-export interface LlmModel {
-  id: string
-  label: string
-}
-
 export const IMAGE_SIZES = [
   { value: 'landscape_16_9', label: 'Landscape 16:9' },
   { value: 'portrait_16_9', label: 'Portrait 9:16' },
@@ -184,19 +179,6 @@ export const VIDEO_MODELS: readonly VideoModel[] = [
 ]
 
 /**
- * Models available for the two "Improve with AI" buttons, routed through fal's
- * any-llm endpoint so prompt rewriting needs no third API key.
- */
-export const LLM_MODELS: readonly LlmModel[] = [
-  { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
-  { id: 'google/gemini-flash-1.5', label: 'Gemini 1.5 Flash (cheapest)' },
-  { id: 'openai/gpt-4o', label: 'GPT-4o' },
-  { id: 'meta-llama/llama-3.2-3b-instruct', label: 'Llama 3.2 3B' },
-]
-
-export const LLM_ENDPOINT = 'fal-ai/any-llm'
-
-/**
  * The transcriber behind captions: ElevenLabs Scribe v2, hosted by fal.
  *
  * Not offered as a choice, and deliberately so. It is here for one property —
@@ -232,7 +214,6 @@ export function speechCost(seconds: number): number {
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]!.id
 export const DEFAULT_VIDEO_MODEL = VIDEO_MODELS[0]!.id
-export const DEFAULT_LLM_MODEL = LLM_MODELS[0]!.id
 
 export function findImageModel(id: string): ImageModel | undefined {
   return IMAGE_MODELS.find((m) => m.id === id)

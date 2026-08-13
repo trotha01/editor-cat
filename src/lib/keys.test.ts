@@ -32,8 +32,8 @@ describe('purgeStoredKeys', () => {
   it('leaves everything else this app stores alone', () => {
     // Preferences and the sidebar state live in the same storage. A purge that
     // reached them would log people out of their own layout.
-    window.localStorage.setItem('editor-cat.prefs.v1', '{"llmModel":"x"}')
+    window.localStorage.setItem('editor-cat.prefs.v1', '{"imageModel":"x"}')
     purgeStoredKeys()
-    expect(window.localStorage.getItem('editor-cat.prefs.v1')).toBe('{"llmModel":"x"}')
+    expect(window.localStorage.getItem('editor-cat.prefs.v1')).toBe('{"imageModel":"x"}')
   })
 })
