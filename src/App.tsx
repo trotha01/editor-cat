@@ -65,7 +65,7 @@ export default function App() {
   const canRedo = useProjectStore((state) => state.canRedo())
 
   const playback = usePlayback(duration)
-  useUndoRedoShortcut()
+  useUndoRedoShortcut(useProjectStore)
 
   useEffect(() => {
     // Loads the project list and opens one, or falls back to the single local

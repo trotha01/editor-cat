@@ -342,6 +342,24 @@ export async function trashFile(fileId: string): Promise<void> {
   })
 }
 
+/**
+ * Takes a file or folder back out of the trash.
+ *
+ * The other half of `trashFile`, for the word pages' undo: a delete there puts
+ * the folder in the bin, so taking the delete back has to take the folder back
+ * out — a restored word whose recordings are still in the bin is half a restore,
+ * and the half that is invisible until somebody presses play. Untrashing a
+ * folder brings back what was trashed along with it, the same way trashing it
+ * took them.
+ */
+export async function untrashFile(fileId: string): Promise<void> {
+  await driveFetch(`${API}/files/${encodeURIComponent(fileId)}?${SHARED_DRIVE_PARAMS}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: false }),
+  })
+}
+
 /** Pulls a file's bytes down for local playback and export. */
 export async function downloadFile(fileId: string, signal?: AbortSignal): Promise<Blob> {
   const response = await driveFetch(
