@@ -23,6 +23,17 @@ interface AssetState {
   loading: boolean
   load: () => Promise<void>
   add: (asset: Asset) => void
+  /**
+   * Into the catalogue, and into nobody's library.
+   *
+   * For media that belongs to something other than a timeline — a word's videos
+   * (see lib/words.ts), which are held in a list of their own and would only
+   * clutter the open project if they were claimed by it. Everything else should
+   * still come through `add`: a file on the machine that no project lists is a
+   * file with nothing on screen to reach it by, and that is the right answer
+   * here only because the word pages are the something else.
+   */
+  adopt: (asset: Asset) => void
   update: (id: string, patch: Partial<Asset>) => Promise<void>
   remove: (id: string) => Promise<void>
   byId: (id: string) => Asset | undefined
@@ -47,6 +58,10 @@ export const useAssetStore = create<AssetState>((set, get) => ({
     // project's library. Every panel that produces media comes through here,
     // which is what makes that one rule rather than seven.
     useProjectStore.getState().addToLibrary(asset.id)
+    get().adopt(asset)
+  },
+
+  adopt: (asset) => {
     set((state) => ({ assets: [asset, ...state.assets] }))
   },
 

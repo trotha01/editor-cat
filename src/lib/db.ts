@@ -1,13 +1,14 @@
 /**
  * IndexedDB persistence.
  *
- * Two stores: raw media blobs, and the project document that references them.
- * Keeping the bytes locally is what makes the editor refresh-safe and lets you
- * come back to a project later without re-generating (and re-paying for)
- * anything.
+ * Raw media blobs, the catalogue of what they are, the project documents that
+ * reference them, and the languages and words of the word pages. Keeping the
+ * bytes locally is what makes the editor refresh-safe and lets you come back to
+ * a project later without re-generating (and re-paying for) anything.
  */
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { Asset, Project } from './types'
+import type { Language, Word } from './words'
 
 interface EditorCatDB extends DBSchema {
   blobs: {
@@ -23,10 +24,20 @@ interface EditorCatDB extends DBSchema {
     key: string
     value: Project
   }
+  languages: {
+    key: string
+    value: Language
+  }
+  words: {
+    key: string
+    value: Word
+    indexes: { languageId: string }
+  }
 }
 
 const DB_NAME = 'editor-cat'
-const DB_VERSION = 1
+/** 2 added the `languages` and `words` stores behind the word pages. */
+const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase<EditorCatDB>> | null = null
 
@@ -42,6 +53,13 @@ function db(): Promise<IDBPDatabase<EditorCatDB>> {
       }
       if (!database.objectStoreNames.contains('projects')) {
         database.createObjectStore('projects', { keyPath: 'id' })
+      }
+      if (!database.objectStoreNames.contains('languages')) {
+        database.createObjectStore('languages', { keyPath: 'id' })
+      }
+      if (!database.objectStoreNames.contains('words')) {
+        const store = database.createObjectStore('words', { keyPath: 'id' })
+        store.createIndex('languageId', 'languageId')
       }
     },
   })
@@ -103,6 +121,38 @@ export async function deleteProject(id: string): Promise<void> {
   await (await db()).delete('projects', id)
 }
 
+/**
+ * The word pages: languages, and the words filed under them.
+ *
+ * Two stores rather than languages holding their words, because the words are
+ * the part that grows — a language is a name, and rewriting a document holding
+ * every word of it each time one video is relabelled is a great deal of writing
+ * to record a very small fact.
+ */
+export async function putLanguage(language: Language): Promise<void> {
+  await (await db()).put('languages', language)
+}
+
+export async function listLanguages(): Promise<Language[]> {
+  return (await db()).getAll('languages')
+}
+
+export async function deleteLanguage(id: string): Promise<void> {
+  await (await db()).delete('languages', id)
+}
+
+export async function putWord(word: Word): Promise<void> {
+  await (await db()).put('words', word)
+}
+
+export async function listWords(): Promise<Word[]> {
+  return (await db()).getAll('words')
+}
+
+export async function deleteWord(id: string): Promise<void> {
+  await (await db()).delete('words', id)
+}
+
 /** Rough total of stored bytes, for the storage readout in Settings. */
 export async function estimateUsage(): Promise<{ used: number; quota: number } | null> {
   if (!navigator.storage?.estimate) return null
@@ -113,7 +163,13 @@ export async function estimateUsage(): Promise<{ used: number; quota: number } |
 /** Wipes everything. Used by the "clear all data" button in Settings. */
 export async function clearAll(): Promise<void> {
   const database = await db()
-  await Promise.all([database.clear('blobs'), database.clear('assets'), database.clear('projects')])
+  await Promise.all([
+    database.clear('blobs'),
+    database.clear('assets'),
+    database.clear('projects'),
+    database.clear('languages'),
+    database.clear('words'),
+  ])
 }
 
 export function formatBytes(bytes: number): string {
