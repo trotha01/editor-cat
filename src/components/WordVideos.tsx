@@ -2,10 +2,15 @@
  * One word's videos: what has been uploaded for it, in what order, labelled and
  * transcribed.
  *
- * The order is the point of the screen, so it is editable two ways — dragged,
- * which is what anybody reaches for, and with a pair of buttons on each row,
- * which is what works from a keyboard and what a test can press. Both go through
- * the same store action, so neither can drift from the other.
+ * The order is the point of the screen, so it is editable three ways — dragged
+ * along the strip in the player above, which is what anybody reaches for,
+ * dragged up and down these rows, and with a pair of buttons on each row, which
+ * is what works from a keyboard and what a test can press. All three go through
+ * the same store action, so none of them can drift from the others.
+ *
+ * The order is also what most of the labelling is: the ends of a run are its
+ * intro and its outro by virtue of being the ends (`roleInRun`), so the only
+ * label a row offers is the optional "Word" on the takes in between.
  */
 import { useMemo, useRef, useState } from 'react'
 import {
@@ -22,12 +27,19 @@ import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
 import { RenameField } from './RenameField'
 import { WordSequencePlayer, type PlayableVideo } from './WordSequencePlayer'
-import { Button, Callout, EmptyState, Select, Spinner, TextArea } from './ui'
+import { Button, Callout, EmptyState, Spinner, TextArea } from './ui'
 import { useWordVideoBytes } from '../hooks/useWordVideoBytes'
 import { toDisplayMessage } from '../lib/errors'
 import { ingestBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
-import { ROLES, type Word, type WordVideo, type WordVideoRole } from '../lib/words'
+import {
+  roleHint,
+  roleInRun,
+  roleLabel,
+  type Word,
+  type WordVideo,
+  type WordVideoRole,
+} from '../lib/words'
 import { useAssetStore } from '../state/useAssetStore'
 import { useWordsStore } from '../state/useWordsStore'
 import type { Asset } from '../lib/types'
@@ -55,7 +67,14 @@ export function WordVideos({ word }: { word: Word }) {
    * report waiting to happen.
    */
   const entries = useMemo(
-    () => word.videos.map((video) => ({ video, asset: byId.get(video.assetId) })),
+    () =>
+      word.videos.map((video, index) => ({
+        video,
+        asset: byId.get(video.assetId),
+        // Against the whole run, missing files included, so the label a take
+        // wears is the same one it wears in the strip above.
+        role: roleInRun(video, index, word.videos.length),
+      })),
     [word.videos, byId],
   )
 
@@ -70,12 +89,24 @@ export function WordVideos({ word }: { word: Word }) {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
+  /**
+   * A drag, from either place, said in the terms the store speaks.
+   *
+   * By id rather than by position because the strip above is drawn from the
+   * takes whose files this browser holds, and the second of those may be the
+   * third of the run — moving "the one I dropped it on" is the only reading that
+   * survives that.
+   */
+  const moveOnto = (activeId: string, overId: string) => {
+    const from = word.videos.findIndex((video) => video.id === activeId)
+    const to = word.videos.findIndex((video) => video.id === overId)
+    if (from >= 0 && to >= 0) moveVideo(word.id, from, to)
+  }
+
   const onDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
     if (!over || active.id === over.id) return
-    const from = word.videos.findIndex((video) => video.id === active.id)
-    const to = word.videos.findIndex((video) => video.id === over.id)
-    if (from >= 0 && to >= 0) moveVideo(word.id, from, to)
+    moveOnto(String(active.id), String(over.id))
   }
 
   /**
@@ -144,7 +175,7 @@ export function WordVideos({ word }: { word: Word }) {
       {/* Keyed on the word so moving to another one starts its run from the
           beginning, rather than resuming at whichever take the last word was
           parked on. */}
-      <WordSequencePlayer key={word.id} entries={playable} />
+      <WordSequencePlayer key={word.id} entries={playable} onMove={moveOnto} />
 
       {entries.length === 0 ? (
         <EmptyState icon="🎥" title="No videos for this word yet">
@@ -162,13 +193,14 @@ export function WordVideos({ word }: { word: Word }) {
             items={word.videos.map((video) => video.id)}
             strategy={verticalListSortingStrategy}
           >
-            <ol className="flex flex-col gap-2">
+            <ol aria-label="Videos in detail" className="flex flex-col gap-2">
               {entries.map((entry, index) => (
                 <VideoRow
                   key={entry.video.id}
                   wordId={word.id}
                   video={entry.video}
                   asset={entry.asset}
+                  role={entry.role}
                   fetching={entry.asset ? fetching.has(entry.asset.id) : false}
                   index={index}
                   count={entries.length}
@@ -186,6 +218,7 @@ function VideoRow({
   wordId,
   video,
   asset,
+  role,
   fetching,
   index,
   count,
@@ -194,6 +227,8 @@ function VideoRow({
   video: WordVideo
   /** Absent when this browser has never heard of the file at all. */
   asset: Asset | undefined
+  /** What it is labelled where it sits. Absent when it is labelled nothing. */
+  role: WordVideoRole | undefined
   /** True while its bytes are coming down from Drive. */
   fetching: boolean
   index: number
@@ -285,25 +320,30 @@ function VideoRow({
           </p>
         </div>
 
-        {/* Sized by the box around it rather than by a width on the control:
-            the shared `Select` is full-width by design, and a competing width
-            utility on it is a coin toss decided by the order Tailwind happens to
-            emit the two rules in. */}
+        {/* The label, which at the ends of a run is a statement and in the
+            middle is a switch: nothing here can make a take the intro except
+            putting it first, so the ends are read out rather than offered as a
+            choice that would only ever fight with the order. */}
         <div className="w-28 shrink-0">
-          <Select
-            value={video.role}
-            aria-label={`Label for ${name}`}
-            className="!py-1.5"
-            onChange={(event) =>
-              setVideoRole(wordId, video.id, event.target.value as WordVideoRole)
-            }
-          >
-            {ROLES.map((role) => (
-              <option key={role.id} value={role.id} title={role.hint}>
-                {role.label}
-              </option>
-            ))}
-          </Select>
+          {role === 'intro' || role === 'outro' ? (
+            <p
+              className="rounded-lg bg-surface-2 px-2 py-1.5 text-center text-xs font-medium"
+              title={roleHint(role)}
+            >
+              {roleLabel(role)}
+            </p>
+          ) : (
+            <Button
+              variant={role === 'word' ? 'secondary' : 'ghost'}
+              className="w-full !py-1.5 text-xs"
+              aria-pressed={role === 'word'}
+              aria-label={`Label ${name} as the word`}
+              title="The takes between the ends may carry this label or none."
+              onClick={() => setVideoRole(wordId, video.id, role === 'word' ? undefined : 'word')}
+            >
+              {roleLabel('word')}
+            </Button>
+          )}
         </div>
 
         {/* The keyboard's half of the drag, and the discoverable half: a drag
