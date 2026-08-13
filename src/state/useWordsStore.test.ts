@@ -89,10 +89,15 @@ function reset() {
     selectedWordId: null,
     loading: false,
     loaded: true,
+    past: [],
+    future: [],
   })
   // Everything below is about languages and words, so the tier they hang from
   // is made once here rather than in every test.
   useWordsStore.getState().addTier('1st tier')
+  // Which is scaffolding rather than something a test did, so it is not a step
+  // any of them can take back.
+  useWordsStore.setState({ past: [], future: [] })
 }
 
 beforeEach(reset)
@@ -228,6 +233,169 @@ describe('deleting', () => {
     expect(stored.words.size).toBe(0)
     expect(deletedAssets).toEqual(['asset_a'])
     expect(useWordsStore.getState().languages.map((entry) => entry.name)).toEqual(['French'])
+  })
+})
+
+/**
+ * Taking an edit back.
+ *
+ * A step is the whole shelf, so what these are really asking is whether the
+ * three lists, what is on screen and what is in storage all move together — a
+ * word that comes back on screen and not in IndexedDB is a word that goes away
+ * again on the next reload, which is worse than an undo that did nothing.
+ */
+describe('undo', () => {
+  /** A language with two words in it, the second of which is open. */
+  function twoWords(): { perro: string; gato: string } {
+    useWordsStore.getState().addLanguage('Spanish')
+    useWordsStore.getState().addWord('perro')
+    const perro = useWordsStore.getState().selectedWordId!
+    useWordsStore.getState().addWord('gato')
+    return { perro, gato: useWordsStore.getState().selectedWordId! }
+  }
+
+  function videosOf(wordId: string) {
+    return useWordsStore.getState().words.find((word) => word.id === wordId)!.videos
+  }
+
+  it('has nothing to take back on a page nobody has edited', () => {
+    expect(useWordsStore.getState().canUndo()).toBe(false)
+    expect(useWordsStore.getState().canRedo()).toBe(false)
+  })
+
+  it('takes back the word that was just added, and a redo puts it back', () => {
+    const { gato } = twoWords()
+
+    useWordsStore.getState().undo()
+
+    expect(useWordsStore.getState().words.map((word) => word.text)).toEqual(['perro'])
+    expect(stored.words.has(gato)).toBe(false)
+    // The word that is left, rather than the one that has gone.
+    expect(useWordsStore.getState().selectedWord()?.text).toBe('perro')
+
+    useWordsStore.getState().redo()
+
+    expect(useWordsStore.getState().words.map((word) => word.text)).toEqual(['perro', 'gato'])
+    expect(stored.words.get(gato)?.text).toBe('gato')
+  })
+
+  it('brings a deleted word back with its videos, in storage as well as on screen', async () => {
+    const { gato } = twoWords()
+    useWordsStore.getState().addVideo(gato, 'asset_a')
+    useWordsStore.getState().setTranscript(gato, videosOf(gato)[0]!.id, 'el gato')
+
+    await useWordsStore.getState().removeWord(gato)
+    useWordsStore.getState().undo()
+
+    expect(stored.words.get(gato)?.videos).toEqual([
+      { id: expect.any(String), assetId: 'asset_a', role: 'word', transcript: 'el gato' },
+    ])
+    expect(useWordsStore.getState().words.map((word) => word.text)).toEqual(['perro', 'gato'])
+    // The delete moved the page on to the word that was left, and the undo
+    // leaves it there: a step never takes you somewhere else while what you are
+    // looking at still exists, which is the rule the editor's undo follows too.
+    expect(useWordsStore.getState().selectedWord()?.text).toBe('perro')
+  })
+
+  it('walks a run of edits back one at a time', () => {
+    const { gato } = twoWords()
+    useWordsStore.getState().renameWord(gato, 'gato - cat')
+    useWordsStore.getState().addVideo(gato, 'asset_a')
+
+    useWordsStore.getState().undo()
+    expect(videosOf(gato)).toEqual([])
+
+    useWordsStore.getState().undo()
+    expect(useWordsStore.getState().words.find((word) => word.id === gato)?.text).toBe('gato')
+
+    useWordsStore.getState().undo()
+    expect(useWordsStore.getState().words.map((word) => word.text)).toEqual(['perro'])
+  })
+
+  it('records nothing for an edit that was refused', () => {
+    useWordsStore.getState().addLanguage('Spanish')
+    const spanish = useWordsStore.getState().selectedLanguageId!
+
+    // Each of these is a no-op with a reason: the name is already taken, the
+    // rename is to the name it has, and the word is not there to remove.
+    useWordsStore.getState().addLanguage('  spanish')
+    useWordsStore.getState().renameLanguage(spanish, 'Spanish')
+    void useWordsStore.getState().removeWord('word_nothing')
+
+    useWordsStore.getState().undo()
+
+    expect(useWordsStore.getState().languages).toEqual([])
+    expect(useWordsStore.getState().canUndo()).toBe(false)
+  })
+
+  it('folds a sentence typed into one transcript into one step', () => {
+    const { gato } = twoWords()
+    useWordsStore.getState().addVideo(gato, 'asset_a')
+    const videoId = videosOf(gato)[0]!.id
+
+    for (const typed of ['e', 'el', 'el g', 'el gato']) {
+      useWordsStore.getState().setTranscript(gato, videoId, typed)
+    }
+
+    useWordsStore.getState().undo()
+
+    // The whole sentence, rather than the last letter of it.
+    expect(videosOf(gato)[0]?.transcript).toBeUndefined()
+    // And the take itself is still there, so the step before it was the add.
+    expect(videosOf(gato)).toHaveLength(1)
+  })
+
+  it('starts a new step when the typing moves to another take', () => {
+    const { gato } = twoWords()
+    useWordsStore.getState().addVideo(gato, 'asset_a')
+    useWordsStore.getState().addVideo(gato, 'asset_b')
+    const [first, second] = videosOf(gato)
+
+    useWordsStore.getState().setTranscript(gato, first!.id, 'el gato')
+    useWordsStore.getState().setTranscript(gato, second!.id, 'the cat')
+
+    useWordsStore.getState().undo()
+
+    expect(videosOf(gato)[1]?.transcript).toBeUndefined()
+    expect(videosOf(gato)[0]?.transcript).toBe('el gato')
+  })
+
+  it('takes the typing back a sentence at a time after an undo, not a letter', () => {
+    const { gato } = twoWords()
+    useWordsStore.getState().addVideo(gato, 'asset_a')
+    const videoId = videosOf(gato)[0]!.id
+    useWordsStore.getState().setTranscript(gato, videoId, 'el gato')
+    useWordsStore.getState().undo()
+
+    // Typing again after an undo is a new thing to be able to take back, so the
+    // step it starts must not be folded into the one that was just walked out of.
+    useWordsStore.getState().setTranscript(gato, videoId, 'el perro')
+    useWordsStore.getState().undo()
+
+    expect(videosOf(gato)[0]?.transcript).toBeUndefined()
+    expect(videosOf(gato)).toHaveLength(1)
+  })
+
+  it('leaves the bytes alone, since a redo — or another word — still wants them', () => {
+    const { gato } = twoWords()
+    useAssetStore.setState({ assets: [asset('asset_a')], loading: false })
+    useWordsStore.getState().addVideo(gato, 'asset_a')
+
+    useWordsStore.getState().undo()
+
+    expect(deletedAssets).toEqual([])
+    expect(useAssetStore.getState().byId('asset_a')).toBeDefined()
+  })
+
+  it('throws away what an undo backed out of as soon as something else is done', () => {
+    const { gato } = twoWords()
+    useWordsStore.getState().undo()
+    expect(useWordsStore.getState().canRedo()).toBe(true)
+
+    useWordsStore.getState().addWord('gata')
+
+    expect(useWordsStore.getState().canRedo()).toBe(false)
+    expect(useWordsStore.getState().words.map((word) => word.id)).not.toContain(gato)
   })
 })
 

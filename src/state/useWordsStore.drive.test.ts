@@ -13,12 +13,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Asset } from '../lib/types'
+import type { DriveFile } from '../lib/google/drive'
 import type { ShelfDoc } from '../lib/words'
 import type { RawTier } from '../lib/wordsDrive'
 
 const findOrCreateFolder = vi.fn<(name: string, parentId: string) => Promise<string>>()
 const readShelf = vi.fn<() => Promise<RawTier[]>>(() => Promise.resolve([]))
 const trashFile = vi.fn<(fileId: string) => Promise<void>>(() => Promise.resolve())
+const untrashFile = vi.fn<(fileId: string) => Promise<void>>(() => Promise.resolve())
 const renameFile = vi.fn<(fileId: string, name: string) => Promise<void>>(() => Promise.resolve())
 
 const getShelf = vi.fn<() => Promise<{ doc: unknown; version: number } | null>>()
@@ -32,6 +34,7 @@ vi.mock('../lib/wordsDrive', () => ({
 
 vi.mock('../lib/google/drive', () => ({
   trashFile: (fileId: string) => trashFile(fileId),
+  untrashFile: (fileId: string) => untrashFile(fileId),
   renameFile: (fileId: string, name: string) => renameFile(fileId, name),
   moveFile: () => Promise.resolve(),
 }))
@@ -179,6 +182,8 @@ beforeEach(() => {
   getAssets.mockResolvedValue([])
   trashFile.mockReset()
   trashFile.mockResolvedValue()
+  untrashFile.mockReset()
+  untrashFile.mockResolvedValue()
   renameFile.mockReset()
   renameFile.mockResolvedValue()
 
@@ -194,6 +199,8 @@ beforeEach(() => {
     loaded: true,
     syncing: false,
     syncError: null,
+    past: [],
+    future: [],
   })
 })
 
@@ -242,6 +249,25 @@ describe('folders', () => {
     expect(findOrCreateFolder).toHaveBeenCalledWith('ESL', 'root_folder')
     expect(findOrCreateFolder).toHaveBeenCalledWith('German', 'folder_for_ESL')
     expect(findOrCreateFolder).toHaveBeenCalledWith('hund - dog', 'folder_for_German')
+  })
+
+  it('keeps a folder that landed after the step that had never heard of it', async () => {
+    // The step below is taken while the tier still has no folder — a folder is
+    // made a beat after the row that wanted it, and edits happen inside that
+    // beat all the time.
+    useWordsStore.getState().addTier('ESL')
+    useWordsStore.getState().addLanguage('German')
+    await vi.waitFor(() =>
+      expect(useWordsStore.getState().tiers[0]?.driveFolderId).toBe('folder_for_ESL'),
+    )
+
+    useWordsStore.getState().undo()
+
+    // Nothing on the stack ever changes a folder id, so an undo must not forget
+    // one: it is what the next rename, the next delete and the next upload all
+    // go by, and a shelf that lost it would quietly make a second folder.
+    expect(useWordsStore.getState().tiers[0]?.driveFolderId).toBe('folder_for_ESL')
+    expect(useWordsStore.getState().languages).toEqual([])
   })
 
   it('makes one folder when several uploads ask for it at once', async () => {
@@ -448,6 +474,47 @@ describe('reading the shelf off the account', () => {
     })
   })
 
+  /*
+   * An undo writes the shelf it restores back up, so a step taken before a read
+   * is a step that would send what the read brought in — a word another machine
+   * added — straight back off the account again.
+   */
+  it('ends what there is to take back when the read moved the shelf', async () => {
+    shelfWithGato()
+    useWordsStore.getState().addWord('perro')
+    expect(useWordsStore.getState().canUndo()).toBe(true)
+
+    getShelf.mockResolvedValue(
+      storedShelf([
+        {
+          id: 'word_chien',
+          languageId: 'lang_es',
+          text: 'chien',
+          createdAt: 0,
+          videos: [],
+        },
+      ]),
+    )
+    await useWordsStore.getState().syncShelf()
+
+    expect(useWordsStore.getState().words.map((word) => word.text)).toContain('chien')
+    expect(useWordsStore.getState().canUndo()).toBe(false)
+  })
+
+  it('leaves the stack alone when the read changed nothing', async () => {
+    shelfWithGato()
+    useWordsStore.getState().addWord('perro')
+    const { tiers, languages, words } = useWordsStore.getState()
+    getShelf.mockResolvedValue({ version: 4, doc: { version: 1, tiers, languages, words } })
+
+    await useWordsStore.getState().syncShelf()
+
+    // Being told what this browser already had is not somebody else's edit, and
+    // clearing the stack for it would mean a sync could quietly take away an
+    // undo somebody was about to press.
+    expect(useWordsStore.getState().canUndo()).toBe(true)
+  })
+
   /**
    * The catalogue loads on its own clock, from Root, and this runs off the back
    * of a network read that regularly gets there first. An id the catalogue has
@@ -524,6 +591,35 @@ describe('reading the shelf off the account', () => {
   })
 })
 
+describe('picking takes that are already in Drive', () => {
+  const picked = (id: string, name: string) =>
+    ({ id, name, mimeType: 'video/mp4', kind: 'video' }) as DriveFile
+
+  it('is one step, however many takes came back from the dialog', async () => {
+    shelfWithGato()
+
+    await useWordsStore
+      .getState()
+      .addDriveVideos('word_gato', [picked('file_1', 'a.mp4'), picked('file_2', 'b.mp4')])
+    expect(useWordsStore.getState().selectedWord()?.videos).toHaveLength(2)
+
+    useWordsStore.getState().undo()
+
+    // Six takes chosen in one dialog are one thing somebody did, so taking it
+    // back takes all of them rather than the last one.
+    expect(useWordsStore.getState().selectedWord()?.videos).toEqual([])
+    expect(useWordsStore.getState().canUndo()).toBe(false)
+  })
+
+  it('leaves nothing to take back when the pick added nothing', async () => {
+    shelfWithGato()
+
+    await useWordsStore.getState().addDriveVideos('word_gato', [])
+
+    expect(useWordsStore.getState().canUndo()).toBe(false)
+  })
+})
+
 describe('deleting', () => {
   it('trashes the file behind a take, so a read does not bring it back', async () => {
     shelfWithGato()
@@ -587,6 +683,66 @@ describe('deleting', () => {
     await useWordsStore.getState().removeWord('word_gato')
 
     expect(trashFile).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The half of an undo that is not this browser.
+ *
+ * A delete here puts a folder in somebody's Drive bin and clears the catalogue
+ * rows that say which file a take is, so a step that only put the rows back
+ * would restore a word on screen and nothing to play — the kind of half-restore
+ * nobody finds out about until they press play, or until a second machine reads
+ * the shelf and finds the files gone.
+ */
+describe('undoing a delete', () => {
+  it('takes a word’s folder back out of the bin', async () => {
+    shelfWithGato()
+
+    await useWordsStore.getState().removeWord('word_gato')
+    useWordsStore.getState().undo()
+
+    await vi.waitFor(() => expect(untrashFile).toHaveBeenCalledWith('folder_gato'))
+  })
+
+  it('asks only for the folder above, since what was inside it comes back with it', async () => {
+    shelfWithGato()
+
+    await useWordsStore.getState().removeTier('tier_1')
+    useWordsStore.getState().undo()
+
+    await vi.waitFor(() => expect(untrashFile).toHaveBeenCalledWith('folder_first'))
+    expect(untrashFile).toHaveBeenCalledTimes(1)
+    expect(useWordsStore.getState().words.map((word) => word.text)).toEqual(['gato'])
+  })
+
+  it('takes one take’s file back out, by the catalogue row the undo fetched again', async () => {
+    shelfWithGato()
+    useAssetStore.setState({ assets: [asset('asset_a', 'file_1')], loading: false })
+    useWordsStore.getState().addVideo('word_gato', 'asset_a')
+    const videoId = useWordsStore.getState().selectedWord()!.videos[0]!.id
+
+    await useWordsStore.getState().removeVideo('word_gato', videoId)
+    // The delete took the catalogue row with the bytes, and that row is the only
+    // place the Drive id is written down — so the account is where it comes back
+    // from, exactly as it does for a word opened on a second machine.
+    expect(useAssetStore.getState().byId('asset_a')).toBeUndefined()
+    getAssets.mockResolvedValue([{ id: 'asset_a', name: 'a.mp4', drive_file_id: 'file_1' }])
+
+    useWordsStore.getState().undo()
+
+    await vi.waitFor(() => expect(untrashFile).toHaveBeenCalledWith('file_1'))
+  })
+
+  it('reaches into nobody’s Drive when there is no connection to it', async () => {
+    connected = false
+    shelfWithGato()
+
+    await useWordsStore.getState().removeWord('word_gato')
+    useWordsStore.getState().undo()
+
+    await vi.waitFor(() => expect(useWordsStore.getState().words).toHaveLength(1))
+    expect(untrashFile).not.toHaveBeenCalled()
   })
 })
 

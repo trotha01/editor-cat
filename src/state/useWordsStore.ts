@@ -28,6 +28,12 @@
  * absent, and the page is the local one it was before. Nothing needs an account
  * either — signed out, or on a deployment with no Supabase, the shelf is this
  * browser's alone and every write above still happens.
+ *
+ * And every edit is a step somebody can take back, the same as the editor's. The
+ * three lists are one document here exactly as they are on the account, so a
+ * step is a picture of the whole shelf and an undo is putting one back — on
+ * screen, in IndexedDB, up to the account, and, for what a delete put in the
+ * bin, back out of it in Drive.
  */
 import { create } from 'zustand'
 import {
@@ -72,7 +78,7 @@ import {
   type WordVideoRole,
 } from '../lib/words'
 import { findOrCreateFolder, readShelf, type RawTier } from '../lib/wordsDrive'
-import { moveFile, renameFile, trashFile, type DriveFile } from '../lib/google/drive'
+import { moveFile, renameFile, trashFile, untrashFile, type DriveFile } from '../lib/google/drive'
 import { fromRow, getAssets } from '../lib/supabase/assets'
 import { isSupabaseConfigured } from '../lib/supabase/client'
 import { getShelf, putShelf } from '../lib/supabase/shelf'
@@ -102,6 +108,14 @@ interface WordsState {
   syncError: string | null
 
   /**
+   * Shelves the edits made here moved on from, most recent last, so `undo` and
+   * `redo` never disagree about which one comes back next.
+   */
+  past: Shelf[]
+  /** Shelves an `undo` stepped back out of, cleared by the next edit. */
+  future: Shelf[]
+
+  /**
    * Reads both stores, then folds in whatever the account holds. Does nothing on
    * a page that has already been opened.
    */
@@ -124,6 +138,13 @@ interface WordsState {
    * is the signal to carry on locally.
    */
   ensureWordFolder: (wordId: string) => Promise<string | null>
+
+  /** Steps the shelf back to what it was before the last edit, if there was one. */
+  undo: () => void
+  /** Steps it forward again to the edit an `undo` backed out of. */
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
 
   /** Adds a tier, or selects the one already under that name. */
   addTier: (name: string) => void
@@ -263,6 +284,25 @@ function assetIdsOf(words: readonly Word[]): string[] {
 function gone<T extends { id: string }>(before: readonly T[], after: readonly T[]): T[] {
   const kept = new Set(after.map((entry) => entry.id))
   return before.filter((entry) => !kept.has(entry.id))
+}
+
+/**
+ * Whether a merge moved anything at all.
+ *
+ * Asked of the settled lists, which keep the object that was already there for
+ * every row nothing happened to (see `settle`) — so this is object identity
+ * rather than a comparison, and a shelf that came back exactly as it went in
+ * answers no.
+ */
+function changed(before: Shelf, after: Shelf): boolean {
+  const same = <T>(next: readonly T[], previous: readonly T[]) =>
+    next.length === previous.length && next.every((entry, index) => entry === previous[index])
+
+  return !(
+    same(after.tiers, before.tiers) &&
+    same(after.languages, before.languages) &&
+    same(after.words, before.words)
+  )
 }
 
 /**
@@ -547,6 +587,11 @@ function applyRemote(remote: Shelf): void {
     languages,
     words,
     ...settledSelection(state, { tiers, languages, words }),
+    // An undo writes the shelf it restores back up to the account, so a stack
+    // taken from before a read is a stack that would send a word another machine
+    // has just added — or just deleted — the other way. Anything the account had
+    // a say in ends what there is to take back here.
+    ...(changed(before, { tiers, languages, words }) ? { past: [], future: [] } : {}),
   }))
 
   void Promise.all([
@@ -749,6 +794,195 @@ function settle<T extends { id: string }>(
   })
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Taking an edit back.
+ *
+ * A step is the whole shelf, the way a step in the editor is the whole project:
+ * the three lists are one document, and a step that is a picture of them cannot
+ * disagree with itself about what a delete took along with it.
+ *
+ * What makes this more than a list of snapshots is that a delete here reaches
+ * past this browser — bytes cleared, a folder in the Drive bin — so putting one
+ * back has to reach the same way. See `restoreShelf`.
+ * ---------------------------------------------------------------------------
+ */
+
+/** How many edits back `undo` can reach before the oldest ones fall off. */
+const MAX_HISTORY = 100
+
+/**
+ * What the step on top of the stack was for, when steps of that kind should not
+ * pile up.
+ *
+ * Typing a transcript is one thing somebody did and forty calls to
+ * `setTranscript`, so a step carrying the key of the one before it is folded
+ * into it and an undo takes the sentence back rather than the last letter. Any
+ * other edit — or an undo — clears it, because carrying on typing after either
+ * is a new thing to be able to take back.
+ */
+let lastStepKey: string | null = null
+
+/**
+ * Puts the shelf as it stands on the stack, in front of the edit about to change
+ * it.
+ *
+ * Called by each edit itself rather than by the persistence helpers, and always
+ * after whatever check would refuse it: a rename to a name a sibling already
+ * has, or an add that only selects what was there, are not steps to walk back
+ * through. The reads — a load, a sync, a folder id landing — deliberately do not
+ * come through here at all.
+ */
+function recordStep(key?: string): void {
+  if (key && key === lastStepKey) return
+  lastStepKey = key ?? null
+  useWordsStore.setState((state) => ({
+    past: [...state.past, lists()].slice(-MAX_HISTORY),
+    future: [],
+  }))
+}
+
+/**
+ * Carries across a step what the stack does not own: which folder in Drive a row
+ * is.
+ *
+ * A folder is made a beat after the row that wanted it (see `ensureTierFolder`),
+ * so a step taken inside that beat is a picture of a row that did not know its
+ * folder yet — and restoring it verbatim would forget a folder that exists,
+ * leaving the next rename and the next delete pointing at nothing and the next
+ * upload filed somewhere else. Nothing on the stack ever changes a folder id, so
+ * the one this browser knows now is always the right one.
+ */
+function withKnownFolders<T extends { id: string; driveFolderId?: string }>(
+  restored: readonly T[],
+  current: readonly T[],
+): T[] {
+  const folders = new Map(
+    current.flatMap((entry) =>
+      entry.driveFolderId ? [[entry.id, entry.driveFolderId] as const] : [],
+    ),
+  )
+  return restored.map((entry) => {
+    const folderId = folders.get(entry.id)
+    return !entry.driveFolderId && folderId ? { ...entry, driveFolderId: folderId } : entry
+  })
+}
+
+/**
+ * Puts a shelf from the stack back — on screen, in storage, on the account and
+ * in Drive.
+ *
+ * The settling is the same one a read from the account does, and for the same
+ * two reasons: rows that came back are written down and rows that went away are
+ * deleted, while anything the step did not touch keeps the object it already
+ * had, so nothing on screen re-renders for a step it was not in.
+ *
+ * What this deliberately does not do is take bytes away. A redo may want the
+ * take an undone add pointed at, and another word may be playing it either way;
+ * bytes nothing lists any more are what Settings clears.
+ */
+function restoreShelf(next: Shelf): void {
+  const before = lists()
+
+  const tiers = settle(withKnownFolders(next.tiers, before.tiers), before.tiers, storeTier)
+  const languages = settle(
+    withKnownFolders(next.languages, before.languages),
+    before.languages,
+    storeLanguage,
+  )
+  const words = settle(withKnownFolders(next.words, before.words), before.words, storeWord)
+
+  useWordsStore.setState((state) => ({
+    tiers,
+    languages,
+    words,
+    ...settledSelection(state, { tiers, languages, words }),
+  }))
+
+  // The shelf this restores is the shelf now, and the account is holding the one
+  // the step moved off.
+  markShelfDirty()
+
+  void Promise.all([
+    ...gone(before.words, words).map((word) => dbDeleteWord(word.id).catch(() => {})),
+    ...gone(before.languages, languages).map((entry) => dbDeleteLanguage(entry.id).catch(() => {})),
+    ...gone(before.tiers, tiers).map((entry) => dbDeleteTier(entry.id).catch(() => {})),
+  ])
+
+  // Both halves of what a delete took away outside the shelf, in this order: the
+  // catalogue rows come back first, and the files in Drive are asked for by the
+  // Drive ids those rows are the only place to read.
+  void (async () => {
+    if (canSync()) await hydrateShelfAssets(words).catch(() => {})
+    await untrashRestored(before, { tiers, languages, words })
+  })()
+}
+
+/** What a step has brought back: in the shelf being restored and not in the one being left. */
+function returned<T extends { id: string }>(before: readonly T[], after: readonly T[]): T[] {
+  return gone(after, before)
+}
+
+/**
+ * Takes back out of the Drive bin whatever a step has just put back on the
+ * shelf.
+ *
+ * Deleting on this page really does delete over there (see `trashInDrive`), so
+ * an undo that stopped at this browser would restore a word whose folder is in
+ * the bin: rows on screen, nothing to play, and a second machine that reads the
+ * shelf and finds the files gone.
+ *
+ * Only the topmost thing that came back is asked for, because trashing a folder
+ * took what was inside it along and untrashing it brings the same back. And
+ * whatever trashing is still in flight is waited for first — an undo pressed a
+ * moment after a delete would otherwise take a file out of the bin before the
+ * delete had finished putting it in.
+ */
+async function untrashRestored(before: Shelf, after: Shelf): Promise<void> {
+  if (!driveRoot()) return
+  await binWork
+
+  const tiers = returned(before.tiers, after.tiers)
+  const languages = returned(before.languages, after.languages)
+  const words = returned(before.words, after.words)
+
+  const backTiers = new Set(tiers.map((tier) => tier.id))
+  const backLanguages = new Set(languages.map((language) => language.id))
+  const backWords = new Set(words.map((word) => word.id))
+
+  await Promise.all([
+    ...tiers.map((tier) => untrashInDrive(tier.driveFolderId)),
+    ...languages
+      .filter((language) => !backTiers.has(language.tierId))
+      .map((language) => untrashInDrive(language.driveFolderId)),
+    ...words
+      .filter((word) => !backLanguages.has(word.languageId))
+      .map((word) => untrashInDrive(word.driveFolderId)),
+    // The takes that came back on their own, into a word that never went away.
+    // Anything inside a folder above came back when that folder did.
+    ...after.words
+      .filter((word) => !backWords.has(word.id))
+      .flatMap((word) => {
+        const kept = before.words.find((entry) => entry.id === word.id)
+        if (!kept) return []
+        const had = new Set(kept.videos.map((video) => video.id))
+        return word.videos
+          .filter((video) => !had.has(video.id))
+          .map((video) => untrashInDrive(driveFileIdOf(video.assetId)))
+      }),
+  ])
+}
+
+/**
+ * Puts a take on the end of a word's run without touching the stack, for the two
+ * callers that own their step themselves.
+ */
+function appendVideo(wordId: string, assetId: string): void {
+  useWordsStore.setState((state) => ({
+    words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
+  }))
+}
+
 export const useWordsStore = create<WordsState>((set, get) => ({
   tiers: [],
   languages: [],
@@ -760,6 +994,8 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   loaded: false,
   syncing: false,
   syncError: null,
+  past: [],
+  future: [],
 
   load: async () => {
     // Leaving the page and coming back to it should come back to what was open,
@@ -779,6 +1015,11 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         words,
         loading: false,
         loaded: true,
+        // What was read is where the page starts, so there is nothing behind it
+        // to step back to — and anything added while the read was in flight is
+        // about to be replaced by it.
+        past: [],
+        future: [],
         // Back to the word this browser had open, and to the first of each
         // column when it has none or what it had is gone — so a page that has
         // been used before opens on something rather than on three empty
@@ -854,6 +1095,31 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     })
   },
 
+  undo: () => {
+    const { past, future } = get()
+    const previous = past.at(-1)
+    if (!previous) return
+
+    set({ past: past.slice(0, -1), future: [lists(), ...future] })
+    restoreShelf(previous)
+    // Typing into a transcript after an undo is a new step, not more of the one
+    // that was just taken back.
+    lastStepKey = null
+  },
+
+  redo: () => {
+    const { past, future } = get()
+    const [next] = future
+    if (!next) return
+
+    set({ past: [...past, lists()], future: future.slice(1) })
+    restoreShelf(next)
+    lastStepKey = null
+  },
+
+  canUndo: () => get().past.length > 0,
+  canRedo: () => get().future.length > 0,
+
   addTier: (name) => {
     const trimmed = name.trim()
     if (!trimmed) return
@@ -864,6 +1130,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       return
     }
 
+    recordStep()
     const tier = newTier(trimmed)
     persistTier(tier)
     set((state) => ({
@@ -891,11 +1158,15 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   },
 
   removeTier: async (id) => {
+    const doomed = get().tiers.find((tier) => tier.id === id)
+    if (!doomed) return
+
+    recordStep()
     const doomedLanguages = get().languages.filter((language) => language.tierId === id)
     const doomedIds = new Set(doomedLanguages.map((language) => language.id))
     const doomedWords = get().words.filter((word) => doomedIds.has(word.languageId))
     const assetIds = assetIdsOf(doomedWords)
-    const folderId = get().tiers.find((tier) => tier.id === id)?.driveFolderId
+    const folderId = doomed.driveFolderId
 
     const tiers = get().tiers.filter((tier) => tier.id !== id)
     const languages = get().languages.filter((language) => language.tierId !== id)
@@ -931,6 +1202,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       return
     }
 
+    recordStep()
     const language = newLanguage(tierId, trimmed)
     persistLanguage(language)
     set((state) => ({
@@ -958,9 +1230,13 @@ export const useWordsStore = create<WordsState>((set, get) => ({
    * write, and a write that fails costs the save rather than the action.
    */
   removeLanguage: async (id) => {
+    const language = get().languages.find((entry) => entry.id === id)
+    if (!language) return
+
+    recordStep()
     const doomed = get().words.filter((word) => word.languageId === id)
     const assetIds = assetIdsOf(doomed)
-    const folderId = get().languages.find((language) => language.id === id)?.driveFolderId
+    const folderId = language.driveFolderId
 
     const languages = get().languages.filter((language) => language.id !== id)
     const words = get().words.filter((word) => word.languageId !== id)
@@ -993,6 +1269,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       return
     }
 
+    recordStep()
     const word = newWord(languageId, trimmed)
     persistWord(word)
     set((state) => ({ words: [...state.words, word], selectedWordId: word.id }))
@@ -1006,6 +1283,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const doomed = get().words.find((word) => word.id === id)
     if (!doomed) return
 
+    recordStep()
     const words = get().words.filter((word) => word.id !== id)
     set((state) => ({
       words,
@@ -1028,6 +1306,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const clash = findTier(get().tiers, trimmed)
     if (clash && clash.id !== id) return false
 
+    recordStep()
     set((state) => ({
       tiers: state.tiers.map((entry) => {
         if (entry.id !== id) return entry
@@ -1048,6 +1327,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const clash = findLanguage(get().languages, language.tierId, trimmed)
     if (clash && clash.id !== id) return false
 
+    recordStep()
     set((state) => ({
       languages: state.languages.map((entry) => {
         if (entry.id !== id) return entry
@@ -1068,6 +1348,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const clash = findWord(get().words, word.languageId, trimmed)
     if (clash && clash.id !== id) return false
 
+    recordStep()
     // Through `mapWord`, which also marks the sidecar for rewriting — the file
     // beside the videos names the word it is for, and a stale name in it would
     // be the one the next machine reads.
@@ -1076,6 +1357,12 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     return true
   },
 
+  /*
+   * Not a step, unlike everything above and below it: a take's name is the
+   * file's, kept in the catalogue and in Drive, and none of it is on the shelf a
+   * step is a picture of. An undo that appeared to take a rename back and left
+   * the file called the new thing would be the worst of both.
+   */
   renameVideo: (assetId, name) => {
     const trimmed = name.trim()
     const asset = useAssetStore.getState().byId(assetId)
@@ -1086,9 +1373,8 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   },
 
   addVideo: (wordId, assetId) => {
-    set((state) => ({
-      words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
-    }))
+    recordStep()
+    appendVideo(wordId, assetId)
   },
 
   addDriveVideos: async (wordId, files) => {
@@ -1098,6 +1384,13 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     // them, and this is where a word that has never been in Drive gets one.
     const folderId = await get().ensureWordFolder(wordId)
     const failed: string[] = []
+    /**
+     * One step for the whole pick, the way the editor makes "add all" one: six
+     * takes chosen in one dialog are one thing somebody did, however many of
+     * them turn out to be new. Recorded on the way to the first that is, so a
+     * pick that adds nothing leaves nothing to walk back through.
+     */
+    let recorded = false
 
     for (const file of files) {
       try {
@@ -1112,7 +1405,12 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         // Into the word's folder, so the tree still reads as the shelf it is
         // meant to be. See the note on this action.
         if (folderId) await moveFile(file.id, folderId)
-        get().addVideo(wordId, (known ?? (await catalogueVideo(file))).id)
+        const asset = known ?? (await catalogueVideo(file))
+        if (!recorded) {
+          recordStep()
+          recorded = true
+        }
+        appendVideo(wordId, asset.id)
       } catch (cause) {
         // One take that would not move leaves the rest of the pick alone. The
         // video is still in Drive and still theirs; what failed is filing it.
@@ -1124,18 +1422,23 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   },
 
   setVideoRole: (wordId, videoId, role) => {
+    recordStep()
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideoPatch(word, videoId, { role })),
     }))
   },
 
   setTranscript: (wordId, videoId, transcript) => {
+    // Keyed on the box being typed into, so a sentence is one step and moving to
+    // another take starts another. See `lastStepKey`.
+    recordStep(`transcript:${wordId}:${videoId}`)
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideoPatch(word, videoId, { transcript })),
     }))
   },
 
   moveVideo: (wordId, from, to) => {
+    recordStep()
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withMovedVideo(word, from, to)),
     }))
@@ -1145,13 +1448,16 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const assetId = get()
       .words.find((word) => word.id === wordId)
       ?.videos.find((video) => video.id === videoId)?.assetId
-    const driveFileId = assetId ? driveFileIdOf(assetId) : undefined
+    // Every take names an asset, so nothing found means nothing to remove — and
+    // nothing for an undo to walk back through either.
+    if (!assetId) return
+    const driveFileId = driveFileIdOf(assetId)
 
+    recordStep()
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withoutVideo(word, videoId)),
     }))
 
-    if (!assetId) return
     // Only once nothing else lists it, and for the same reason the bytes go:
     // another word playing the same take still wants the file it plays.
     if (isVideoAssetOrphaned(assetId, get().words)) await trashInDrive(driveFileId)
@@ -1185,17 +1491,6 @@ useWordsStore.subscribe((state, previous) => {
 })
 
 /**
- * Puts a folder or a file in the Drive bin, if there is one and Drive is there
- * to take it.
- *
- * Deleting here really does delete over there, which is a departure from the
- * rest of the app — the Library is emphatic that your Drive copy is left alone.
- * The difference is that this shelf *is* the folder tree: a take removed from a
- * word and left sitting in that word's folder would simply be found again on the
- * next read, and come back from the dead. Drive's own bin is what makes that
- * safe rather than final.
- */
-/**
  * Renames a folder or a file over in Drive, if there is one and Drive is there
  * to take it.
  *
@@ -1215,14 +1510,48 @@ async function renameInDrive(fileId: string | undefined, name: string): Promise<
   }
 }
 
+/**
+ * The trashing that has not landed yet.
+ *
+ * An undo takes back out of the bin what a delete put in it, and the two are a
+ * second apart at most — so the untrash waits for this rather than racing it,
+ * because a `trashed: true` that arrives after the `trashed: false` leaves the
+ * file in the bin and the shelf saying it is not.
+ */
+let binWork: Promise<unknown> = Promise.resolve()
+
+/**
+ * Puts a folder or a file in the Drive bin, if there is one and Drive is there
+ * to take it.
+ *
+ * Deleting here really does delete over there, which is a departure from the
+ * rest of the app — the Library is emphatic that your Drive copy is left alone.
+ * The difference is that this shelf *is* the folder tree: a take removed from a
+ * word and left sitting in that word's folder would simply be found again on the
+ * next read, and come back from the dead. Drive's own bin is what makes that
+ * safe rather than final — and what an undo reaches into.
+ */
 async function trashInDrive(fileId: string | undefined): Promise<void> {
   if (!fileId || !driveRoot()) return
-  try {
-    await trashFile(fileId)
-  } catch (cause) {
+  const work = trashFile(fileId).catch((cause: unknown) => {
     // Worth saying, and not worth undoing the delete over: what is left is an
     // item in Drive that this shelf no longer lists, which the next read will
     // offer back rather than lose.
+    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
+  })
+  binWork = Promise.all([binWork, work])
+  await work
+}
+
+/** Takes one back out again, for an undo. See `untrashRestored`. */
+async function untrashInDrive(fileId: string | undefined): Promise<void> {
+  if (!fileId || !driveRoot()) return
+  try {
+    await untrashFile(fileId)
+  } catch (cause) {
+    // The row is back on the shelf either way, which is what was asked for. What
+    // is left is a folder in the bin that this shelf lists — worth saying, since
+    // its takes will not play until it is restored from Drive itself.
     useWordsStore.setState({ syncError: toDisplayMessage(cause) })
   }
 }

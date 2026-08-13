@@ -23,6 +23,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { usePersistedState } from './hooks/usePersistedState'
+import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
 import { DriveUploads } from './components/DriveUploads'
 import { FeedbackBubble } from './components/FeedbackBubble'
 import { RenameField } from './components/RenameField'
@@ -56,8 +57,15 @@ export function WordsPage() {
   const loading = useWordsStore((state) => state.loading)
   const syncing = useWordsStore((state) => state.syncing)
   const syncError = useWordsStore((state) => state.syncError)
+  const canUndo = useWordsStore((state) => state.canUndo())
+  const canRedo = useWordsStore((state) => state.canRedo())
   const driveConnected = useDriveStore((state) => state.status === 'connected' && !!state.folder)
   const signedIn = useAuthStore((state) => state.account !== null)
+
+  // The shelf's stack rather than the open project's — this page never opened
+  // one — and the same two keys, because a word page is a document being edited
+  // as much as a timeline is.
+  useUndoRedoShortcut(useWordsStore)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   /**
@@ -149,6 +157,27 @@ export function WordsPage() {
             : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
         {busy ? <Spinner className="text-ink-dim" /> : null}
+
+        {/* The same pair as the editor's, in the same shape and the same corner
+            of the header: adding a language, dragging a run into order and
+            deleting a word are all edits to a document, and the page they are
+            made on should be able to take them back. */}
+        <Button
+          onClick={() => useWordsStore.getState().undo()}
+          disabled={!canUndo}
+          title="Undo (Ctrl/Cmd+Z)"
+          aria-label="Undo"
+        >
+          <span aria-hidden>↶</span>
+        </Button>
+        <Button
+          onClick={() => useWordsStore.getState().redo()}
+          disabled={!canRedo}
+          title="Redo (Ctrl/Cmd+Shift+Z)"
+          aria-label="Redo"
+        >
+          <span aria-hidden>↷</span>
+        </Button>
 
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
