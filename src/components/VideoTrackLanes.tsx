@@ -17,6 +17,8 @@ import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
 import { ClipMenu } from './ClipMenu'
 import { formatTime } from '../lib/timeline'
+import { clipEnd } from '../lib/lanes'
+import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
 import { MIN_OVERLAY_DURATION } from '../lib/videoTracks'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
@@ -43,8 +45,9 @@ interface DragState {
 }
 
 export function VideoTrackLanes({ zoom }: { zoom: number }) {
-  const tracks = useProjectStore((state) => videoTracksOf(state.project))
-  const clips = useProjectStore((state) => videoClipsOf(state.project))
+  const project = useProjectStore((state) => state.project)
+  const tracks = videoTracksOf(project)
+  const clips = videoClipsOf(project)
   const assets = useAssetStore((state) => state.assets)
   const assetsLoading = useAssetStore((state) => state.loading)
   const hydrating = useProjectsStore((state) => state.hydration !== null)
@@ -86,6 +89,9 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
     if (!drag.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return
     drag.moved = true
 
+    const clip = clips.find((entry) => entry.id === drag.clipId)
+    if (!clip) return
+
     // Any lane will take any layer — unlike the audio lanes, where the kind
     // decides the gain, a video lane's only property is how it stacks, and
     // moving between them is exactly how you restack a shot.
@@ -99,7 +105,14 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
       if (candidate) targetTrackId = candidate.id
     }
 
-    const ok = moveVideoClipTo(drag.clipId, drag.originStart + dx / zoom, targetTrackId)
+    // Snapped against every other clip's edges, the same as the audio lanes —
+    // lining a layer up with a cut or a caption by eye is not something a
+    // pointer can do to the pixel.
+    const rawStart = drag.originStart + dx / zoom
+    const points = withoutOwnEdges(snapPointsFor(project), clip.startTime, clipEnd(clip))
+    const start = snapClipStart(rawStart, clip.duration, points, SNAP_DISTANCE_PX / zoom)
+
+    const ok = moveVideoClipTo(drag.clipId, start, targetTrackId)
     setBlockedClipId(ok ? null : drag.clipId)
   }
 
