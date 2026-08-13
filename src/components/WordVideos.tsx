@@ -55,6 +55,7 @@ export function WordVideos({ word }: { word: Word }) {
   const moveVideo = useWordsStore((state) => state.moveVideo)
   const uploading = useWordsStore((state) => state.uploading)
   const uploadError = useWordsStore((state) => state.uploadError)
+  const setTranscript = useWordsStore((state) => state.setTranscript)
   const driveReady = useDriveStore((state) => state.status === 'connected' && state.folder !== null)
 
   /** This word's upload, when the batch that is running is this word's. */
@@ -235,7 +236,15 @@ export function WordVideos({ word }: { word: Word }) {
       {/* Keyed on the word so moving to another one starts its run from the
           beginning, rather than resuming at whichever take the last word was
           parked on. */}
-      <WordSequencePlayer key={word.id} entries={playable} onMove={moveOnto} />
+      <WordSequencePlayer
+        key={word.id}
+        entries={playable}
+        onMove={moveOnto}
+        // The same action the box on the take's own row calls, so the transcript
+        // under the picture and the one on the row are one thing edited twice
+        // over rather than two that have to be kept in step.
+        onTranscript={(videoId, transcript) => setTranscript(word.id, videoId, transcript)}
+      />
 
       {entries.length === 0 ? (
         <EmptyState icon="🎥" title="No videos for this word yet">

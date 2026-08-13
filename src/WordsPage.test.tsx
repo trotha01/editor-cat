@@ -96,6 +96,8 @@ beforeEach(() => {
     syncError: null,
     uploading: null,
     uploadError: null,
+    past: [],
+    future: [],
   })
   render(<WordsPage />)
 })
@@ -121,6 +123,66 @@ describe('starting from nothing', () => {
     expect(screen.getByText('1st tier · French')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Upload videos' })).toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The same two buttons the editor's header carries, doing the same job for the
+ * other document this app edits.
+ *
+ * Asserted from the page rather than only from the store because the pair is
+ * half state and half furniture: a button that works and is disabled is the same
+ * as no button at all, and the shelf is edited from three columns at once, so
+ * which of them a step came from must not matter.
+ */
+describe('undo and redo', () => {
+  it('has nothing to offer until something has been done', () => {
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+  })
+
+  it('takes the last edit back, and puts it back again', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    expect(within(column('Words')).queryByText('chien')).not.toBeInTheDocument()
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+
+    expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+  })
+
+  it('brings back a deleted language, with the words that went with it', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete French' }))
+    expect(within(column('Languages')).queryByText('French')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+    expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
+  })
+
+  it('answers Ctrl+Z, the same as the editor does', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+
+    expect(within(column('Languages')).queryByText('French')).not.toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true, shiftKey: true })
+
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
   })
 })
 
