@@ -1,11 +1,12 @@
 /**
  * Preferences and storage.
  *
- * There are no API keys here any more, and their absence is the feature: images,
- * video and captions run on the deployment's fal.ai account, and the voice
- * features on its ElevenLabs one. Nothing a visitor can type would be spent, so
- * nothing asks them to type it — a field that only ever produced a second way to
- * pay for the same thing is worse than no field.
+ * There are no API keys here any more: images, video and captions run on the
+ * deployment's fal.ai account, and the voice features on its ElevenLabs one.
+ * Nothing a visitor can type would be spent, so nothing asks them to type it —
+ * and nothing explains it either. Whose account pays is not a preference, and a
+ * settings screen that answers a question nobody asked is just noise on the way
+ * to the controls that are actually here.
  *
  * What is left is what genuinely belongs to this browser: which models the
  * prompt improver uses, the account, Drive, and the media stored on this device.
@@ -43,9 +44,6 @@ export function SettingsDialog({
   showProject?: boolean
 }) {
   const settings = useSettingsStore()
-  // Whether the voice features are set up here at all. Nothing a visitor can do
-  // changes it, so this only decides which half of one sentence is true.
-  const siteEleven = settings.siteElevenLabs
   const loadAssets = useAssetStore((state) => state.load)
 
   const [usage, setUsage] = useState<{ used: number; quota: number } | null>(null)
@@ -78,15 +76,6 @@ export function SettingsDialog({
         ) : null}
 
         {showProject ? <ProjectSettings /> : null}
-
-        <Callout tone="info" title="No keys needed">
-          Everything runs on this site&apos;s own accounts: images, video and captions on its fal.ai
-          account, and the voice features — changing a recorded voice, and fixing a clip that
-          mispronounces its line — on its ElevenLabs one.{' '}
-          {siteEleven
-            ? 'Nothing is asked of you and nothing is stored in this browser.'
-            : 'Voice generation is not set up on this deployment, so those two are unavailable until whoever runs it sets ELEVENLABS_API_KEY.'}
-        </Callout>
 
         <ModelPicker
           label="Video prompt-improvement model"
