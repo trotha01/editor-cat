@@ -236,6 +236,25 @@ describe('folders', () => {
     expect(findOrCreateFolder).toHaveBeenCalledWith('hund - dog', 'folder_for_German')
   })
 
+  it('keeps a folder that landed after the step that had never heard of it', async () => {
+    // The step below is taken while the tier still has no folder — a folder is
+    // made a beat after the row that wanted it, and edits happen inside that
+    // beat all the time.
+    useWordsStore.getState().addTier('ESL')
+    useWordsStore.getState().addLanguage('German')
+    await vi.waitFor(() =>
+      expect(useWordsStore.getState().tiers[0]?.driveFolderId).toBe('folder_for_ESL'),
+    )
+
+    useWordsStore.getState().undo()
+
+    // Nothing on the stack ever changes a folder id, so an undo must not forget
+    // one: it is what the next rename, the next delete and the next upload all
+    // go by, and a shelf that lost it would quietly make a second folder.
+    expect(useWordsStore.getState().tiers[0]?.driveFolderId).toBe('folder_for_ESL')
+    expect(useWordsStore.getState().languages).toEqual([])
+  })
+
   it('makes one folder when several uploads ask for it at once', async () => {
     useWordsStore.setState({
       tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0, driveFolderId: 'folder_first' }],
