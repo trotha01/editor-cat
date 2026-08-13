@@ -346,7 +346,7 @@ Type **`VERSION`** in the browser console on any deployed site:
 
 ```js
 VERSION
-// { commit: "91d8e38…", short: "91d8e38", branch: "staging",
+// { commit: "91d8e38…", short: "91d8e38", branch: "feat/oauth-refresh",
 //   context: "branch-deploy", builtAt: "2026-08-06T22:24:11.368Z" }
 ```
 
@@ -356,49 +356,6 @@ anything else runs, so it answers even on a screen that is refusing to let you
 in — which is usually when you need it. The `branch` is the field that matters
 most: a branch deploy running code older than the branch you fixed it on looks
 identical to a bug from the outside.
-
-### Which PR staging is showing
-
-On the staging site — and only there — a line sits in the bottom-left corner:
-
-```
-PR #412 · feat/oauth-refresh · a1b3c9d · 3m ago
-```
-
-`staging` is main plus every open PR, rebuilt from scratch whenever any of them
-moves, and all of it deploys to one fixed address because that address is
-registered with Google and a per-PR URL could not sign anyone in. So the site
-cannot introduce itself: `VERSION` there says `staging` and a merge commit
-written by a bot, which is true and useless. The badge names the pull request
-whose push caused the rebuild — not the only one in the build, since every open
-PR is in there, but the one that answers "is what I am looking at mine?".
-
-- **The commit** is the PR branch's own tip, so it compares directly against a
-  local `git rev-parse --short HEAD`.
-- **The age updates as you watch**, and past half an hour turns amber with a
-  `⚠`: rebuild plus deploy takes a few minutes, so anything older has been
-  superseded, or the mirror hit a conflict, or the deploy failed. Whichever it
-  is, it is not your build.
-- **Clicking it** opens the PR title, the author and the full build time.
-  **`PR #412`** opens the pull request in a new tab, and **`✕`** hides the badge
-  until the tab is closed.
-- It takes no clicks that were not aimed at it, so the editor underneath stays
-  usable right up to its edge.
-
-**Why it cannot appear anywhere else.** The workflow writes `staging-build.json`
-into the branch just before pushing it (`.github/workflows/staging.yml`), and
-Vite inlines it at build time next to `__BUILD__`. No other branch carries that
-file, so every other build inlines `null` and has nothing to draw. On top of
-that the badge compares `location.hostname` against the address Netlify gave the
-build, and stays away unless they match — so the same bundle served from a local
-`vite preview`, or promoted somewhere it should not have been, shows nothing.
-Production is excluded twice, and neither time by remembering to exclude it.
-
-That host comes from Netlify's `DEPLOY_PRIME_URL` (or `URL`), which needs no
-setup. Set **`STAGING_HOST`** in the site's environment variables only if
-staging is reached through a domain Netlify does not name — a bare host or a
-full URL, either will do. Get it wrong and the badge simply never appears;
-nothing else changes.
 
 ### Conflicts
 
