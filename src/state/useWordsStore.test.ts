@@ -16,7 +16,31 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAssetStore } from './useAssetStore'
 import { useWordsStore } from './useWordsStore'
 import type { Language, Tier, Word } from '../lib/words'
-import type { Asset } from '../lib/types'
+import type { Asset, AssetKind } from '../lib/types'
+
+/** Every file handed to `ingestBlob`, in the order the store handed them over. */
+const ingested: string[] = []
+
+// Only the one call is stood in for: reading a file's duration means letting a
+// browser decode it, which jsdom will not do — the promise would simply never
+// settle. The rest of the module is what the ids below are made with.
+vi.mock('../lib/media', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../lib/media')>()
+  return {
+    ...original,
+    ingestBlob: (blob: Blob, options: { kind: AssetKind; name: string }) => {
+      ingested.push(options.name)
+      return Promise.resolve({
+        id: original.newId('asset'),
+        kind: options.kind,
+        blobKey: original.newId('blob'),
+        mimeType: blob.type,
+        name: options.name,
+        createdAt: 0,
+      } satisfies Asset)
+    },
+  }
+})
 
 const stored = {
   tiers: new Map<string, Tier>(),
@@ -70,12 +94,18 @@ function asset(id: string): Asset {
   return { id, kind: 'video', blobKey: `blob_${id}`, mimeType: 'video/mp4', name: id, createdAt: 0 }
 }
 
+/** A file as a drop or a file input hands one over. */
+function file(name: string, type: string): File {
+  return new File(['take'], name, { type })
+}
+
 /** A store that has been read once, so `load` will not re-read over the test. */
 function reset() {
   stored.tiers.clear()
   stored.languages.clear()
   stored.words.clear()
   deletedAssets.length = 0
+  ingested.length = 0
   // The store writes the open selection down as the columns move, so without
   // this every test would open where the one before it left off.
   localStorage.clear()
@@ -89,6 +119,8 @@ function reset() {
     selectedWordId: null,
     loading: false,
     loaded: true,
+    uploading: null,
+    uploadError: null,
     past: [],
     future: [],
   })
@@ -202,6 +234,67 @@ describe('editing a word’s videos', () => {
     await useWordsStore.getState().removeVideo(wordId, first!.id)
 
     expect(deletedAssets).toEqual([])
+  })
+})
+
+/**
+ * Filing files from this machine, which is what both the upload button and a
+ * drop onto a word end up calling.
+ *
+ * The order is the part worth asserting: the run is what the page exists to put
+ * in order, so six takes handed over at once have to arrive in the order they
+ * were handed over rather than in whichever order six ingests finished.
+ */
+describe('adding videos from this machine', () => {
+  function openWord(): string {
+    useWordsStore.getState().addLanguage('Spanish')
+    useWordsStore.getState().addWord('gato')
+    return useWordsStore.getState().selectedWordId!
+  }
+
+  it('files them under the word, in the order they were handed over', async () => {
+    const wordId = openWord()
+
+    await useWordsStore
+      .getState()
+      .addLocalVideos(wordId, [
+        file('intro.mp4', 'video/mp4'),
+        file('gato.mp4', 'video/mp4'),
+        file('outro.mp4', 'video/mp4'),
+      ])
+
+    expect(ingested).toEqual(['intro.mp4', 'gato.mp4', 'outro.mp4'])
+    const names = stored.words
+      .get(wordId)!
+      .videos.map((video) => useAssetStore.getState().byId(video.assetId)?.name)
+    expect(names).toEqual(['intro.mp4', 'gato.mp4', 'outro.mp4'])
+    // Nothing is left claiming to be running, which is what the button and the
+    // drop zones read to know they are free again.
+    expect(useWordsStore.getState().uploading).toBeNull()
+  })
+
+  it('says which file was not a video and files the rest anyway', async () => {
+    const wordId = openWord()
+
+    await useWordsStore
+      .getState()
+      .addLocalVideos(wordId, [file('notes.pdf', 'application/pdf'), file('gato.mp4', 'video/mp4')])
+
+    expect(useWordsStore.getState().uploadError).toContain('notes.pdf')
+    expect(ingested).toEqual(['gato.mp4'])
+    expect(stored.words.get(wordId)!.videos).toHaveLength(1)
+  })
+
+  it('refuses a second batch while one is running', async () => {
+    const wordId = openWord()
+
+    // Not awaited: the first batch is still in flight, which is exactly the
+    // moment a second armful of files can be dropped on it.
+    const running = useWordsStore.getState().addLocalVideos(wordId, [file('a.mp4', 'video/mp4')])
+    await useWordsStore.getState().addLocalVideos(wordId, [file('b.mp4', 'video/mp4')])
+    await running
+
+    expect(ingested).toEqual(['a.mp4'])
   })
 })
 

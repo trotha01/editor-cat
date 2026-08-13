@@ -44,6 +44,25 @@ vi.mock('../lib/google/drive', async (importOriginal) => ({
   moveFile: (fileId: string, parentId: string) => moveFile(fileId, parentId),
 }))
 
+// Reading a file's duration means letting a browser decode it, which jsdom will
+// not do — the promise inside `ingestBlob` would simply never settle. Only that
+// one call is stood in for; the store around it is what is being tested.
+vi.mock('../lib/media', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../lib/media')>()
+  return {
+    ...original,
+    ingestBlob: (blob: Blob, options: { kind: Asset['kind']; name: string }) =>
+      Promise.resolve({
+        id: original.newId('asset'),
+        kind: options.kind,
+        blobKey: original.newId('blob'),
+        mimeType: blob.type,
+        name: options.name,
+        createdAt: 0,
+      } satisfies Asset),
+  }
+})
+
 vi.mock('../lib/db', () => ({
   putWord: () => Promise.resolve(),
   putLanguage: () => Promise.resolve(),
@@ -98,9 +117,13 @@ function mount(word: Word = WORD) {
     selectedWordId: word.id,
     loading: false,
     loaded: true,
+    uploading: null,
+    uploadError: null,
   })
   const view = render(<WordVideos word={word} />)
   return {
+    // The whole of a word's area, which is what files are dropped onto.
+    area: () => view.container.firstElementChild as HTMLElement,
     // The page re-renders from the store in the real app; here the prop is
     // passed in, so an edit has to be handed back the same way to be seen.
     rerender: () => view.rerender(<WordVideos word={current()} />),
@@ -418,6 +441,60 @@ describe('watching them together', () => {
 
     expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
+  })
+})
+
+/**
+ * Files dragged in off the desktop, which is the door somebody with a folder of
+ * takes open beside the browser reaches for first.
+ *
+ * Asserted from the events the browser really sends, because the guard is the
+ * interesting part: the page is already full of dnd-kit drags that reorder a
+ * run, and those must not light this up as somewhere to drop anything.
+ */
+describe('dropping files onto a word’s videos', () => {
+  /** A drag carrying files, as the browser describes one. */
+  const withFiles = (...files: File[]) => ({ dataTransfer: { files, types: ['Files'] } })
+
+  function video(name: string): File {
+    return new File(['take'], name, { type: 'video/mp4' })
+  }
+
+  it('files what was dropped under the word, on the end of the run', async () => {
+    const { area, rerender } = mount()
+
+    fireEvent.drop(area(), withFiles(video('cervelle.mp4')))
+    await waitFor(() => expect(current().videos).toHaveLength(3))
+
+    rerender()
+    expect(within(rows()[2]!).getByText('cervelle.mp4')).toBeInTheDocument()
+  })
+
+  it('says where they will land while the drag is over the area', () => {
+    const { area } = mount()
+
+    fireEvent.dragEnter(area(), withFiles(video('cervelle.mp4')))
+    expect(screen.getByText(/Drop videos to add them to/)).toBeInTheDocument()
+
+    fireEvent.dragLeave(area(), withFiles(video('cervelle.mp4')))
+    expect(screen.queryByText(/Drop videos to add them to/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a drag that is not carrying files, since a take is dragged the same way', () => {
+    const { area } = mount()
+
+    fireEvent.dragEnter(area(), { dataTransfer: { files: [], types: ['text/plain'] } })
+
+    expect(screen.queryByText(/Drop videos to add them to/)).not.toBeInTheDocument()
+  })
+
+  it('says so about a file that is not a video, and leaves the run alone', async () => {
+    const { area } = mount()
+
+    fireEvent.drop(area(), withFiles(new File(['x'], 'notes.pdf', { type: 'application/pdf' })))
+
+    expect(await screen.findByText(/"notes.pdf" is not a video/)).toBeInTheDocument()
+    expect(current().videos).toHaveLength(2)
   })
 })
 

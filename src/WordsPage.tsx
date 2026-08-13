@@ -22,6 +22,7 @@
  * word's takes back.
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useFileDrop } from './hooks/useFileDrop'
 import { usePersistedState } from './hooks/usePersistedState'
 import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
 import { DriveUploads } from './components/DriveUploads'
@@ -139,7 +140,21 @@ export function WordsPage() {
   const busy = loading || syncing
 
   return (
-    <div className="flex h-full flex-col bg-canvas text-ink">
+    <div
+      className="flex h-full flex-col bg-canvas text-ink"
+      // The page now takes files in two places, which means it is a page people
+      // will drop files *near*. A drop the browser is left to handle replaces
+      // the app with the video that was dropped, so everything that misses a
+      // target is swallowed here instead: `defaultPrevented` is how a drop that
+      // did land on one says so, since those handlers have already run by the
+      // time this one does.
+      onDragOver={(event) => {
+        if (event.defaultPrevented) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'none'
+      }}
+      onDrop={(event) => event.preventDefault()}
+    >
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-3">
         <span aria-hidden className="text-xl">
           🔤
@@ -309,6 +324,20 @@ export function WordsPage() {
               setSheet(null)
             }}
             onAdd={(value) => useWordsStore.getState().addWord(value)}
+            // Files dragged in off the desktop onto a word, which is the other
+            // half of what the video area takes and the reason only this column
+            // takes them: a tier is a folder of languages and a language a
+            // folder of words, but a word is the folder the takes go in.
+            //
+            // The word is opened as well as filed into, so what was just
+            // dropped — and anything that went wrong dropping it — is on screen
+            // beside the list rather than happening to a row you are not
+            // looking at.
+            onDropFiles={(id, files) => {
+              useWordsStore.getState().selectWord(id)
+              setSheet(null)
+              void useWordsStore.getState().addLocalVideos(id, files)
+            }}
             onRename={(id, name) => useWordsStore.getState().renameWord(id, name)}
             onDelete={(id) => {
               const doomed = wordList.find((entry) => entry.id === id)
@@ -561,6 +590,7 @@ function NavColumn({
   onAdd,
   onRename,
   onDelete,
+  onDropFiles,
   addLabel,
   placeholder,
   empty,
@@ -587,6 +617,8 @@ function NavColumn({
   onAdd: (value: string) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
+  /** Given only where a row is somewhere files can go. Without it, rows take none. */
+  onDropFiles?: (id: string, files: File[]) => void
   addLabel: string
   placeholder: string
   empty: string
@@ -678,67 +710,16 @@ function NavColumn({
                   />
                 </li>
               ) : (
-                <li key={item.id} className="group flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onSelect(item.id)}
-                    aria-current={selectedId === item.id}
-                    // Spelled out for the count, because "French (1)" read aloud
-                    // is "French one" — the brackets carry the meaning on screen
-                    // and say nothing out loud. A row with nothing in it keeps
-                    // its bare name, on screen and off.
-                    aria-label={
-                      item.count
-                        ? `${item.label}, ${item.count} ${countNoun}${item.count === 1 ? '' : 's'}`
-                        : undefined
-                    }
-                    className={`flex min-w-0 flex-1 items-baseline rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                      selectedId === item.id
-                        ? 'bg-accent text-accent-ink'
-                        : 'text-ink hover:bg-surface-2'
-                    }`}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                    {/* How much is filed under the row, dimmed: it is worth
-                        seeing which tiers are full and which word has no takes
-                        yet without opening them, but it is not what you are
-                        reading the column for, so it must not compete with the
-                        names. An empty row shows nothing rather than "(0)" —
-                        three columns of zeroes is exactly the distraction this
-                        is meant to avoid. It sits outside the truncated name so
-                        a long name's ellipsis never eats the count with it. */}
-                    {item.count ? (
-                      <span
-                        aria-hidden
-                        className={`ml-1.5 flex-shrink-0 text-xs ${
-                          selectedId === item.id ? 'text-accent-ink/75' : 'text-ink-dim'
-                        }`}
-                      >
-                        ({item.count})
-                      </span>
-                    ) : null}
-                  </button>
-                  {/* Out of the way until the row is pointed at or tabbed into:
-                    three columns of names are what this page is read from, and a
-                    pencil and a cross beside every one of them is a lot of
-                    furniture to read past. */}
-                  <Button
-                    variant="ghost"
-                    className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    onClick={() => setRenaming(item.id)}
-                    aria-label={`Rename ${item.label}`}
-                  >
-                    ✏️
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    onClick={() => onDelete(item.id)}
-                    aria-label={`Delete ${item.label}`}
-                  >
-                    ✕
-                  </Button>
-                </li>
+                <NavRow
+                  key={item.id}
+                  item={item}
+                  countNoun={countNoun}
+                  selected={selectedId === item.id}
+                  onSelect={() => onSelect(item.id)}
+                  onRename={() => setRenaming(item.id)}
+                  onDelete={() => onDelete(item.id)}
+                  onDropFiles={onDropFiles && ((files) => onDropFiles(item.id, files))}
+                />
               ),
             )}
           </ul>
@@ -775,5 +756,104 @@ function NavColumn({
         </form>
       </div>
     </section>
+  )
+}
+
+/**
+ * One name in one of the columns: the row you pick with, rename from and delete
+ * from — and, where the column says so, drop files onto.
+ *
+ * Its own component for the drop: a hook per row is what gives each one its own
+ * "a drag is over *me*", and there is nowhere to keep that in a list rendered
+ * inline.
+ */
+function NavRow({
+  item,
+  countNoun,
+  selected,
+  onSelect,
+  onRename,
+  onDelete,
+  onDropFiles,
+}: {
+  item: NavItem
+  /**
+   * What the row's count counts, singular — "language", "word", "video". Only
+   * a screen reader hears it: on screen the column above says what the list
+   * holds, so a bare "(9)" is enough, but read out on its own a number in
+   * brackets is nine of nothing.
+   */
+  countNoun: string
+  selected: boolean
+  onSelect: () => void
+  onRename: () => void
+  onDelete: () => void
+  /** Absent in the columns whose rows are not folders of takes. */
+  onDropFiles?: (files: File[]) => void
+}) {
+  const { over, dropProps } = useFileDrop((files) => onDropFiles?.(files), !onDropFiles)
+
+  return (
+    <li
+      className={`group flex items-center gap-1 rounded-lg ${over ? 'ring-2 ring-accent' : ''}`}
+      {...dropProps}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected}
+        // Spelled out for the count, because "French (1)" read aloud is
+        // "French one" — the brackets carry the meaning on screen and say
+        // nothing out loud. A row with nothing in it keeps its bare name, on
+        // screen and off.
+        aria-label={
+          item.count
+            ? `${item.label}, ${item.count} ${countNoun}${item.count === 1 ? '' : 's'}`
+            : undefined
+        }
+        className={`flex min-w-0 flex-1 items-baseline rounded-lg px-2 py-1.5 text-left text-sm transition ${
+          selected ? 'bg-accent text-accent-ink' : 'text-ink hover:bg-surface-2'
+        }`}
+      >
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+        {/* How much is filed under the row, dimmed: it is worth seeing which
+            tiers are full and which word has no takes yet without opening
+            them, but it is not what you are reading the column for, so it
+            must not compete with the names. An empty row shows nothing
+            rather than "(0)" — three columns of zeroes is exactly the
+            distraction this is meant to avoid. It sits outside the
+            truncated name so a long name's ellipsis never eats the count
+            with it. */}
+        {item.count ? (
+          <span
+            aria-hidden
+            className={`ml-1.5 flex-shrink-0 text-xs ${
+              selected ? 'text-accent-ink/75' : 'text-ink-dim'
+            }`}
+          >
+            ({item.count})
+          </span>
+        ) : null}
+      </button>
+      {/* Out of the way until the row is pointed at or tabbed into: three
+          columns of names are what this page is read from, and a pencil and a
+          cross beside every one of them is a lot of furniture to read past. */}
+      <Button
+        variant="ghost"
+        className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={onRename}
+        aria-label={`Rename ${item.label}`}
+      >
+        ✏️
+      </Button>
+      <Button
+        variant="ghost"
+        className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={onDelete}
+        aria-label={`Delete ${item.label}`}
+      >
+        ✕
+      </Button>
+    </li>
   )
 }

@@ -10,10 +10,29 @@
  * store, where the three columns are just three ids.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { WordsPage } from './WordsPage'
 import { useAssetStore } from './state/useAssetStore'
 import { useWordsStore } from './state/useWordsStore'
+import type { Asset } from './lib/types'
+
+// Reading a file's duration means letting a browser decode it, which jsdom will
+// not do — the promise inside `ingestBlob` would simply never settle.
+vi.mock('./lib/media', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./lib/media')>()
+  return {
+    ...original,
+    ingestBlob: (blob: Blob, options: { kind: Asset['kind']; name: string }) =>
+      Promise.resolve({
+        id: original.newId('asset'),
+        kind: options.kind,
+        blobKey: original.newId('blob'),
+        mimeType: blob.type,
+        name: options.name,
+        createdAt: 0,
+      } satisfies Asset),
+  }
+})
 
 vi.mock('./lib/db', () => ({
   putTier: () => Promise.resolve(),
@@ -75,6 +94,8 @@ beforeEach(() => {
     loaded: true,
     syncing: false,
     syncError: null,
+    uploading: null,
+    uploadError: null,
     past: [],
     future: [],
   })
@@ -538,5 +559,59 @@ describe('the columns to the right of a tier', () => {
     // By exact name: every row also carries a "Delete chien" button, which a
     // looser match would count as a second chien.
     expect(within(column('Words')).getAllByRole('button', { name: 'chien' })).toHaveLength(1)
+  })
+})
+
+/**
+ * Files dragged in off the desktop and dropped on a word.
+ *
+ * The other half of what the video area takes, and the only column that takes
+ * anything: a tier is a folder of languages and a language a folder of words,
+ * but a word is the folder the takes themselves go in.
+ */
+describe('dropping files onto a word', () => {
+  /** A drag carrying one take, as the browser describes one. */
+  const withTake = () => ({
+    dataTransfer: {
+      files: [new File(['take'], 'chien.mp4', { type: 'video/mp4' })],
+      types: ['Files'],
+    },
+  })
+
+  /** The row a name sits in, which is what the drop lands on. */
+  function row(name: string): HTMLElement {
+    return within(column('Words')).getByRole('button', { name }).closest('li')!
+  }
+
+  beforeEach(() => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+    // Added last, so it is the word that is open — the drop below is aimed at
+    // the other one, which is the case worth asserting.
+    add('Add a word', 'cerville - brain')
+  })
+
+  it('files the take under the word it was dropped on, and opens that word', async () => {
+    fireEvent.drop(row('chien'), withTake())
+
+    expect(await screen.findByRole('heading', { name: 'chien' })).toBeInTheDocument()
+    await waitFor(() => {
+      const chien = useWordsStore.getState().words.find((word) => word.text === 'chien')
+      expect(chien?.videos).toHaveLength(1)
+    })
+    // The other word is where it was: a drop files takes, it does not move them.
+    const other = useWordsStore.getState().words.find((word) => word.text === 'cerville - brain')
+    expect(other?.videos).toEqual([])
+  })
+
+  it('closes the list the narrow layout had open, the way picking a word does', () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Word: cerville - brain' }))
+    fireEvent.drop(row('chien'), withTake())
+
+    expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
   })
 })
