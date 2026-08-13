@@ -45,11 +45,41 @@ export const COUNTDOWN_SPEC: CountdownSpec = {
   sampleRate: 48000,
 }
 
+/**
+ * One beep, and no silence after it.
+ *
+ * A different job from the count-in above, which is why it is a different
+ * length rather than the same clip with two beeps taken out. A count-in is
+ * played *into* — its tail is the mark — whereas this marks a moment that has
+ * already been chosen for it, so what it sounds against is its left edge and a
+ * tail would only be room for it to collide with the next one.
+ *
+ * `interval` carries the whole length when there is a single beep, so setting
+ * it to the beep's own length is what makes the clip stop where the sound does.
+ */
+export const BEEP_SPEC: CountdownSpec = {
+  ...COUNTDOWN_SPEC,
+  beeps: 1,
+  interval: COUNTDOWN_SPEC.beepSeconds,
+}
+
 /** What the generated asset is called in the library. */
 export const COUNTDOWN_ASSET_NAME = '3-beep countdown'
 
+/** And the single beep, kept apart so the two are never mistaken for each other. */
+export const BEEP_ASSET_NAME = '1-beep mark'
+
 /** What the clip is called on the timeline. */
 export const COUNTDOWN_LABEL = 'Countdown'
+
+/**
+ * What an auto-placed beep is called on the timeline.
+ *
+ * Load-bearing, not decoration: it is how a second run finds the beeps the last
+ * one laid, so the marks can be redone after a recaption instead of doubling
+ * up. See `addCountInBeeps`.
+ */
+export const BEEP_LABEL = 'Beep'
 
 export const WAV_MIME = 'audio/wav'
 
