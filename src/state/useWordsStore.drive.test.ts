@@ -1,37 +1,66 @@
 /**
- * The half of the word pages that is a tree of folders in somebody's Drive.
+ * The two halves of the word pages that are not this browser: the shelf on the
+ * account, and the tree of folders in somebody's Drive.
  *
- * Every claim here is one that only breaks somewhere expensive to find out —
- * on a second machine, or a week later. A language whose folder is never made
- * puts its videos loose in the media folder. Two uploads racing to make the same
+ * Every claim here is one that only breaks somewhere expensive to find out — on
+ * a second machine, or a week later. A language whose folder is never made puts
+ * its videos loose in the media folder. Two uploads racing to make the same
  * folder make two, and the shelf quietly forks. A delete that stops at this
  * browser is undone by the next read, which is a take coming back from the dead.
- * And a sidecar that is not written is an order and a set of labels that never
- * leave this machine.
+ * A shelf that is not written up is a morning's work that never leaves this
+ * machine — and a shelf that is written up too eagerly is two tabs writing at
+ * each other.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Asset } from '../lib/types'
-import type { WordSidecar } from '../lib/words'
+import type { ShelfDoc } from '../lib/words'
 import type { RawTier } from '../lib/wordsDrive'
 
 const findOrCreateFolder = vi.fn<(name: string, parentId: string) => Promise<string>>()
 const readShelf = vi.fn<() => Promise<RawTier[]>>(() => Promise.resolve([]))
-const writeSidecar = vi.fn<(folderId: string, sidecar: WordSidecar) => Promise<void>>(() =>
-  Promise.resolve(),
-)
 const trashFile = vi.fn<(fileId: string) => Promise<void>>(() => Promise.resolve())
 const renameFile = vi.fn<(fileId: string, name: string) => Promise<void>>(() => Promise.resolve())
+
+const getShelf = vi.fn<() => Promise<{ doc: unknown; version: number } | null>>()
+const putShelf = vi.fn<(doc: unknown, expected: number | null) => Promise<number | null>>()
+const getAssets = vi.fn<(ids: string[]) => Promise<Record<string, unknown>[]>>()
 
 vi.mock('../lib/wordsDrive', () => ({
   findOrCreateFolder: (name: string, parentId: string) => findOrCreateFolder(name, parentId),
   readShelf: () => readShelf(),
-  writeSidecar: (folderId: string, sidecar: WordSidecar) => writeSidecar(folderId, sidecar),
 }))
 
 vi.mock('../lib/google/drive', () => ({
   trashFile: (fileId: string) => trashFile(fileId),
   renameFile: (fileId: string, name: string) => renameFile(fileId, name),
+  moveFile: () => Promise.resolve(),
 }))
+
+vi.mock('../lib/supabase/shelf', () => ({
+  getShelf: () => getShelf(),
+  putShelf: (doc: unknown, expected: number | null) => putShelf(doc, expected),
+}))
+
+vi.mock('../lib/supabase/assets', () => ({
+  getAssets: (ids: string[]) => getAssets(ids),
+  fromRow: (row: { id: string; name: string; drive_file_id: string | null }, blobKey: string) => ({
+    id: row.id,
+    kind: 'video',
+    blobKey,
+    mimeType: 'video/mp4',
+    name: row.name,
+    createdAt: 0,
+    ...(row.drive_file_id ? { driveFileId: row.drive_file_id } : {}),
+  }),
+}))
+
+vi.mock('../lib/sync/assetSync', () => ({ recordAsset: () => Promise.resolve() }))
+
+/** Whether there is an account to keep the shelf on, which is the other switch. */
+let signedIn = true
+
+vi.mock('../lib/supabase/client', () => ({ isSupabaseConfigured: () => true }))
+vi.mock('./useAuthStore', () => ({ isSignedIn: () => signedIn }))
 
 /** Whether there is a Drive to link to at all, which every call here starts from. */
 let connected = true
@@ -120,13 +149,19 @@ function shelfWithGato() {
 
 beforeEach(() => {
   connected = true
+  signedIn = true
   stored.clear()
+  localStorage.clear()
   findOrCreateFolder.mockReset()
   findOrCreateFolder.mockImplementation((name) => Promise.resolve(`folder_for_${name}`))
   readShelf.mockReset()
   readShelf.mockResolvedValue([])
-  writeSidecar.mockReset()
-  writeSidecar.mockResolvedValue()
+  getShelf.mockReset()
+  getShelf.mockResolvedValue(null)
+  putShelf.mockReset()
+  putShelf.mockResolvedValue(2)
+  getAssets.mockReset()
+  getAssets.mockResolvedValue([])
   trashFile.mockReset()
   trashFile.mockResolvedValue()
   renameFile.mockReset()
@@ -232,8 +267,8 @@ describe('folders', () => {
   })
 })
 
-describe('reading the shelf out of Drive', () => {
-  it('brings in the languages, words and takes, and catalogues the files', async () => {
+describe('the first read of an account with no shelf', () => {
+  it('builds one out of the folders in Drive, and writes it up', async () => {
     readShelf.mockResolvedValue([
       {
         folderId: 'folder_first',
@@ -259,12 +294,14 @@ describe('reading the shelf out of Drive', () => {
       },
     ])
 
-    await useWordsStore.getState().syncFromDrive()
+    await useWordsStore.getState().syncShelf()
 
     const state = useWordsStore.getState()
     expect(state.tiers.map((entry) => entry.name)).toEqual(['1st tier'])
     expect(state.languages.map((entry) => entry.name)).toEqual(['Spanish'])
     expect(state.words[0]).toMatchObject({ text: 'gato', driveFolderId: 'folder_gato' })
+    // The old file beside the videos is still read, once, for exactly this: the
+    // order and the labels of somebody who was using the page before it moved.
     expect(state.words[0]?.videos[0]?.role).toBe('intro')
 
     // The file is in the catalogue, pointing at Drive and holding no bytes:
@@ -274,37 +311,107 @@ describe('reading the shelf out of Drive', () => {
 
     // And it opens on what just arrived rather than on an empty pair of columns.
     expect(state.selectedWordId).toBe(state.words[0]?.id)
+
+    // The migration is the write: an insert, since there is no row to guard.
+    await vi.waitFor(() => expect(putShelf).toHaveBeenCalled(), { timeout: 4000 })
+    const [doc, expected] = putShelf.mock.calls[0] ?? []
+    expect(expected).toBeNull()
+    expect((doc as ShelfDoc).words[0]?.text).toBe('gato')
+  })
+
+  it('writes up the shelf this browser already has rather than reading Drive at all', async () => {
+    shelfWithGato()
+
+    await useWordsStore.getState().syncShelf()
+
+    expect(readShelf).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(putShelf).toHaveBeenCalled(), { timeout: 4000 })
+    expect((putShelf.mock.calls[0]?.[0] as ShelfDoc).words[0]?.text).toBe('gato')
+  })
+})
+
+describe('reading the shelf off the account', () => {
+  /** A stored shelf with one tier, one language and one word in it. */
+  const storedShelf = (words: unknown[], version = 4) => ({
+    version,
+    doc: {
+      version: 1,
+      tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0, driveFolderId: 'folder_first' }],
+      languages: [{ id: 'lang_es', tierId: 'tier_1', name: 'Spanish', createdAt: 0 }],
+      words,
+    },
   })
 
   it('takes away a word deleted elsewhere, and the bytes it leaves stranded', async () => {
     shelfWithGato()
+    // This browser has agreed with the account before, which is what makes the
+    // word's absence up there a deletion rather than something never sent.
+    localStorage.setItem('editor-cat.words.syncedAt.v1', '1000')
     useAssetStore.setState({ assets: [asset('asset_a', 'file_1')], loading: false })
     useWordsStore.getState().addVideo('word_gato', 'asset_a')
-    // Drive has nothing under the root any more: the word was deleted from
-    // another machine, which trashed its folder.
-    readShelf.mockResolvedValue([])
+    getShelf.mockResolvedValue(storedShelf([]))
 
-    await useWordsStore.getState().syncFromDrive()
+    await useWordsStore.getState().syncShelf()
 
     expect(useWordsStore.getState().words).toEqual([])
     expect(useAssetStore.getState().byId('asset_a')).toBeUndefined()
   })
 
-  it('says why when Drive cannot be read, and keeps the shelf that is on screen', async () => {
+  it('keeps a word added on this machine since the last write', async () => {
     shelfWithGato()
-    readShelf.mockRejectedValue(new Error('Google Drive is having a moment.'))
+    // The last agreement with the account was before this word existed, which is
+    // what tells it apart from one the account has deliberately dropped.
+    localStorage.setItem('editor-cat.words.syncedAt.v1', '1000')
+    useWordsStore.setState((state) => ({
+      words: state.words.map((word) => ({ ...word, createdAt: 2000 })),
+    }))
+    getShelf.mockResolvedValue(storedShelf([]))
 
-    await useWordsStore.getState().syncFromDrive()
+    await useWordsStore.getState().syncShelf()
 
-    expect(useWordsStore.getState().syncError).toContain('Google Drive')
+    expect(useWordsStore.getState().words.map((word) => word.text)).toEqual(['gato'])
+  })
+
+  it('catalogues a take it has never held, so the run is more than a row of blanks', async () => {
+    getShelf.mockResolvedValue(
+      storedShelf([
+        {
+          id: 'word_gato',
+          languageId: 'lang_es',
+          text: 'gato',
+          createdAt: 0,
+          videos: [{ id: 'v1', assetId: 'asset_far', role: 'word' }],
+        },
+      ]),
+    )
+    getAssets.mockResolvedValue([{ id: 'asset_far', name: 'gato.mp4', drive_file_id: 'file_9' }])
+
+    await useWordsStore.getState().syncShelf()
+
+    expect(getAssets).toHaveBeenCalledWith(['asset_far'])
+    expect(useAssetStore.getState().byId('asset_far')).toMatchObject({
+      name: 'gato.mp4',
+      driveFileId: 'file_9',
+    })
+  })
+
+  it('says why when the account cannot be read, and keeps the shelf that is on screen', async () => {
+    shelfWithGato()
+    getShelf.mockRejectedValue(new Error('Supabase is having a moment.'))
+
+    await useWordsStore.getState().syncShelf()
+
+    expect(useWordsStore.getState().syncError).toContain('Supabase')
     expect(useWordsStore.getState().words).toHaveLength(1)
     expect(useWordsStore.getState().syncing).toBe(false)
   })
 
-  it('does nothing at all with no Drive connected', async () => {
-    connected = false
-    await useWordsStore.getState().syncFromDrive()
+  it('does nothing at all with nobody signed in', async () => {
+    signedIn = false
 
+    await useWordsStore.getState().syncShelf()
+
+    expect(getShelf).not.toHaveBeenCalled()
     expect(readShelf).not.toHaveBeenCalled()
   })
 })
@@ -437,7 +544,7 @@ describe('renaming', () => {
   })
 })
 
-describe('the file beside the videos', () => {
+describe('writing the shelf up', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -454,47 +561,58 @@ describe('the file beside the videos', () => {
     store.setVideoRole('word_gato', videoId, 'intro')
     store.setTranscript('word_gato', videoId, 'Ready?')
 
-    expect(writeSidecar).not.toHaveBeenCalled()
+    expect(putShelf).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(2000)
 
-    expect(writeSidecar).toHaveBeenCalledTimes(1)
-    expect(writeSidecar).toHaveBeenCalledWith('folder_gato', {
-      version: 1,
-      word: 'gato',
-      videos: [{ driveFileId: 'file_1', role: 'intro', transcript: 'Ready?' }],
-    })
+    expect(putShelf).toHaveBeenCalledTimes(1)
+    expect((putShelf.mock.calls[0]?.[0] as ShelfDoc).words[0]?.videos).toEqual([
+      { id: videoId, assetId: 'asset_a', role: 'intro', transcript: 'Ready?' },
+    ])
 
     vi.useRealTimers()
   })
 
-  it('is written again when an upload finishes and the take finally has a file', async () => {
+  it('takes what is up there and writes again when somebody got in first', async () => {
     vi.useRealTimers()
     shelfWithGato()
-    // Ingested but not yet uploaded: nothing in Drive to name it by, so the
-    // first write cannot mention it.
-    useAssetStore.setState({ assets: [asset('asset_a')], loading: false })
-    // `load` is what starts watching for uploads finishing.
-    await useWordsStore.getState().load()
+    // Read once so this session has a version, then have that version go stale.
+    getShelf.mockResolvedValue({
+      version: 4,
+      doc: { version: 1, tiers: [], languages: [], words: [] },
+    })
+    await useWordsStore.getState().syncShelf()
+    getShelf.mockResolvedValue({
+      version: 9,
+      doc: {
+        version: 1,
+        tiers: [{ id: 'tier_2', name: 'ESL', createdAt: 0 }],
+        languages: [],
+        words: [],
+      },
+    })
+    putShelf.mockResolvedValueOnce(null).mockResolvedValueOnce(10)
     vi.useFakeTimers()
 
-    useWordsStore.getState().addVideo('word_gato', 'asset_a')
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(writeSidecar).toHaveBeenLastCalledWith(
-      'folder_gato',
-      expect.objectContaining({ videos: [] }),
-    )
-
-    // The upload lands, which is the asset gaining a Drive id.
-    useAssetStore.setState({ assets: [asset('asset_a', 'file_1')] })
+    useWordsStore.getState().addTier('Classical')
     await vi.advanceTimersByTimeAsync(2000)
 
-    expect(writeSidecar).toHaveBeenLastCalledWith('folder_gato', {
-      version: 1,
-      word: 'gato',
-      videos: [{ driveFileId: 'file_1', role: 'word' }],
-    })
+    // Their tier is on the shelf now, and so is the one added here, and the
+    // second write is guarded by *their* version rather than our stale one.
+    expect(useWordsStore.getState().tiers.map((entry) => entry.name)).toEqual(['ESL', 'Classical'])
+    expect(putShelf).toHaveBeenLastCalledWith(expect.anything(), 9)
 
+    vi.useRealTimers()
+  })
+
+  it('writes nothing with nobody signed in', async () => {
+    signedIn = false
+    shelfWithGato()
+
+    useWordsStore.getState().addWord('perro')
+    await vi.advanceTimersByTimeAsync(2000)
+
+    expect(putShelf).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
 })
