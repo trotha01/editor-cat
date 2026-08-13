@@ -83,6 +83,7 @@ vi.mock('../lib/db', () => ({
     return Promise.resolve()
   },
   putAsset: () => Promise.resolve(),
+  getAsset: () => Promise.resolve(undefined),
   getBlob: () => Promise.resolve(undefined),
   listAssets: () => Promise.resolve([]),
   saveProject: () => Promise.resolve(),
