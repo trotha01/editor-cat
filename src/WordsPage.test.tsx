@@ -297,6 +297,16 @@ describe('the count beside a name', () => {
     expect(within(column('Tiers')).queryByText('(0)')).not.toBeInTheDocument()
     expect(within(column('Tiers')).getByRole('button', { name: '1st tier' })).toBeInTheDocument()
   })
+
+  // The name is what truncates with an ellipsis when the row is too narrow for
+  // it — the count sits outside that truncated span, so a long name never
+  // pushes it off the row or swallows it into the "...".
+  it('keeps showing the count beside a name too long for the row', () => {
+    add('Add a tier', 'A first tier with a name so long it will not fit in the column width')
+    add('Add a language', 'French')
+
+    expect(within(column('Tiers')).getByText('(1)')).toBeInTheDocument()
+  })
 })
 
 describe('the columns to the right of a tier', () => {

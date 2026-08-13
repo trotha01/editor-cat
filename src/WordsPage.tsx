@@ -575,24 +575,25 @@ function NavColumn({
                         ? `${item.label}, ${item.count} ${countNoun}${item.count === 1 ? '' : 's'}`
                         : undefined
                     }
-                    className={`min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                    className={`flex min-w-0 flex-1 items-baseline rounded-lg px-2 py-1.5 text-left text-sm transition ${
                       selectedId === item.id
                         ? 'bg-accent text-accent-ink'
                         : 'text-ink hover:bg-surface-2'
                     }`}
                   >
-                    {item.label}
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
                     {/* How much is filed under the row, dimmed: it is worth
                         seeing which tiers are full and which word has no takes
                         yet without opening them, but it is not what you are
                         reading the column for, so it must not compete with the
                         names. An empty row shows nothing rather than "(0)" —
                         three columns of zeroes is exactly the distraction this
-                        is meant to avoid. */}
+                        is meant to avoid. It sits outside the truncated name so
+                        a long name's ellipsis never eats the count with it. */}
                     {item.count ? (
                       <span
                         aria-hidden
-                        className={`ml-1.5 text-xs ${
+                        className={`ml-1.5 flex-shrink-0 text-xs ${
                           selectedId === item.id ? 'text-accent-ink/75' : 'text-ink-dim'
                         }`}
                       >
