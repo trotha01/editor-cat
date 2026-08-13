@@ -136,6 +136,94 @@ describe('collapsing a column', () => {
   })
 })
 
+/**
+ * The strip of buttons the narrow layout puts along the bottom of the window.
+ *
+ * Which list is open is CSS — jsdom applies none of it — so what is asserted is
+ * the part that is not: each button says what is chosen at its level, and
+ * `aria-expanded` says which list it opened. Both are also what a screen reader
+ * has to go on, so testing them is not a proxy for the layout so much as the
+ * other half of it.
+ */
+describe('the picker strip', () => {
+  it('says what is chosen at each level, and follows the selection', () => {
+    expect(screen.getByRole('button', { name: 'Tier: None chosen' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Language: None chosen' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Word: None chosen' })).toBeInTheDocument()
+
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+
+    expect(screen.getByRole('button', { name: 'Tier: 1st tier' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Language: French' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Word: chien' })).toBeInTheDocument()
+  })
+
+  it('opens one list at a time, and closes the one that was open', () => {
+    const tiers = screen.getByRole('button', { name: 'Tier: None chosen' })
+    const languages = screen.getByRole('button', { name: 'Language: None chosen' })
+
+    // Closed to start with: arriving at the page should be arriving at the
+    // videos, not at a list of names covering them.
+    expect(tiers).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(tiers)
+    expect(tiers).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(languages)
+    expect(tiers).toHaveAttribute('aria-expanded', 'false')
+    expect(languages).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(languages)
+    expect(languages).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('moves on to the next level when one is picked, and gets out of the way at the last', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+    add('Add a tier', 'ESL')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tier: ESL' }))
+    fireEvent.click(within(column('Tiers')).getByRole('button', { name: '1st tier' }))
+
+    expect(screen.getByRole('button', { name: 'Tier: 1st tier' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.getByRole('button', { name: 'Language: French' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+
+    fireEvent.click(within(column('Languages')).getByRole('button', { name: 'French' }))
+    expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+
+    fireEvent.click(within(column('Words')).getByRole('button', { name: 'chien' }))
+    expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  it('stays open while a run of words is being added', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Word: None chosen' }))
+    add('Add a word', 'chien')
+
+    expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+  })
+})
+
 describe('the columns to the right of a tier', () => {
   beforeEach(() => {
     add('Add a tier', '1st tier')
