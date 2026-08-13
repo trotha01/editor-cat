@@ -142,33 +142,6 @@ export function WordsPage() {
             the narrow layout is the only one that needs them grouped, to sit
             them at the bottom of the window under a strip of buttons. */}
         <div className="order-last flex shrink-0 flex-col gap-2 lg:contents">
-          {/* Room kept clear on the right for the report bubble, which is pinned
-              to that corner of the window on both pages and would otherwise
-              land on top of the last button in the strip. */}
-          <div className="flex gap-1 pr-16 lg:hidden">
-            <PickerTab
-              title="Tier"
-              value={tier?.name}
-              controls="words-column-tiers"
-              open={sheet === 'tiers'}
-              onToggle={() => setSheet((open) => (open === 'tiers' ? null : 'tiers'))}
-            />
-            <PickerTab
-              title="Language"
-              value={language?.name}
-              controls="words-column-languages"
-              open={sheet === 'languages'}
-              onToggle={() => setSheet((open) => (open === 'languages' ? null : 'languages'))}
-            />
-            <PickerTab
-              title="Word"
-              value={word?.text}
-              controls="words-column-words"
-              open={sheet === 'words'}
-              onToggle={() => setSheet((open) => (open === 'words' ? null : 'words'))}
-            />
-          </div>
-
           <NavColumn
             id="words-column-tiers"
             open={sheet === 'tiers'}
@@ -290,6 +263,35 @@ export function WordsPage() {
                 : 'Pick a language first.'
             }
           />
+
+          {/* Last, so it is the bottom edge of the window and whichever list is
+              open sits above it rather than under it. The gap on the right is
+              kept clear for the report bubble, which is pinned to that corner of
+              the window on both pages and would otherwise take the taps meant
+              for the button beneath it. */}
+          <div className="flex gap-1 pr-16 lg:hidden">
+            <PickerTab
+              title="Tier"
+              value={tier?.name}
+              controls="words-column-tiers"
+              open={sheet === 'tiers'}
+              onToggle={() => setSheet((open) => (open === 'tiers' ? null : 'tiers'))}
+            />
+            <PickerTab
+              title="Language"
+              value={language?.name}
+              controls="words-column-languages"
+              open={sheet === 'languages'}
+              onToggle={() => setSheet((open) => (open === 'languages' ? null : 'languages'))}
+            />
+            <PickerTab
+              title="Word"
+              value={word?.text}
+              controls="words-column-words"
+              open={sheet === 'words'}
+              onToggle={() => setSheet((open) => (open === 'words' ? null : 'words'))}
+            />
+          </div>
         </div>
 
         {/* Scrolls inside itself at every width now, rather than scrolling the
