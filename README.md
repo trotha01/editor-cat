@@ -26,7 +26,7 @@ need **no key at all**. Signing in is the whole of the way in.
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **5 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Two navigation columns on the left — a language, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. **Watch together** plays the whole run back to back in one player, moving to the next take on its own and showing each one's transcript as it goes. The shelf **is a tree of folders in your Drive** — one per language, one per word inside it, that word's videos in that folder — so it opens the same on your next machine, a video dropped into a word's folder from your phone turns up in the app, and **Open the Drive folder** on any word takes you straight to it. See [The word shelf in your Drive](#the-word-shelf-in-your-drive).                                                                                                                                                                                                                                                                                                                             |
+| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Three navigation columns on the left — a tier ("1st tier", "Classical", "ESL"), then a language taught in it, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. **Watch together** plays the whole run back to back in one player, moving to the next take on its own and showing each one's transcript as it goes. The shelf **is a tree of folders in your Drive** — one per tier, one per language inside it, one per word inside that, and that word's videos in the word folder — so it opens the same on your next machine, a video dropped into a word's folder from your phone turns up in the app, and **Open the Drive folder** on any word takes you straight to it. See [The word shelf in your Drive](#the-word-shelf-in-your-drive).                                                                                                                                                                                                                              |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## What you need
@@ -1444,26 +1444,36 @@ The [word pages](#what-it-does) keep their shelf as folders in the Drive folder
 you chose, in the layout anybody would build by hand:
 
 ```
-editor-cat/                     the folder you chose at sign-in
-  Spanish/                      a language
-    gato/                       a word
-      intro.mp4                 its takes, in the order the sidecar gives
-      gato.mp4
-      editor-cat.json           the order, the labels and the transcripts
-    perro/
+editor-cat/                       the folder you chose at sign-in
+  1st tier/                       a tier
+    French/                       a language taught in it
+      cerville - brain/           a word
+        intro.mp4                 its takes, in the order the sidecar gives
+        cerville.mp4
+        editor-cat.json           the order, the labels and the transcripts
+      bonjour - hello/
+        ...
+    German/
       ...
-  French/
-    chien/
+  ESL/
+    French/                       the same language, a different shelf
       ...
 ```
+
+**Three levels, because the top one is not a property of a language.** The same
+language is taught in more than one tier and its words are not the same words:
+French in the first tier and French in ESL share a name and nothing else. So each
+gets its own folder under its own tier, and the app matches a language by folder
+first and by name _within a tier_ second — never across them, which would merge
+two shelves that only look alike.
 
 **Why folders rather than a table.** The obvious alternative was another Supabase
 table beside the projects one. Folders won because of what they cost and what
 they buy: no schema, no migration, no row-level security policy, and a shelf that
 is legible in Drive without this app — the videos for a word are where you would
-go looking for them from a phone, in a folder named after the word. Adding a
-language creates its folder there and then, so the place to drop takes into exists
-before there are any.
+go looking for them from a phone, in a folder named after the word. Adding a tier,
+a language or a word creates its folder there and then, so the place to drop takes
+into exists before there are any.
 
 **A folder cannot hold an order, so one small file does.** `editor-cat.json` in
 each word folder lists that word's takes by Drive file id, in order, with the
@@ -1477,9 +1487,10 @@ every keystroke, and again when an upload finishes, since a take has no Drive id
 to be listed under until it is up there.
 
 **Reading it back is what makes it a link rather than a tidier upload.** Opening
-the page lists the folders, matches them against what this browser already had —
-by folder id first, then by name, so a language added offline adopts its folder
-rather than growing a second one — and folds in anything new (`mergeShelf`). Only
+the page lists the folders three levels down, matches them against what this
+browser already had — by folder id first, then by name, so a tier or language
+added offline adopts its folder rather than growing a second one — and folds in
+anything new (`mergeShelf`). Only
 the folder names and the sidecars come down at that point; a take's bytes are
 fetched when you open the word that has it, which is the same
 metadata-first-bytes-second order the editor hydrates a project in.
@@ -1487,13 +1498,15 @@ metadata-first-bytes-second order the editor hydrates a project in.
 **Deleting reaches Drive, which is a departure.** Everywhere else in this app your
 Drive copy is left alone. Here it cannot be: a take removed from a word and left
 sitting in that word's folder would simply be found again on the next read and
-come back from the dead. So removing a take trashes its file, and deleting a word
-or a language trashes the folder — Drive's own bin, where a mis-click is
-recoverable, and the confirmation says so. The same reasoning runs the other way:
-a word whose folder the read did not turn up has been deleted from another
-machine, and goes here too, or it would sit on this machine forever with no way
-to get rid of it. Nothing without a folder id is ever dropped — that is work made
-here that Drive has not been told about yet.
+come back from the dead. So removing a take trashes its file, and deleting a word,
+a language or a tier trashes the folder — which takes everything inside it, and is
+Drive's own bin, where a mis-click is recoverable. The confirmation says so. The
+same reasoning runs the other way: a word whose folder the read did not turn up
+has been deleted from another machine, and goes here too, or it would sit on this
+machine forever with no way to get rid of it. Pruning runs top down, so a tier
+that has gone takes its languages and their words with it. Nothing without a
+folder id is ever dropped — that is work made here that Drive has not been told
+about yet.
 
 **None of it is required.** With no Drive connection there are no folder ids, no
 reads and no writes, and the page is exactly the local one it would have been.
@@ -1591,6 +1604,11 @@ If your CI image ships its own browser, point the test at it with
   word or language trashes the folder — because the folder _is_ the list, and
   anything left in it comes back on the next read. It is Drive's bin rather than
   a permanent delete, and the confirmation says so.
+- **A language saved before the shelf had tiers is left out.** The word pages
+  briefly kept languages directly in the chosen folder, with no tier above them.
+  Those rows are skipped on load rather than guessed at, because their folders sit
+  where tier folders live now. Nothing in Drive is touched: move such a folder
+  under a tier folder and the next visit reads it back in.
 - **Two machines editing the same word at once will not merge.** Each writes the
   whole sidecar for that word, so the last write wins for the order and the
   labels. The videos themselves are never lost this way — they are files in the

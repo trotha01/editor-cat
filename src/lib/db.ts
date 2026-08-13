@@ -8,7 +8,7 @@
  */
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { Asset, Project } from './types'
-import type { Language, Word } from './words'
+import type { Language, Tier, Word } from './words'
 
 interface EditorCatDB extends DBSchema {
   blobs: {
@@ -24,9 +24,14 @@ interface EditorCatDB extends DBSchema {
     key: string
     value: Project
   }
+  tiers: {
+    key: string
+    value: Tier
+  }
   languages: {
     key: string
     value: Language
+    indexes: { tierId: string }
   }
   words: {
     key: string
@@ -36,8 +41,11 @@ interface EditorCatDB extends DBSchema {
 }
 
 const DB_NAME = 'editor-cat'
-/** 2 added the `languages` and `words` stores behind the word pages. */
-const DB_VERSION = 2
+/**
+ * 2 added the `languages` and `words` stores behind the word pages; 3 added the
+ * `tiers` store above them, when the shelf grew a level.
+ */
+const DB_VERSION = 3
 
 let dbPromise: Promise<IDBPDatabase<EditorCatDB>> | null = null
 
@@ -54,8 +62,12 @@ function db(): Promise<IDBPDatabase<EditorCatDB>> {
       if (!database.objectStoreNames.contains('projects')) {
         database.createObjectStore('projects', { keyPath: 'id' })
       }
+      if (!database.objectStoreNames.contains('tiers')) {
+        database.createObjectStore('tiers', { keyPath: 'id' })
+      }
       if (!database.objectStoreNames.contains('languages')) {
-        database.createObjectStore('languages', { keyPath: 'id' })
+        const store = database.createObjectStore('languages', { keyPath: 'id' })
+        store.createIndex('tierId', 'tierId')
       }
       if (!database.objectStoreNames.contains('words')) {
         const store = database.createObjectStore('words', { keyPath: 'id' })
@@ -122,13 +134,26 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 /**
- * The word pages: languages, and the words filed under them.
+ * The word pages: tiers, the languages filed under them, and the words filed
+ * under those.
  *
- * Two stores rather than languages holding their words, because the words are
- * the part that grows — a language is a name, and rewriting a document holding
- * every word of it each time one video is relabelled is a great deal of writing
- * to record a very small fact.
+ * Three stores rather than one document holding the tree, because the words are
+ * the part that grows — a tier is a name, and rewriting a document holding every
+ * word of every language each time one video is relabelled is a great deal of
+ * writing to record a very small fact.
  */
+export async function putTier(tier: Tier): Promise<void> {
+  await (await db()).put('tiers', tier)
+}
+
+export async function listTiers(): Promise<Tier[]> {
+  return (await db()).getAll('tiers')
+}
+
+export async function deleteTier(id: string): Promise<void> {
+  await (await db()).delete('tiers', id)
+}
+
 export async function putLanguage(language: Language): Promise<void> {
   await (await db()).put('languages', language)
 }
@@ -167,6 +192,7 @@ export async function clearAll(): Promise<void> {
     database.clear('blobs'),
     database.clear('assets'),
     database.clear('projects'),
+    database.clear('tiers'),
     database.clear('languages'),
     database.clear('words'),
   ])

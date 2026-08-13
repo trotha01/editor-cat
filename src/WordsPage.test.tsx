@@ -1,11 +1,13 @@
 /**
- * The two navigation columns, and the rule that ties them together.
+ * The three navigation columns, and the rule that ties them together.
  *
- * A language, then a word of that language: the second column is always about
- * whatever the first one has open, and there is no state where it is showing
- * somebody else's words. That is easy to break from either side — a delete, a
- * new language, a stale selection — so it is asserted from the page rather than
- * only from the store, where the two columns are just two ids.
+ * A tier, then a language taught in it, then a word of that language: each
+ * column is always about whatever the one to its left has open, and there is no
+ * state where it is showing somebody else's languages or words. That is easy to
+ * break from any side — a delete, a new tier, a stale selection — and it matters
+ * most where two tiers teach the same language, which is two shelves that happen
+ * to share a name. So it is asserted from the page rather than only from the
+ * store, where the three columns are just three ids.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
@@ -14,6 +16,9 @@ import { useAssetStore } from './state/useAssetStore'
 import { useWordsStore } from './state/useWordsStore'
 
 vi.mock('./lib/db', () => ({
+  putTier: () => Promise.resolve(),
+  deleteTier: () => Promise.resolve(),
+  listTiers: () => Promise.resolve([]),
   putWord: () => Promise.resolve(),
   putLanguage: () => Promise.resolve(),
   deleteWord: () => Promise.resolve(),
@@ -28,7 +33,7 @@ vi.mock('./lib/db', () => ({
   loadProject: () => Promise.resolve(undefined),
 }))
 
-/** Types a name into one of the two add boxes and presses its button. */
+/** Types a name into one of the three add boxes and presses its button. */
 function add(label: string, value: string) {
   fireEvent.change(screen.getByRole('textbox', { name: label }), { target: { value } })
   fireEvent.click(screen.getByRole('button', { name: label }))
@@ -41,12 +46,16 @@ function column(title: string): HTMLElement {
 beforeEach(() => {
   useAssetStore.setState({ assets: [], loading: false })
   useWordsStore.setState({
+    tiers: [],
     languages: [],
     words: [],
+    selectedTierId: null,
     selectedLanguageId: null,
     selectedWordId: null,
     loading: false,
     loaded: true,
+    syncing: false,
+    syncError: null,
   })
   render(<WordsPage />)
 })
@@ -56,27 +65,58 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('starting from nothing', () => {
-  it('asks for a language before it will take a word', () => {
+  it('asks for each column in turn before it will take the next', () => {
+    expect(screen.getByRole('textbox', { name: 'Add a language' })).toBeDisabled()
+    expect(screen.getByText('Pick a tier first.')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Add a word' })).toBeDisabled()
     expect(screen.getByText('Pick a language first.')).toBeInTheDocument()
   })
 
-  it('opens the word and its videos once both have been added', () => {
-    add('Add a language', 'Spanish')
-    add('Add a word', 'gato')
+  it('opens the word and its videos once all three have been added', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'cerville - brain')
 
-    expect(screen.getByRole('heading', { name: 'gato' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'cerville - brain' })).toBeInTheDocument()
+    expect(screen.getByText('1st tier · French')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Upload videos' })).toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
   })
 })
 
-describe('the second column', () => {
+describe('the columns to the right of a tier', () => {
   beforeEach(() => {
+    add('Add a tier', '1st tier')
     add('Add a language', 'Spanish')
     add('Add a word', 'gato')
     add('Add a language', 'French')
     add('Add a word', 'chien')
+  })
+
+  it('shows only the languages of the tier that is open', () => {
+    add('Add a tier', 'ESL')
+
+    expect(within(column('Languages')).queryByText('Spanish')).not.toBeInTheDocument()
+    expect(within(column('Words')).queryByText('gato')).not.toBeInTheDocument()
+
+    fireEvent.click(within(column('Tiers')).getByRole('button', { name: '1st tier' }))
+
+    expect(within(column('Languages')).getByText('Spanish')).toBeInTheDocument()
+  })
+
+  it('keeps two tiers’ copies of the same language apart', () => {
+    add('Add a tier', 'ESL')
+    add('Add a language', 'French')
+    add('Add a word', 'bonjour - hello')
+
+    expect(within(column('Words')).getByText('bonjour - hello')).toBeInTheDocument()
+    expect(within(column('Words')).queryByText('chien')).not.toBeInTheDocument()
+
+    fireEvent.click(within(column('Tiers')).getByRole('button', { name: '1st tier' }))
+    fireEvent.click(within(column('Languages')).getByRole('button', { name: 'French' }))
+
+    expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
+    expect(within(column('Words')).queryByText('bonjour - hello')).not.toBeInTheDocument()
   })
 
   it('shows only the words of the language that is open', () => {

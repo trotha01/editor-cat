@@ -12,10 +12,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Asset } from '../lib/types'
 import type { WordSidecar } from '../lib/words'
-import type { RawLanguage } from '../lib/wordsDrive'
+import type { RawTier } from '../lib/wordsDrive'
 
 const findOrCreateFolder = vi.fn<(name: string, parentId: string) => Promise<string>>()
-const readShelf = vi.fn<() => Promise<RawLanguage[]>>(() => Promise.resolve([]))
+const readShelf = vi.fn<() => Promise<RawTier[]>>(() => Promise.resolve([]))
 const writeSidecar = vi.fn<(folderId: string, sidecar: WordSidecar) => Promise<void>>(() =>
   Promise.resolve(),
 )
@@ -57,7 +57,13 @@ vi.mock('../lib/db', () => ({
     return Promise.resolve()
   },
   deleteLanguage: () => Promise.resolve(),
+  deleteTier: () => Promise.resolve(),
   deleteWord: () => Promise.resolve(),
+  listTiers: () => Promise.resolve([]),
+  putTier: (value: { id: string }) => {
+    stored.set(value.id, value)
+    return Promise.resolve()
+  },
   putAsset: () => Promise.resolve(),
   deleteAsset: () => Promise.resolve(),
   getBlob: () => Promise.resolve(undefined),
@@ -81,10 +87,19 @@ function asset(id: string, driveFileId?: string): Asset {
   }
 }
 
-/** A language and a word, both already knowing their folders. */
+/** A tier, a language and a word, all already knowing their folders. */
 function shelfWithGato() {
   useWordsStore.setState({
-    languages: [{ id: 'lang_es', name: 'Spanish', createdAt: 0, driveFolderId: 'folder_es' }],
+    tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0, driveFolderId: 'folder_first' }],
+    languages: [
+      {
+        id: 'lang_es',
+        tierId: 'tier_1',
+        name: 'Spanish',
+        createdAt: 0,
+        driveFolderId: 'folder_es',
+      },
+    ],
     words: [
       {
         id: 'word_gato',
@@ -95,6 +110,7 @@ function shelfWithGato() {
         driveFolderId: 'folder_gato',
       },
     ],
+    selectedTierId: 'tier_1',
     selectedLanguageId: 'lang_es',
     selectedWordId: 'word_gato',
   })
@@ -114,8 +130,10 @@ beforeEach(() => {
 
   useAssetStore.setState({ assets: [], loading: false })
   useWordsStore.setState({
+    tiers: [],
     languages: [],
     words: [],
+    selectedTierId: null,
     selectedLanguageId: null,
     selectedWordId: null,
     loading: false,
@@ -126,32 +144,64 @@ beforeEach(() => {
 })
 
 describe('folders', () => {
-  it('makes a language its folder as it is added', async () => {
-    useWordsStore.getState().addLanguage('Spanish')
+  it('makes a tier its folder in the chosen folder as it is added', async () => {
+    useWordsStore.getState().addTier('1st tier')
     await vi.waitFor(() =>
-      expect(useWordsStore.getState().languages[0]?.driveFolderId).toBe('folder_for_Spanish'),
+      expect(useWordsStore.getState().tiers[0]?.driveFolderId).toBe('folder_for_1st tier'),
     )
 
-    expect(findOrCreateFolder).toHaveBeenCalledWith('Spanish', 'root_folder')
+    expect(findOrCreateFolder).toHaveBeenCalledWith('1st tier', 'root_folder')
+  })
+
+  it('makes a language its folder inside its tier’s', async () => {
+    useWordsStore.setState({
+      tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0, driveFolderId: 'folder_first' }],
+      selectedTierId: 'tier_1',
+    })
+
+    useWordsStore.getState().addLanguage('French')
+    await vi.waitFor(() =>
+      expect(useWordsStore.getState().languages[0]?.driveFolderId).toBe('folder_for_French'),
+    )
+
+    expect(findOrCreateFolder).toHaveBeenCalledWith('French', 'folder_first')
   })
 
   it('makes a word its folder inside its language’s', async () => {
-    useWordsStore.setState({
-      languages: [{ id: 'lang_es', name: 'Spanish', createdAt: 0, driveFolderId: 'folder_es' }],
-      selectedLanguageId: 'lang_es',
-    })
-
-    useWordsStore.getState().addWord('gato')
+    shelfWithGato()
+    useWordsStore.setState({ words: [] })
+    useWordsStore.getState().addWord('cerville - brain')
     await vi.waitFor(() =>
-      expect(useWordsStore.getState().words[0]?.driveFolderId).toBe('folder_for_gato'),
+      expect(useWordsStore.getState().words[0]?.driveFolderId).toBe('folder_for_cerville - brain'),
     )
 
-    expect(findOrCreateFolder).toHaveBeenCalledWith('gato', 'folder_es')
+    expect(findOrCreateFolder).toHaveBeenCalledWith('cerville - brain', 'folder_es')
+  })
+
+  it('makes the whole chain for a word whose tier and language have no folders yet', async () => {
+    useWordsStore.getState().addTier('ESL')
+    useWordsStore.getState().addLanguage('German')
+    useWordsStore.getState().addWord('hund - dog')
+    const wordId = useWordsStore.getState().selectedWordId!
+
+    expect(await useWordsStore.getState().ensureWordFolder(wordId)).toBe('folder_for_hund - dog')
+    expect(findOrCreateFolder).toHaveBeenCalledWith('ESL', 'root_folder')
+    expect(findOrCreateFolder).toHaveBeenCalledWith('German', 'folder_for_ESL')
+    expect(findOrCreateFolder).toHaveBeenCalledWith('hund - dog', 'folder_for_German')
   })
 
   it('makes one folder when several uploads ask for it at once', async () => {
     useWordsStore.setState({
-      languages: [{ id: 'lang_es', name: 'Spanish', createdAt: 0, driveFolderId: 'folder_es' }],
+      tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0, driveFolderId: 'folder_first' }],
+      languages: [
+        {
+          id: 'lang_es',
+          tierId: 'tier_1',
+          name: 'Spanish',
+          createdAt: 0,
+          driveFolderId: 'folder_es',
+        },
+      ],
       words: [{ id: 'word_gato', languageId: 'lang_es', text: 'gato', videos: [], createdAt: 0 }],
     })
 
@@ -168,7 +218,8 @@ describe('folders', () => {
   it('answers with nothing at all when there is no Drive connected', async () => {
     connected = false
     useWordsStore.setState({
-      languages: [{ id: 'lang_es', name: 'Spanish', createdAt: 0 }],
+      tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0 }],
+      languages: [{ id: 'lang_es', tierId: 'tier_1', name: 'Spanish', createdAt: 0 }],
       words: [{ id: 'word_gato', languageId: 'lang_es', text: 'gato', videos: [], createdAt: 0 }],
     })
 
@@ -181,18 +232,24 @@ describe('reading the shelf out of Drive', () => {
   it('brings in the languages, words and takes, and catalogues the files', async () => {
     readShelf.mockResolvedValue([
       {
-        folderId: 'folder_es',
-        name: 'Spanish',
-        words: [
+        folderId: 'folder_first',
+        name: '1st tier',
+        languages: [
           {
-            folderId: 'folder_gato',
-            name: 'gato',
-            files: [{ id: 'file_1', name: 'intro.mp4', mimeType: 'video/mp4' }],
-            sidecar: {
-              version: 1,
-              word: 'gato',
-              videos: [{ driveFileId: 'file_1', role: 'intro' }],
-            },
+            folderId: 'folder_es',
+            name: 'Spanish',
+            words: [
+              {
+                folderId: 'folder_gato',
+                name: 'gato',
+                files: [{ id: 'file_1', name: 'intro.mp4', mimeType: 'video/mp4' }],
+                sidecar: {
+                  version: 1,
+                  word: 'gato',
+                  videos: [{ driveFileId: 'file_1', role: 'intro' }],
+                },
+              },
+            ],
           },
         ],
       },
@@ -201,6 +258,7 @@ describe('reading the shelf out of Drive', () => {
     await useWordsStore.getState().syncFromDrive()
 
     const state = useWordsStore.getState()
+    expect(state.tiers.map((entry) => entry.name)).toEqual(['1st tier'])
     expect(state.languages.map((entry) => entry.name)).toEqual(['Spanish'])
     expect(state.words[0]).toMatchObject({ text: 'gato', driveFolderId: 'folder_gato' })
     expect(state.words[0]?.videos[0]?.role).toBe('intro')
@@ -291,6 +349,16 @@ describe('deleting', () => {
     await useWordsStore.getState().removeLanguage('lang_es')
 
     expect(trashFile).toHaveBeenCalledWith('folder_es')
+  })
+
+  it('trashes a tier’s folder, which takes its languages and their words', async () => {
+    shelfWithGato()
+
+    await useWordsStore.getState().removeTier('tier_1')
+
+    expect(trashFile).toHaveBeenCalledWith('folder_first')
+    expect(useWordsStore.getState().languages).toEqual([])
+    expect(useWordsStore.getState().words).toEqual([])
   })
 
   it('touches nobody’s Drive when there is no connection to it', async () => {

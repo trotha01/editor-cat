@@ -8,16 +8,18 @@
  * storage and nothing else. Sitting it in the step nav would have made it a step
  * of a project it has nothing to do with.
  *
- * Two navigation columns, because the shelf has two levels and both are lists
- * you look things up in: a language, then a word of that language. Everything to
- * the right of them is about the one word that is selected.
+ * Three navigation columns, because the shelf has three levels and each is a
+ * list you look things up in: a tier — "1st tier", "Classical", "ESL" — then a
+ * language taught in it, then a word of that language. Everything to the right
+ * of them is about the one word that is selected, and the three columns are the
+ * same three levels of folder the shelf is kept as in Drive.
  */
 import { useEffect, useMemo, useState } from 'react'
 import { DriveUploads } from './components/DriveUploads'
 import { WordVideos } from './components/WordVideos'
 import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
 import { EDITOR_HASH } from './lib/route'
-import { sortedLanguages, wordsInLanguage } from './lib/words'
+import { languagesInTier, sortedTiers, wordsInLanguage } from './lib/words'
 import { useDriveStore } from './state/useDriveStore'
 import { useWordsStore } from './state/useWordsStore'
 
@@ -33,8 +35,10 @@ function binNote(inDrive: boolean): string {
 }
 
 export function WordsPage() {
+  const tiers = useWordsStore((state) => state.tiers)
   const languages = useWordsStore((state) => state.languages)
   const words = useWordsStore((state) => state.words)
+  const selectedTierId = useWordsStore((state) => state.selectedTierId)
   const selectedLanguageId = useWordsStore((state) => state.selectedLanguageId)
   const selectedWordId = useWordsStore((state) => state.selectedWordId)
   const loading = useWordsStore((state) => state.loading)
@@ -56,12 +60,17 @@ export function WordsPage() {
     if (driveConnected) void useWordsStore.getState().syncFromDrive()
   }, [driveConnected])
 
-  const languageList = useMemo(() => sortedLanguages(languages), [languages])
+  const tierList = useMemo(() => sortedTiers(tiers), [tiers])
+  const languageList = useMemo(
+    () => languagesInTier(languages, selectedTierId),
+    [languages, selectedTierId],
+  )
   const wordList = useMemo(
     () => wordsInLanguage(words, selectedLanguageId),
     [words, selectedLanguageId],
   )
 
+  const tier = tierList.find((entry) => entry.id === selectedTierId)
   const language = languageList.find((entry) => entry.id === selectedLanguageId)
   const word = wordList.find((entry) => entry.id === selectedWordId)
 
@@ -85,7 +94,32 @@ export function WordsPage() {
         </LinkButton>
       </header>
 
-      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:flex-row lg:overflow-hidden">
+      <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 lg:flex-row lg:overflow-hidden">
+        <NavColumn
+          title="Tiers"
+          items={tierList.map((entry) => ({ id: entry.id, label: entry.name }))}
+          selectedId={selectedTierId}
+          onSelect={(id) => useWordsStore.getState().selectTier(id)}
+          onAdd={(value) => useWordsStore.getState().addTier(value)}
+          onDelete={(id) => {
+            const doomed = tierList.find((entry) => entry.id === id)
+            const count = languages.filter((entry) => entry.tierId === id).length
+            if (
+              count > 0 &&
+              !window.confirm(
+                `Delete "${doomed?.name}" and its ${count} language${count === 1 ? '' : 's'}?` +
+                  binNote(driveConnected && !!doomed?.driveFolderId),
+              )
+            ) {
+              return
+            }
+            void useWordsStore.getState().removeTier(id)
+          }}
+          addLabel="Add a tier"
+          placeholder="1st tier"
+          empty={loading ? 'Loading…' : 'No tiers yet. Add one to start.'}
+        />
+
         <NavColumn
           title="Languages"
           items={languageList.map((entry) => ({ id: entry.id, label: entry.name }))}
@@ -107,8 +141,13 @@ export function WordsPage() {
             void useWordsStore.getState().removeLanguage(id)
           }}
           addLabel="Add a language"
-          placeholder="Spanish"
-          empty={loading ? 'Loading…' : 'No languages yet. Add one to start.'}
+          placeholder="French"
+          disabled={!selectedTierId}
+          empty={
+            selectedTierId
+              ? `No languages in ${tier?.name ?? 'this tier'} yet.`
+              : 'Pick a tier first.'
+          }
         />
 
         <NavColumn
@@ -136,7 +175,7 @@ export function WordsPage() {
             void useWordsStore.getState().removeWord(id)
           }}
           addLabel="Add a word"
-          placeholder="gato"
+          placeholder="cerville - brain"
           // The column is drawn either way rather than hidden, so the shape of
           // the page does not change the moment a language is picked.
           disabled={!selectedLanguageId}
@@ -168,7 +207,12 @@ export function WordsPage() {
             <>
               <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="text-lg font-semibold">{word.text}</h2>
-                {language ? <span className="text-sm text-ink-dim">{language.name}</span> : null}
+                {language ? (
+                  <span className="text-sm text-ink-dim">
+                    {tier ? `${tier.name} · ` : ''}
+                    {language.name}
+                  </span>
+                ) : null}
                 {/* The other end of the link, made visible: these videos are in a
                     folder the user owns, and the fastest way to believe that is
                     to be able to open it. */}
@@ -189,7 +233,7 @@ export function WordsPage() {
             <EmptyState icon="🔤" title="Nothing selected">
               {selectedLanguageId
                 ? 'Add a word, or pick one from the list, and its videos will show up here.'
-                : 'Add a language, then a word, and upload the videos for it.'}
+                : 'Add a tier, then a language, then a word, and upload the videos for it.'}
             </EmptyState>
           )}
         </section>
@@ -247,7 +291,7 @@ function NavColumn({
   }
 
   return (
-    <section className="flex w-full shrink-0 flex-col gap-2 rounded-xl border border-line bg-surface p-2 lg:w-52 lg:min-h-0">
+    <section className="flex w-full shrink-0 flex-col gap-2 rounded-xl border border-line bg-surface p-2 lg:w-44 lg:min-h-0">
       <h2 className="px-1 text-xs font-semibold tracking-wide text-ink-dim uppercase">{title}</h2>
 
       {items.length === 0 ? (

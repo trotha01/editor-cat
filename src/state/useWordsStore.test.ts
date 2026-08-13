@@ -15,13 +15,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAssetStore } from './useAssetStore'
 import { useWordsStore } from './useWordsStore'
-import type { Language, Word } from '../lib/words'
+import type { Language, Tier, Word } from '../lib/words'
 import type { Asset } from '../lib/types'
 
-const stored = { languages: new Map<string, Language>(), words: new Map<string, Word>() }
+const stored = {
+  tiers: new Map<string, Tier>(),
+  languages: new Map<string, Language>(),
+  words: new Map<string, Word>(),
+}
 const deletedAssets: string[] = []
 
 vi.mock('../lib/db', () => ({
+  listTiers: () => Promise.resolve([...stored.tiers.values()]),
+  putTier: (tier: Tier) => {
+    stored.tiers.set(tier.id, tier)
+    return Promise.resolve()
+  },
+  deleteTier: (id: string) => {
+    stored.tiers.delete(id)
+    return Promise.resolve()
+  },
   listLanguages: () => Promise.resolve([...stored.languages.values()]),
   listWords: () => Promise.resolve([...stored.words.values()]),
   putLanguage: (language: Language) => {
@@ -58,18 +71,24 @@ function asset(id: string): Asset {
 
 /** A store that has been read once, so `load` will not re-read over the test. */
 function reset() {
+  stored.tiers.clear()
   stored.languages.clear()
   stored.words.clear()
   deletedAssets.length = 0
   useAssetStore.setState({ assets: [], loading: false })
   useWordsStore.setState({
+    tiers: [],
     languages: [],
     words: [],
+    selectedTierId: null,
     selectedLanguageId: null,
     selectedWordId: null,
     loading: false,
     loaded: true,
   })
+  // Everything below is about languages and words, so the tier they hang from
+  // is made once here rather than in every test.
+  useWordsStore.getState().addTier('1st tier')
 }
 
 beforeEach(reset)
@@ -209,10 +228,25 @@ describe('deleting', () => {
 })
 
 describe('load', () => {
-  it('opens on the first language and its first word', async () => {
+  it('opens on the first of each column', async () => {
+    // Out with the tier every other test starts from: this one is about what a
+    // cold read opens on, so what is in storage has to be only its own.
+    stored.tiers.clear()
     useWordsStore.setState({ loaded: false })
-    stored.languages.set('lang_es', { id: 'lang_es', name: 'Spanish', createdAt: 0 })
-    stored.languages.set('lang_fr', { id: 'lang_fr', name: 'French', createdAt: 0 })
+    stored.tiers.set('tier_esl', { id: 'tier_esl', name: 'ESL', createdAt: 0 })
+    stored.tiers.set('tier_1', { id: 'tier_1', name: '1st tier', createdAt: 0 })
+    stored.languages.set('lang_es', {
+      id: 'lang_es',
+      tierId: 'tier_1',
+      name: 'Spanish',
+      createdAt: 0,
+    })
+    stored.languages.set('lang_fr', {
+      id: 'lang_fr',
+      tierId: 'tier_1',
+      name: 'French',
+      createdAt: 0,
+    })
     stored.words.set('w1', {
       id: 'w1',
       languageId: 'lang_fr',
@@ -223,10 +257,24 @@ describe('load', () => {
 
     await useWordsStore.getState().load()
 
-    // French, because the column is sorted by name rather than by what was
-    // added first — what you see at the top is what opens.
+    // "1st tier" and French, because each column is sorted by name rather than
+    // by what was added first — what you see at the top is what opens.
+    expect(useWordsStore.getState().selectedTierId).toBe('tier_1')
     expect(useWordsStore.getState().selectedLanguageId).toBe('lang_fr')
     expect(useWordsStore.getState().selectedWordId).toBe('w1')
+  })
+
+  it('leaves out a language saved before the shelf had tiers', async () => {
+    stored.tiers.clear()
+    useWordsStore.setState({ loaded: false })
+    stored.tiers.set('tier_1', { id: 'tier_1', name: '1st tier', createdAt: 0 })
+    // No tierId: written by a version whose languages sat at the root. Its
+    // folder is still in Drive, which is where it can be moved under a tier.
+    stored.languages.set('old', { id: 'old', name: 'Spanish', createdAt: 0 } as Language)
+
+    await useWordsStore.getState().load()
+
+    expect(useWordsStore.getState().languages).toEqual([])
   })
 
   it('leaves the selection alone when the page is opened a second time', async () => {

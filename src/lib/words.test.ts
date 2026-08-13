@@ -15,25 +15,32 @@ import {
   findLanguage,
   findWord,
   isVideoAssetOrphaned,
+  languagesInTier,
   mergeShelf,
   parseSidecar,
   roleLabel,
-  sortedLanguages,
+  sortedTiers,
   withMovedVideo,
   withVideo,
   withVideoPatch,
   withoutVideo,
   wordsInLanguage,
   type DiscoveredLanguage,
+  type DiscoveredTier,
   type DiscoveredWord,
   type Language,
+  type Tier,
   type Word,
   type WordSidecar,
   type WordVideo,
 } from './words'
 
-function language(id: string, name: string): Language {
+function tier(id: string, name: string): Tier {
   return { id, name, createdAt: 0 }
+}
+
+function language(id: string, name: string, tierId = FIRST.id): Language {
+  return { id, tierId, name, createdAt: 0 }
 }
 
 function video(id: string, assetId: string): WordVideo {
@@ -44,15 +51,34 @@ function word(id: string, languageId: string, text: string, videos: WordVideo[] 
   return { id, languageId, text, videos, createdAt: 0 }
 }
 
+const FIRST = tier('tier_1', '1st tier')
+const ESL = tier('tier_esl', 'ESL')
 const SPANISH = language('lang_es', 'Spanish')
 const FRENCH = language('lang_fr', 'French')
 
 describe('the navigation lists', () => {
-  it('sort languages by name without disturbing the stored order', () => {
-    const stored = [SPANISH, FRENCH]
+  it('sort tiers by name without disturbing the stored order', () => {
+    const stored = [ESL, FIRST]
 
-    expect(sortedLanguages(stored).map((entry) => entry.name)).toEqual(['French', 'Spanish'])
-    expect(stored.map((entry) => entry.name)).toEqual(['Spanish', 'French'])
+    expect(sortedTiers(stored).map((entry) => entry.name)).toEqual(['1st tier', 'ESL'])
+    expect(stored.map((entry) => entry.name)).toEqual(['ESL', '1st tier'])
+  })
+
+  it('sort a tier’s own languages and leave every other tier out', () => {
+    const languages = [
+      language('l1', 'Spanish'),
+      language('l2', 'German', ESL.id),
+      language('l3', 'French'),
+    ]
+
+    expect(languagesInTier(languages, FIRST.id).map((entry) => entry.name)).toEqual([
+      'French',
+      'Spanish',
+    ])
+  })
+
+  it('have no languages to show until a tier is picked', () => {
+    expect(languagesInTier([language('l1', 'Spanish')], null)).toEqual([])
   })
 
   it('sort a language’s own words and leave every other language out', () => {
@@ -71,9 +97,11 @@ describe('the navigation lists', () => {
 })
 
 describe('adding something already there', () => {
-  it('recognises a language whatever the case and spacing', () => {
-    expect(findLanguage([SPANISH], '  spanish ')).toEqual(SPANISH)
-    expect(findLanguage([SPANISH], 'Italian')).toBeUndefined()
+  it('recognises a language whatever the case and spacing, inside its own tier', () => {
+    expect(findLanguage([SPANISH], FIRST.id, '  spanish ')).toEqual(SPANISH)
+    expect(findLanguage([SPANISH], FIRST.id, 'Italian')).toBeUndefined()
+    // Spanish in ESL is a different shelf from Spanish in the first tier.
+    expect(findLanguage([SPANISH], ESL.id, 'Spanish')).toBeUndefined()
   })
 
   it('recognises a word, but only inside its own language', () => {
@@ -174,17 +202,29 @@ describe('reading the shelf back out of Drive', () => {
     sidecar: WordSidecar | null = null,
   ): DiscoveredWord => ({ folderId, name, videos, sidecar })
 
+  /** Wraps discovered languages in the one tier most of these tests are about. */
+  const inTier = (languages: DiscoveredLanguage[]): DiscoveredTier[] => [
+    { folderId: 'folder_first', name: '1st tier', languages },
+  ]
+
+  /** A shelf with the first tier already on it, which is where the local ones start. */
+  const withFirst = (languages: Language[], words: Word[]) => ({
+    tiers: [{ ...FIRST, driveFolderId: 'folder_first' }],
+    languages,
+    words,
+  })
+
   /** Every take of these tests has been uploaded, unless a test says otherwise. */
   const uploaded = (map: Record<string, string>) => (assetId: string) => map[assetId]
 
   it('brings a whole shelf onto a machine that has never seen it', () => {
     const merged = mergeShelf(
-      { languages: [], words: [] },
-      [
+      { tiers: [], languages: [], words: [] },
+      inTier([
         found('Spanish', 'folder_es', [
           foundWord('gato', 'folder_gato', [{ driveFileId: 'f1', assetId: 'asset_a' }]),
         ]),
-      ],
+      ]),
       uploaded({ asset_a: 'f1' }),
     )
 
@@ -201,11 +241,11 @@ describe('reading the shelf back out of Drive', () => {
   })
 
   it('adopts the folder of a language added here before Drive was reachable', () => {
-    const local = { languages: [SPANISH], words: [word('w1', SPANISH.id, 'gato')] }
+    const local = withFirst([SPANISH], [word('w1', SPANISH.id, 'gato')])
 
     const merged = mergeShelf(
       local,
-      [found('spanish', 'folder_es', [foundWord('GATO', 'folder_gato', [])])],
+      inTier([found('spanish', 'folder_es', [foundWord('GATO', 'folder_gato', [])])]),
       () => undefined,
     )
 
@@ -218,14 +258,14 @@ describe('reading the shelf back out of Drive', () => {
   })
 
   it('is not fooled into a duplicate by reading the same shelf twice', () => {
-    const discovered = [
+    const discovered = inTier([
       found('Spanish', 'folder_es', [
         foundWord('gato', 'folder_gato', [{ driveFileId: 'f1', assetId: 'asset_a' }]),
       ]),
-    ]
+    ])
     const driveIds = uploaded({ asset_a: 'f1' })
 
-    const once = mergeShelf({ languages: [], words: [] }, discovered, driveIds)
+    const once = mergeShelf({ tiers: [], languages: [], words: [] }, discovered, driveIds)
     const twice = mergeShelf(once, discovered, driveIds)
 
     expect(twice.languages).toHaveLength(1)
@@ -244,8 +284,8 @@ describe('reading the shelf back out of Drive', () => {
     }
 
     const merged = mergeShelf(
-      { languages: [], words: [] },
-      [
+      { tiers: [], languages: [], words: [] },
+      inTier([
         found('Spanish', 'folder_es', [
           foundWord(
             'gato',
@@ -259,7 +299,7 @@ describe('reading the shelf back out of Drive', () => {
             sidecar,
           ),
         ]),
-      ],
+      ]),
       uploaded({ asset_a: 'f1', asset_b: 'f2' }),
     )
 
@@ -275,8 +315,8 @@ describe('reading the shelf back out of Drive', () => {
     }
 
     const merged = mergeShelf(
-      { languages: [], words: [] },
-      [
+      { tiers: [], languages: [], words: [] },
+      inTier([
         found('Spanish', 'folder_es', [
           foundWord(
             'gato',
@@ -288,7 +328,7 @@ describe('reading the shelf back out of Drive', () => {
             sidecar,
           ),
         ]),
-      ],
+      ]),
       uploaded({ asset_a: 'f1', asset_phone: 'f_phone' }),
     )
 
@@ -301,9 +341,9 @@ describe('reading the shelf back out of Drive', () => {
   })
 
   it('drops a take whose file has gone from the folder, and keeps one still uploading', () => {
-    const local = {
-      languages: [{ ...SPANISH, driveFolderId: 'folder_es' }],
-      words: [
+    const local = withFirst(
+      [{ ...SPANISH, driveFolderId: 'folder_es' }],
+      [
         {
           ...word('w1', SPANISH.id, 'gato', [
             video('v_deleted', 'asset_deleted'),
@@ -312,11 +352,11 @@ describe('reading the shelf back out of Drive', () => {
           driveFolderId: 'folder_gato',
         },
       ],
-    }
+    )
 
     const merged = mergeShelf(
       local,
-      [found('Spanish', 'folder_es', [foundWord('gato', 'folder_gato', [])])],
+      inTier([found('Spanish', 'folder_es', [foundWord('gato', 'folder_gato', [])])]),
       // The first was uploaded and is no longer in the folder — deleted from
       // another machine. The second has no Drive file yet, so its absence there
       // says nothing at all.
@@ -327,22 +367,22 @@ describe('reading the shelf back out of Drive', () => {
   })
 
   it('drops a word deleted from another machine, and the language with it', () => {
-    const local = {
-      languages: [
+    const local = withFirst(
+      [
         { ...SPANISH, driveFolderId: 'folder_es' },
         { ...FRENCH, driveFolderId: 'folder_fr' },
       ],
-      words: [
+      [
         { ...word('w1', SPANISH.id, 'gato'), driveFolderId: 'folder_gato' },
         { ...word('w2', SPANISH.id, 'perro'), driveFolderId: 'folder_perro' },
         { ...word('w3', FRENCH.id, 'chien'), driveFolderId: 'folder_chien' },
       ],
-    }
+    )
 
     const merged = mergeShelf(
       local,
       // French is gone entirely, and Spanish has lost "perro".
-      [found('Spanish', 'folder_es', [foundWord('gato', 'folder_gato', [])])],
+      inTier([found('Spanish', 'folder_es', [foundWord('gato', 'folder_gato', [])])]),
       () => undefined,
     )
 
@@ -350,37 +390,95 @@ describe('reading the shelf back out of Drive', () => {
     expect(merged.words.map((entry) => entry.text)).toEqual(['gato'])
   })
 
+  it('keeps two tiers apart, even where they teach the same language', () => {
+    const merged = mergeShelf(
+      { tiers: [], languages: [], words: [] },
+      [
+        {
+          folderId: 'folder_first',
+          name: '1st tier',
+          languages: [found('French', 'folder_fr_1', [foundWord('cerville - brain', 'w_a', [])])],
+        },
+        {
+          folderId: 'folder_esl',
+          name: 'ESL',
+          languages: [found('French', 'folder_fr_esl', [foundWord('bonjour - hello', 'w_b', [])])],
+        },
+      ],
+      () => undefined,
+    )
+
+    expect(merged.tiers.map((entry) => entry.name)).toEqual(['1st tier', 'ESL'])
+    // Two French folders under two tiers are two languages, not one seen twice —
+    // and each keeps its own words.
+    expect(merged.languages).toHaveLength(2)
+    expect(merged.languages.map((entry) => entry.tierId)).toEqual([
+      merged.tiers[0]!.id,
+      merged.tiers[1]!.id,
+    ])
+    expect(merged.words.map((entry) => entry.text)).toEqual(['cerville - brain', 'bonjour - hello'])
+  })
+
+  it('drops a tier deleted elsewhere, and everything filed under it', () => {
+    const local = {
+      tiers: [
+        { ...FIRST, driveFolderId: 'folder_first' },
+        { ...ESL, driveFolderId: 'folder_esl' },
+      ],
+      languages: [
+        { ...SPANISH, driveFolderId: 'folder_es' },
+        { ...language('lang_de', 'German', ESL.id), driveFolderId: 'folder_de' },
+      ],
+      words: [
+        { ...word('w1', SPANISH.id, 'gato'), driveFolderId: 'folder_gato' },
+        { ...word('w2', 'lang_de', 'hund - dog'), driveFolderId: 'folder_hund' },
+      ],
+    }
+
+    const merged = mergeShelf(
+      local,
+      inTier([found('Spanish', 'folder_es', [foundWord('gato', 'folder_gato', [])])]),
+      () => undefined,
+    )
+
+    expect(merged.tiers.map((entry) => entry.name)).toEqual(['1st tier'])
+    expect(merged.languages.map((entry) => entry.name)).toEqual(['Spanish'])
+    expect(merged.words.map((entry) => entry.text)).toEqual(['gato'])
+  })
+
   it('keeps what was added here while Drive was out of reach', () => {
     const local = {
       // No folder ids: made on this machine, and Drive has never heard of them.
+      tiers: [FIRST],
       languages: [SPANISH],
       words: [word('w1', SPANISH.id, 'gato', [video('v1', 'asset_a')])],
     }
 
     const merged = mergeShelf(local, [], () => undefined)
 
+    expect(merged.tiers).toEqual([FIRST])
     expect(merged.languages).toEqual([SPANISH])
     expect(merged.words[0]?.videos).toHaveLength(1)
   })
 
   it('keeps the row a take is already on, so a sync mid-edit does not move it', () => {
-    const local = {
-      languages: [{ ...SPANISH, driveFolderId: 'folder_es' }],
-      words: [
+    const local = withFirst(
+      [{ ...SPANISH, driveFolderId: 'folder_es' }],
+      [
         {
           ...word('w1', SPANISH.id, 'gato', [{ id: 'v1', assetId: 'asset_a', role: 'outro' }]),
           driveFolderId: 'folder_gato',
         },
       ],
-    }
+    )
 
     const merged = mergeShelf(
       local,
-      [
+      inTier([
         found('Spanish', 'folder_es', [
           foundWord('gato', 'folder_gato', [{ driveFileId: 'f1', assetId: 'asset_a' }]),
         ]),
-      ],
+      ]),
       uploaded({ asset_a: 'f1' }),
     )
 

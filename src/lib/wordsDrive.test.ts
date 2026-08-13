@@ -82,9 +82,10 @@ describe('findOrCreateFolder', () => {
 })
 
 describe('readShelf', () => {
-  it('reads languages, their words, their takes and the order beside them', async () => {
+  it('reads tiers, languages, their words, their takes and the order beside them', async () => {
     drive({
-      root: [folder('folder_es', 'Spanish'), file('stray', 'holiday.mp4')],
+      root: [folder('folder_first', '1st tier'), file('stray', 'holiday.mp4')],
+      folder_first: [folder('folder_es', 'Spanish')],
       folder_es: [folder('folder_gato', 'gato')],
       folder_gato: [
         file('f1', 'intro.mp4'),
@@ -105,17 +106,21 @@ describe('readShelf', () => {
 
     const shelf = await readShelf('root')
 
-    // The loose video in the media folder is not a language, and the text file
-    // is not a take.
+    // The loose video in the media folder is not a tier, and the text file is
+    // not a take.
     expect(shelf).toHaveLength(1)
-    expect(shelf[0]?.name).toBe('Spanish')
-    expect(shelf[0]?.words[0]?.files.map((entry) => entry.id)).toEqual(['f1', 'f2'])
-    expect(shelf[0]?.words[0]?.sidecar?.videos).toEqual([{ driveFileId: 'f2', role: 'outro' }])
+    expect(shelf[0]?.name).toBe('1st tier')
+    expect(shelf[0]?.languages[0]?.name).toBe('Spanish')
+
+    const gato = shelf[0]?.languages[0]?.words[0]
+    expect(gato?.files.map((entry) => entry.id)).toEqual(['f1', 'f2'])
+    expect(gato?.sidecar?.videos).toEqual([{ driveFileId: 'f2', role: 'outro' }])
   })
 
   it('still reads the folder when the sidecar will not come down', async () => {
     drive({
-      root: [folder('folder_es', 'Spanish')],
+      root: [folder('folder_first', '1st tier')],
+      folder_first: [folder('folder_es', 'Spanish')],
       folder_es: [folder('folder_gato', 'gato')],
       folder_gato: [file('f1', 'intro.mp4'), file('sidecar', SIDECAR_NAME, 'application/json')],
     })
@@ -123,8 +128,9 @@ describe('readShelf', () => {
 
     const shelf = await readShelf('root')
 
-    expect(shelf[0]?.words[0]?.files.map((entry) => entry.id)).toEqual(['f1'])
-    expect(shelf[0]?.words[0]?.sidecar).toBeNull()
+    const gato = shelf[0]?.languages[0]?.words[0]
+    expect(gato?.files.map((entry) => entry.id)).toEqual(['f1'])
+    expect(gato?.sidecar).toBeNull()
   })
 })
 

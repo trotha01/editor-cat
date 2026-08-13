@@ -1,7 +1,8 @@
 /**
  * The word pages, as folders in the user's Drive.
  *
- * A folder per language, a folder per word inside it, that word's videos in that
+ * A folder per tier — "1st tier", "Classical", "ESL" — a folder per language
+ * inside it, a folder per word inside that, that word's videos in the word
  * folder, and one small JSON file beside them holding the order and the labels
  * (see `SIDECAR_NAME` in lib/words.ts). This module is the half that talks to
  * Drive; the reconciling is pure and lives next to the model.
@@ -63,24 +64,34 @@ export interface RawLanguage {
   words: RawWord[]
 }
 
+export interface RawTier {
+  folderId: string
+  name: string
+  languages: RawLanguage[]
+}
+
 /**
- * Reads the whole shelf: every language folder, its word folders, and what is in
- * them.
+ * Reads the whole shelf: every tier folder, its languages, their words, and what
+ * is in them.
  *
- * Three levels of listing, which sounds like a lot until you notice what it
+ * Four levels of listing, which sounds like a lot until you notice what it
  * replaces — a table, a schema, a migration and a sync protocol. The shelf is
  * small (folders and names), the videos are named but not fetched, and the only
  * bytes that come down are the sidecars, which are a few hundred of them each.
  */
-export async function readShelf(rootId: string, signal?: AbortSignal): Promise<RawLanguage[]> {
-  const languages = (await listChildren(rootId, signal)).filter(isFolder)
+export async function readShelf(rootId: string, signal?: AbortSignal): Promise<RawTier[]> {
+  const tiers = (await listChildren(rootId, signal)).filter(isFolder)
 
-  return await mapLimited(languages, LIST_CONCURRENCY, async (folder) => {
-    const wordFolders = (await listChildren(folder.id, signal)).filter(isFolder)
-    const words = await mapLimited(wordFolders, LIST_CONCURRENCY, async (wordFolder) =>
-      readWord(wordFolder, signal),
-    )
-    return { folderId: folder.id, name: folder.name, words }
+  return await mapLimited(tiers, LIST_CONCURRENCY, async (tierFolder) => {
+    const languageFolders = (await listChildren(tierFolder.id, signal)).filter(isFolder)
+    const languages = await mapLimited(languageFolders, LIST_CONCURRENCY, async (folder) => {
+      const wordFolders = (await listChildren(folder.id, signal)).filter(isFolder)
+      const words = await mapLimited(wordFolders, LIST_CONCURRENCY, async (wordFolder) =>
+        readWord(wordFolder, signal),
+      )
+      return { folderId: folder.id, name: folder.name, words }
+    })
+    return { folderId: tierFolder.id, name: tierFolder.name, languages }
   })
 }
 

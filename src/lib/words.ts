@@ -80,14 +80,37 @@ export interface Word {
 
 export interface Language {
   id: string
+  /** The tier this language is taught in. A language may be in more than one. */
+  tierId: string
   name: string
   createdAt: number
   /** The folder in Drive holding this language's words. See `Word`. */
   driveFolderId?: string
 }
 
-export function newLanguage(name: string): Language {
-  return { id: newId('lang'), name: name.trim(), createdAt: Date.now() }
+/**
+ * The top of the shelf: a course, a level, a programme — whatever a set of
+ * languages is being taught as. "1st tier", "2nd tier", "Classical", "ESL".
+ *
+ * A level of its own rather than a field on the language, because the same
+ * language is taught in several of them and its words are not the same words.
+ * French in the first tier and French in ESL are two shelves that happen to
+ * share a name, and the folder tree says so.
+ */
+export interface Tier {
+  id: string
+  name: string
+  createdAt: number
+  /** The folder in Drive holding this tier's languages. */
+  driveFolderId?: string
+}
+
+export function newTier(name: string): Tier {
+  return { id: newId('tier'), name: name.trim(), createdAt: Date.now() }
+}
+
+export function newLanguage(tierId: string, name: string): Language {
+  return { id: newId('lang'), tierId, name: name.trim(), createdAt: Date.now() }
 }
 
 export function newWord(languageId: string, text: string): Word {
@@ -99,15 +122,24 @@ export function newWordVideo(assetId: string, role: WordVideoRole = DEFAULT_ROLE
 }
 
 /**
- * Both navigation lists are sorted by name rather than by when they were added.
+ * All three navigation lists are sorted by name rather than by when they were
+ * added.
  *
  * A list you are navigating is a list you are looking things up in, and two
  * hundred words in the order somebody happened to record them is not a list you
  * can look anything up in. Adding one still puts you straight into it — the page
  * selects what it just made — so where it lands in the column costs nothing.
  */
-export function sortedLanguages(languages: readonly Language[]): Language[] {
-  return [...languages].sort((a, b) => a.name.localeCompare(b.name))
+export function sortedTiers(tiers: readonly Tier[]): Tier[] {
+  return [...tiers].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** The languages of one tier, sorted. Empty when no tier is chosen. */
+export function languagesInTier(languages: readonly Language[], tierId: string | null): Language[] {
+  if (!tierId) return []
+  return languages
+    .filter((language) => language.tierId === tierId)
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /** The words of one language, sorted the same way. Empty when none is chosen. */
@@ -129,8 +161,17 @@ function sameName(a: string, b: string): boolean {
   return a.trim().localeCompare(b.trim(), undefined, { sensitivity: 'accent' }) === 0
 }
 
-export function findLanguage(languages: readonly Language[], name: string): Language | undefined {
-  return languages.find((language) => sameName(language.name, name))
+export function findTier(tiers: readonly Tier[], name: string): Tier | undefined {
+  return tiers.find((tier) => sameName(tier.name, name))
+}
+
+/** A language of that name in that tier. French in ESL is not French in 1st tier. */
+export function findLanguage(
+  languages: readonly Language[],
+  tierId: string,
+  name: string,
+): Language | undefined {
+  return languages.find((language) => language.tierId === tierId && sameName(language.name, name))
 }
 
 export function findWord(
@@ -287,8 +328,15 @@ export interface DiscoveredLanguage {
   words: DiscoveredWord[]
 }
 
-/** The two lists the page is drawn from, passed around together. */
+export interface DiscoveredTier {
+  folderId: string
+  name: string
+  languages: DiscoveredLanguage[]
+}
+
+/** The three lists the page is drawn from, passed around together. */
 export interface Shelf {
+  tiers: Tier[]
   languages: Language[]
   words: Word[]
 }
@@ -317,18 +365,22 @@ export interface Shelf {
  */
 export function mergeShelf(
   local: Shelf,
-  discovered: readonly DiscoveredLanguage[],
+  discovered: readonly DiscoveredTier[],
   driveFileIdOf: (assetId: string) => string | undefined,
 ): Shelf {
+  const tiers = [...local.tiers]
   const languages = [...local.languages]
   const words = [...local.words]
 
   // Every folder the read turned up, so that what it did not turn up can be
   // told apart from what it was never asked about.
   const seen = new Set<string>()
-  for (const language of discovered) {
-    seen.add(language.folderId)
-    for (const word of language.words) seen.add(word.folderId)
+  for (const tier of discovered) {
+    seen.add(tier.folderId)
+    for (const language of tier.languages) {
+      seen.add(language.folderId)
+      for (const word of language.words) seen.add(word.folderId)
+    }
   }
 
   const put = <T extends { id: string }>(list: T[], next: T) => {
@@ -338,46 +390,72 @@ export function mergeShelf(
     return next
   }
 
-  for (const found of discovered) {
-    const matched =
-      languages.find((entry) => entry.driveFolderId === found.folderId) ??
-      languages.find((entry) => !entry.driveFolderId && sameName(entry.name, found.name))
+  for (const foundTier of discovered) {
+    const matchedTier =
+      tiers.find((entry) => entry.driveFolderId === foundTier.folderId) ??
+      tiers.find((entry) => !entry.driveFolderId && sameName(entry.name, foundTier.name))
 
-    const language = put(languages, {
-      ...(matched ?? newLanguage(found.name)),
-      driveFolderId: found.folderId,
+    const tier = put(tiers, {
+      ...(matchedTier ?? newTier(foundTier.name)),
+      driveFolderId: foundTier.folderId,
     })
 
-    for (const foundWord of found.words) {
-      const matchedWord =
-        words.find((entry) => entry.driveFolderId === foundWord.folderId) ??
-        words.find(
+    for (const found of foundTier.languages) {
+      const matched =
+        languages.find((entry) => entry.driveFolderId === found.folderId) ??
+        // Only within this tier: the same language name under two tiers is two
+        // shelves, and matching across them would merge somebody's ESL French
+        // into their first-tier French.
+        languages.find(
           (entry) =>
-            entry.languageId === language.id &&
-            !entry.driveFolderId &&
-            sameName(entry.text, foundWord.name),
+            entry.tierId === tier.id && !entry.driveFolderId && sameName(entry.name, found.name),
         )
-      const word = matchedWord ?? newWord(language.id, foundWord.name)
 
-      put(words, {
-        ...word,
-        languageId: language.id,
-        driveFolderId: foundWord.folderId,
-        videos: mergeVideos(word, foundWord, driveFileIdOf),
+      const language = put(languages, {
+        ...(matched ?? newLanguage(tier.id, found.name)),
+        tierId: tier.id,
+        driveFolderId: found.folderId,
       })
+
+      for (const foundWord of found.words) {
+        const matchedWord =
+          words.find((entry) => entry.driveFolderId === foundWord.folderId) ??
+          words.find(
+            (entry) =>
+              entry.languageId === language.id &&
+              !entry.driveFolderId &&
+              sameName(entry.text, foundWord.name),
+          )
+        const word = matchedWord ?? newWord(language.id, foundWord.name)
+
+        put(words, {
+          ...word,
+          languageId: language.id,
+          driveFolderId: foundWord.folderId,
+          videos: mergeVideos(word, foundWord, driveFileIdOf),
+        })
+      }
     }
   }
 
-  const kept = languages.filter((entry) => !entry.driveFolderId || seen.has(entry.driveFolderId))
-  const keptIds = new Set(kept.map((entry) => entry.id))
+  // Pruned from the top down, so a tier that has gone takes its languages with
+  // it and they take their words — exactly as trashing its folder in Drive took
+  // everything underneath.
+  const keptTiers = tiers.filter((entry) => !entry.driveFolderId || seen.has(entry.driveFolderId))
+  const tierIds = new Set(keptTiers.map((entry) => entry.id))
+
+  const keptLanguages = languages.filter(
+    (entry) => tierIds.has(entry.tierId) && (!entry.driveFolderId || seen.has(entry.driveFolderId)),
+  )
+  const languageIds = new Set(keptLanguages.map((entry) => entry.id))
 
   return {
-    languages: kept,
-    // A language that has gone takes its words with it, exactly as trashing its
-    // folder took their folders.
+    tiers: keptTiers,
+    languages: keptLanguages,
     words: words.filter(
       (entry) =>
-        keptIds.has(entry.languageId) && (!entry.driveFolderId || seen.has(entry.driveFolderId)),
+        languageIds.has(entry.languageId) &&
+        (!entry.driveFolderId || seen.has(entry.driveFolderId)),
     ),
   }
 }

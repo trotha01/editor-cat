@@ -1,6 +1,6 @@
 /**
- * The word pages: the languages, the words under them, and which of each is
- * being looked at.
+ * The word pages: the tiers, the languages under them, the words under those,
+ * and which of each is being looked at.
  *
  * Every change writes straight through to IndexedDB, the way the project store
  * does and for the same reason — somebody who has just uploaded and labelled
@@ -8,46 +8,54 @@
  * are in the asset catalogue and their bytes in the blob store, so what is kept
  * here is small: names, an order, and a line of transcript each.
  *
- * And the same shelf is a tree of folders in the user's Drive: one per language,
- * one per word inside it, that word's videos in that folder. The two are kept in
- * step from here — every language and word gets its folder as it is made, every
- * upload goes into the folder for its word, every delete trashes what it was —
- * so what IndexedDB holds is a fast local copy of something that lives somewhere
- * the user can open, and a second machine reads the shelf back out of Drive
- * rather than starting empty. Nothing here needs Drive to work: with no
- * connection the folder ids are simply absent, and the page is local like before.
+ * And the same shelf is a tree of folders in the user's Drive: one per tier, one
+ * per language inside it, one per word inside that, and that word's videos in
+ * the word folder. The two are kept in step from here — every tier, language and
+ * word gets its folder as it is made, every upload goes into the folder for its
+ * word, every delete trashes what it was — so what IndexedDB holds is a fast
+ * local copy of something that lives somewhere the user can open, and a second
+ * machine reads the shelf back out of Drive rather than starting empty. Nothing
+ * here needs Drive to work: with no connection the folder ids are simply absent,
+ * and the page is the local one it was before.
  */
 import { create } from 'zustand'
 import {
   deleteLanguage as dbDeleteLanguage,
+  deleteTier as dbDeleteTier,
   deleteWord as dbDeleteWord,
   listLanguages,
+  listTiers,
   listWords,
   putAsset,
   putLanguage,
+  putTier,
   putWord,
 } from '../lib/db'
 import {
   buildSidecar,
   findLanguage,
+  findTier,
   findWord,
   isVideoAssetOrphaned,
+  languagesInTier,
   mergeShelf,
   newLanguage,
+  newTier,
   newWord,
   newWordVideo,
-  sortedLanguages,
+  sortedTiers,
   withMovedVideo,
   withVideo,
   withVideoPatch,
   withoutVideo,
   wordsInLanguage,
-  type DiscoveredLanguage,
+  type DiscoveredTier,
   type Language,
+  type Tier,
   type Word,
   type WordVideoRole,
 } from '../lib/words'
-import { findOrCreateFolder, readShelf, writeSidecar, type RawLanguage } from '../lib/wordsDrive'
+import { findOrCreateFolder, readShelf, writeSidecar, type RawTier } from '../lib/wordsDrive'
 import { trashFile } from '../lib/google/drive'
 import { createScheduler } from '../lib/sync/scheduler'
 import { newId } from '../lib/media'
@@ -57,9 +65,11 @@ import { useDriveStore } from './useDriveStore'
 import type { Asset } from '../lib/types'
 
 interface WordsState {
+  tiers: Tier[]
   languages: Language[]
   words: Word[]
   /** Null before anything has been added, and while the first read is running. */
+  selectedTierId: string | null
   selectedLanguageId: string | null
   selectedWordId: string | null
   loading: boolean
@@ -84,13 +94,19 @@ interface WordsState {
    */
   syncFromDrive: () => Promise<void>
   /**
-   * The Drive folder for a word, made — along with its language's folder — if it
-   * is not there yet. Null when Drive is not connected, which is the signal to
-   * carry on locally.
+   * The Drive folder for a word, made — along with the language and tier folders
+   * above it — if it is not there yet. Null when Drive is not connected, which
+   * is the signal to carry on locally.
    */
   ensureWordFolder: (wordId: string) => Promise<string | null>
 
-  /** Adds a language, or selects the one already under that name. */
+  /** Adds a tier, or selects the one already under that name. */
+  addTier: (name: string) => void
+  selectTier: (id: string | null) => void
+  /** Deletes a tier and everything filed under it. */
+  removeTier: (id: string) => Promise<void>
+
+  /** Adds a language to the selected tier, or selects the one already there. */
   addLanguage: (name: string) => void
   selectLanguage: (id: string | null) => void
   /** Deletes a language, its words, and any video bytes left with nothing to reach them. */
@@ -120,6 +136,10 @@ function persistWord(word: Word): void {
 
 function persistLanguage(language: Language): void {
   void putLanguage(language).catch(() => {})
+}
+
+function persistTier(tier: Tier): void {
+  void putTier(tier).catch(() => {})
 }
 
 /**
@@ -195,17 +215,40 @@ function onceOnly(key: string, run: () => Promise<string | null>): Promise<strin
   return request
 }
 
-/** The Drive folder for a language, made under the chosen folder if it is not there. */
-function ensureLanguageFolder(languageId: string): Promise<string | null> {
-  const language = useWordsStore.getState().languages.find((entry) => entry.id === languageId)
-  if (!language) return Promise.resolve(null)
-  if (language.driveFolderId) return Promise.resolve(language.driveFolderId)
+/** The Drive folder for a tier, made under the chosen folder if it is not there. */
+function ensureTierFolder(tierId: string): Promise<string | null> {
+  const tier = useWordsStore.getState().tiers.find((entry) => entry.id === tierId)
+  if (!tier) return Promise.resolve(null)
+  if (tier.driveFolderId) return Promise.resolve(tier.driveFolderId)
 
   const root = driveRoot()
   if (!root) return Promise.resolve(null)
 
-  return onceOnly(`language:${languageId}`, async () => {
-    const folderId = await findOrCreateFolder(language.name, root)
+  return onceOnly(`tier:${tierId}`, async () => {
+    const folderId = await findOrCreateFolder(tier.name, root)
+    useWordsStore.setState((state) => ({
+      tiers: state.tiers.map((entry) => {
+        if (entry.id !== tierId) return entry
+        const next = { ...entry, driveFolderId: folderId }
+        persistTier(next)
+        return next
+      }),
+    }))
+    return folderId
+  })
+}
+
+/** The Drive folder for a language, made inside its tier's folder. */
+async function ensureLanguageFolder(languageId: string): Promise<string | null> {
+  const language = useWordsStore.getState().languages.find((entry) => entry.id === languageId)
+  if (!language) return null
+  if (language.driveFolderId) return language.driveFolderId
+
+  const parent = await ensureTierFolder(language.tierId)
+  if (!parent) return null
+
+  return await onceOnly(`language:${languageId}`, async () => {
+    const folderId = await findOrCreateFolder(language.name, parent)
     useWordsStore.setState((state) => ({
       languages: state.languages.map((entry) => {
         if (entry.id !== languageId) return entry
@@ -300,39 +343,43 @@ async function pushSidecar(wordId: string): Promise<void> {
  * (see hooks/useWordVideoBytes.ts). A file this browser already knows is matched
  * by its Drive id rather than fetched a second time.
  */
-async function adoptDiscovered(languages: readonly RawLanguage[]): Promise<DiscoveredLanguage[]> {
+async function adoptDiscovered(tiers: readonly RawTier[]): Promise<DiscoveredTier[]> {
   const byDriveId = new Map(
     useAssetStore
       .getState()
       .assets.flatMap((asset) => (asset.driveFileId ? [[asset.driveFileId, asset] as const] : [])),
   )
 
-  const discovered: DiscoveredLanguage[] = []
-  for (const language of languages) {
-    const words = []
-    for (const word of language.words) {
-      const videos = []
-      for (const file of word.files) {
-        let asset = byDriveId.get(file.id)
-        if (!asset) {
-          asset = {
-            id: newId('asset'),
-            kind: 'video',
-            blobKey: newId('blob'),
-            mimeType: file.mimeType,
-            name: file.name,
-            driveFileId: file.id,
-            createdAt: Date.now(),
-          } satisfies Asset
-          await putAsset(asset)
-          useAssetStore.getState().adopt(asset)
-          byDriveId.set(file.id, asset)
+  const discovered: DiscoveredTier[] = []
+  for (const tier of tiers) {
+    const languages = []
+    for (const language of tier.languages) {
+      const words = []
+      for (const word of language.words) {
+        const videos = []
+        for (const file of word.files) {
+          let asset = byDriveId.get(file.id)
+          if (!asset) {
+            asset = {
+              id: newId('asset'),
+              kind: 'video',
+              blobKey: newId('blob'),
+              mimeType: file.mimeType,
+              name: file.name,
+              driveFileId: file.id,
+              createdAt: Date.now(),
+            } satisfies Asset
+            await putAsset(asset)
+            useAssetStore.getState().adopt(asset)
+            byDriveId.set(file.id, asset)
+          }
+          videos.push({ driveFileId: file.id, assetId: asset.id })
         }
-        videos.push({ driveFileId: file.id, assetId: asset.id })
+        words.push({ folderId: word.folderId, name: word.name, videos, sidecar: word.sidecar })
       }
-      words.push({ folderId: word.folderId, name: word.name, videos, sidecar: word.sidecar })
+      languages.push({ folderId: language.folderId, name: language.name, words })
     }
-    discovered.push({ folderId: language.folderId, name: language.name, words })
+    discovered.push({ folderId: tier.folderId, name: tier.name, languages })
   }
   return discovered
 }
@@ -360,8 +407,10 @@ function settle<T extends { id: string }>(
 }
 
 export const useWordsStore = create<WordsState>((set, get) => ({
+  tiers: [],
   languages: [],
   words: [],
+  selectedTierId: null,
   selectedLanguageId: null,
   selectedWordId: null,
   loading: true,
@@ -376,27 +425,30 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     watchUploads()
 
     // Leaving the page and coming back to it should come back to what was open,
-    // and re-reading would put the selection back to the top of both columns.
+    // and re-reading would put the selection back to the top of all three columns.
     if (get().loaded) return
     set({ loading: true })
     try {
-      const [languages, words] = await Promise.all([listLanguages(), listWords()])
-      // Opening on the first language and its first word, so a page that has
-      // been used before opens on something rather than on two empty columns
-      // and a prompt.
-      const language = sortedLanguages(languages)[0]
+      const [tiers, stored, words] = await Promise.all([listTiers(), listLanguages(), listWords()])
+      // A language saved before the shelf grew a tier above it has nowhere to
+      // hang: its folder is at the root, which is where tiers live now. Left out
+      // rather than guessed at — nothing in Drive is touched, so moving that
+      // folder under a tier folder is all it takes to have it read back in.
+      const languages = stored.filter((language) => language.tierId)
       set({
+        tiers,
         languages,
         words,
         loading: false,
         loaded: true,
-        selectedLanguageId: language?.id ?? null,
-        selectedWordId: wordsInLanguage(words, language?.id ?? null)[0]?.id ?? null,
+        // Opening on the first of each, so a page that has been used before
+        // opens on something rather than on three empty columns and a prompt.
+        ...openingSelection({ tiers, languages, words }),
       })
     } catch {
       // Nothing to show and nothing to be done about it from here. Not latched
       // as loaded: coming back to the page is a fair second try.
-      set({ languages: [], words: [], loading: false })
+      set({ tiers: [], languages: [], words: [], loading: false })
     }
 
     // The local copy is on screen by now, and Drive is what says whether it is
@@ -411,13 +463,20 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 
     set({ syncing: true, syncError: null })
     try {
-      const before = { languages: get().languages, words: get().words }
+      const before = { tiers: get().tiers, languages: get().languages, words: get().words }
       const discovered = await adoptDiscovered(await readShelf(root))
       const merged = mergeShelf(before, discovered, driveFileIdOf)
 
+      const tiers = settle(merged.tiers, before.tiers, persistTier)
       const languages = settle(merged.languages, before.languages, persistLanguage)
       const words = settle(merged.words, before.words, persistWord)
-      set({ languages, words, syncing: false, ...settledSelection(get(), languages, words) })
+      set({
+        tiers,
+        languages,
+        words,
+        syncing: false,
+        ...settledSelection(get(), { tiers, languages, words }),
+      })
 
       // What a read can take away, it takes the stored copy and the bytes of
       // too: a word deleted on another machine otherwise leaves a row here and
@@ -429,6 +488,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         ...gone(before.languages, languages).map((entry) =>
           dbDeleteLanguage(entry.id).catch(() => {}),
         ),
+        ...gone(before.tiers, tiers).map((entry) => dbDeleteTier(entry.id).catch(() => {})),
       ])
     } catch (cause) {
       // The shelf on screen is still the shelf; what failed is finding out
@@ -459,17 +519,82 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     })
   },
 
-  addLanguage: (name) => {
+  addTier: (name) => {
     const trimmed = name.trim()
     if (!trimmed) return
 
-    const existing = findLanguage(get().languages, trimmed)
+    const existing = findTier(get().tiers, trimmed)
+    if (existing) {
+      get().selectTier(existing.id)
+      return
+    }
+
+    const tier = newTier(trimmed)
+    persistTier(tier)
+    set((state) => ({
+      tiers: [...state.tiers, tier],
+      selectedTierId: tier.id,
+      // Nothing in it yet, so nothing below it to be looking at.
+      selectedLanguageId: null,
+      selectedWordId: null,
+    }))
+
+    // Its folder, made now rather than when the first video arrives: adding a
+    // tier is what it means to want one, and a folder waiting in Drive is where
+    // somebody would file things from a phone.
+    void ensureTierFolder(tier.id)
+  },
+
+  selectTier: (id) => {
+    set((state) => ({
+      selectedTierId: id,
+      // The two columns to the right are about whatever this one has open, so
+      // moving it resettles both rather than leaving a language from another
+      // tier on screen.
+      ...belowTier(state, id),
+    }))
+  },
+
+  removeTier: async (id) => {
+    const doomedLanguages = get().languages.filter((language) => language.tierId === id)
+    const doomedIds = new Set(doomedLanguages.map((language) => language.id))
+    const doomedWords = get().words.filter((word) => doomedIds.has(word.languageId))
+    const assetIds = assetIdsOf(doomedWords)
+    const folderId = get().tiers.find((tier) => tier.id === id)?.driveFolderId
+
+    const tiers = get().tiers.filter((tier) => tier.id !== id)
+    const languages = get().languages.filter((language) => language.tierId !== id)
+    const words = get().words.filter((word) => !doomedIds.has(word.languageId))
+    set((state) => ({
+      tiers,
+      languages,
+      words,
+      ...(state.selectedTierId === id ? openingSelection({ tiers, languages, words }) : {}),
+    }))
+
+    await Promise.all([
+      dbDeleteTier(id),
+      ...doomedLanguages.map((language) => dbDeleteLanguage(language.id)),
+      ...doomedWords.map((word) => dbDeleteWord(word.id)),
+    ]).catch(() => {})
+    // One call takes the languages, their words and their videos with it,
+    // because trashing a folder trashes everything inside it.
+    await trashInDrive(folderId)
+    await forgetOrphanedAssets(assetIds, words)
+  },
+
+  addLanguage: (name) => {
+    const tierId = get().selectedTierId
+    const trimmed = name.trim()
+    if (!tierId || !trimmed) return
+
+    const existing = findLanguage(get().languages, tierId, trimmed)
     if (existing) {
       get().selectLanguage(existing.id)
       return
     }
 
-    const language = newLanguage(trimmed)
+    const language = newLanguage(tierId, trimmed)
     persistLanguage(language)
     set((state) => ({
       languages: [...state.languages, language],
@@ -478,9 +603,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       selectedWordId: null,
     }))
 
-    // Its folder, made now rather than when the first video arrives: adding a
-    // language is what it means to want one, and a folder waiting in Drive is
-    // where somebody would drop takes in from a phone.
     void ensureLanguageFolder(language.id)
   },
 
@@ -488,7 +610,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     set((state) => ({
       selectedLanguageId: id,
       // A language and a word from another language is not a state the page can
-      // draw, so switching column one always resettles column two.
+      // draw, so switching the middle column always resettles the last one.
       selectedWordId: wordsInLanguage(state.words, id)[0]?.id ?? null,
     }))
   },
@@ -505,17 +627,13 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 
     const languages = get().languages.filter((language) => language.id !== id)
     const words = get().words.filter((word) => word.languageId !== id)
-    const next = sortedLanguages(languages)[0]
-    set({
+    set((state) => ({
       languages,
       words,
-      ...(get().selectedLanguageId === id
-        ? {
-            selectedLanguageId: next?.id ?? null,
-            selectedWordId: wordsInLanguage(words, next?.id ?? null)[0]?.id ?? null,
-          }
+      ...(state.selectedLanguageId === id
+        ? belowTier({ ...state, languages, words }, state.selectedTierId)
         : {}),
-    })
+    }))
 
     await Promise.all([dbDeleteLanguage(id), ...doomed.map((word) => dbDeleteWord(word.id))]).catch(
       () => {},
@@ -633,24 +751,52 @@ async function trashInDrive(fileId: string | undefined): Promise<void> {
   }
 }
 
+/** The three lists, in whatever state they are in. */
+type Lists = Pick<WordsState, 'tiers' | 'languages' | 'words'>
+
+type Selection = Pick<WordsState, 'selectedTierId' | 'selectedLanguageId' | 'selectedWordId'>
+
+/** The first language of a tier and the first word of that, for the columns below it. */
+function belowTier(
+  lists: Lists,
+  tierId: string | null,
+): Pick<WordsState, 'selectedLanguageId' | 'selectedWordId'> {
+  const language = languagesInTier(lists.languages, tierId)[0]
+  return {
+    selectedLanguageId: language?.id ?? null,
+    selectedWordId: wordsInLanguage(lists.words, language?.id ?? null)[0]?.id ?? null,
+  }
+}
+
+/** The first of each, which is what a page with nothing open yet should show. */
+function openingSelection(lists: Lists): Selection {
+  const tier = sortedTiers(lists.tiers)[0]
+  return { selectedTierId: tier?.id ?? null, ...belowTier(lists, tier?.id ?? null) }
+}
+
 /**
- * Where the two columns should be pointing after a read from Drive.
+ * Where the three columns should be pointing after a read from Drive.
  *
  * Whatever was open stays open — a sync is not a reason to move somebody — and
- * anything that had nothing open takes the first of what has just arrived, which
- * is what makes a second machine open on a shelf rather than on a prompt.
+ * anything that had nothing open, or had something that has since gone, takes
+ * the first of what is there. That is what makes a second machine open on a
+ * shelf rather than on a prompt.
  */
-function settledSelection(
-  state: WordsState,
-  languages: readonly Language[],
-  words: readonly Word[],
-): Pick<WordsState, 'selectedLanguageId' | 'selectedWordId'> {
-  const language =
-    languages.find((entry) => entry.id === state.selectedLanguageId) ??
-    sortedLanguages(languages)[0]
-  const inLanguage = wordsInLanguage(words, language?.id ?? null)
+function settledSelection(state: WordsState, lists: Lists): Selection {
+  const tier =
+    lists.tiers.find((entry) => entry.id === state.selectedTierId) ?? sortedTiers(lists.tiers)[0]
+
+  const inTier = languagesInTier(lists.languages, tier?.id ?? null)
+  const language = inTier.find((entry) => entry.id === state.selectedLanguageId) ?? inTier[0]
+
+  const inLanguage = wordsInLanguage(lists.words, language?.id ?? null)
   const word = inLanguage.find((entry) => entry.id === state.selectedWordId) ?? inLanguage[0]
-  return { selectedLanguageId: language?.id ?? null, selectedWordId: word?.id ?? null }
+
+  return {
+    selectedTierId: tier?.id ?? null,
+    selectedLanguageId: language?.id ?? null,
+    selectedWordId: word?.id ?? null,
+  }
 }
 
 /**

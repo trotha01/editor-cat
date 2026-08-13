@@ -66,8 +66,10 @@ function current(): Word {
 
 function mount(word: Word = WORD) {
   useWordsStore.setState({
-    languages: [{ id: 'lang_es', name: 'Spanish', createdAt: 0 }],
+    tiers: [{ id: 'tier_1', name: '1st tier', createdAt: 0 }],
+    languages: [{ id: 'lang_es', tierId: 'tier_1', name: 'Spanish', createdAt: 0 }],
     words: [word],
+    selectedTierId: 'tier_1',
     selectedLanguageId: 'lang_es',
     selectedWordId: word.id,
     loading: false,
