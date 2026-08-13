@@ -178,7 +178,13 @@ export function EmptyState({
   title,
   children,
 }: {
-  icon: string
+  /**
+   * Usually an emoji. Anything drawable, because the panel a list has while it
+   * is still being read is the same panel with a spinner where the emoji goes —
+   * see the words page, which draws both from the same component so the two do
+   * not sit at different heights as one replaces the other.
+   */
+  icon: ReactNode
   title: string
   children?: ReactNode
 }) {
