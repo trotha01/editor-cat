@@ -7,6 +7,11 @@
  * "watch them together" needs to mean when the takes are whole files played in
  * order.
  *
+ * The one thing it does draw for itself is the scrub bar, which is the same
+ * decision seen from the other side: the run is what is being watched, so the
+ * bar spans the whole word and dragging it crosses the join between two takes.
+ * A native one would stop at the end of whichever file happened to be loaded.
+ *
  * Under it the same run laid out left to right, which is where the order is
  * actually decided: the run reads as a sentence — this leads in, this is the
  * word, this signs off — and a strip of frames in a row is that sentence, in a
@@ -34,6 +39,16 @@ import { formatTime } from '../lib/timeline'
 import { roleLabel, type WordVideo, type WordVideoRole } from '../lib/words'
 import type { Asset } from '../lib/types'
 
+/**
+ * How far the element may drift from where the bar says it should be before we
+ * bother correcting it, in seconds. The same idea as the editor's own preview
+ * (`SEEK_TOLERANCE` in Preview.tsx): a drag fires this on every pointer move,
+ * and seeking a `<video>` on every one of those is what made scrubbing stutter
+ * — most of those moves are well under the tolerance and can just wait for the
+ * next one that isn't.
+ */
+const SEEK_TOLERANCE = 0.3
+
 /** A video and the file behind it. Entries whose bytes are missing never get here. */
 export interface PlayableVideo {
   video: WordVideo
@@ -57,7 +72,18 @@ export function WordSequencePlayer({
 }) {
   const [index, setIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
+  /** How far into the take on screen the element has got, by its own clock. */
+  const [elapsed, setElapsed] = useState(0)
   const element = useRef<HTMLVideoElement>(null)
+  /**
+   * Where a move wants the element, kept until the file it lands in is loaded.
+   *
+   * Scrubbing into another take swaps the source, and an element that has not
+   * got its new file yet has nowhere to put a time — a `currentTime` assigned
+   * before then is quietly dropped, or worse, applied to the take being left.
+   * So the offset waits here and goes in when the metadata arrives.
+   */
+  const pending = useRef<number | null>(null)
 
   // Deleting the take that was playing must not leave the player pointing past
   // the end of the run, so where we are is clamped on the way out rather than
@@ -70,6 +96,30 @@ export function WordSequencePlayer({
     () => entries.reduce((sum, entry) => sum + (entry.asset.duration ?? 0), 0),
     [entries],
   )
+
+  /**
+   * Where each take starts within the run, which is what lets one slider cover
+   * all of them: the bar is over the word, not over the file that happens to be
+   * in the element, so a point on it has to be read back as a take and an
+   * offset into that take.
+   *
+   * A take whose length was never measured takes up no room, which is the
+   * honest answer rather than a tidy one — we do not know where it ends, so we
+   * cannot say where the next one begins either, and any guess would put the
+   * handle somewhere the picture is not.
+   */
+  const starts = useMemo(() => {
+    const list: number[] = []
+    let sum = 0
+    for (const entry of entries) {
+      list.push(sum)
+      sum += entry.asset.duration ?? 0
+    }
+    return list
+  }, [entries])
+
+  /** The handle's place on the bar: the run so far, plus how far into this take. */
+  const position = Math.min((starts[at] ?? 0) + elapsed, total)
 
   // The same 6px before a drag begins as the list below, which is what leaves a
   // plain click on a clip free to mean "play this one".
@@ -103,7 +153,36 @@ export function WordSequencePlayer({
 
   if (entries.length === 0) return null
 
-  const goTo = (next: number) => setIndex(Math.min(Math.max(next, 0), entries.length - 1))
+  /** Move to a take, and to a point inside it — the start of it unless said. */
+  const goTo = (next: number, offset = 0) => {
+    const bounded = Math.min(Math.max(next, 0), entries.length - 1)
+    setElapsed(offset)
+    if (bounded === at) {
+      const video = element.current
+      if (video && Math.abs(video.currentTime - offset) > SEEK_TOLERANCE) video.currentTime = offset
+      return
+    }
+    pending.current = offset
+    setIndex(bounded)
+  }
+
+  /**
+   * A point on the bar, turned back into a take and a time within it.
+   *
+   * The take is the *last* one starting at or before that point, which does two
+   * things at once: the very end of the run lands on the last take rather than
+   * off the end of it, and a take of unmeasured length — which starts exactly
+   * where the take after it does — never wins the point it shares, so scrubbing
+   * cannot strand the run on a clip with nothing to play.
+   */
+  const seek = (time: number) => {
+    const target = Math.min(Math.max(time, 0), total)
+    let next = 0
+    starts.forEach((start, i) => {
+      if (target >= start) next = i
+    })
+    goTo(next, target - (starts[next] ?? 0))
+  }
 
   const onDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
@@ -137,6 +216,7 @@ export function WordSequencePlayer({
    * once per take.
    */
   const advance = () => {
+    setElapsed(0)
     if (at + 1 < entries.length) {
       setIndex(at + 1)
       setPlaying(true)
@@ -157,19 +237,54 @@ export function WordSequencePlayer({
         </span>
       </div>
 
-      <div className="overflow-hidden rounded-lg bg-black">
+      {/* A fixed box rather than one sized off whichever take happens to be
+          loaded — the same reasoning as the editor's own preview. Without it,
+          the element's own height follows each take's native aspect ratio, so
+          the picture visibly grows and shrinks at every join. Letterboxing
+          inside an unchanging box, `object-contain`, is what the editor does
+          too. */}
+      <div className="relative aspect-video max-h-80 w-full overflow-hidden rounded-lg bg-black">
         <video
           ref={element}
           src={source.url ?? undefined}
           playsInline
           // Not `controls`: the run is the thing being watched, and a native
           // scrub bar that stops at the end of take two would be describing a
-          // different video from the one on screen.
-          className="mx-auto max-h-80 w-full object-contain"
+          // different video from the one on screen. The bar under it is ours
+          // for exactly that reason — it runs the length of the word.
+          className="absolute inset-0 size-full object-contain"
           onEnded={advance}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)}
+          onLoadedMetadata={(event) => {
+            if (pending.current === null) return
+            event.currentTarget.currentTime = pending.current
+            pending.current = null
+          }}
         />
+      </div>
+
+      {/* Dragged across the whole run rather than the file in the element, so
+          the handle keeps moving straight through the join between two takes.
+          Disabled when nothing has been measured: with no lengths there is no
+          length to drag along, and a bar that moves without moving the picture
+          is worse than one that plainly cannot be moved. */}
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          min={0}
+          max={Math.max(total, 0.001)}
+          step={0.01}
+          value={position}
+          onChange={(event) => seek(Number(event.target.value))}
+          disabled={total <= 0}
+          aria-label="Scrub through the run"
+          className="min-w-0 flex-1"
+        />
+        <span className="shrink-0 text-xs tabular-nums text-ink-dim">
+          {formatTime(position)} / {formatTime(total)}
+        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
