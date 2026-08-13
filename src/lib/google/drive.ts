@@ -7,9 +7,15 @@
  *
  * Everything here works under `drive.file` alone — creating, uploading,
  * and reading back files this app made or the user handed over through the
- * Google Picker. Listing or searching someone's existing Drive is deliberately
- * absent: that needs a restricted scope, and the Picker does it better. See
- * `picker.ts`.
+ * Google Picker. Searching someone's existing Drive is deliberately absent: that
+ * needs a restricted scope, and the Picker does it better. See `picker.ts`.
+ *
+ * `listChildren` is not that search, and the difference is the whole reason it
+ * is allowed to exist: `files.list` under `drive.file` answers with the app's own
+ * files and nothing else, so looking inside a folder this app made shows what
+ * this app put there. That is what lets the word pages find their own language
+ * and word folders again on a second machine — and it is also why a folder
+ * somebody made by hand in Drive is invisible until they hand it over.
  */
 import { accessToken, invalidateToken } from './gis'
 import type { AssetKind } from '../types'
@@ -198,6 +204,106 @@ export async function createFolder(name: string, parentId = 'root'): Promise<Dri
     body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
   })
   return (await response.json()) as DriveFolder
+}
+
+/** One thing inside a folder — a file or a folder of its own. */
+export interface DriveChild {
+  id: string
+  name: string
+  mimeType: string
+}
+
+export function isFolder(child: DriveChild): boolean {
+  return child.mimeType === FOLDER_MIME
+}
+
+/**
+ * What is inside a folder, as far as this app is allowed to see.
+ *
+ * Trashed items are left out: a language folder somebody deleted has not gone
+ * anywhere Drive cannot get it back from, but it has stopped being part of the
+ * shelf, and listing it would put it straight back on screen.
+ *
+ * Paged through to the end rather than taking the first hundred. A word folder
+ * holds a handful of takes, but the folder holding every language of a big shelf
+ * can be long, and a list that silently stops is a language that silently
+ * vanishes.
+ */
+export async function listChildren(parentId: string, signal?: AbortSignal): Promise<DriveChild[]> {
+  const children: DriveChild[] = []
+  let pageToken: string | undefined
+
+  do {
+    const params = new URLSearchParams({
+      q: `'${parentId}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType)',
+      pageSize: '200',
+      // Both halves of the ordering matter: folders before files so a language's
+      // words are read before its stray uploads, and name order so a shelf reads
+      // the same way twice.
+      orderBy: 'folder, name',
+      ...(pageToken ? { pageToken } : {}),
+    })
+    const response = await driveFetch(`${API}/files?${params.toString()}&${SHARED_DRIVE_PARAMS}`, {
+      signal,
+    })
+    const body = (await response.json()) as { files?: DriveChild[]; nextPageToken?: string }
+    children.push(...(body.files ?? []))
+    pageToken = body.nextPageToken
+  } while (pageToken)
+
+  return children
+}
+
+/**
+ * Replaces a file's contents, leaving its id — and therefore every reference to
+ * it — alone.
+ *
+ * For the small JSON the word pages keep beside the videos, which is rewritten
+ * every time a take is relabelled. Uploading a new file each time would leave a
+ * folder full of them.
+ */
+export async function updateFileContent(fileId: string, blob: Blob): Promise<void> {
+  await driveFetch(
+    `${UPLOAD_API}/${encodeURIComponent(fileId)}?uploadType=media&${SHARED_DRIVE_PARAMS}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+      body: blob,
+    },
+  )
+}
+
+/**
+ * Renames a file or folder, leaving its id — and everything pointing at it —
+ * alone.
+ *
+ * Which is what makes renaming safe here: the shelf is matched to Drive by
+ * folder id, so a tier renamed on one machine is the same tier on the next one
+ * rather than a new one beside the old.
+ */
+export async function renameFile(fileId: string, name: string): Promise<void> {
+  await driveFetch(`${API}/files/${encodeURIComponent(fileId)}?${SHARED_DRIVE_PARAMS}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+/**
+ * Moves a file or folder to the Drive trash.
+ *
+ * Trash rather than delete, deliberately: this is the user's own Drive, and a
+ * mis-click on a language should be answerable from Drive's own bin rather than
+ * being the end of a folder of recordings. Trashing a folder takes what is in it
+ * along, which is what makes deleting a word one call rather than one per take.
+ */
+export async function trashFile(fileId: string): Promise<void> {
+  await driveFetch(`${API}/files/${encodeURIComponent(fileId)}?${SHARED_DRIVE_PARAMS}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  })
 }
 
 /** Pulls a file's bytes down for local playback and export. */

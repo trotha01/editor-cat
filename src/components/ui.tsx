@@ -2,6 +2,7 @@
 import {
   useEffect,
   useRef,
+  type AnchorHTMLAttributes,
   type ButtonHTMLAttributes,
   type ComponentPropsWithRef,
   type ReactNode,
@@ -17,17 +18,30 @@ const VARIANTS: Record<Variant, string> = {
   danger: 'bg-red-500/10 text-red-700 hover:bg-red-500/20',
 }
 
+const BUTTON =
+  'inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+
 export function Button({
   variant = 'secondary',
   className = '',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }) {
-  return (
-    <button
-      {...props}
-      className={`inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${VARIANTS[variant]} ${className}`}
-    />
-  )
+  return <button {...props} className={`${BUTTON} ${VARIANTS[variant]} ${className}`} />
+}
+
+/**
+ * A link that looks like a button, for going to the other page.
+ *
+ * An anchor rather than a button with an onClick, because it is genuinely
+ * navigation: middle-click and "open in new tab" should work, and the address it
+ * leads to should be visible on hover like any other link.
+ */
+export function LinkButton({
+  variant = 'secondary',
+  className = '',
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: Variant }) {
+  return <a {...props} className={`${BUTTON} ${VARIANTS[variant]} ${className}`} />
 }
 
 export function Field({

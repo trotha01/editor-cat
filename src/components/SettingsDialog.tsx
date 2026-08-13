@@ -9,6 +9,9 @@
  *
  * What is left is what genuinely belongs to this browser: which models the
  * prompt improver uses, the account, Drive, and the media stored on this device.
+ * All of which is as much use on the word pages as in the editor — Drive most of
+ * all, since the shelf lives in the folder this dialog names — so the same dialog
+ * opens from both, minus the one section that is about a project.
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout, Modal } from './ui'
@@ -23,7 +26,22 @@ import { useSettingsStore } from '../state/useSettingsStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { releaseAllAssetUrls } from '../state/useAssetStore'
 
-export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function SettingsDialog({
+  open,
+  onClose,
+  showProject = true,
+}: {
+  open: boolean
+  onClose: () => void
+  /**
+   * Whether to offer the settings that belong to the open project.
+   *
+   * False on the word pages, which have no project open — nothing there ever
+   * asked the project list to load, so the name in that field would be the empty
+   * document's, and typing in it would rename a project nobody chose.
+   */
+  showProject?: boolean
+}) {
   const settings = useSettingsStore()
   // Whether the voice features are set up here at all. Nothing a visitor can do
   // changes it, so this only decides which half of one sentence is true.
@@ -59,7 +77,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </Callout>
         ) : null}
 
-        <ProjectSettings />
+        {showProject ? <ProjectSettings /> : null}
 
         <Callout tone="info" title="No keys needed">
           Everything runs on this site&apos;s own accounts: images, video and captions on its fal.ai

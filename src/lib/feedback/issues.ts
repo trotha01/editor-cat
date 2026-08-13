@@ -184,3 +184,26 @@ export function projectContext(summary: {
     `Captions: ${summary.captions}`,
   ].join('\n')
 }
+
+/**
+ * The shelf's shape, which is what a word-pages bug depends on instead.
+ *
+ * A report from that page used to carry the project block, which was a report
+ * about a timeline nobody had opened: all zeroes, and no hint of the tree the
+ * bug was actually in. How big the shelf is and whether Drive is connected are
+ * the two things that separate "this is broken" from "this is slow with four
+ * hundred words" and from "this never reached Drive at all".
+ */
+export function shelfContext(summary: {
+  tiers: number
+  languages: number
+  words: number
+  videosOnOpenWord: number
+  driveConnected: boolean
+}): string {
+  return [
+    `Shelf: ${summary.tiers} tiers, ${summary.languages} languages, ${summary.words} words`,
+    `Open word: ${summary.videosOnOpenWord} videos`,
+    `Drive: ${summary.driveConnected ? 'connected' : 'not connected'}`,
+  ].join('\n')
+}
