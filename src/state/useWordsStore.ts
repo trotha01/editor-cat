@@ -77,7 +77,7 @@ import { isSupabaseConfigured } from '../lib/supabase/client'
 import { getShelf, putShelf } from '../lib/supabase/shelf'
 import { createScheduler } from '../lib/sync/scheduler'
 import { recordAsset } from '../lib/sync/assetSync'
-import { newId } from '../lib/media'
+import { ingestBlob, newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { isSignedIn } from './useAuthStore'
 import { useAssetStore } from './useAssetStore'
@@ -99,6 +99,19 @@ interface WordsState {
   syncing: boolean
   /** Why the last read or write failed, if it did. The local shelf still stands. */
   syncError: string | null
+  /**
+   * The batch of files being filed into a word right now — which word, and how
+   * many of them are in.
+   *
+   * Here rather than in the component that started it because there are two
+   * doors in: the button over the videos, and a drop onto a word in the column
+   * beside them. One of them is not on screen while the other is running, and
+   * progress that lived in whichever component took the drop would be progress
+   * you could lose by looking away.
+   */
+  uploading: { wordId: string; done: number; total: number } | null
+  /** Why the last batch could not be filed, until the next one starts. */
+  uploadError: string | null
 
   /**
    * Reads both stores, then folds in whatever the account holds. Does nothing on
@@ -164,6 +177,20 @@ interface WordsState {
 
   /** Puts an uploaded video on the end of a word's run, labelled as the word itself. */
   addVideo: (wordId: string, assetId: string) => void
+  /**
+   * Files videos from this machine — picked with the button or dragged in off
+   * the desktop — into a word, and into that word's folder in Drive.
+   *
+   * One file at a time and in the order they were handed over: picking six
+   * takes and having them land in whatever order six parallel ingests happened
+   * to finish would mean re-ordering the run by hand every time, which is the
+   * work this page exists to make easy.
+   *
+   * A second batch while one is running is refused rather than queued, because
+   * both doors in show the one `uploading` and two overlapping batches would
+   * report each other's progress.
+   */
+  addLocalVideos: (wordId: string, files: readonly File[]) => Promise<void>
   /**
    * Puts videos that are already in Drive on the end of a word's run.
    *
@@ -667,6 +694,8 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   loaded: false,
   syncing: false,
   syncError: null,
+  uploading: null,
+  uploadError: null,
 
   load: async () => {
     // Leaving the page and coming back to it should come back to what was open,
@@ -994,6 +1023,41 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
     }))
+  },
+
+  addLocalVideos: async (wordId, files) => {
+    const chosen = [...files]
+    if (get().uploading || chosen.length === 0) return
+    if (!get().words.some((entry) => entry.id === wordId)) return
+
+    set({ uploading: { wordId, done: 0, total: chosen.length }, uploadError: null })
+    try {
+      // Asked for once, before the first byte is read: it is the same folder for
+      // every file in this batch, and making it is what stops six uploads racing
+      // to create six of it. Null when there is no Drive to make it in, which
+      // sends the backup nowhere and the file nowhere but here.
+      const driveParentId = (await get().ensureWordFolder(wordId)) ?? undefined
+
+      for (const [done, file] of chosen.entries()) {
+        set({ uploading: { wordId, done, total: chosen.length } })
+        // Worth saying rather than skipping quietly: dropping a folder, or the
+        // wrong file out of a folder of takes, is easy to do and leaves a run
+        // that is simply one short.
+        if (!file.type.startsWith('video/')) {
+          set({ uploadError: `"${file.name}" is not a video.` })
+          continue
+        }
+        const asset = await ingestBlob(file, { kind: 'video', name: file.name, driveParentId })
+        // Into the catalogue but into no project's library: this belongs to a
+        // word, not to whatever timeline happens to be open.
+        useAssetStore.getState().adopt(asset)
+        get().addVideo(wordId, asset.id)
+      }
+    } catch (cause) {
+      set({ uploadError: toDisplayMessage(cause) })
+    } finally {
+      set({ uploading: null })
+    }
   },
 
   addDriveVideos: async (wordId, files) => {
