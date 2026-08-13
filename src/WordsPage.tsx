@@ -175,7 +175,12 @@ export function WordsPage() {
             title="Tiers"
             collapsed={!!collapsed.tiers}
             onToggle={() => toggle('tiers')}
-            items={tierList.map((entry) => ({ id: entry.id, label: entry.name }))}
+            items={tierList.map((entry) => ({
+              id: entry.id,
+              label: entry.name,
+              count: languages.filter((language) => language.tierId === entry.id).length,
+            }))}
+            countNoun="language"
             selectedId={selectedTierId}
             // Picking one moves the narrow layout on to the list below it: the
             // three levels are one errand — tier, then language, then word — and
@@ -214,7 +219,12 @@ export function WordsPage() {
             title="Languages"
             collapsed={!!collapsed.languages}
             onToggle={() => toggle('languages')}
-            items={languageList.map((entry) => ({ id: entry.id, label: entry.name }))}
+            items={languageList.map((entry) => ({
+              id: entry.id,
+              label: entry.name,
+              count: words.filter((word) => word.languageId === entry.id).length,
+            }))}
+            countNoun="word"
             selectedId={selectedLanguageId}
             onSelect={(id) => {
               useWordsStore.getState().selectLanguage(id)
@@ -259,8 +269,9 @@ export function WordsPage() {
             items={wordList.map((entry) => ({
               id: entry.id,
               label: entry.text,
-              note: entry.videos.length ? `${entry.videos.length}` : undefined,
+              count: entry.videos.length,
             }))}
+            countNoun="video"
             selectedId={selectedWordId}
             // The end of the errand: the videos are what was being looked for, so
             // the list gets out of their way.
@@ -456,8 +467,12 @@ function PickerTab({
 interface NavItem {
   id: string
   label: string
-  /** A small figure after the name — how many videos a word has. */
-  note?: string
+  /**
+   * How many things are filed under this row: languages in a tier, words in a
+   * language, takes in a word — which is to say how many folders or files are
+   * inside its folder in Drive.
+   */
+  count: number
 }
 
 /**
@@ -511,6 +526,7 @@ function NavColumn({
   open,
   title,
   items,
+  countNoun,
   selectedId,
   onSelect,
   onAdd,
@@ -530,6 +546,13 @@ function NavColumn({
   open: boolean
   title: string
   items: NavItem[]
+  /**
+   * What a row's count counts, singular — "language", "word", "video". Only a
+   * screen reader hears it: on screen the column above says what the list holds,
+   * so a bare "(9)" is enough, but read out on its own a number in brackets is
+   * nine of nothing.
+   */
+  countNoun: string
   selectedId: string | null
   onSelect: (id: string) => void
   onAdd: (value: string) => void
@@ -631,20 +654,38 @@ function NavColumn({
                     type="button"
                     onClick={() => onSelect(item.id)}
                     aria-current={selectedId === item.id}
-                    className={`min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                    // Spelled out for the count, because "French (1)" read aloud
+                    // is "French one" — the brackets carry the meaning on screen
+                    // and say nothing out loud. A row with nothing in it keeps
+                    // its bare name, on screen and off.
+                    aria-label={
+                      item.count
+                        ? `${item.label}, ${item.count} ${countNoun}${item.count === 1 ? '' : 's'}`
+                        : undefined
+                    }
+                    className={`flex min-w-0 flex-1 items-baseline rounded-lg px-2 py-1.5 text-left text-sm transition ${
                       selectedId === item.id
                         ? 'bg-accent text-accent-ink'
                         : 'text-ink hover:bg-surface-2'
                     }`}
                   >
-                    {item.label}
-                    {item.note ? (
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {/* How much is filed under the row, dimmed: it is worth
+                        seeing which tiers are full and which word has no takes
+                        yet without opening them, but it is not what you are
+                        reading the column for, so it must not compete with the
+                        names. An empty row shows nothing rather than "(0)" —
+                        three columns of zeroes is exactly the distraction this
+                        is meant to avoid. It sits outside the truncated name so
+                        a long name's ellipsis never eats the count with it. */}
+                    {item.count ? (
                       <span
-                        className={`ml-1.5 text-xs ${
+                        aria-hidden
+                        className={`ml-1.5 flex-shrink-0 text-xs ${
                           selectedId === item.id ? 'text-accent-ink/75' : 'text-ink-dim'
                         }`}
                       >
-                        {item.note}
+                        ({item.count})
                       </span>
                     ) : null}
                   </button>
