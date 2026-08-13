@@ -115,6 +115,21 @@ export function WordsPage() {
   const language = languageList.find((entry) => entry.id === selectedLanguageId)
   const word = wordList.find((entry) => entry.id === selectedWordId)
 
+  /**
+   * Whether a read that could still fill the columns is out.
+   *
+   * Two of them can: this browser's copy of the shelf (`loading`) and the
+   * account's (`syncing`), and a shelf that has never been on this machine only
+   * arrives with the second — so the page is still loading until both have come
+   * back, not just the first. Held here and handed to all three columns and the
+   * word, so the whole page says "loading" at once rather than one corner of it.
+   *
+   * Only the parts with nothing in them draw a placeholder. A sync on a shelf
+   * that is already up is a background refresh, and blanking the names somebody
+   * is reading to say so would be worse than saying nothing.
+   */
+  const busy = loading || syncing
+
   return (
     <div className="flex h-full flex-col bg-canvas text-ink">
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-3">
@@ -124,12 +139,16 @@ export function WordsPage() {
         {/* Not "Words": the column below is called that, and a page and a list
             inside it should not answer to the same name. */}
         <h1 className="text-sm font-semibold">Word videos</h1>
-        <p className="min-w-0 flex-1 truncate text-xs text-ink-dim">
-          {syncing
+        {/* `status`, so the one line that says a read is running is announced
+            when it starts rather than sat there to be found. The placeholders
+            below are drawn for the eye and hidden from a screen reader, which
+            makes this their announcement too. */}
+        <p role="status" className="min-w-0 flex-1 truncate text-xs text-ink-dim">
+          {busy
             ? 'Reading your shelf…'
             : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
-        {syncing ? <Spinner className="text-ink-dim" /> : null}
+        {busy ? <Spinner className="text-ink-dim" /> : null}
 
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
@@ -185,7 +204,8 @@ export function WordsPage() {
             }}
             addLabel="Add a tier"
             placeholder="1st tier"
-            empty={loading ? 'Loading…' : 'No tiers yet. Add one to start.'}
+            empty="No tiers yet. Add one to start."
+            loading={busy}
           />
 
           <NavColumn
@@ -224,6 +244,10 @@ export function WordsPage() {
                 ? `No languages in ${tier?.name ?? 'this tier'} yet.`
                 : 'Pick a tier first.'
             }
+            // "Pick a tier first" while the tiers are still on their way is an
+            // instruction nobody can follow, and it is the line that made the
+            // page look like an empty shelf rather than a loading one.
+            loading={busy}
           />
 
           <NavColumn
@@ -270,6 +294,7 @@ export function WordsPage() {
                 ? `No words in ${language?.name ?? 'this language'} yet.`
                 : 'Pick a language first.'
             }
+            loading={busy}
           />
 
           {/* Last, so it is the bottom edge of the window and whichever list is
@@ -349,6 +374,17 @@ export function WordsPage() {
               </div>
               <WordVideos word={word} />
             </>
+          ) : busy ? (
+            /* Before "Nothing selected", because with the columns still filling
+               there is nothing to select yet — and telling somebody to add a
+               tier while their four tiers are being fetched is how a page that
+               is working reads as a page that lost their shelf. */
+            <EmptyState
+              icon={<Spinner className="!size-7 border-4 text-ink-dim" />}
+              title="Loading your shelf"
+            >
+              Reading your tiers, languages and words.
+            </EmptyState>
           ) : (
             <EmptyState icon="🔤" title="Nothing selected">
               {selectedLanguageId
@@ -425,6 +461,43 @@ interface NavItem {
 }
 
 /**
+ * The uneven widths of the rows a column stands in for while it is being read.
+ *
+ * Uneven because names are: a stack of identical bars reads as a widget, and a
+ * ragged one reads as the list of "1st tier", "Classical", "ESL" that is about
+ * to land in its place. Five of them, which is about what a column holds before
+ * it starts scrolling — enough to fill the space so the column does not resize
+ * under the mouse when the real names arrive.
+ */
+const PENDING_ROWS = ['w-4/5', 'w-3/5', 'w-11/12', 'w-2/3', 'w-1/2']
+
+/**
+ * A column with its read still out.
+ *
+ * Rows rather than a spinner or another line of small grey text, because the
+ * complaint that got this written was that the columns looked empty rather than
+ * busy — and an empty column and a column holding one short sentence look alike
+ * from across the room. This one has the shape of a list.
+ *
+ * Hidden from screen readers: it says nothing the header's "Reading your shelf…"
+ * has not already said, and five nameless rows announced one after another would
+ * be worse than silence.
+ */
+function PendingRows() {
+  return (
+    <div aria-hidden className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-hidden">
+      {PENDING_ROWS.map((width) => (
+        // The height of a real row, so the list does not jump as it fills.
+        <span
+          key={width}
+          className={`h-8 shrink-0 animate-pulse rounded-lg bg-surface-2 ${width}`}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
  * One of the two navigation columns.
  *
  * Both are the same thing — a list you pick from, with a box at the bottom to
@@ -446,6 +519,7 @@ function NavColumn({
   addLabel,
   placeholder,
   empty,
+  loading,
   disabled = false,
   collapsed,
   onToggle,
@@ -464,6 +538,8 @@ function NavColumn({
   addLabel: string
   placeholder: string
   empty: string
+  /** A read that could fill this list is out. Only matters while it is empty. */
+  loading: boolean
   disabled?: boolean
   /** Narrowed to a strip, so the columns you are not using stop taking room. */
   collapsed: boolean
@@ -472,6 +548,9 @@ function NavColumn({
   const [draft, setDraft] = useState('')
   /** The row whose name is being typed over, if any. */
   const [renaming, setRenaming] = useState<string | null>(null)
+
+  /** A list on its way is neither the list nor the reason it is empty. */
+  const pending = loading && items.length === 0
 
   const add = () => {
     const value = draft.trim()
@@ -483,6 +562,7 @@ function NavColumn({
   return (
     <section
       id={id}
+      aria-busy={pending}
       // Half the window at most below `lg`, so opening a list of thirty
       // languages leaves the player on screen behind it rather than becoming the
       // page again. Above `lg` the column is a column and takes the height it is
@@ -529,7 +609,9 @@ function NavColumn({
         {/* The names are the part that scrolls, at both widths: they are the only
             thing here with no bound on how long they get, and the add box below
             them has to stay reachable without scrolling past thirty languages. */}
-        {items.length === 0 ? (
+        {pending ? (
+          <PendingRows />
+        ) : items.length === 0 ? (
           <p className="px-1 py-2 text-xs leading-relaxed text-ink-dim">{empty}</p>
         ) : (
           <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">

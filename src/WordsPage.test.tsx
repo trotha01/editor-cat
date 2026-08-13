@@ -10,7 +10,7 @@
  * store, where the three columns are just three ids.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { WordsPage } from './WordsPage'
 import { useAssetStore } from './state/useAssetStore'
 import { useWordsStore } from './state/useWordsStore'
@@ -86,6 +86,65 @@ describe('starting from nothing', () => {
     expect(screen.getByText('1st tier · French')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Upload videos' })).toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The page between opening it and the shelf arriving.
+ *
+ * Worth its own block because the three columns are empty in exactly the same
+ * way whether the read is still out or the shelf really is bare, and the page
+ * used to say the second thing in both cases — "Pick a tier first", "Add a
+ * tier, then a language", on a signed-in browser whose four tiers were on their
+ * way. What is asserted is that the columns say they are busy and stop giving
+ * instructions until they are not.
+ */
+describe('while the shelf is still being read', () => {
+  /** Nothing local yet, and the read off the account still out. */
+  const reading = () => act(() => useWordsStore.setState({ loading: false, syncing: true }))
+
+  it('says every column is busy rather than showing it as empty', () => {
+    reading()
+
+    expect(column('Tiers')).toHaveAttribute('aria-busy', 'true')
+    expect(column('Languages')).toHaveAttribute('aria-busy', 'true')
+    expect(column('Words')).toHaveAttribute('aria-busy', 'true')
+
+    expect(screen.queryByText('No tiers yet. Add one to start.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Pick a tier first.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Pick a language first.')).not.toBeInTheDocument()
+  })
+
+  it('says so where the videos go, instead of asking for a word that cannot be picked yet', () => {
+    reading()
+
+    expect(screen.getByText('Loading your shelf')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing selected')).not.toBeInTheDocument()
+  })
+
+  it('goes back to the empty shelf once the read comes back with nothing', () => {
+    reading()
+    act(() => useWordsStore.setState({ syncing: false }))
+
+    expect(column('Tiers')).toHaveAttribute('aria-busy', 'false')
+    expect(screen.getByText('No tiers yet. Add one to start.')).toBeInTheDocument()
+    expect(screen.getByText('Pick a tier first.')).toBeInTheDocument()
+    expect(screen.getByText('Nothing selected')).toBeInTheDocument()
+  })
+
+  /**
+   * The other half of the rule: syncing runs on every visit, not only the first,
+   * and a shelf that is already on screen must not be replaced by placeholders
+   * because a background read is checking it.
+   */
+  it('leaves the names alone when a shelf that is already up is re-read', () => {
+    add('Add a tier', '1st tier')
+    reading()
+
+    expect(within(column('Tiers')).getByRole('button', { name: '1st tier' })).toBeInTheDocument()
+    expect(column('Tiers')).toHaveAttribute('aria-busy', 'false')
+    // The columns below it have nothing yet, so they are still waiting.
+    expect(column('Languages')).toHaveAttribute('aria-busy', 'true')
   })
 })
 
