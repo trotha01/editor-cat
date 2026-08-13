@@ -10,7 +10,6 @@ import { useState } from 'react'
 import { Button, Callout, Field, Spinner, TextArea } from './ui'
 import { enhancePrompt, type EnhanceKind } from '../lib/promptEnhancer'
 import { toDisplayMessage } from '../lib/errors'
-import { useSettingsStore } from '../state/useSettingsStore'
 
 interface Props {
   kind: EnhanceKind
@@ -33,8 +32,6 @@ export function PromptField({
   rows = 4,
   disabled,
 }: Props) {
-  const llmModel = useSettingsStore((state) => state.llmModel)
-
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [suggestion, setSuggestion] = useState<string | null>(null)
@@ -47,7 +44,7 @@ export function PromptField({
     setError(null)
     setSuggestion(null)
     try {
-      const improved = await enhancePrompt({ kind, prompt: value, model: llmModel })
+      const improved = await enhancePrompt({ kind, prompt: value })
       setSuggestion(improved)
     } catch (cause) {
       setError(toDisplayMessage(cause))

@@ -14,7 +14,6 @@ describe('migratePrefs', () => {
     const prefs = migratePrefs({
       imageModel: 'fal-ai/flux/dev',
       videoModel: 'fal-ai/veo3/image-to-video',
-      llmModel: 'openai/gpt-4o',
     })
 
     expect(prefs.videoModel).toBe(DEFAULT_VIDEO_MODEL)
@@ -24,11 +23,9 @@ describe('migratePrefs', () => {
     const prefs = migratePrefs({
       imageModel: 'fal-ai/flux/dev',
       videoModel: 'fal-ai/wan-i2v',
-      llmModel: 'openai/gpt-4o',
     })
 
     expect(prefs.imageModel).toBe('fal-ai/flux/dev')
-    expect(prefs.llmModel).toBe('openai/gpt-4o')
   })
 
   it('leaves a hand-typed model ID alone, because that choice is unmistakable', () => {
@@ -48,10 +45,17 @@ describe('migratePrefs', () => {
   })
 
   it('drops a preference the app no longer has, rather than carrying it around', () => {
-    // Captions moved to a hosted transcriber, so the in-browser speech model is
-    // gone. Anyone who used the app before that has one written into storage.
-    const prefs = migratePrefs({ speechModel: 'Xenova/whisper-base', v: 3 } as StoredPrefs)
+    // Captions moved to a hosted transcriber and both prompt buttons moved to
+    // Claude, so neither the in-browser speech model nor the prompt-improvement
+    // LLM exists any more. Anyone who used the app before has them in storage.
+    const prefs = migratePrefs({
+      speechModel: 'Xenova/whisper-base',
+      llmModel: 'openai/gpt-4o',
+      v: 3,
+    } as StoredPrefs)
+
     expect(prefs).not.toHaveProperty('speechModel')
+    expect(prefs).not.toHaveProperty('llmModel')
   })
 })
 
@@ -66,12 +70,10 @@ describe('setPref', () => {
     const { setPref } = useSettingsStore.getState()
 
     setPref('imageModel', 'fal-ai/flux/dev')
-    setPref('llmModel', 'openai/gpt-4o')
     setPref('videoModel', 'fal-ai/wan-i2v')
 
     expect(stored()).toMatchObject({
       imageModel: 'fal-ai/flux/dev',
-      llmModel: 'openai/gpt-4o',
       videoModel: 'fal-ai/wan-i2v',
     })
   })

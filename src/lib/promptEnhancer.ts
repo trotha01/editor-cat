@@ -13,18 +13,16 @@
  * Sending the same generic "make this better" text to both is the usual way
  * this feature ends up useless, so the split is the point.
  *
- * The two also take different routes to a model. The image button calls the
- * Claude API directly on this deployment's own key, the way the Idea tab does
- * (see `ideaGenerator.ts`); the video button still goes through fal's
- * `any-llm` endpoint with whatever model the user picked in settings. The
- * image prompt is the one the whole clip is built from — everything after it
- * inherits its mistakes — so it is worth pinning to a known model rather than
- * leaving it to a picker default and fal's catalogue.
+ * What they no longer differ on is the model behind them. Both call the Claude
+ * API directly on this deployment's own key, the way the Idea tab does (see
+ * `ideaGenerator.ts`). The video button used to go through fal's `any-llm`
+ * endpoint with whatever the user picked in settings, which made the quality of
+ * a rewrite depend on a choice nobody has any basis for making — and every clip
+ * inherits its prompt's mistakes. Pinning both to a known model is worth more
+ * than the picker was.
  */
 import { createMessage } from './claudeClient'
-import { run, type LlmOutput } from './falClient'
 import { isMockEnabled, mockImprovedPrompt } from './mock'
-import { LLM_ENDPOINT } from './models'
 
 const IMAGE_SYSTEM = `You rewrite prompts for text-to-image models.
 
@@ -60,76 +58,41 @@ Rules:
 
 export type EnhanceKind = 'image' | 'video'
 
-/** Which Claude rewrites image prompts. Same model the Idea tab asks for ideas. */
-export const IMAGE_MODEL = 'claude-opus-5'
+/** Which Claude rewrites prompts. Same model the Idea tab asks for ideas. */
+export const PROMPT_MODEL = 'claude-opus-5'
 
 /**
  * Far more than a 60-120 word paragraph needs, because `max_tokens` caps
  * thinking and answer together and this model thinks by default — a cap sized
  * to the paragraph alone would come back truncated, or empty.
  */
-export const IMAGE_MAX_TOKENS = 4096
+export const PROMPT_MAX_TOKENS = 4096
 
 export interface EnhanceOptions {
   kind: EnhanceKind
   prompt: string
-  /** The fal `any-llm` model. Used for video prompts only; image prompts go to Claude. */
-  model: string
   signal?: AbortSignal
 }
 
 /** Rewrites a prompt, returning the improved text. */
-export async function enhancePrompt({
-  kind,
-  prompt,
-  model,
-  signal,
-}: EnhanceOptions): Promise<string> {
+export async function enhancePrompt({ kind, prompt, signal }: EnhanceOptions): Promise<string> {
   const trimmed = prompt.trim()
   if (!trimmed) throw new Error('Write a prompt first, then improve it.')
 
-  const improved =
-    kind === 'image'
-      ? await improveImagePrompt(trimmed, signal)
-      : await improveVideoPrompt(trimmed, model, signal)
-
-  return stripWrapping(improved)
-}
-
-/** The image prompt, rewritten by Claude on this deployment's own key. */
-async function improveImagePrompt(prompt: string, signal?: AbortSignal): Promise<string> {
-  if (isMockEnabled()) return mockImprovedPrompt(prompt)
+  if (isMockEnabled()) return stripWrapping(await mockImprovedPrompt(trimmed))
 
   const text = await createMessage({
-    model: IMAGE_MODEL,
-    system: IMAGE_SYSTEM,
-    prompt,
-    maxTokens: IMAGE_MAX_TOKENS,
+    model: PROMPT_MODEL,
+    system: kind === 'image' ? IMAGE_SYSTEM : VIDEO_SYSTEM,
+    prompt: trimmed,
+    maxTokens: PROMPT_MAX_TOKENS,
     signal,
   })
 
   const improved = text.trim()
   if (!improved) throw new Error('Claude returned an empty prompt. Try again.')
-  return improved
-}
 
-/** The video prompt, rewritten by whichever LLM the user picked in settings. */
-async function improveVideoPrompt(
-  prompt: string,
-  model: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const output = await run<LlmOutput>(
-    LLM_ENDPOINT,
-    { model, system_prompt: VIDEO_SYSTEM, prompt },
-    { signal },
-  )
-
-  const improved = (output.output ?? '').trim()
-  if (!improved) {
-    throw new Error('The model returned an empty prompt. Try again, or pick a different LLM.')
-  }
-  return improved
+  return stripWrapping(improved)
 }
 
 /**
