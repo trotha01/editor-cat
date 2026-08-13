@@ -16,8 +16,10 @@ import { downloadFile, type DriveFile } from '../lib/google/drive'
 import { pickMedia } from '../lib/google/picker'
 import { ingestBlob } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
+import { libraryAssetIdsOf } from '../lib/library'
 import { useAssetStore } from '../state/useAssetStore'
 import { useDriveStore } from '../state/useDriveStore'
+import { useProjectStore } from '../state/useProjectStore'
 
 export interface ImportState {
   /** Files copied so far, out of how many. Null when nothing is running. */
@@ -36,6 +38,8 @@ export function useDriveImport(): ImportState & { start: () => Promise<void> } {
   const folder = useDriveStore((state) => state.folder)
   const assets = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
+  const project = useProjectStore((state) => state.project)
+  const addToLibrary = useProjectStore((state) => state.addToLibrary)
 
   const [progress, setProgress] = useState<ImportState['progress']>(null)
   const [error, setError] = useState<string | null>(null)
@@ -55,8 +59,25 @@ export function useDriveImport(): ImportState & { start: () => Promise<void> } {
     // Anything already in the library is skipped rather than refused: the user
     // picked from their whole Drive and cannot be expected to remember what they
     // imported last time.
-    const known = new Set(assets.map((asset) => asset.driveFileId).filter(Boolean))
-    const targets = picked.filter((file) => !known.has(file.id))
+    //
+    // A file this browser already holds but *this* project does not list is the
+    // interesting case — imported once into another project — and it is adopted
+    // rather than fetched again. The bytes are the same bytes, and downloading a
+    // second copy of them would be paying twice for one file.
+    const catalogued = new Map(
+      assets.flatMap((asset) => (asset.driveFileId ? [[asset.driveFileId, asset] as const] : [])),
+    )
+    const inLibrary = new Set(libraryAssetIdsOf(project))
+
+    const targets: DriveFile[] = []
+    for (const file of picked) {
+      const existing = catalogued.get(file.id)
+      if (!existing) {
+        targets.push(file)
+        continue
+      }
+      if (!inLibrary.has(existing.id)) addToLibrary(existing.id)
+    }
     if (targets.length === 0) return
 
     setProgress({ done: 0, total: targets.length })

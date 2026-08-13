@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planFor, referencedAssetIds } from './hydrate'
+import { neededAssetIds, planFor } from './hydrate'
 import type { AudioClip, Clip, Project } from '../types'
 
 const clip = (id: string, assetId: string): Clip => ({ id, assetId, inPoint: 0, outPoint: 3 })
@@ -45,18 +45,16 @@ describe('planFor', () => {
   })
 })
 
-describe('referencedAssetIds', () => {
+describe('neededAssetIds', () => {
   it('collects visual clips', () => {
-    const ids = referencedAssetIds(
-      project({ clips: [clip('c1', 'asset_a'), clip('c2', 'asset_b')] }),
-    )
+    const ids = neededAssetIds(project({ clips: [clip('c1', 'asset_a'), clip('c2', 'asset_b')] }))
     expect(ids.sort()).toEqual(['asset_a', 'asset_b'])
   })
 
   it('includes converted takes, which are separate assets', () => {
     // A clip set to use its converted voice plays the converted asset, so a
     // project restored without it opens with silent audio.
-    const ids = referencedAssetIds(
+    const ids = neededAssetIds(
       project({
         audioClips: [audioClip('a1', { assetId: 'asset_raw', convertedAssetId: 'asset_conv' })],
       }),
@@ -65,7 +63,7 @@ describe('referencedAssetIds', () => {
   })
 
   it('keeps the original take even when the converted one is in use', () => {
-    const ids = referencedAssetIds(
+    const ids = neededAssetIds(
       project({
         audioClips: [
           audioClip('a1', {
@@ -81,13 +79,28 @@ describe('referencedAssetIds', () => {
   })
 
   it('deduplicates an asset used by several clips', () => {
-    const ids = referencedAssetIds(
-      project({ clips: [clip('c1', 'asset_a'), clip('c2', 'asset_a')] }),
+    const ids = neededAssetIds(project({ clips: [clip('c1', 'asset_a'), clip('c2', 'asset_a')] }))
+    expect(ids).toEqual(['asset_a'])
+  })
+
+  it('fetches library files the timeline does not use', () => {
+    // The other machine has to be able to *show* the library, not only play the
+    // edit: a file generated here and not yet cut in is still one of this
+    // project's files, and it would be missing over there without this.
+    const ids = neededAssetIds(
+      project({ clips: [clip('c1', 'asset_a')], libraryAssetIds: ['asset_a', 'asset_spare'] }),
     )
+    expect(ids.sort()).toEqual(['asset_a', 'asset_spare'])
+  })
+
+  it('still fetches what the edit uses when the library has forgotten it', () => {
+    // Removing a file from the library does not take it off the timeline, and a
+    // clip that cannot be played is worse than a library row nobody asked for.
+    const ids = neededAssetIds(project({ clips: [clip('c1', 'asset_a')], libraryAssetIds: [] }))
     expect(ids).toEqual(['asset_a'])
   })
 
   it('returns nothing for an empty project', () => {
-    expect(referencedAssetIds(project())).toEqual([])
+    expect(neededAssetIds(project())).toEqual([])
   })
 })

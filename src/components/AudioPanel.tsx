@@ -1,5 +1,5 @@
 /**
- * Step 3: layer voiceovers, lay music under them, and count yourself in.
+ * Step 5: layer voiceovers, lay music under them, and count yourself in.
  *
  * Recording starts playback at the playhead so you narrate to picture, and the
  * take is pinned where you started. Takes are placed automatically: onto an
@@ -116,7 +116,13 @@ export function AudioPanel({
       (asset) => asset.kind === 'audio' && asset.name === COUNTDOWN_ASSET_NAME,
     )
     let asset = existing
-    if (!asset) {
+    if (asset) {
+      // The beeps may have been generated for a different project, in which
+      // case they are still missing from this one's library — and a file on
+      // this timeline that the library does not list is exactly what the
+      // library is supposed never to be.
+      useProjectStore.getState().addToLibrary(asset.id)
+    } else {
       asset = await ingestBlob(countdownWav(), { kind: 'audio', name: COUNTDOWN_ASSET_NAME })
       addAsset(asset)
     }

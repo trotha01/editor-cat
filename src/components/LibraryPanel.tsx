@@ -1,15 +1,24 @@
-/** Everything generated or uploaded, ready to drop on the timeline. */
-import { useRef, useState } from 'react'
+/**
+ * This project's files: everything generated, uploaded or imported for it,
+ * ready to drop on the timeline.
+ *
+ * Only this project's. The bytes are catalogued per browser, so what is listed
+ * here is the project's own library list — a file leaves it by being deleted
+ * from here and by nothing else, least of all by being taken off the timeline.
+ */
+import { useMemo, useRef, useState } from 'react'
 import { AssetThumb } from './AssetThumb'
 import { Button, Callout, EmptyState, Spinner } from './ui'
 import { ingestBlob } from '../lib/media'
+import { listProjects } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
+import { isAssetOrphaned, libraryAssets } from '../lib/library'
 import { formatTime } from '../lib/timeline'
 import { useDriveImport } from '../hooks/useDriveImport'
 import { useAssetStore } from '../state/useAssetStore'
 import { useDriveStore } from '../state/useDriveStore'
 import { useProjectStore } from '../state/useProjectStore'
-import type { AssetKind } from '../lib/types'
+import type { Asset, AssetKind } from '../lib/types'
 
 function kindOf(file: File): AssetKind | null {
   if (file.type.startsWith('image/')) return 'image'
@@ -19,13 +28,17 @@ function kindOf(file: File): AssetKind | null {
 }
 
 export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
-  const assets = useAssetStore((state) => state.assets)
+  const catalogue = useAssetStore((state) => state.assets)
   const addAsset = useAssetStore((state) => state.add)
   const removeAsset = useAssetStore((state) => state.remove)
+  const project = useProjectStore((state) => state.project)
+  const removeFromLibrary = useProjectStore((state) => state.removeFromLibrary)
   const addClip = useProjectStore((state) => state.addClip)
   const addClips = useProjectStore((state) => state.addClips)
   const addVideoClip = useProjectStore((state) => state.addVideoClip)
   const clips = useProjectStore((state) => state.project.clips)
+
+  const assets = useMemo(() => libraryAssets(catalogue, project), [catalogue, project])
 
   const driveReady = useDriveStore((state) => state.status === 'connected' && state.folder !== null)
 
@@ -69,6 +82,32 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
     } finally {
       setBusy(false)
       if (fileInput.current) fileInput.current.value = ''
+    }
+  }
+
+  /**
+   * Takes a file out of this project's library, and out of storage with it —
+   * but only if nothing else on this machine still wants the bytes.
+   *
+   * The same asset can be in more than one project's library: importing a Drive
+   * file that is already here adopts the copy rather than fetching a second one.
+   * So the catalogue entry only goes when no other project lists the file or
+   * uses it, and the copy in the user's Drive is never touched by any of this.
+   */
+  const forget = async (asset: Asset) => {
+    removeFromLibrary(asset.id)
+    try {
+      // The open project as it is *now*, over whatever is cached for it: its
+      // last write may still be in flight, and a stale copy of it would still
+      // be listing the file that has just been removed.
+      const cached = await listProjects()
+      const current = useProjectStore.getState().project
+      const projects = [current, ...cached.filter((entry) => entry.id !== current.id)]
+      if (isAssetOrphaned(asset.id, projects)) await removeAsset(asset.id)
+    } catch {
+      // Deliberately silent: the file is out of the library either way, which
+      // is the whole of what was asked for. What is left behind is bytes nobody
+      // can see, and Settings can still clear those.
     }
   }
 
@@ -171,9 +210,9 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
                 ) : null}
                 <Button
                   variant="ghost"
-                  onClick={() => void removeAsset(asset.id)}
-                  title="Delete from your library"
-                  aria-label={`Delete ${asset.name}`}
+                  onClick={() => void forget(asset)}
+                  title="Remove from this project's library. Your Drive copy is left alone."
+                  aria-label={`Remove ${asset.name} from the library`}
                 >
                   🗑
                 </Button>

@@ -66,6 +66,7 @@ import {
   videoTracksOf,
 } from '../lib/videoTracks'
 import { publicationsOf } from '../lib/mintspace/publications'
+import { withBackfilledLibrary, withLibraryAsset, withoutLibraryAsset } from '../lib/library'
 import { DEFAULT_PRESET } from '../lib/orientation'
 import { newId } from '../lib/media'
 import type {
@@ -100,6 +101,10 @@ export function emptyProject(id = LOCAL_PROJECT_ID, name = 'Untitled project'): 
     clips: [],
     audioTracks: defaultTracks(newId('track'), newId('track')),
     audioClips: [],
+    // Explicitly empty rather than absent: a new project has an empty library,
+    // and an absent list means "whatever the edit uses", which is only the
+    // right reading for a project saved before the library was per project.
+    libraryAssetIds: [],
     // Vertical by default: short-form is what most of these get made for, and
     // it is far easier to notice and flip than to discover afterwards that a
     // 9:16 clip has been letterboxed into a landscape frame. The tier that
@@ -351,6 +356,17 @@ interface ProjectState {
   clearTimeline: () => void
 
   /**
+   * Puts a file in this project's library, where the Library panel lists it.
+   *
+   * Nothing to do with the timeline: a file is in the library from the moment it
+   * is generated, recorded, uploaded or imported, and it stays there when the
+   * shot it was cut into is taken out again.
+   */
+  addToLibrary: (assetId: string) => void
+  /** Takes a file out of the library, which is the only way one ever leaves. */
+  removeFromLibrary: (assetId: string) => void
+
+  /**
    * Remembers a video this project is now live as in the Mintspace feed.
    *
    * Not an edit, and deliberately not on the undo stack: it records something
@@ -377,16 +393,27 @@ function persist(project: Project): void {
 const MAX_HISTORY = 100
 
 /**
- * Carries the published-videos list across an undo or a redo.
+ * Carries the lists the undo stack does not own across an undo or a redo.
  *
- * The history holds whole projects, so a step taken before a publish still
- * carries the list as it was then — and restoring it verbatim would forget a
- * video that is still in the feed, leaving nothing to stop it going up again.
- * Publishing is not on the stack, so the live list is simply kept.
+ * The history holds whole projects, so a step taken before a video was
+ * published — or before a file joined the library — still carries those lists as
+ * they were then, and restoring one verbatim would forget something no edit put
+ * there: a video that is still in the feed, leaving nothing to stop it going up
+ * again, or a file that is still on this machine with nothing on screen left to
+ * reach it by. Neither is on the stack, so both are simply kept.
  */
-function withPublications(restored: Project, current: Project): Project {
-  if (restored.publications === current.publications) return restored
-  return { ...restored, publications: current.publications }
+function keptOutsideHistory(restored: Project, current: Project): Project {
+  if (
+    restored.publications === current.publications &&
+    restored.libraryAssetIds === current.libraryAssetIds
+  ) {
+    return restored
+  }
+  return {
+    ...restored,
+    publications: current.publications,
+    libraryAssetIds: current.libraryAssetIds,
+  }
 }
 
 /**
@@ -487,8 +514,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       try {
         const stored = await loadProject(id)
         // Projects saved before multitrack carry a flat `voiceovers` list;
-        // migrating on read means old work opens with its layers intact.
-        const project = stored ? migrateProject(stored, newId) : emptyProject(id)
+        // migrating on read means old work opens with its layers intact. The
+        // library is written down on the way past for the same reason: until it
+        // is, it is only being *read* as the files the edit uses, and a file
+        // could not be taken out of it without being taken off the timeline.
+        const project = stored
+          ? withBackfilledLibrary(migrateProject(stored, newId))
+          : emptyProject(id)
         if (stored && project !== stored) persist(project)
         set({
           project,
@@ -510,7 +542,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
     },
 
-    adopt: (project) => {
+    adopt: (incoming) => {
+      // Backfilled here as well as in `open`: a project fetched from the server
+      // may have been last saved by a build that had no library list, and this
+      // is the other door into the editor.
+      const project = withBackfilledLibrary(incoming)
       persist(project)
       set({
         project,
@@ -529,7 +565,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set((state) => {
         const previous = state.past.at(-1)
         if (!previous) return {}
-        const restored = withPublications(previous, state.project)
+        const restored = keptOutsideHistory(previous, state.project)
         persist(restored)
         return {
           project: restored,
@@ -544,7 +580,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set((state) => {
         const next = state.future[0]
         if (!next) return {}
-        const restored = withPublications(next, state.project)
+        const restored = keptOutsideHistory(next, state.project)
         persist(restored)
         return {
           project: restored,
@@ -1237,6 +1273,29 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedAudioClipId: null,
         selectedVideoClipId: null,
         selectedCaption: null,
+      })
+    },
+
+    // Off the undo stack for the same reason publishing is: what the library
+    // holds is not an edit. A generated image landing in it is not a step worth
+    // walking back through, and an undo that took it out would leave a file on
+    // the machine with nothing on screen left to reach it by — while an undo
+    // that put a deleted one back would undelete a file nobody asked for.
+    addToLibrary: (assetId) => {
+      set((state) => {
+        const next = withLibraryAsset(state.project, assetId)
+        if (next === state.project) return {}
+        persist(next)
+        return { project: next }
+      })
+    },
+
+    removeFromLibrary: (assetId) => {
+      set((state) => {
+        const next = withoutLibraryAsset(state.project, assetId)
+        if (next === state.project) return {}
+        persist(next)
+        return { project: next }
       })
     },
 
