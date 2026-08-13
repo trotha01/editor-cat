@@ -31,6 +31,10 @@ vi.mock('./lib/db', () => ({
   listAssets: () => Promise.resolve([]),
   saveProject: () => Promise.resolve(),
   loadProject: () => Promise.resolve(undefined),
+  // Reached by the Settings dialog, which this page can open.
+  estimateUsage: () => Promise.resolve(null),
+  clearAll: () => Promise.resolve(),
+  formatBytes: () => '0 B',
 }))
 
 /** Types a name into one of the three add boxes and presses its button. */
@@ -39,8 +43,9 @@ function add(label: string, value: string) {
   fireEvent.click(screen.getByRole('button', { name: label }))
 }
 
+/** The whole column a heading belongs to, rather than the row the heading is in. */
 function column(title: string): HTMLElement {
-  return screen.getByRole('heading', { name: title }).parentElement!
+  return screen.getByRole('heading', { name: title }).closest('section')!
 }
 
 beforeEach(() => {
@@ -81,6 +86,53 @@ describe('starting from nothing', () => {
     expect(screen.getByText('1st tier · French')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Upload videos' })).toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
+  })
+})
+
+describe('settings', () => {
+  /**
+   * The same dialog the editor opens, minus one section.
+   *
+   * Which is the whole point of it being the same dialog: the account and the
+   * Drive folder the shelf lives in are as much this page's business as the
+   * editor's. The project name is not — this page never opened a project, so
+   * that field would name the empty document and typing in it would rename
+   * something nobody chose.
+   */
+  it('opens the shared dialog, without the project name field', async () => {
+    fireEvent.click(screen.getByRole('button', { name: /Settings/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    // One of the sections that does belong here. The Drive one draws nothing
+    // without a connection, which is what a test environment has.
+    expect(screen.getByText('Stored media')).toBeInTheDocument()
+
+    expect(screen.queryByLabelText('Project name')).not.toBeInTheDocument()
+    expect(screen.queryByText('Project name')).not.toBeInTheDocument()
+  })
+})
+
+describe('collapsing a column', () => {
+  it('folds it to a strip and back, keeping what was open', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Tiers' }))
+
+    // The list is still there — it is CSS that narrows the column, so what is
+    // asserted is the button changing sides. What matters is that collapsing one
+    // column does not disturb the two beside it.
+    expect(screen.getByRole('button', { name: 'Expand Tiers' })).toBeInTheDocument()
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Tiers' }))
+    expect(screen.getByRole('button', { name: 'Collapse Tiers' })).toBeInTheDocument()
+  })
+
+  it('remembers which columns were folded', () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Words' }))
+
+    expect(window.localStorage.getItem('editor-cat.words.collapsedColumns.v1')).toContain('words')
   })
 })
 
@@ -149,6 +201,40 @@ describe('the columns to the right of a tier', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete French' }))
 
     expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+  })
+
+  it('renames a language in place, and keeps its words', () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Rename French' }))
+
+    const box = screen.getByRole('textbox', { name: 'Rename French' })
+    fireEvent.change(box, { target: { value: 'Français' } })
+    fireEvent.submit(box)
+
+    expect(within(column('Languages')).getByText('Français')).toBeInTheDocument()
+    expect(within(column('Languages')).queryByText('French')).not.toBeInTheDocument()
+    expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
+  })
+
+  it('throws the typing away on Escape', () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Rename French' }))
+
+    const box = screen.getByRole('textbox', { name: 'Rename French' })
+    fireEvent.change(box, { target: { value: 'Nonsense' } })
+    fireEvent.keyDown(box, { key: 'Escape' })
+    fireEvent.blur(box)
+
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+    expect(within(column('Languages')).queryByText('Nonsense')).not.toBeInTheDocument()
+  })
+
+  it('keeps the typing when the box loses focus, which is not a cancel', () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Rename French' }))
+
+    const box = screen.getByRole('textbox', { name: 'Rename French' })
+    fireEvent.change(box, { target: { value: 'Français' } })
+    fireEvent.blur(box)
+
+    expect(within(column('Languages')).getByText('Français')).toBeInTheDocument()
   })
 
   it('adds nothing twice, whatever the case it is typed in', () => {

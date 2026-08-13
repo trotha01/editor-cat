@@ -25,6 +25,7 @@ import {
   fileIssue,
   loadIssueSupport,
   projectContext,
+  shelfContext,
   supportContext,
   type FiledIssue,
   type IssueSupport,
@@ -32,7 +33,9 @@ import {
 import { toDisplayMessage } from '../lib/errors'
 import { orientationOf } from '../lib/orientation'
 import { BUILD } from '../lib/version'
+import { useDriveStore } from '../state/useDriveStore'
 import { useProjectStore } from '../state/useProjectStore'
+import { useWordsStore } from '../state/useWordsStore'
 
 const KINDS = [
   { id: 'bug', label: 'Something is broken' },
@@ -49,7 +52,13 @@ const PROMPTS: Record<Kind, string> = {
   question: 'What would you like to know?',
 }
 
-export function FeedbackBubble() {
+/**
+ * Which page the bubble is sitting on, and therefore what a report from it
+ * should carry besides the words somebody types.
+ */
+export type FeedbackScope = 'project' | 'shelf'
+
+export function FeedbackBubble({ scope = 'project' }: { scope?: FeedbackScope }) {
   const [open, setOpen] = useState(false)
   const [support, setSupport] = useState<IssueSupport | null>(null)
   const [kind, setKind] = useState<Kind>('bug')
@@ -92,7 +101,7 @@ export function FeedbackBubble() {
     )
   }
 
-  const context = collectContext()
+  const context = collectContext(scope)
   const ready = title.trim().length > 0 && body.trim().length > 0
 
   const post = () => {
@@ -261,22 +270,37 @@ function Filed({
 }
 
 /**
- * This build, this browser, and the shape of the project that is open.
+ * This build, this browser, and the shape of whatever the reporter was working
+ * on — a timeline in the editor, a shelf on the word pages.
  *
  * Read imperatively rather than subscribed to, so a bubble that is closed
  * ninety-nine times out of a hundred does not re-render on every timeline drag.
  */
-function collectContext(): string {
+function collectContext(scope: FeedbackScope): string {
+  return [supportContext(BUILD), scope === 'shelf' ? shelfSummary() : projectSummary()].join('\n')
+}
+
+function projectSummary(): string {
   const { project, duration } = useProjectStore.getState()
 
-  return [
-    supportContext(BUILD),
-    projectContext({
-      clips: project.clips.length,
-      durationSeconds: duration(),
-      audioClips: project.audioClips.length,
-      captions: project.captionCues?.length ?? 0,
-      orientation: orientationOf(project.width, project.height),
-    }),
-  ].join('\n')
+  return projectContext({
+    clips: project.clips.length,
+    durationSeconds: duration(),
+    audioClips: project.audioClips.length,
+    captions: project.captionCues?.length ?? 0,
+    orientation: orientationOf(project.width, project.height),
+  })
+}
+
+function shelfSummary(): string {
+  const { tiers, languages, words, selectedWord } = useWordsStore.getState()
+  const { status, folder } = useDriveStore.getState()
+
+  return shelfContext({
+    tiers: tiers.length,
+    languages: languages.length,
+    words: words.length,
+    videosOnOpenWord: selectedWord()?.videos.length ?? 0,
+    driveConnected: status === 'connected' && folder !== null,
+  })
 }

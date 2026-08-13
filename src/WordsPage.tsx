@@ -15,7 +15,11 @@
  * same three levels of folder the shelf is kept as in Drive.
  */
 import { useEffect, useMemo, useState } from 'react'
+import { usePersistedState } from './hooks/usePersistedState'
 import { DriveUploads } from './components/DriveUploads'
+import { FeedbackBubble } from './components/FeedbackBubble'
+import { RenameField } from './components/RenameField'
+import { SettingsDialog } from './components/SettingsDialog'
 import { WordVideos } from './components/WordVideos'
 import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
 import { EDITOR_HASH } from './lib/route'
@@ -45,6 +49,20 @@ export function WordsPage() {
   const syncing = useWordsStore((state) => state.syncing)
   const syncError = useWordsStore((state) => state.syncError)
   const driveConnected = useDriveStore((state) => state.status === 'connected' && !!state.folder)
+
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  /**
+   * Which of the three columns are narrowed to a strip.
+   *
+   * Remembered across visits like the editor's sidebar width, and for the same
+   * reason: somebody who works one tier at a time collapses that column once,
+   * not every morning.
+   */
+  const [collapsed, setCollapsed] = usePersistedState<Record<string, boolean>>(
+    'editor-cat.words.collapsedColumns.v1',
+    {},
+  )
+  const toggle = (key: string) => setCollapsed((current) => ({ ...current, [key]: !current[key] }))
 
   useEffect(() => {
     // A second visit in the same session keeps what was open — see `load`, which
@@ -89,6 +107,13 @@ export function WordsPage() {
             : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
         {syncing ? <Spinner className="text-ink-dim" /> : null}
+
+        {/* The same dialog the editor opens, minus the project section: the
+            account, the Drive folder this shelf lives in, and what this browser
+            is storing are all as much this page's business as the editor's. */}
+        <Button onClick={() => setSettingsOpen(true)}>
+          <span aria-hidden>⚙️</span> Settings
+        </Button>
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
         </LinkButton>
@@ -97,10 +122,13 @@ export function WordsPage() {
       <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 lg:flex-row lg:overflow-hidden">
         <NavColumn
           title="Tiers"
+          collapsed={!!collapsed.tiers}
+          onToggle={() => toggle('tiers')}
           items={tierList.map((entry) => ({ id: entry.id, label: entry.name }))}
           selectedId={selectedTierId}
           onSelect={(id) => useWordsStore.getState().selectTier(id)}
           onAdd={(value) => useWordsStore.getState().addTier(value)}
+          onRename={(id, name) => useWordsStore.getState().renameTier(id, name)}
           onDelete={(id) => {
             const doomed = tierList.find((entry) => entry.id === id)
             const count = languages.filter((entry) => entry.tierId === id).length
@@ -122,10 +150,13 @@ export function WordsPage() {
 
         <NavColumn
           title="Languages"
+          collapsed={!!collapsed.languages}
+          onToggle={() => toggle('languages')}
           items={languageList.map((entry) => ({ id: entry.id, label: entry.name }))}
           selectedId={selectedLanguageId}
           onSelect={(id) => useWordsStore.getState().selectLanguage(id)}
           onAdd={(value) => useWordsStore.getState().addLanguage(value)}
+          onRename={(id, name) => useWordsStore.getState().renameLanguage(id, name)}
           onDelete={(id) => {
             const doomed = languageList.find((entry) => entry.id === id)
             const count = words.filter((entry) => entry.languageId === id).length
@@ -152,6 +183,8 @@ export function WordsPage() {
 
         <NavColumn
           title="Words"
+          collapsed={!!collapsed.words}
+          onToggle={() => toggle('words')}
           items={wordList.map((entry) => ({
             id: entry.id,
             label: entry.text,
@@ -160,6 +193,7 @@ export function WordsPage() {
           selectedId={selectedWordId}
           onSelect={(id) => useWordsStore.getState().selectWord(id)}
           onAdd={(value) => useWordsStore.getState().addWord(value)}
+          onRename={(id, name) => useWordsStore.getState().renameWord(id, name)}
           onDelete={(id) => {
             const doomed = wordList.find((entry) => entry.id === id)
             const count = doomed?.videos.length ?? 0
@@ -238,6 +272,17 @@ export function WordsPage() {
           )}
         </section>
       </main>
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        showProject={false}
+      />
+
+      {/* Fixed to the corner of the window rather than placed in the layout, the
+          same as in the editor — and told it is on this page, so a report says
+          how big the shelf is instead of describing a timeline nobody opened. */}
+      <FeedbackBubble scope="shelf" />
     </div>
   )
 }
@@ -264,24 +309,33 @@ function NavColumn({
   selectedId,
   onSelect,
   onAdd,
+  onRename,
   onDelete,
   addLabel,
   placeholder,
   empty,
   disabled = false,
+  collapsed,
+  onToggle,
 }: {
   title: string
   items: NavItem[]
   selectedId: string | null
   onSelect: (id: string) => void
   onAdd: (value: string) => void
+  onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
   addLabel: string
   placeholder: string
   empty: string
   disabled?: boolean
+  /** Narrowed to a strip, so the columns you are not using stop taking room. */
+  collapsed: boolean
+  onToggle: () => void
 }) {
   const [draft, setDraft] = useState('')
+  /** The row whose name is being typed over, if any. */
+  const [renaming, setRenaming] = useState<string | null>(null)
 
   const add = () => {
     const value = draft.trim()
@@ -291,78 +345,139 @@ function NavColumn({
   }
 
   return (
-    <section className="flex w-full shrink-0 flex-col gap-2 rounded-xl border border-line bg-surface p-2 lg:w-44 lg:min-h-0">
-      <h2 className="px-1 text-xs font-semibold tracking-wide text-ink-dim uppercase">{title}</h2>
+    <section
+      className={`flex w-full shrink-0 flex-col gap-2 rounded-xl border border-line bg-surface p-2 lg:min-h-0 ${
+        collapsed ? 'lg:w-10' : 'lg:w-44'
+      }`}
+    >
+      <div className="flex items-center gap-1">
+        <h2
+          className={`min-w-0 flex-1 truncate px-1 text-xs font-semibold tracking-wide text-ink-dim uppercase ${
+            collapsed ? 'lg:hidden' : ''
+          }`}
+        >
+          {title}
+        </h2>
+        {/* Collapsing only makes sense once the columns sit beside each other
+            rather than stacked above the word, so the button — and the narrow
+            state it produces — stay out of the mobile layout entirely. Same
+            trade the editor's sidebar makes. */}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+          title={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+          className="hidden shrink-0 rounded-lg px-1 py-0.5 text-xs text-ink-dim transition hover:text-ink lg:block"
+        >
+          <span aria-hidden>{collapsed ? '»' : '«'}</span>
+        </button>
+      </div>
 
-      {items.length === 0 ? (
-        <p className="px-1 py-2 text-xs leading-relaxed text-ink-dim">{empty}</p>
-      ) : (
-        <ul className="flex flex-col gap-0.5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-          {items.map((item) => (
-            <li key={item.id} className="group flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => onSelect(item.id)}
-                aria-current={selectedId === item.id}
-                className={`min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                  selectedId === item.id
-                    ? 'bg-accent text-accent-ink'
-                    : 'text-ink hover:bg-surface-2'
-                }`}
-              >
-                {item.label}
-                {item.note ? (
-                  <span
-                    className={`ml-1.5 text-xs ${
-                      selectedId === item.id ? 'text-accent-ink/75' : 'text-ink-dim'
+      {/* The name of a column you cannot read the contents of, turned on its
+          side so a strip this narrow can still say which one it is. */}
+      {collapsed ? (
+        <p className="hidden flex-1 px-1 text-xs font-semibold tracking-wide text-ink-dim uppercase [writing-mode:vertical-rl] lg:block">
+          {title}
+        </p>
+      ) : null}
+
+      {/* `contents` drops this wrapper out of the box model, so the section's
+          own `gap-2` still applies as if these were direct children —
+          collapsing only has to add `lg:hidden` here, not rebuild the spacing. */}
+      <div className={collapsed ? 'flex flex-col gap-2 lg:hidden' : 'contents'}>
+        {items.length === 0 ? (
+          <p className="px-1 py-2 text-xs leading-relaxed text-ink-dim">{empty}</p>
+        ) : (
+          <ul className="flex flex-col gap-0.5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+            {items.map((item) =>
+              renaming === item.id ? (
+                <li key={item.id} className="flex items-center">
+                  <RenameField
+                    initial={item.label}
+                    label={`Rename ${item.label}`}
+                    onCommit={(name) => onRename(item.id, name)}
+                    onCancel={() => setRenaming(null)}
+                  />
+                </li>
+              ) : (
+                <li key={item.id} className="group flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onSelect(item.id)}
+                    aria-current={selectedId === item.id}
+                    className={`min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                      selectedId === item.id
+                        ? 'bg-accent text-accent-ink'
+                        : 'text-ink hover:bg-surface-2'
                     }`}
                   >
-                    {item.note}
-                  </span>
-                ) : null}
-              </button>
-              <Button
-                variant="ghost"
-                className="!px-1.5 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                onClick={() => onDelete(item.id)}
-                aria-label={`Delete ${item.label}`}
-              >
-                ✕
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
+                    {item.label}
+                    {item.note ? (
+                      <span
+                        className={`ml-1.5 text-xs ${
+                          selectedId === item.id ? 'text-accent-ink/75' : 'text-ink-dim'
+                        }`}
+                      >
+                        {item.note}
+                      </span>
+                    ) : null}
+                  </button>
+                  {/* Out of the way until the row is pointed at or tabbed into:
+                    three columns of names are what this page is read from, and a
+                    pencil and a cross beside every one of them is a lot of
+                    furniture to read past. */}
+                  <Button
+                    variant="ghost"
+                    className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                    onClick={() => setRenaming(item.id)}
+                    aria-label={`Rename ${item.label}`}
+                  >
+                    ✏️
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                    onClick={() => onDelete(item.id)}
+                    aria-label={`Delete ${item.label}`}
+                  >
+                    ✕
+                  </Button>
+                </li>
+              ),
+            )}
+          </ul>
+        )}
 
-      {/* A form, so Enter adds — typing a name and reaching for the mouse to
-          confirm it is not how anyone adds twenty words. */}
-      <form
-        className="flex gap-1"
-        onSubmit={(event) => {
-          event.preventDefault()
-          add()
-        }}
-      >
-        <TextInput
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={placeholder}
-          aria-label={addLabel}
-          disabled={disabled}
-          className="min-w-0 flex-1 !px-2 !py-1.5 text-sm"
-        />
-        {/* Labelled with the same words as the field beside it: two columns
-            means two buttons that both read "Add", and which list a press adds
-            to is the whole of what tells them apart. */}
-        <Button
-          type="submit"
-          aria-label={addLabel}
-          disabled={disabled || !draft.trim()}
-          className="!px-2 !py-1.5"
+        {/* A form, so Enter adds — typing a name and reaching for the mouse to
+            confirm it is not how anyone adds twenty words. */}
+        <form
+          className="flex gap-1"
+          onSubmit={(event) => {
+            event.preventDefault()
+            add()
+          }}
         >
-          Add
-        </Button>
-      </form>
+          <TextInput
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={placeholder}
+            aria-label={addLabel}
+            disabled={disabled}
+            className="min-w-0 flex-1 !px-2 !py-1.5 text-sm"
+          />
+          {/* Labelled with the same words as the field beside it: three columns
+              means three buttons that all read "Add", and which list a press
+              adds to is the whole of what tells them apart. */}
+          <Button
+            type="submit"
+            aria-label={addLabel}
+            disabled={disabled || !draft.trim()}
+            className="!px-2 !py-1.5"
+          >
+            Add
+          </Button>
+        </form>
+      </div>
     </section>
   )
 }

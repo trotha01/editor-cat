@@ -275,6 +275,22 @@ export async function updateFileContent(fileId: string, blob: Blob): Promise<voi
 }
 
 /**
+ * Renames a file or folder, leaving its id — and everything pointing at it —
+ * alone.
+ *
+ * Which is what makes renaming safe here: the shelf is matched to Drive by
+ * folder id, so a tier renamed on one machine is the same tier on the next one
+ * rather than a new one beside the old.
+ */
+export async function renameFile(fileId: string, name: string): Promise<void> {
+  await driveFetch(`${API}/files/${encodeURIComponent(fileId)}?${SHARED_DRIVE_PARAMS}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+/**
  * Moves a file or folder to the Drive trash.
  *
  * Trash rather than delete, deliberately: this is the user's own Drive, and a

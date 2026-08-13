@@ -43,6 +43,7 @@ import {
   newTier,
   newWord,
   newWordVideo,
+  sameName,
   sortedTiers,
   withMovedVideo,
   withVideo,
@@ -56,7 +57,7 @@ import {
   type WordVideoRole,
 } from '../lib/words'
 import { findOrCreateFolder, readShelf, writeSidecar, type RawTier } from '../lib/wordsDrive'
-import { trashFile } from '../lib/google/drive'
+import { renameFile, trashFile } from '../lib/google/drive'
 import { createScheduler } from '../lib/sync/scheduler'
 import { newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
@@ -116,6 +117,27 @@ interface WordsState {
   addWord: (text: string) => void
   selectWord: (id: string | null) => void
   removeWord: (id: string) => Promise<void>
+
+  /**
+   * Renames a tier, a language or a word — here and in Drive, where it renames
+   * the folder rather than making a new one.
+   *
+   * Refused when a sibling already has that name, which is the same rule adding
+   * one follows: two folders of the same name under one parent are a shelf that
+   * has quietly forked, and the column would show the pair with nothing to tell
+   * them apart. False says the rename did not happen.
+   */
+  renameTier: (id: string, name: string) => boolean
+  renameLanguage: (id: string, name: string) => boolean
+  renameWord: (id: string, text: string) => boolean
+  /**
+   * Renames one take's file, in the catalogue and in Drive.
+   *
+   * No such rule here: a word's folder may hold two takes of the same name
+   * without either becoming ambiguous, because everything that refers to them —
+   * the sidecar, the run, the catalogue — goes by id.
+   */
+  renameVideo: (assetId: string, name: string) => void
 
   /** Puts an uploaded video on the end of a word's run, labelled as the word itself. */
   addVideo: (wordId: string, assetId: string) => void
@@ -681,6 +703,71 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     await forgetOrphanedAssets(assetIdsOf([doomed]), words)
   },
 
+  renameTier: (id, name) => {
+    const trimmed = name.trim()
+    const tier = get().tiers.find((entry) => entry.id === id)
+    if (!tier || !trimmed || sameName(tier.name, trimmed)) return false
+
+    const clash = findTier(get().tiers, trimmed)
+    if (clash && clash.id !== id) return false
+
+    set((state) => ({
+      tiers: state.tiers.map((entry) => {
+        if (entry.id !== id) return entry
+        const next = { ...entry, name: trimmed }
+        persistTier(next)
+        return next
+      }),
+    }))
+    void renameInDrive(tier.driveFolderId, trimmed)
+    return true
+  },
+
+  renameLanguage: (id, name) => {
+    const trimmed = name.trim()
+    const language = get().languages.find((entry) => entry.id === id)
+    if (!language || !trimmed || sameName(language.name, trimmed)) return false
+
+    const clash = findLanguage(get().languages, language.tierId, trimmed)
+    if (clash && clash.id !== id) return false
+
+    set((state) => ({
+      languages: state.languages.map((entry) => {
+        if (entry.id !== id) return entry
+        const next = { ...entry, name: trimmed }
+        persistLanguage(next)
+        return next
+      }),
+    }))
+    void renameInDrive(language.driveFolderId, trimmed)
+    return true
+  },
+
+  renameWord: (id, text) => {
+    const trimmed = text.trim()
+    const word = get().words.find((entry) => entry.id === id)
+    if (!word || !trimmed || sameName(word.text, trimmed)) return false
+
+    const clash = findWord(get().words, word.languageId, trimmed)
+    if (clash && clash.id !== id) return false
+
+    // Through `mapWord`, which also marks the sidecar for rewriting — the file
+    // beside the videos names the word it is for, and a stale name in it would
+    // be the one the next machine reads.
+    set((state) => ({ words: mapWord(state.words, id, (entry) => ({ ...entry, text: trimmed })) }))
+    void renameInDrive(word.driveFolderId, trimmed)
+    return true
+  },
+
+  renameVideo: (assetId, name) => {
+    const trimmed = name.trim()
+    const asset = useAssetStore.getState().byId(assetId)
+    if (!asset || !trimmed || asset.name === trimmed) return
+
+    void useAssetStore.getState().update(assetId, { name: trimmed })
+    void renameInDrive(asset.driveFileId, trimmed)
+  },
+
   addVideo: (wordId, assetId) => {
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
@@ -739,6 +826,26 @@ export const useWordsStore = create<WordsState>((set, get) => ({
  * next read, and come back from the dead. Drive's own bin is what makes that
  * safe rather than final.
  */
+/**
+ * Renames a folder or a file over in Drive, if there is one and Drive is there
+ * to take it.
+ *
+ * The id never changes, which is what makes this a rename rather than a move:
+ * everything on both sides — the merge, the sidecar, the catalogue — points at
+ * ids, so the new name is the only thing that travels.
+ */
+async function renameInDrive(fileId: string | undefined, name: string): Promise<void> {
+  if (!fileId || !driveRoot()) return
+  try {
+    await renameFile(fileId, name)
+  } catch (cause) {
+    // The name on screen and in this browser has already changed, so what is
+    // left is a folder in Drive still called the old thing. Worth saying;
+    // nothing is lost, and renaming again retries it.
+    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
+  }
+}
+
 async function trashInDrive(fileId: string | undefined): Promise<void> {
   if (!fileId || !driveRoot()) return
   try {

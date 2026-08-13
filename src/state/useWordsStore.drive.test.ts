@@ -20,6 +20,7 @@ const writeSidecar = vi.fn<(folderId: string, sidecar: WordSidecar) => Promise<v
   Promise.resolve(),
 )
 const trashFile = vi.fn<(fileId: string) => Promise<void>>(() => Promise.resolve())
+const renameFile = vi.fn<(fileId: string, name: string) => Promise<void>>(() => Promise.resolve())
 
 vi.mock('../lib/wordsDrive', () => ({
   findOrCreateFolder: (name: string, parentId: string) => findOrCreateFolder(name, parentId),
@@ -29,6 +30,7 @@ vi.mock('../lib/wordsDrive', () => ({
 
 vi.mock('../lib/google/drive', () => ({
   trashFile: (fileId: string) => trashFile(fileId),
+  renameFile: (fileId: string, name: string) => renameFile(fileId, name),
 }))
 
 /** Whether there is a Drive to link to at all, which every call here starts from. */
@@ -127,6 +129,8 @@ beforeEach(() => {
   writeSidecar.mockResolvedValue()
   trashFile.mockReset()
   trashFile.mockResolvedValue()
+  renameFile.mockReset()
+  renameFile.mockResolvedValue()
 
   useAssetStore.setState({ assets: [], loading: false })
   useWordsStore.setState({
@@ -368,6 +372,68 @@ describe('deleting', () => {
     await useWordsStore.getState().removeWord('word_gato')
 
     expect(trashFile).not.toHaveBeenCalled()
+  })
+})
+
+describe('renaming', () => {
+  it('renames the folder rather than making a new one, at every level', async () => {
+    shelfWithGato()
+
+    expect(useWordsStore.getState().renameTier('tier_1', '2nd tier')).toBe(true)
+    expect(useWordsStore.getState().renameLanguage('lang_es', 'Castilian')).toBe(true)
+    expect(useWordsStore.getState().renameWord('word_gato', 'gato - cat')).toBe(true)
+
+    await vi.waitFor(() => expect(renameFile).toHaveBeenCalledTimes(3))
+    expect(renameFile).toHaveBeenCalledWith('folder_first', '2nd tier')
+    expect(renameFile).toHaveBeenCalledWith('folder_es', 'Castilian')
+    expect(renameFile).toHaveBeenCalledWith('folder_gato', 'gato - cat')
+
+    // And the names this browser holds, since the folder is only half of it.
+    expect(useWordsStore.getState().tiers[0]?.name).toBe('2nd tier')
+    expect(useWordsStore.getState().languages[0]?.name).toBe('Castilian')
+    expect(useWordsStore.getState().words[0]?.text).toBe('gato - cat')
+  })
+
+  it('renames a take’s file, in the catalogue and in Drive', async () => {
+    shelfWithGato()
+    useAssetStore.setState({ assets: [asset('asset_a', 'file_1')], loading: false })
+
+    useWordsStore.getState().renameVideo('asset_a', 'intro.webm')
+
+    await vi.waitFor(() => expect(renameFile).toHaveBeenCalledWith('file_1', 'intro.webm'))
+    expect(useAssetStore.getState().byId('asset_a')?.name).toBe('intro.webm')
+  })
+
+  it('refuses a name a sibling already has, and leaves both alone', () => {
+    shelfWithGato()
+    useWordsStore.getState().addLanguage('French')
+    const french = useWordsStore.getState().selectedLanguageId!
+
+    // Case and spacing included, the same way adding one is refused.
+    expect(useWordsStore.getState().renameLanguage(french, ' spanish ')).toBe(false)
+    expect(useWordsStore.getState().languages.map((entry) => entry.name)).toEqual([
+      'Spanish',
+      'French',
+    ])
+    expect(renameFile).not.toHaveBeenCalled()
+  })
+
+  it('allows a name another tier’s language has, since they are different shelves', () => {
+    shelfWithGato()
+    useWordsStore.getState().addTier('ESL')
+    useWordsStore.getState().addLanguage('German')
+    const german = useWordsStore.getState().selectedLanguageId!
+
+    expect(useWordsStore.getState().renameLanguage(german, 'Spanish')).toBe(true)
+  })
+
+  it('touches nobody’s Drive with no connection to it', () => {
+    connected = false
+    shelfWithGato()
+
+    expect(useWordsStore.getState().renameTier('tier_1', '2nd tier')).toBe(true)
+    expect(renameFile).not.toHaveBeenCalled()
+    expect(useWordsStore.getState().tiers[0]?.name).toBe('2nd tier')
   })
 })
 

@@ -20,6 +20,7 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
+import { RenameField } from './RenameField'
 import { WordSequencePlayer, type PlayableVideo } from './WordSequencePlayer'
 import { Button, Callout, EmptyState, Select, Spinner, TextArea } from './ui'
 import { useWordVideoBytes } from '../hooks/useWordVideoBytes'
@@ -202,6 +203,9 @@ function VideoRow({
   const setVideoRole = useWordsStore((state) => state.setVideoRole)
   const setTranscript = useWordsStore((state) => state.setTranscript)
   const removeVideo = useWordsStore((state) => state.removeVideo)
+  const renameVideo = useWordsStore((state) => state.renameVideo)
+
+  const [renaming, setRenaming] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: video.id,
@@ -213,7 +217,7 @@ function VideoRow({
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex flex-col gap-2 rounded-lg border bg-surface p-2 ${
+      className={`group flex flex-col gap-2 rounded-lg border bg-surface p-2 ${
         isDragging ? 'border-accent opacity-80' : 'border-line'
       }`}
     >
@@ -240,7 +244,32 @@ function VideoRow({
         )}
 
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <p className="truncate text-sm font-medium">{name}</p>
+          {/* The file's own name, and it really is the file's: renaming here
+              renames it in Drive too, so what the row says and what the folder
+              holds cannot drift apart. Only offered for a take this browser
+              knows about — there is no file to rename otherwise. */}
+          {renaming && asset ? (
+            <RenameField
+              initial={asset.name}
+              label={`Rename ${name}`}
+              onCommit={(next) => renameVideo(asset.id, next)}
+              onCancel={() => setRenaming(false)}
+            />
+          ) : (
+            <div className="flex min-w-0 items-center gap-1">
+              <p className="truncate text-sm font-medium">{name}</p>
+              {asset ? (
+                <Button
+                  variant="ghost"
+                  className="shrink-0 !px-1 !py-0 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                  onClick={() => setRenaming(true)}
+                  aria-label={`Rename ${name}`}
+                >
+                  ✏️
+                </Button>
+              ) : null}
+            </div>
+          )}
           <p className="flex items-center gap-1.5 text-xs text-ink-dim">
             {fetching ? (
               <>

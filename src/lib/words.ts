@@ -157,7 +157,7 @@ export function wordsInLanguage(words: readonly Word[], languageId: string | nul
  * a page where half your work is filed under a stray capital. So an add that
  * matches something already there selects it instead of making a second one.
  */
-function sameName(a: string, b: string): boolean {
+export function sameName(a: string, b: string): boolean {
   return a.trim().localeCompare(b.trim(), undefined, { sensitivity: 'accent' }) === 0
 }
 
