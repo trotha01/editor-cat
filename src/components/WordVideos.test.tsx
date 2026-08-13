@@ -261,6 +261,51 @@ describe('watching them together', () => {
   })
 
   /**
+   * The bar is over the *word*, not over the file in the element, which is the
+   * whole of why it is ours rather than the browser's own. Both directions of
+   * that are asserted here: a point dragged to is read back as a take and a
+   * time inside it, and a take playing is read forward as a point on the run.
+   */
+  it('scrubs across the whole run rather than the take on screen', () => {
+    const { player } = mount()
+
+    // Six seconds into a run of two four-second takes is two seconds into the
+    // second one, and the element is only told that once it has that file.
+    fireEvent.change(screen.getByRole('slider', { name: 'Scrub through the run' }), {
+      target: { value: '6' },
+    })
+
+    expect(screen.getByText('2 of 2 · Outro · gato.mp4')).toBeInTheDocument()
+    expect(screen.getByText('0:06.0 / 0:08.0')).toBeInTheDocument()
+    fireEvent.loadedMetadata(player())
+    expect(player().currentTime).toBe(2)
+  })
+
+  it('counts where the run has got to as the take on screen plays', () => {
+    const { player } = mount()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next video' }))
+    player().currentTime = 1
+    fireEvent.timeUpdate(player())
+
+    // One second into the second take is five into the run, not one.
+    expect(screen.getByText('0:05.0 / 0:08.0')).toBeInTheDocument()
+  })
+
+  it('cannot be scrubbed along a run whose takes have never been measured', () => {
+    useAssetStore.setState({
+      assets: [
+        { ...asset('asset_a', 'intro.mp4'), duration: undefined },
+        { ...asset('asset_b', 'gato.mp4'), duration: undefined },
+      ],
+      loading: false,
+    })
+    mount()
+
+    expect(screen.getByRole('slider', { name: 'Scrub through the run' })).toBeDisabled()
+  })
+
+  /**
    * The one rule in the player that is not obvious from reading it.
    *
    * A media element that reaches the end of its file pauses itself and fires
