@@ -536,6 +536,51 @@ function ExportRangeHandle({
   )
 }
 
+/**
+ * How tall a row of the gutter that adds a lane is.
+ *
+ * A number rather than a class because the lanes column has to hold a spacer of
+ * exactly this height opposite each one. Nothing lines the two columns up but
+ * their rows being the same height — a row on one side with nothing facing it
+ * puts every lane below it out of line with its own header.
+ */
+const ADD_TRACK_ROW_HEIGHT = 28
+
+/**
+ * The button that adds a lane, in the gutter beside where that lane will turn
+ * up: video above the picture it lays over, audio below the clip sound it is
+ * mixed with. Here rather than in the header above the timeline because adding
+ * a track is a thing you do to a place, and this is the place — the button sits
+ * in the gap the new lane opens up.
+ */
+function AddTrackRow({
+  label,
+  title,
+  onClick,
+}: {
+  label: string
+  title: string
+  onClick: () => void
+}) {
+  return (
+    <div className="mt-2 flex" style={{ height: ADD_TRACK_ROW_HEIGHT }}>
+      <Button
+        variant="ghost"
+        onClick={onClick}
+        title={title}
+        className="h-full w-full border border-dashed border-line !px-2 !py-0 text-[11px]"
+      >
+        {label}
+      </Button>
+    </div>
+  )
+}
+
+/** The lanes-column counterpart to an `AddTrackRow`, holding its line open. */
+function AddTrackSpacer() {
+  return <div aria-hidden className="mt-2" style={{ height: ADD_TRACK_ROW_HEIGHT }} />
+}
+
 /** Whether the clip at `index` begins at a cut rather than at its own start. */
 function cutBefore(positioned: readonly PositionedClip[], index: number): boolean {
   const previous = positioned[index - 1]?.clip
@@ -900,21 +945,6 @@ export function Timeline({
               Clear range
             </Button>
           ) : null}
-          {/* One button, because a voice lane and a music lane are both audio
-              lanes — what a lane carries is set on the lane itself, where you
-              can also change your mind about it later. */}
-          <Button
-            onClick={() => addTrack('voice')}
-            title="Add an empty audio track. Switch it between voice and music from the lane itself."
-          >
-            + Audio track
-          </Button>
-          <Button
-            onClick={addVideoTrack}
-            title="Add an empty video track. Clips on it are laid over the picture rather than into it."
-          >
-            + Video track
-          </Button>
           {/* Only offered while the lines are hidden — once they are showing,
               the button would do nothing you could see. */}
           {!frameLines && canReachFrames ? (
@@ -955,6 +985,12 @@ export function Timeline({
               draw in, read top to bottom. */}
           <VideoTrackHeaders />
 
+          <AddTrackRow
+            label="+ Video track"
+            title="Add an empty video track. Clips on it are laid over the picture rather than into it."
+            onClick={addVideoTrack}
+          />
+
           {/* The picture track's own controls, in the same gutter the audio
               tracks keep theirs in. Lead-in lives here because it is a property
               of the track rather than of any one clip — and because at zero
@@ -990,6 +1026,15 @@ export function Timeline({
               <span className="truncate font-medium">Clip sound</span>
             </div>
           ) : null}
+
+          {/* One button, because a voice lane and a music lane are both audio
+              lanes — what a lane carries is set on the lane itself, where you
+              can also change your mind about it later. */}
+          <AddTrackRow
+            label="+ Audio track"
+            title="Add an empty audio track. Switch it between voice and music from the lane itself."
+            onClick={() => addTrack('voice')}
+          />
 
           <AudioTrackHeaders />
 
@@ -1029,6 +1074,9 @@ export function Timeline({
             {/* Above the picture it is laid over, matching the headers in the
                 gutter: the lanes read up the screen in the order they stack in. */}
             <VideoTrackLanes zoom={zoom} />
+
+            {/* Facing "+ Video track" over in the gutter. */}
+            <AddTrackSpacer />
 
             <div className="relative">
               <DndContext
@@ -1134,6 +1182,9 @@ export function Timeline({
             </div>
 
             <ClipWaveformLane entries={soundEntries} zoom={zoom} />
+
+            {/* And this one "+ Audio track". */}
+            <AddTrackSpacer />
 
             <AudioTrackLanes zoom={zoom} targets={targets} />
 

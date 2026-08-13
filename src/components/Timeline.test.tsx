@@ -308,6 +308,71 @@ describe('the Delete key', () => {
 })
 
 /**
+ * Adding a lane is done from the gutter, beside where that lane will turn up,
+ * rather than from the row of buttons above the timeline. Which side of the
+ * picture each button is on is the whole point of it being there at all, so
+ * that is what these cover — a button in the header says nothing about where
+ * the track it adds is going to land.
+ */
+describe('the add-a-track buttons', () => {
+  const video: Asset = {
+    id: 'a1',
+    kind: 'video',
+    blobKey: 'b1',
+    mimeType: 'video/mp4',
+    name: 'lighthouse.mp4',
+    duration: 4,
+    createdAt: 0,
+  }
+
+  /** True when `first` comes before `second` in the rendered document. */
+  function precedes(first: Element, second: Element) {
+    return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
+  }
+
+  it('puts the video button in the gutter, directly above the picture track', () => {
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    const button = screen.getByRole('button', { name: '+ Video track' })
+
+    expect(button.closest('header')).toBeNull()
+    expect(precedes(button, screen.getByText('Picture'))).toBe(true)
+  })
+
+  it('puts the audio button in the gutter, under the clip sound and over the lanes', () => {
+    // A filmed clip, because the clip-sound row is only drawn once there is
+    // something on the timeline with sound of its own.
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'c1', assetId: video.id, inPoint: 0, outPoint: 4 }],
+      },
+    })
+    useAssetStore.setState({ assets: [video], loading: false })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    const button = screen.getByRole('button', { name: '+ Audio track' })
+    const firstLane = useProjectStore.getState().project.audioTracks[0]!
+
+    expect(button.closest('header')).toBeNull()
+    expect(precedes(screen.getByText('Clip sound'), button)).toBe(true)
+    expect(precedes(button, screen.getByText(firstLane.name))).toBe(true)
+  })
+
+  it('adds an empty lane of each kind', () => {
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+    const audioBefore = useProjectStore.getState().project.audioTracks.length
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Video track' }))
+    fireEvent.click(screen.getByRole('button', { name: '+ Audio track' }))
+
+    const project = useProjectStore.getState().project
+    expect(project.videoTracks).toHaveLength(1)
+    expect(project.audioTracks).toHaveLength(audioBefore + 1)
+  })
+})
+
+/**
  * Marking where an export of the timeline starts and ends — directly here,
  * rather than only by typing seconds into the export dialog, which now opens
  * onto whatever this leaves marked.
