@@ -110,6 +110,16 @@ describe('settings', () => {
     expect(screen.queryByLabelText('Project name')).not.toBeInTheDocument()
     expect(screen.queryByText('Project name')).not.toBeInTheDocument()
   })
+
+  // It is the last control in the editor's header too. Settings is the one
+  // button both pages have, so it is the one that has to be in the same place.
+  it('sits last in the header', () => {
+    // Links as well as buttons: what sat to the right of Settings here was the
+    // link across to the editor.
+    const controls = [...screen.getByRole('banner').querySelectorAll('button, a')]
+
+    expect(controls.at(-1)).toHaveTextContent('Settings')
+  })
 })
 
 describe('collapsing a column', () => {

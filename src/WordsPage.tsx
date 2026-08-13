@@ -108,15 +108,17 @@ export function WordsPage() {
         </p>
         {syncing ? <Spinner className="text-ink-dim" /> : null}
 
-        {/* The same dialog the editor opens, minus the project section: the
-            account, the Drive folder this shelf lives in, and what this browser
-            is storing are all as much this page's business as the editor's. */}
-        <Button onClick={() => setSettingsOpen(true)}>
-          <span aria-hidden>⚙️</span> Settings
-        </Button>
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
         </LinkButton>
+        {/* The same dialog the editor opens, minus the project section: the
+            account, the Drive folder this shelf lives in, and what this browser
+            is storing are all as much this page's business as the editor's. It
+            sits last here as it does there, so it is in the same place on both
+            pages. */}
+        <Button onClick={() => setSettingsOpen(true)}>
+          <span aria-hidden>⚙️</span> Settings
+        </Button>
       </header>
 
       <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 lg:flex-row lg:overflow-hidden">

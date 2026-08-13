@@ -114,17 +114,19 @@ export default function App() {
           <span aria-hidden>↷</span>
         </Button>
 
-        {/* The other page. Beside Settings rather than in the step nav, because
-            it is not a step of this project — it is somewhere else to be. */}
+        {/* The other page. Up here rather than in the step nav, because it is
+            not a step of this project — it is somewhere else to be. */}
         <LinkButton href={WORDS_HASH} title="Upload and order videos for a word">
           <span aria-hidden>🔤</span> Words
         </LinkButton>
 
-        <Button onClick={() => setSettingsOpen(true)}>
-          <span aria-hidden>⚙️</span> Settings
-        </Button>
         <Button variant="primary" onClick={() => setExportOpen(true)} disabled={clipCount === 0}>
           <span aria-hidden>⬇️</span> Export
+        </Button>
+        {/* Last, and last on the words page too: Settings is the one button in
+            the same place on both pages, so it stays findable by position. */}
+        <Button onClick={() => setSettingsOpen(true)}>
+          <span aria-hidden>⚙️</span> Settings
         </Button>
       </header>
 
