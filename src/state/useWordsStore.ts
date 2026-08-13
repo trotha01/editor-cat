@@ -34,6 +34,7 @@ import {
   deleteLanguage as dbDeleteLanguage,
   deleteTier as dbDeleteTier,
   deleteWord as dbDeleteWord,
+  getAsset,
   listLanguages,
   listTiers,
   listWords,
@@ -534,20 +535,49 @@ async function importFromDrive(): Promise<void> {
 }
 
 /**
- * Gives every take a catalogue entry on a machine that has never held one.
+ * Gives every take a catalogue entry, wherever the entry has to come from — and
+ * makes sure the account could give one to the next machine that asks.
  *
- * The shelf names its videos by asset id, and the asset rows say what those are
- * and which Drive file holds the bytes — the same trick `hydrateProject` does
- * for a timeline, at the scale of a shelf. Without it a second machine draws a
- * run of rows saying the file is not here, for files that are perfectly
- * reachable.
+ * The shelf names its videos by asset id and by nothing else, so an id that
+ * resolves to nothing is a row saying the file is not on this machine and a take
+ * the player will not draw at all — for a file sitting in the word's own Drive
+ * folder. Three places can answer, in this order:
+ *
+ *  - the catalogue, when it has already been read;
+ *  - this browser's own store, which the catalogue is a read of and which can
+ *    still be loading when the account answers first (see Root.tsx). "Not in the
+ *    catalogue" is not "not on this machine", and treating it as such would file
+ *    a second entry over the first — with a fresh blob key, and so with none of
+ *    the bytes the old key still names;
+ *  - the account's asset rows, which are how a machine that has never held the
+ *    file learns what it is and which Drive file holds it. The same trick
+ *    `hydrateProject` does for a timeline, at the scale of a shelf.
+ *
+ * And it answers back. A take this browser holds that the account has never
+ * heard of is written up, because plenty are: nothing recorded a row for a take
+ * catalogued out of the folder tree until the shelf moved to the account, so a
+ * shelf built from those names ids no other machine can resolve — which is a
+ * second machine seeing a word's whole run as files it has not got, with no way
+ * to ever fetch them.
  */
 async function hydrateShelfAssets(words: readonly Word[]): Promise<void> {
-  const known = new Set(useAssetStore.getState().assets.map((asset) => asset.id))
-  const wanted = [...new Set(assetIdsOf(words))].filter((id) => !known.has(id))
-  if (wanted.length === 0) return
+  const ids = [...new Set(assetIdsOf(words))]
+  if (ids.length === 0) return
 
-  for (const row of await getAssets(wanted)) {
+  const rows = new Map((await getAssets(ids)).map((row) => [row.id, row] as const))
+
+  for (const id of ids) {
+    // Read afresh each time round rather than snapshotted: the catalogue's own
+    // load can land in the middle of this, and so can the line below.
+    const held = useAssetStore.getState().byId(id) ?? (await getAsset(id))
+    if (held) {
+      if (!rows.has(id)) void recordAsset(held)
+      if (!useAssetStore.getState().byId(id)) useAssetStore.getState().adopt(held)
+      continue
+    }
+
+    const row = rows.get(id)
+    if (!row) continue
     // A blob key names an IndexedDB entry on one machine and nothing anywhere
     // else, so it is made here rather than carried.
     const asset = fromRow(row, newId('blob'))
@@ -619,7 +649,13 @@ async function adoptDiscovered(tiers: readonly RawTier[]): Promise<DiscoveredTie
         const videos = []
         for (const file of word.files) {
           let asset = byDriveId.get(file.id)
-          if (!asset) {
+          if (asset) {
+            // Recorded against the account even though this browser already had
+            // it, because the shelf about to be built out of these names it by
+            // asset id: a file catalogued here before there were rows to record
+            // is one no other machine could ever resolve.
+            void recordAsset(asset)
+          } else {
             asset = await catalogueVideo(file)
             byDriveId.set(file.id, asset)
           }

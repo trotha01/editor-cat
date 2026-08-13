@@ -46,9 +46,25 @@ export const useAssetStore = create<AssetState>((set, get) => ({
   load: async () => {
     set({ loading: true })
     try {
-      set({ assets: await listAssets(), loading: false })
+      const stored = await listAssets()
+      // Folded in rather than assigned, because the catalogue can be added to
+      // while this read is in flight. The word pages resolve a shelf's takes
+      // against it the moment the account answers (see
+      // `hydrateShelfAssets`), which on a cold IndexedDB is often before this
+      // has finished — and assigning would drop every one of them, leaving the
+      // run reading "not on this machine" for files that are.
+      set((state) => {
+        const held = new Set(state.assets.map((asset) => asset.id))
+        return {
+          assets: [...state.assets, ...stored.filter((asset) => !held.has(asset.id))],
+          loading: false,
+        }
+      })
     } catch {
-      set({ assets: [], loading: false })
+      // Whatever was adopted while this was failing is still the truth about
+      // this browser, so it stays. There was nothing else to lose: this runs
+      // once, from an empty catalogue.
+      set({ loading: false })
     }
   },
 
@@ -62,7 +78,13 @@ export const useAssetStore = create<AssetState>((set, get) => ({
   },
 
   adopt: (asset) => {
-    set((state) => ({ assets: [asset, ...state.assets] }))
+    // Replacing any entry for the same id rather than putting a second one in
+    // front of it: a file can be handed over twice — picked from Drive, and
+    // resolved again out of the shelf's asset rows — and two entries for one id
+    // is a catalogue where which one answers depends on which lookup is asked.
+    set((state) => ({
+      assets: [asset, ...state.assets.filter((entry) => entry.id !== asset.id)],
+    }))
   },
 
   update: async (id, patch) => {

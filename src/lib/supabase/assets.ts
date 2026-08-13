@@ -72,12 +72,34 @@ export async function upsertAsset(asset: Asset, byteSize?: number): Promise<void
   if (error) throw new Error(error.message)
 }
 
+/**
+ * How many ids `in.(...)` carries in one request.
+ *
+ * A timeline asks for a handful; a whole word shelf can ask for hundreds — every
+ * take of every word on the account, in one call (see `hydrateShelfAssets`). The
+ * query string is `id=in.(id1,id2,...)`, so that grows without bound too, and a
+ * long enough one has nowhere good to fail: not a row-shaped error, just a
+ * request that never lands. Chunked, the same account asks in several requests
+ * short enough that none of them are a novelty to whatever sits between the
+ * browser and Postgres.
+ */
+const ASSET_ID_BATCH = 100
+
 /** Fetches metadata for a specific set of assets — what a timeline references. */
 export async function getAssets(ids: string[]): Promise<AssetRow[]> {
   if (ids.length === 0) return []
-  const { data, error } = await supabase().from('assets').select('*').in('id', ids)
-  if (error) throw new Error(error.message)
-  return (data ?? []) as AssetRow[]
+  const batches: string[][] = []
+  for (let at = 0; at < ids.length; at += ASSET_ID_BATCH)
+    batches.push(ids.slice(at, at + ASSET_ID_BATCH))
+
+  const rows = await Promise.all(
+    batches.map(async (batch) => {
+      const { data, error } = await supabase().from('assets').select('*').in('id', batch)
+      if (error) throw new Error(error.message)
+      return (data ?? []) as AssetRow[]
+    }),
+  )
+  return rows.flat()
 }
 
 /** The whole library, for populating a machine that has never seen it. */
