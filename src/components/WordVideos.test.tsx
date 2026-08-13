@@ -367,7 +367,7 @@ describe('adding videos that are already in Drive', () => {
     // No bytes yet — the row is drawn from the name, and the file comes down
     // afterwards, the same way a shelf read out of Drive fills in.
     rerender()
-    expect(screen.getByText('cervelle.mp4')).toBeInTheDocument()
+    expect(within(rows()[2]!).getByText('cervelle.mp4')).toBeInTheDocument()
   })
 
   it('moves it into the word’s folder, since the folder is the list of takes', async () => {
