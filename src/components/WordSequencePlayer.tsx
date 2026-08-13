@@ -12,6 +12,12 @@
  * bar spans the whole word and dragging it crosses the join between two takes.
  * A native one would stop at the end of whichever file happened to be loaded.
  *
+ * There is no transport under the picture: the picture is the button. Clicking a
+ * video to start and stop it is what every player anybody uses does, and once
+ * the click does that, a row of ▶/⏮/⏭ underneath is three more things to explain
+ * that say nothing the bar and the strip do not already say better — moving
+ * between takes is what those are for.
+ *
  * Under it the same run laid out left to right, which is where the order is
  * actually decided: the run reads as a sentence — this leads in, this is the
  * word, this signs off — and a strip of frames in a row is that sentence, in a
@@ -19,6 +25,11 @@
  * and because the ends of a run are what name themselves (`roleInRun`), the
  * labels follow the drag rather than the drag having to be followed by
  * relabelling two takes by hand.
+ *
+ * And under that, the transcript of the take on screen — as a box that types,
+ * not as a line that reads. Watching the run is when a wrong transcript is
+ * noticed, so it is also where it should be fixable; the edit goes out through
+ * `onTranscript` to the same store action the take's own row calls.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -33,7 +44,7 @@ import { restrictToHorizontalAxis } from '@dnd-kit/modifiers'
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { AssetThumb } from './AssetThumb'
-import { Button } from './ui'
+import { TextArea } from './ui'
 import { useAssetSource } from '../hooks/useAssetUrl'
 import { formatTime } from '../lib/timeline'
 import { roleLabel, type WordVideo, type WordVideoRole } from '../lib/words'
@@ -66,9 +77,12 @@ export function WordSequencePlayer({
   entries,
   /** Moves the take dragged onto another one into its place, both named by id. */
   onMove,
+  /** Rewrites the transcript of one take, named by id. */
+  onTranscript,
 }: {
   entries: PlayableVideo[]
   onMove: (activeId: string, overId: string) => void
+  onTranscript: (videoId: string, transcript: string) => void
 }) {
   const [index, setIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -228,22 +242,25 @@ export function WordSequencePlayer({
 
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold tracking-wide text-ink-dim uppercase">
-          Watch together
-        </h3>
-        <span className="text-xs text-ink-dim">
-          {entries.length} {entries.length === 1 ? 'video' : 'videos'} · {formatTime(total)}
-        </span>
-      </div>
-
       {/* A fixed box rather than one sized off whichever take happens to be
           loaded — the same reasoning as the editor's own preview. Without it,
           the element's own height follows each take's native aspect ratio, so
           the picture visibly grows and shrinks at every join. Letterboxing
           inside an unchanging box, `object-contain`, is what the editor does
-          too. */}
-      <div className="relative aspect-video max-h-80 w-full overflow-hidden rounded-lg bg-black">
+          too.
+
+          The box is a button rather than a `<div>` with a click on it, which is
+          what keeps play/pause reachable now that there is no ▶ under the
+          picture: a button is focusable and answers Space and Enter, and it is
+          also the gesture a browser will let a video start on. The `<video>`
+          inside carries no `controls`, so it is not interactive content and
+          this nests legally. */}
+      <button
+        type="button"
+        onClick={() => setPlaying((value) => !value)}
+        aria-label={playing ? 'Pause' : 'Play'}
+        className="relative aspect-video max-h-80 w-full cursor-pointer overflow-hidden rounded-lg bg-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
         <video
           ref={element}
           src={source.url ?? undefined}
@@ -263,7 +280,7 @@ export function WordSequencePlayer({
             pending.current = null
           }}
         />
-      </div>
+      </button>
 
       {/* Dragged across the whole run rather than the file in the element, so
           the handle keeps moving straight through the join between two takes.
@@ -287,31 +304,18 @@ export function WordSequencePlayer({
         </span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="primary"
-          onClick={() => setPlaying((value) => !value)}
-          aria-label={playing ? 'Pause' : 'Play all'}
-        >
-          <span aria-hidden>{playing ? '⏸' : '▶️'}</span> {playing ? 'Pause' : 'Play all'}
-        </Button>
-        <Button onClick={() => goTo(at - 1)} disabled={at === 0} aria-label="Previous video">
-          <span aria-hidden>⏮</span>
-        </Button>
-        <Button
-          onClick={() => goTo(at + 1)}
-          disabled={at >= entries.length - 1}
-          aria-label="Next video"
-        >
-          <span aria-hidden>⏭</span>
-        </Button>
-
+      {/* What is on screen and how much there is of the whole run — all that is
+          left of the row that used to be the transport. */}
+      <div className="flex items-center justify-between gap-2">
         {current ? (
           <p className="min-w-0 flex-1 truncate text-xs text-ink-dim">
             {at + 1} of {entries.length} · {current.role ? `${roleLabel(current.role)} · ` : ''}
             {current.asset.name}
           </p>
         ) : null}
+        <span className="shrink-0 text-xs text-ink-dim">
+          {entries.length} {entries.length === 1 ? 'video' : 'videos'} · {formatTime(total)}
+        </span>
       </div>
 
       {/* The run laid out in order, and the place it is put in order.
@@ -343,14 +347,22 @@ export function WordSequencePlayer({
 
       {/* The transcript of whatever is on screen, which is the other half of
           watching these back: reading along is how you catch the take that says
-          something slightly different from what it was supposed to. */}
-      {current?.video.transcript?.trim() ? (
-        <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm leading-relaxed">
-          {current.video.transcript}
-        </p>
-      ) : (
-        <p className="px-3 py-2 text-sm text-ink-dim">No transcript for this one yet.</p>
-      )}
+          something slightly different from what it was supposed to.
+
+          And catching it is when you want to fix it, so this is the same box as
+          the one on the take's row below rather than a read-only copy of it —
+          having to hunt down the matching row to correct a word you are looking
+          straight at is the whole of the complaint. Both write through the same
+          store action, so the two boxes cannot disagree. */}
+      {current ? (
+        <TextArea
+          rows={2}
+          value={current.video.transcript ?? ''}
+          aria-label="Transcript for the take on screen"
+          placeholder="What is said in this video…"
+          onChange={(event) => onTranscript(current.video.id, event.target.value)}
+        />
+      ) : null}
     </div>
   )
 }

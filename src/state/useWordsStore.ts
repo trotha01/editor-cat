@@ -438,6 +438,63 @@ function rememberSyncedAt(when: number): void {
 }
 
 /**
+ * Which tier, language and word the three columns were last pointing at.
+ *
+ * In localStorage rather than on the account, and deliberately: the shelf is
+ * one person's across all their machines, but "the word I am watching" is about
+ * this browser and this desk, and a laptop should not drag a phone off the word
+ * it has open. Reloading the page is how somebody comes back to a take they
+ * have just filmed into Drive, and landing at the top of all three columns
+ * means finding the word again every time.
+ */
+const SELECTION_KEY = 'editor-cat.words.selection.v1'
+
+const NOTHING_SELECTED: Selection = {
+  selectedTierId: null,
+  selectedLanguageId: null,
+  selectedWordId: null,
+}
+
+function storedId(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function rememberedSelection(): Selection {
+  try {
+    const raw = localStorage.getItem(SELECTION_KEY)
+    if (!raw) return NOTHING_SELECTED
+    const parsed = JSON.parse(raw) as Partial<Record<keyof Selection, unknown>>
+    return {
+      selectedTierId: storedId(parsed.selectedTierId),
+      selectedLanguageId: storedId(parsed.selectedLanguageId),
+      selectedWordId: storedId(parsed.selectedWordId),
+    }
+  } catch {
+    // Storage blocked, or something under the key that is not a selection.
+    // Either way the page opens on the first of each column, which is where it
+    // opened before any of this was remembered.
+    return NOTHING_SELECTED
+  }
+}
+
+function rememberSelection({
+  selectedTierId,
+  selectedLanguageId,
+  selectedWordId,
+}: Selection): void {
+  try {
+    // Picked apart rather than written whole: the caller hands over the store,
+    // and the three lists have no business in localStorage.
+    localStorage.setItem(
+      SELECTION_KEY,
+      JSON.stringify({ selectedTierId, selectedLanguageId, selectedWordId }),
+    )
+  } catch {
+    // Same as above: what is lost is the next reload landing where this one is.
+  }
+}
+
+/**
  * How long after the last edit the shelf is written up.
  *
  * Long enough that dragging a run into order is one write rather than five, and
@@ -963,9 +1020,11 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         // about to be replaced by it.
         past: [],
         future: [],
-        // Opening on the first of each, so a page that has been used before
-        // opens on something rather than on three empty columns and a prompt.
-        ...openingSelection({ tiers, languages, words }),
+        // Back to the word this browser had open, and to the first of each
+        // column when it has none or what it had is gone — so a page that has
+        // been used before opens on something rather than on three empty
+        // columns and a prompt.
+        ...reopeningSelection({ tiers, languages, words }),
       })
     } catch {
       // Nothing to show and nothing to be done about it from here. Not latched
@@ -1412,6 +1471,26 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 }))
 
 /**
+ * Keeps the remembered selection in step with the columns.
+ *
+ * One listener rather than a write inside `selectTier`, `selectLanguage` and
+ * `selectWord`, because those three are not the only things that move the
+ * selection: adding moves it, deleting resettles the columns below, and a sync
+ * can take the open word away entirely. This catches all of them, and cannot be
+ * forgotten by the next action that moves a column.
+ */
+useWordsStore.subscribe((state, previous) => {
+  if (
+    state.selectedTierId === previous.selectedTierId &&
+    state.selectedLanguageId === previous.selectedLanguageId &&
+    state.selectedWordId === previous.selectedWordId
+  ) {
+    return
+  }
+  rememberSelection(state)
+})
+
+/**
  * Renames a folder or a file over in Drive, if there is one and Drive is there
  * to take it.
  *
@@ -1501,6 +1580,25 @@ function openingSelection(lists: Lists): Selection {
 }
 
 /**
+ * Where the three columns should be pointing when the page is opened cold.
+ *
+ * Whatever this browser had open last time, checked against the shelf that is
+ * actually here: a word deleted from another machine falls back to the first of
+ * its column, exactly the way a sync landing on it would settle it.
+ *
+ * The exception is a browser whose local copy is empty — a machine that has
+ * never had the page, or one whose storage was cleared. Settling ids against
+ * three empty lists would null every one of them, so they are kept as they are
+ * and the shelf arriving off the account a moment later settles them instead
+ * (see `applyRemote`). Nothing is drawn from them in the meantime: a selection
+ * naming rows the page does not have is the same empty page as no selection.
+ */
+function reopeningSelection(lists: Lists): Selection {
+  const remembered = rememberedSelection()
+  return lists.tiers.length === 0 ? remembered : settledSelection(remembered, lists)
+}
+
+/**
  * Where the three columns should be pointing after a read from Drive.
  *
  * Whatever was open stays open — a sync is not a reason to move somebody — and
@@ -1508,15 +1606,16 @@ function openingSelection(lists: Lists): Selection {
  * the first of what is there. That is what makes a second machine open on a
  * shelf rather than on a prompt.
  */
-function settledSelection(state: WordsState, lists: Lists): Selection {
+function settledSelection(selection: Selection, lists: Lists): Selection {
   const tier =
-    lists.tiers.find((entry) => entry.id === state.selectedTierId) ?? sortedTiers(lists.tiers)[0]
+    lists.tiers.find((entry) => entry.id === selection.selectedTierId) ??
+    sortedTiers(lists.tiers)[0]
 
   const inTier = languagesInTier(lists.languages, tier?.id ?? null)
-  const language = inTier.find((entry) => entry.id === state.selectedLanguageId) ?? inTier[0]
+  const language = inTier.find((entry) => entry.id === selection.selectedLanguageId) ?? inTier[0]
 
   const inLanguage = wordsInLanguage(lists.words, language?.id ?? null)
-  const word = inLanguage.find((entry) => entry.id === state.selectedWordId) ?? inLanguage[0]
+  const word = inLanguage.find((entry) => entry.id === selection.selectedWordId) ?? inLanguage[0]
 
   return {
     selectedTierId: tier?.id ?? null,

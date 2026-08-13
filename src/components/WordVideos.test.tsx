@@ -269,14 +269,31 @@ describe('watching them together', () => {
   it('shows the transcript of whatever is on screen, and moves on', () => {
     mount()
 
-    // As a line under the picture, as against the same words in the box that is
-    // there to edit them — both are on screen, and this is the reading copy.
-    expect(screen.getByText('Ready?', { selector: 'p' })).toBeInTheDocument()
+    const showing = () => screen.getByRole('textbox', { name: 'Transcript for the take on screen' })
+    expect(showing()).toHaveValue('Ready?')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next video' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play gato.mp4' }))
 
     expect(screen.getByText('2 of 2 · Outro · gato.mp4')).toBeInTheDocument()
-    expect(screen.getByText('No transcript for this one yet.')).toBeInTheDocument()
+    expect(showing()).toHaveValue('')
+  })
+
+  /**
+   * The box under the picture is the same edit as the box on the take's row, and
+   * this is asserted from the store rather than from the other box because that
+   * is what "the same edit" means — a copy that merely looked right on screen
+   * would be back to two transcripts that can drift.
+   */
+  it('rewrites the transcript of the take on screen, from under the picture', () => {
+    const { rerender } = mount()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Transcript for the take on screen' }), {
+      target: { value: '¿Listo?' },
+    })
+
+    expect(current().videos.map((video) => video.transcript)).toEqual(['¿Listo?', undefined])
+    rerender()
+    expect(screen.getByRole('textbox', { name: 'Transcript for intro.mp4' })).toHaveValue('¿Listo?')
   })
 
   /**
@@ -325,7 +342,7 @@ describe('watching them together', () => {
   it('counts where the run has got to as the take on screen plays', () => {
     const { player } = mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next video' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play gato.mp4' }))
     player().currentTime = 1
     fireEvent.timeUpdate(player())
 
@@ -359,7 +376,7 @@ describe('watching them together', () => {
   it('carries on into the next take through the pause the browser fires at the end', () => {
     const { player } = mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Play all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
     fireEvent.pause(player())
     fireEvent.ended(player())
 
@@ -370,20 +387,36 @@ describe('watching them together', () => {
   it('stops and rewinds when the last take ends', () => {
     const { player } = mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Play all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
     fireEvent.pause(player())
     fireEvent.ended(player())
     fireEvent.pause(player())
     fireEvent.ended(player())
 
     expect(screen.getByText('1 of 2 · Intro · intro.mp4')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Play all' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument()
+  })
+
+  /**
+   * The picture is the only play control there is, so the click that reaches it
+   * is asserted on the element itself rather than on the button around it — a
+   * handler that only ever fired on the frame around the letterboxed picture
+   * would pass any test that pressed the button by name.
+   */
+  it('plays and pauses when the picture itself is clicked', () => {
+    const { player } = mount()
+
+    fireEvent.click(player())
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument()
+
+    fireEvent.click(player())
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument()
   })
 
   it('is not drawn at all for a word with nothing uploaded yet', () => {
     mount({ ...WORD, videos: [] })
 
-    expect(screen.queryByRole('button', { name: 'Play all' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
   })
 })

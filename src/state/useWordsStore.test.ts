@@ -76,6 +76,9 @@ function reset() {
   stored.languages.clear()
   stored.words.clear()
   deletedAssets.length = 0
+  // The store writes the open selection down as the columns move, so without
+  // this every test would open where the one before it left off.
+  localStorage.clear()
   useAssetStore.setState({ assets: [], loading: false })
   useWordsStore.setState({
     tiers: [],
@@ -455,5 +458,127 @@ describe('load', () => {
     await useWordsStore.getState().load()
 
     expect(useWordsStore.getState().selectedWordId).toBe(perro)
+  })
+})
+
+/**
+ * A refresh is how somebody comes back to a word after filming a take for it,
+ * so the columns have to be where they were left rather than back at the top of
+ * the shelf. Storage is checked directly here: what a reload reads is the whole
+ * of what this does, and nothing on screen says whether it was written.
+ */
+describe('coming back after a reload', () => {
+  const SELECTION_KEY = 'editor-cat.words.selection.v1'
+
+  /** A shelf in storage with two tiers, two languages and a word under each. */
+  function shelfInStorage() {
+    stored.tiers.clear()
+    // Out with the tier every other test starts from, and with the selection
+    // adding it wrote down: this is a browser opening the page cold.
+    localStorage.clear()
+    stored.tiers.set('tier_esl', { id: 'tier_esl', name: 'ESL', createdAt: 0 })
+    stored.tiers.set('tier_1', { id: 'tier_1', name: '1st tier', createdAt: 0 })
+    stored.languages.set('lang_es', {
+      id: 'lang_es',
+      tierId: 'tier_1',
+      name: 'Spanish',
+      createdAt: 0,
+    })
+    stored.languages.set('lang_fr', {
+      id: 'lang_fr',
+      tierId: 'tier_1',
+      name: 'French',
+      createdAt: 0,
+    })
+    stored.words.set('w_helado', {
+      id: 'w_helado',
+      languageId: 'lang_es',
+      text: 'helado',
+      videos: [],
+      createdAt: 0,
+    })
+    stored.words.set('w_chien', {
+      id: 'w_chien',
+      languageId: 'lang_fr',
+      text: 'chien',
+      videos: [],
+      createdAt: 0,
+    })
+    useWordsStore.setState({ loaded: false })
+  }
+
+  function remember(selection: Record<string, string | null>) {
+    localStorage.setItem(SELECTION_KEY, JSON.stringify(selection))
+  }
+
+  it('writes the open columns down as they move', () => {
+    useWordsStore.getState().addLanguage('Spanish')
+    useWordsStore.getState().addWord('helado')
+
+    const { selectedTierId, selectedLanguageId, selectedWordId } = useWordsStore.getState()
+    expect(JSON.parse(localStorage.getItem(SELECTION_KEY) ?? 'null')).toEqual({
+      selectedTierId,
+      selectedLanguageId,
+      selectedWordId,
+    })
+  })
+
+  it('opens on the remembered word rather than the first of each column', async () => {
+    shelfInStorage()
+    // Not what a cold read would pick: sorted by name, the first of each column
+    // is "1st tier", French, chien.
+    remember({
+      selectedTierId: 'tier_1',
+      selectedLanguageId: 'lang_es',
+      selectedWordId: 'w_helado',
+    })
+
+    await useWordsStore.getState().load()
+
+    expect(useWordsStore.getState().selectedTierId).toBe('tier_1')
+    expect(useWordsStore.getState().selectedLanguageId).toBe('lang_es')
+    expect(useWordsStore.getState().selectedWordId).toBe('w_helado')
+  })
+
+  it('falls back to the first of a column whose remembered row has gone', async () => {
+    shelfInStorage()
+    // Deleted from another machine since this browser last had the page.
+    remember({
+      selectedTierId: 'tier_1',
+      selectedLanguageId: 'lang_es',
+      selectedWordId: 'w_deleted',
+    })
+
+    await useWordsStore.getState().load()
+
+    expect(useWordsStore.getState().selectedLanguageId).toBe('lang_es')
+    expect(useWordsStore.getState().selectedWordId).toBe('w_helado')
+  })
+
+  it('keeps the remembered ids when this browser has no shelf yet', async () => {
+    // Storage cleared, or a machine that has never had the page: the shelf is
+    // about to arrive off the account, and settling against nothing would
+    // forget where the user was before it got here.
+    stored.tiers.clear()
+    useWordsStore.setState({ loaded: false })
+    remember({
+      selectedTierId: 'tier_1',
+      selectedLanguageId: 'lang_es',
+      selectedWordId: 'w_helado',
+    })
+
+    await useWordsStore.getState().load()
+
+    expect(useWordsStore.getState().selectedWordId).toBe('w_helado')
+  })
+
+  it('opens on the first of each column when there is nothing remembered', async () => {
+    shelfInStorage()
+
+    await useWordsStore.getState().load()
+
+    expect(useWordsStore.getState().selectedTierId).toBe('tier_1')
+    expect(useWordsStore.getState().selectedLanguageId).toBe('lang_fr')
+    expect(useWordsStore.getState().selectedWordId).toBe('w_chien')
   })
 })
