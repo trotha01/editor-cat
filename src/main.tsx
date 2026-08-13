@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App'
+import { Root } from './Root'
 import { SignInGate } from './components/SignInGate'
 import { StagingBadge } from './components/StagingBadge'
 import { installVersionGlobal } from './lib/version'
@@ -12,10 +12,10 @@ function mount(): void {
 
   createRoot(container).render(
     <StrictMode>
-      {/* Wraps App rather than living inside it, so nothing in the editor mounts
-          — and no project is fetched — until there is a session to fetch it for. */}
+      {/* Wraps the pages rather than living inside them, so nothing mounts — and
+          no project is fetched — until there is a session to fetch it for. */}
       <SignInGate>
-        <App />
+        <Root />
       </SignInGate>
 
       {/* Outside the gate for the reason `VERSION` is installed before it: which

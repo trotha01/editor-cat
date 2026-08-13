@@ -18,17 +18,14 @@ import { HydrationStatus } from './components/HydrationStatus'
 import { ProjectPicker } from './components/ProjectPicker'
 import { ProjectsError } from './components/ProjectsError'
 import { SyncStatus } from './components/SyncStatus'
-import { Button } from './components/ui'
+import { Button, LinkButton } from './components/ui'
 import { usePersistedState } from './hooks/usePersistedState'
 import { usePlayback } from './hooks/usePlayback'
 import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
-import { useAssetStore } from './state/useAssetStore'
-import { useDriveStore } from './state/useDriveStore'
 import { useProjectStore } from './state/useProjectStore'
 import { installFlushOnExit, useProjectsStore } from './state/useProjectsStore'
 import { useSettingsStore } from './state/useSettingsStore'
-import { setIngestListener } from './lib/media'
-import { recordAsset } from './lib/sync/assetSync'
+import { WORDS_HASH } from './lib/route'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
@@ -61,7 +58,6 @@ export default function App() {
     false,
   )
 
-  const loadAssets = useAssetStore((state) => state.load)
   const duration = useProjectStore((state) => state.duration())
   const fps = useProjectStore((state) => state.project.fps)
   const clipCount = useProjectStore((state) => state.project.clips.length)
@@ -72,7 +68,6 @@ export default function App() {
   useUndoRedoShortcut()
 
   useEffect(() => {
-    void loadAssets()
     // Loads the project list and opens one, or falls back to the single local
     // project when there is no account behind this build.
     void useProjectsStore.getState().start()
@@ -82,17 +77,6 @@ export default function App() {
     void useSettingsStore.getState().loadElevenLabsSupport()
 
     return installFlushOnExit()
-  }, [loadAssets])
-
-  useEffect(() => {
-    // Every panel reaches durable storage through this one hook, so generated
-    // images, rendered clips, recordings and manual uploads are all backed up
-    // and catalogued without any of them knowing Drive or Supabase exist.
-    setIngestListener((asset, blob) => {
-      useDriveStore.getState().uploadAsset(asset, blob)
-      void recordAsset(asset, blob.size)
-    })
-    return () => setIngestListener(null)
   }, [])
 
   return (
@@ -129,6 +113,12 @@ export default function App() {
         >
           <span aria-hidden>↷</span>
         </Button>
+
+        {/* The other page. Beside Settings rather than in the step nav, because
+            it is not a step of this project — it is somewhere else to be. */}
+        <LinkButton href={WORDS_HASH} title="Upload and order videos for a word">
+          <span aria-hidden>🔤</span> Words
+        </LinkButton>
 
         <Button onClick={() => setSettingsOpen(true)}>
           <span aria-hidden>⚙️</span> Settings

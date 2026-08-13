@@ -26,6 +26,7 @@ need **no key at all**. Signing in is the whole of the way in.
 | **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **5 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Two navigation columns on the left — a language, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. **Watch together** plays the whole run back to back in one player, moving to the next take on its own and showing each one's transcript as it goes. Videos uploaded here are backed up to your Drive like everything else; the lists themselves stay in this browser.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## What you need
@@ -1405,6 +1406,36 @@ black lives.
 custom-ID box. When something goes stale, the provider's error shows verbatim
 and the fix is one line — no code change and no waiting for a release.
 
+**The words page is a page, not a tab.** It is a different job from the editor:
+the editor is one project being cut together, and the words page is a growing
+shelf of words with a handful of whole takes filed under each. They share media
+storage and nothing else — no timeline, no clips, no export — so putting it in
+the step nav would have made it step six of a project it has nothing to do with.
+Which page is on screen comes off the URL hash (`src/lib/route.ts`), which is
+about as much router as two pages need, and it is the hash rather than the path
+because Auth0 returns from Google to this same URL with `code` and `state` in the
+_query_ string: the hash is the one part of the address that return cannot
+disturb. `src/Root.tsx` picks between the two and owns the pair of things both
+need — the asset catalogue and the ingest hook — so a video uploaded for a word
+reaches Drive by exactly the route a generated image does.
+
+**A word's videos are ordered by hand, and the labels are only labels.** Intro,
+Word and Outro say what a take _is_; they do not say where it goes. The run plays
+in the order it is listed, so somebody who wants two intros, or the outro in the
+middle for a minute, gets to have that — sorting the run by label would be the
+page overruling the drag that was just made. Reordering is offered twice, as a
+drag handle and as a pair of arrows on each row, because a drag handle is
+invisible to a keyboard; both call the same `moveVideo`, so neither can drift.
+
+**Word videos are catalogued without joining a library.** Every other panel hands
+new media to `useAssetStore.add`, which also claims it for the open project —
+that is what stops a generated file from ending up on the machine with nothing on
+screen to reach it by. A word's takes have somewhere else to be reached from, so
+they go through `adopt` instead and stay out of the project's library, where they
+would only be clutter. The bytes are cleared when the last word listing them is
+deleted (`isVideoAssetOrphaned`), and the copy in the user's Drive is never
+touched by any of it.
+
 ## Testing
 
 ```bash
@@ -1484,6 +1515,12 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
+- **The word lists live in this browser.** The videos themselves are backed up
+  to your Drive as they are uploaded, like every other file the app takes in, but
+  the languages, the words, the order, the labels and the transcripts are kept in
+  IndexedDB and do not sync to your account the way a timeline does. So the shelf
+  is per machine: the same account on a second computer opens the words page
+  empty. Clearing this browser's data from Settings clears it too.
 - **A filed report is one-way.** The issue carries the reporter's address so
   they can be answered, but nothing comes back into the editor — there is no
   inbox in the app, and someone who files a bug and closes the tab will only
