@@ -26,6 +26,7 @@ vi.mock('./lib/db', () => ({
   listWords: () => Promise.resolve([]),
   listLanguages: () => Promise.resolve([]),
   putAsset: () => Promise.resolve(),
+  getAsset: () => Promise.resolve(undefined),
   deleteAsset: () => Promise.resolve(),
   getBlob: () => Promise.resolve(undefined),
   listAssets: () => Promise.resolve([]),
