@@ -57,7 +57,9 @@ vi.mock('../lib/supabase/assets', () => ({
   }),
 }))
 
-vi.mock('../lib/sync/assetSync', () => ({ recordAsset: () => Promise.resolve() }))
+const recordAsset = vi.fn<(asset: Asset) => Promise<void>>(() => Promise.resolve())
+
+vi.mock('../lib/sync/assetSync', () => ({ recordAsset: (asset: Asset) => recordAsset(asset) }))
 
 /** Whether there is an account to keep the shelf on, which is the other switch. */
 let signedIn = true
@@ -79,6 +81,13 @@ vi.mock('./useDriveStore', () => ({
 
 const stored = new Map<string, unknown>()
 
+/**
+ * What this browser holds in IndexedDB, which is not the same thing as what the
+ * catalogue has read out of it — the difference is the whole point of two of the
+ * claims below.
+ */
+const storedAssets = new Map<string, Asset>()
+
 vi.mock('../lib/db', () => ({
   listLanguages: () => Promise.resolve([]),
   listWords: () => Promise.resolve([]),
@@ -98,7 +107,11 @@ vi.mock('../lib/db', () => ({
     stored.set(value.id, value)
     return Promise.resolve()
   },
-  putAsset: () => Promise.resolve(),
+  putAsset: (value: Asset) => {
+    storedAssets.set(value.id, value)
+    return Promise.resolve()
+  },
+  getAsset: (id: string) => Promise.resolve(storedAssets.get(id)),
   deleteAsset: () => Promise.resolve(),
   getBlob: () => Promise.resolve(undefined),
   listAssets: () => Promise.resolve([]),
@@ -154,6 +167,8 @@ beforeEach(() => {
   connected = true
   signedIn = true
   stored.clear()
+  storedAssets.clear()
+  recordAsset.mockClear()
   localStorage.clear()
   findOrCreateFolder.mockReset()
   findOrCreateFolder.mockImplementation((name) => Promise.resolve(`folder_for_${name}`))
@@ -345,6 +360,44 @@ describe('the first read of an account with no shelf', () => {
     expect((doc as ShelfDoc).words[0]?.text).toBe('gato')
   })
 
+  /**
+   * The shelf this builds names its takes by asset id, so every one of those ids
+   * has to be something the account can answer for. A file already in this
+   * browser's catalogue is the case that got missed: nothing recorded a row for
+   * a take catalogued out of the folder tree before the shelf moved, so a shelf
+   * built out of them was a run of ids no second machine could ever resolve.
+   */
+  it('records a take it already knew, so the shelf it builds is resolvable elsewhere', async () => {
+    useAssetStore.setState({ assets: [asset('asset_a', 'file_1')], loading: false })
+    readShelf.mockResolvedValue([
+      {
+        folderId: 'folder_first',
+        name: '1st tier',
+        languages: [
+          {
+            folderId: 'folder_es',
+            name: 'Spanish',
+            words: [
+              {
+                folderId: 'folder_gato',
+                name: 'gato',
+                files: [{ id: 'file_1', name: 'intro.mp4', mimeType: 'video/mp4' }],
+                sidecar: null,
+              },
+            ],
+          },
+        ],
+      },
+    ])
+
+    await useWordsStore.getState().syncShelf()
+
+    // Matched by its Drive id rather than catalogued a second time, and written
+    // up all the same.
+    expect(useWordsStore.getState().words[0]?.videos[0]?.assetId).toBe('asset_a')
+    expect(recordAsset).toHaveBeenCalledWith(expect.objectContaining({ id: 'asset_a' }))
+  })
+
   it('writes up the shelf this browser already has rather than reading Drive at all', async () => {
     shelfWithGato()
 
@@ -460,6 +513,61 @@ describe('reading the shelf off the account', () => {
     // clearing the stack for it would mean a sync could quietly take away an
     // undo somebody was about to press.
     expect(useWordsStore.getState().canUndo()).toBe(true)
+  })
+
+  /**
+   * The catalogue loads on its own clock, from Root, and this runs off the back
+   * of a network read that regularly gets there first. An id the catalogue has
+   * not reached yet is not an id this browser has never held — and filing a
+   * fresh entry over the top of one it has held gives the take a blob key
+   * nothing has ever been stored under, which is a video that was on the machine
+   * a moment ago and now will not play.
+   */
+  it('keeps the file this browser already holds, rather than filing a fresh entry over it', async () => {
+    storedAssets.set('asset_far', asset('asset_far', 'file_9'))
+    getShelf.mockResolvedValue(
+      storedShelf([
+        {
+          id: 'word_gato',
+          languageId: 'lang_es',
+          text: 'gato',
+          createdAt: 0,
+          videos: [{ id: 'v1', assetId: 'asset_far', role: 'word' }],
+        },
+      ]),
+    )
+    getAssets.mockResolvedValue([{ id: 'asset_far', name: 'gato.mp4', drive_file_id: 'file_9' }])
+
+    await useWordsStore.getState().syncShelf()
+
+    // The stored entry, bytes and all — not a rebuild of it from the row.
+    expect(useAssetStore.getState().byId('asset_far')?.blobKey).toBe('blob_asset_far')
+  })
+
+  /**
+   * The other half of the same rule: the account is the only thing a machine
+   * that has never held a take can resolve it against, so a take this one holds
+   * and the account has never heard of gets written up rather than left as an id
+   * that only works here.
+   */
+  it('writes up a take the account has no row for', async () => {
+    useAssetStore.setState({ assets: [asset('asset_a', 'file_1')], loading: false })
+    getShelf.mockResolvedValue(
+      storedShelf([
+        {
+          id: 'word_gato',
+          languageId: 'lang_es',
+          text: 'gato',
+          createdAt: 0,
+          videos: [{ id: 'v1', assetId: 'asset_a', role: 'word' }],
+        },
+      ]),
+    )
+    getAssets.mockResolvedValue([])
+
+    await useWordsStore.getState().syncShelf()
+
+    expect(recordAsset).toHaveBeenCalledWith(expect.objectContaining({ id: 'asset_a' }))
   })
 
   it('says why when the account cannot be read, and keeps the shelf that is on screen', async () => {
