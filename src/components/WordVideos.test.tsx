@@ -14,12 +14,30 @@
  * them, and drawing those as blanks would look like the takes had been lost.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { WordVideos } from './WordVideos'
 import { useAssetStore } from '../state/useAssetStore'
+import { useDriveStore } from '../state/useDriveStore'
 import { useWordsStore } from '../state/useWordsStore'
+import type { DriveFile } from '../lib/google/drive'
 import type { Asset } from '../lib/types'
 import type { Word } from '../lib/words'
+
+const pickVideos = vi.fn<(parentId: string) => Promise<DriveFile[]>>()
+const moveFile = vi.fn<(fileId: string, parentId: string) => Promise<void>>()
+
+vi.mock('../lib/google/picker', () => ({
+  isPickerConfigured: () => true,
+  pickVideos: (parentId: string) => pickVideos(parentId),
+}))
+
+// Only the one call is stood in for: the rest of the module is what the store
+// and the byte-fetching hook are built on, and replacing all of it would be
+// mocking the thing under test out from under itself.
+vi.mock('../lib/google/drive', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/google/drive')>()),
+  moveFile: (fileId: string, parentId: string) => moveFile(fileId, parentId),
+}))
 
 vi.mock('../lib/db', () => ({
   putWord: () => Promise.resolve(),
@@ -220,5 +238,91 @@ describe('watching them together', () => {
 
     expect(screen.queryByRole('button', { name: 'Play all' })).not.toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The takes that are in Drive and not in the app.
+ *
+ * The case this page had no answer to: `drive.file` shows this app what it made
+ * and what it was handed, so a video recorded on a phone and dropped into the
+ * word's folder is really there and really invisible here. Picking it is what
+ * grants access to it, which is why the whole flow is asserted from the button
+ * rather than from the store — the button is the only door in.
+ */
+describe('adding videos that are already in Drive', () => {
+  const takeInDrive: DriveFile = {
+    id: 'drive_take',
+    name: 'cervelle.mp4',
+    mimeType: 'video/mp4',
+    kind: 'video',
+  }
+
+  /** The word as it is once its folder exists, which is what the Picker opens in. */
+  const IN_DRIVE: Word = { ...WORD, driveFolderId: 'folder_gato' }
+
+  beforeEach(() => {
+    useDriveStore.setState({
+      status: 'connected',
+      folder: { id: 'root_media', name: 'editor-cat' },
+    })
+    pickVideos.mockReset()
+    pickVideos.mockResolvedValue([])
+    moveFile.mockReset()
+    moveFile.mockResolvedValue(undefined)
+  })
+
+  it('puts a picked take on the end of the run, catalogued by its Drive id', async () => {
+    pickVideos.mockResolvedValue([takeInDrive])
+    const { rerender } = mount(IN_DRIVE)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add from Drive' }))
+    await waitFor(() => expect(current().videos).toHaveLength(3))
+
+    // Opened in the word's own folder, which is where the takes it is missing
+    // are most likely to be sitting.
+    expect(pickVideos).toHaveBeenCalledWith('folder_gato')
+    const added = useAssetStore.getState().byId(current().videos[2]!.assetId)
+    expect(added?.driveFileId).toBe('drive_take')
+
+    // No bytes yet — the row is drawn from the name, and the file comes down
+    // afterwards, the same way a shelf read out of Drive fills in.
+    rerender()
+    expect(screen.getByText('cervelle.mp4')).toBeInTheDocument()
+  })
+
+  it('moves it into the word’s folder, since the folder is the list of takes', async () => {
+    pickVideos.mockResolvedValue([takeInDrive])
+    mount(IN_DRIVE)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add from Drive' }))
+
+    // One picked from somewhere else in Drive would be dropped by the next read
+    // of the shelf, which rebuilds each run from what the folder holds.
+    await waitFor(() => expect(moveFile).toHaveBeenCalledWith('drive_take', 'folder_gato'))
+  })
+
+  it('does not list a take twice when it is picked again', async () => {
+    useAssetStore.setState({
+      assets: [
+        asset('asset_a', 'intro.mp4'),
+        { ...asset('asset_b', 'gato.mp4'), driveFileId: 'drive_take' },
+      ],
+      loading: false,
+    })
+    pickVideos.mockResolvedValue([takeInDrive])
+    mount(IN_DRIVE)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add from Drive' }))
+    await screen.findByRole('button', { name: 'Add from Drive' })
+
+    expect(current().videos).toHaveLength(2)
+  })
+
+  it('is not offered at all with no Drive to pick from', () => {
+    useDriveStore.setState({ status: 'disconnected', folder: null })
+    mount(IN_DRIVE)
+
+    expect(screen.queryByRole('button', { name: 'Add from Drive' })).not.toBeInTheDocument()
   })
 })

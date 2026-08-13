@@ -230,9 +230,17 @@ export function isVideoAssetOrphaned(assetId: string, words: readonly Word[]): b
  *
  * A folder cannot hold an order, a label or a transcript, so each word folder
  * also gets one small JSON file listing its takes by Drive id. The folder still
- * says which videos there *are* — drop one in from a phone and it turns up at
- * the end of the run — and the sidecar says what they are and what order they go
- * in. Everything below is the pure half of that: what the file says, and how to
+ * says which videos there *are* — a take uploaded from another machine turns up
+ * at the end of the run — and the sidecar says what they are and what order they
+ * go in.
+ *
+ * With one limit worth knowing, because it looks like a bug from the outside:
+ * this app sees the files it made and the ones handed to it through the Picker,
+ * and nothing else in anybody's Drive. So a video dropped into a word folder
+ * from a phone is really there and still invisible here, until it is picked —
+ * which is what "Add from Drive" on the word page is for.
+ *
+ * Everything below is the pure half of that: what the file says, and how to
  * reconcile it with what this browser already had. The Drive calls themselves
  * are in lib/wordsDrive.ts.
  * ---------------------------------------------------------------------------
@@ -464,8 +472,9 @@ export function mergeShelf(
  * One word's run, rebuilt from its folder.
  *
  * The order is the sidecar's, then whatever else is in the folder — which is how
- * a video dropped in from a phone joins the end of the run rather than being
- * ignored. A take the sidecar names takes its label and transcript from there,
+ * a take uploaded from another machine, or just handed over through the Picker,
+ * joins the end of the run rather than being ignored. A take the sidecar names
+ * takes its label and transcript from there,
  * because that file is what the machine that made the edit wrote down; one it
  * does not name keeps whatever this browser had for it.
  */

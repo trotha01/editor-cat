@@ -291,6 +291,42 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
 }
 
 /**
+ * Moves a file into a folder, leaving its id — and everything pointing at it —
+ * alone.
+ *
+ * Drive has no move. A file's folders are its `parents`, so moving one is adding
+ * the folder it is going to and taking away the ones it was in, and there is no
+ * "take away whatever is there" — hence the read first. A file already in that
+ * folder is left alone rather than patched to where it is.
+ *
+ * The word pages are what needs this: a take handed over through the Picker from
+ * somewhere else in Drive has to end up in the word's own folder, because that
+ * folder is the list of takes and the next read rebuilds the run from it.
+ */
+export async function moveFile(fileId: string, parentId: string): Promise<void> {
+  const response = await driveFetch(
+    `${API}/files/${encodeURIComponent(fileId)}?fields=parents&${SHARED_DRIVE_PARAMS}`,
+  )
+  const { parents = [] } = (await response.json()) as { parents?: string[] }
+  if (parents.includes(parentId)) return
+
+  const params = new URLSearchParams({
+    addParents: parentId,
+    ...(parents.length > 0 ? { removeParents: parents.join(',') } : {}),
+  })
+  await driveFetch(
+    `${API}/files/${encodeURIComponent(fileId)}?${params.toString()}&${SHARED_DRIVE_PARAMS}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      // Everything this call changes is in the query string, but Drive wants a
+      // body on a PATCH all the same.
+      body: '{}',
+    },
+  )
+}
+
+/**
  * Moves a file or folder to the Drive trash.
  *
  * Trash rather than delete, deliberately: this is the user's own Drive, and a

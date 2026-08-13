@@ -696,7 +696,10 @@ app go public without that assessment.
 The practical limit: `drive.file` does **not** grant access to files already
 inside a folder you pick — only to the folder itself, and to files the app
 created or you selected. So import always goes through the Picker, and there is
-no way to enumerate a folder behind your back.
+no way to enumerate a folder behind your back. The word pages hit this from the
+other side — a take put in a word's folder from a phone is invisible to them —
+which is why they offer **Add from Drive**: the same Picker, opened inside that
+word's folder, handing the file over so the shelf can see it.
 
 ## Publishing to Mintspace (optional)
 
@@ -1435,8 +1438,9 @@ into exists before there are any.
 **A folder cannot hold an order, so one small file does.** `editor-cat.json` in
 each word folder lists that word's takes by Drive file id, in order, with the
 label and transcript for each (`buildSidecar`/`parseSidecar` in
-`src/lib/words.ts`). The folder still says which videos there _are_ — drop one in
-from a phone and it joins the end of the run, labelled as the word itself — and
+`src/lib/words.ts`). The folder still says which videos there _are_ — a take
+uploaded from another machine joins the end of the run, labelled as the word
+itself — and
 the sidecar says what they are and what order they go in. A sidecar that has been
 mangled or will not download is read as absent: what is lost is the order and the
 labels, not the videos. It is rewritten a beat after the last edit rather than on
@@ -1557,14 +1561,16 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
-- **A folder you made by hand is invisible to the word pages.** The app holds the
-  narrowest Drive scope there is — `drive.file`, per-file access to what it
-  created or you handed it — so it can see the language and word folders it made
-  and nothing else of your Drive. If you already have a `Spanish/gato/` tree in
-  there, the app cannot find it and will make its own; move your videos into the
-  folder it made, or drop them into it from Drive, and they turn up in the app on
-  the next visit. The alternative is `drive.readonly`, which puts "see and
-  download all your Google Drive files" on the consent screen.
+- **A file you put in Drive by hand is invisible until you hand it over.** The app
+  holds the narrowest Drive scope there is — `drive.file`, per-file access to what
+  it created or you handed it — so it can see the language and word folders it
+  made and nothing else of your Drive, not even a video you dropped into one of
+  those folders yourself. That video really is there and the word page really
+  cannot see it, which looks exactly like a bug; **Add from Drive** on the word
+  page is the way in, because picking a file is what grants access to it. Same
+  story for a `Spanish/gato/` tree you already had: the app cannot find it and
+  makes its own. The alternative is `drive.readonly`, which puts "see and download
+  all your Google Drive files" on the consent screen.
 - **Deleting on the word pages deletes in Drive.** Unlike the Library, which
   never touches your Drive copy, removing a take trashes its file and deleting a
   word or language trashes the folder — because the folder _is_ the list, and

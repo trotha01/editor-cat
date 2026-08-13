@@ -141,15 +141,16 @@ export async function pickFolder(): Promise<DriveFolder | null> {
   return { id: folder.id, name: folder.name ?? 'Selected folder' }
 }
 
+/** The video types this app can play, which is what a take is ever going to be. */
+const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime']
+
 /** The media types the editor can actually do something with. */
 const MEDIA_MIME_TYPES = [
   'image/png',
   'image/jpeg',
   'image/webp',
   'image/gif',
-  'video/mp4',
-  'video/webm',
-  'video/quicktime',
+  ...VIDEO_MIME_TYPES,
 ].join(',')
 
 /**
@@ -168,6 +169,35 @@ export async function pickMedia(parentId: string): Promise<DriveFile[]> {
         new google.picker.DocsView(google.picker.ViewId.DOCS)
           .setParent(parentId)
           .setMimeTypes(MEDIA_MIME_TYPES)
+          .setIncludeFolders(true)
+          .setSelectFolderEnabled(false),
+      ),
+  )
+
+  return docs.map(toDriveFile).filter((file): file is DriveFile => file !== null)
+}
+
+/**
+ * Asks which videos already in Drive are takes of a word, opening inside that
+ * word's own folder.
+ *
+ * The word pages' way round the one thing `drive.file` cannot do: a video put in
+ * the folder from a phone, or from Drive itself, is invisible to this app until
+ * somebody hands it over — and the Picker is what handing it over means. Without
+ * this the only way in is uploading the file again from the machine you are at.
+ *
+ * Videos only, unlike the editor's import: a run of takes with an image in it is
+ * a row that never plays.
+ */
+export async function pickVideos(parentId: string): Promise<DriveFile[]> {
+  const docs = await pick((builder) =>
+    builder
+      .setTitle('Add videos from Google Drive')
+      .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+      .addView(
+        new google.picker.DocsView(google.picker.ViewId.DOCS)
+          .setParent(parentId)
+          .setMimeTypes(VIDEO_MIME_TYPES.join(','))
           .setIncludeFolders(true)
           .setSelectFolderEnabled(false),
       ),

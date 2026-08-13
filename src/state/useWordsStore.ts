@@ -57,7 +57,7 @@ import {
   type WordVideoRole,
 } from '../lib/words'
 import { findOrCreateFolder, readShelf, writeSidecar, type RawTier } from '../lib/wordsDrive'
-import { renameFile, trashFile } from '../lib/google/drive'
+import { moveFile, renameFile, trashFile, type DriveFile } from '../lib/google/drive'
 import { createScheduler } from '../lib/sync/scheduler'
 import { newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
@@ -141,6 +141,21 @@ interface WordsState {
 
   /** Puts an uploaded video on the end of a word's run, labelled as the word itself. */
   addVideo: (wordId: string, assetId: string) => void
+  /**
+   * Puts videos that are already in Drive on the end of a word's run.
+   *
+   * For the files this app cannot see by itself: `drive.file` grants it what it
+   * created and what the user hands it through the Picker, and nothing else — so
+   * a take dropped into the word's folder from a phone is in the folder, in the
+   * user's Drive, and invisible to the read of the shelf until it is picked.
+   * This is what picking it does.
+   *
+   * Each one is moved into the word's folder if it is not there already, because
+   * that folder is the word's list of takes and the next read rebuilds the run
+   * from it — a take left elsewhere would show up now and be gone by morning.
+   * The names it could not add come back, so the page can say which and why.
+   */
+  addDriveVideos: (wordId: string, files: readonly DriveFile[]) => Promise<string[]>
   setVideoRole: (wordId: string, videoId: string, role: WordVideoRole) => void
   setTranscript: (wordId: string, videoId: string, transcript: string) => void
   moveVideo: (wordId: string, from: number, to: number) => void
@@ -357,6 +372,40 @@ async function pushSidecar(wordId: string): Promise<void> {
 }
 
 /**
+ * A catalogue entry for a video that is in Drive and not on this machine.
+ *
+ * Names only: the bytes follow when the word is opened (see
+ * hooks/useWordVideoBytes.ts), and `blobKey` is where they will land. Both ways
+ * a Drive video reaches a word — found by a read of the shelf, or handed over
+ * through the Picker — come through here, so a file is catalogued the same way
+ * whichever door it came in by.
+ */
+async function catalogueVideo(file: {
+  id: string
+  name: string
+  mimeType: string
+}): Promise<Asset> {
+  const asset = {
+    id: newId('asset'),
+    kind: 'video',
+    blobKey: newId('blob'),
+    mimeType: file.mimeType,
+    name: file.name,
+    driveFileId: file.id,
+    createdAt: Date.now(),
+  } satisfies Asset
+
+  await putAsset(asset)
+  useAssetStore.getState().adopt(asset)
+  return asset
+}
+
+/** The catalogue entry for a Drive file, if this browser already has one. */
+function assetForDriveFile(driveFileId: string): Asset | undefined {
+  return useAssetStore.getState().assets.find((asset) => asset.driveFileId === driveFileId)
+}
+
+/**
  * Gives every video file found in Drive a catalogue entry, so the shelf can name
  * it before any of its bytes are here.
  *
@@ -382,17 +431,7 @@ async function adoptDiscovered(tiers: readonly RawTier[]): Promise<DiscoveredTie
         for (const file of word.files) {
           let asset = byDriveId.get(file.id)
           if (!asset) {
-            asset = {
-              id: newId('asset'),
-              kind: 'video',
-              blobKey: newId('blob'),
-              mimeType: file.mimeType,
-              name: file.name,
-              driveFileId: file.id,
-              createdAt: Date.now(),
-            } satisfies Asset
-            await putAsset(asset)
-            useAssetStore.getState().adopt(asset)
+            asset = await catalogueVideo(file)
             byDriveId.set(file.id, asset)
           }
           videos.push({ driveFileId: file.id, assetId: asset.id })
@@ -772,6 +811,36 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
     }))
+  },
+
+  addDriveVideos: async (wordId, files) => {
+    if (!get().words.some((entry) => entry.id === wordId)) return []
+
+    // Asked for once, before the first file: the folder is the same for all of
+    // them, and this is where a word that has never been in Drive gets one.
+    const folderId = await get().ensureWordFolder(wordId)
+    const failed: string[] = []
+
+    for (const file of files) {
+      try {
+        const known = assetForDriveFile(file.id)
+        // Picking a take the run already has is a no-op rather than a second
+        // row: the Picker opens in the word's own folder, so the takes already
+        // listed here are the ones most likely to be picked by mistake. Read
+        // from the store each time, since the loop is adding to it.
+        const run = get().words.find((entry) => entry.id === wordId)?.videos ?? []
+        if (known && run.some((video) => video.assetId === known.id)) continue
+
+        if (folderId) await moveFile(file.id, folderId)
+        get().addVideo(wordId, (known ?? (await catalogueVideo(file))).id)
+      } catch (cause) {
+        // One take that would not move leaves the rest of the pick alone. The
+        // video is still in Drive and still theirs; what failed is filing it.
+        failed.push(`${file.name}: ${toDisplayMessage(cause)}`)
+      }
+    }
+
+    return failed
   },
 
   setVideoRole: (wordId, videoId, role) => {
