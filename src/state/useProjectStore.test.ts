@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyProject, useProjectStore } from './useProjectStore'
 import { captionCuesOf, captionTracksOf } from '../lib/captions'
-import { BEEP_LABEL, COUNTDOWN_LABEL } from '../lib/countdown'
+import { BEEP_LABEL, COUNTDOWN_LABEL, countdownSeconds } from '../lib/countdown'
 import type { Asset, CaptionCue, Project, Publication } from '../lib/types'
 
 const PUBLICATION: Publication = {
@@ -1454,9 +1454,9 @@ describe('the library', () => {
  *
  * `planCountIns` is asserted on directly next door; what is left to check here
  * is everything the store does around it — the lead-in going in first so the
- * beeps are measured against a picture that has stopped moving, each beep being
- * anchored to the clip it marks rather than to wherever it happens to land, and
- * a second press redoing the marks instead of doubling them.
+ * marks are measured against a picture that has stopped moving, each mark
+ * being anchored to the clip it marks rather than to wherever it happens to
+ * land, and a second press redoing the marks instead of doubling them.
  */
 describe('count-in beeps', () => {
   const cue = (id: string, start: number, sourceId: string): CaptionCue => ({
@@ -1485,45 +1485,45 @@ describe('count-in beeps', () => {
       .audioClips.filter((clip) => clip.label === BEEP_LABEL)
       .sort((a, b) => a.startTime - b.startTime)
 
-  it('puts a beep on each clip’s first word', () => {
-    useProjectStore.setState({ project: talking([2, 6.5, 12]) })
+  it('runs a count-in into each clip’s first word, three beeps ending on it', () => {
+    // A full count-in's worth of room ahead of every word, so nothing has to
+    // move: clip-1 talks 3s in, clip-2 3s into its own shot, and so on.
+    useProjectStore.setState({ project: talking([3, 8, 13]) })
 
     const outcome = useProjectStore.getState().addCountInBeeps({ beepAssetId: 'beep' })
 
-    expect(outcome).toMatchObject({ added: 3, replaced: 0, opened: false })
-    expect(marks().map((clip) => clip.startTime)).toEqual([2, 6.5, 12])
+    expect(outcome).toMatchObject({ added: 3, replaced: 0, opened: false, leadIn: 0 })
+    // Each count-in starts exactly where its clip does and runs the full three
+    // seconds, landing its last beat on the word.
+    expect(marks().map((clip) => clip.startTime)).toEqual([0, 5, 10])
+    expect(marks().every((clip) => clip.duration === countdownSeconds())).toBe(true)
     // Anchored to the shot each one marks, so it follows that shot rather than
     // staying at a time on the timeline that has since become another clip.
     expect(marks().map((clip) => clip.anchorClipId)).toEqual(['clip-1', 'clip-2', 'clip-3'])
     expect(marks().every((clip) => clip.assetId === 'beep')).toBe(true)
   })
 
-  it('lands them on the picture as it is after the lead-in goes in', () => {
-    // The first clip talks from the off, so a count-in goes in front of it and
-    // the whole picture moves back three seconds. Every mark behind it has to
-    // move with it — a beep left at 6.5 would now be over the wrong shot.
-    useProjectStore.setState({ project: talking([0.2, 6.5, 12]) })
+  it('grows the lead-in when the first clip has no room for its own count-in', () => {
+    // Only the first clip talks, a single second in — nowhere near the three
+    // seconds its count-in needs, and nothing precedes it to run the beeps
+    // back over.
+    useProjectStore.setState({ project: talking([1]) })
 
-    const outcome = useProjectStore
-      .getState()
-      .addCountInBeeps({ beepAssetId: 'beep', countdownAssetId: 'countdown' })
+    const outcome = useProjectStore.getState().addCountInBeeps({ beepAssetId: 'beep' })
 
-    expect(outcome).toMatchObject({ added: 3, opened: true, leadIn: 3 })
-    expect(stored().leadIn).toBe(3)
-    expect(marks().map((clip) => clip.startTime)).toEqual([3.2, 9.5, 15])
-
-    // And the count-in itself, running into the first frame.
-    const opening = stored().audioClips.find((clip) => clip.assetId === 'countdown')
-    expect(opening?.startTime).toBe(0)
-    expect(opening?.label).toBe(COUNTDOWN_LABEL)
+    expect(outcome).toMatchObject({ added: 1, opened: true, leadIn: 2 })
+    expect(stored().leadIn).toBe(2)
+    // The picture now starts two seconds later, so the word that was one
+    // second into the clip is three seconds in on the timeline — and the
+    // count-in run up to it starts right at time zero.
+    expect(marks().map((clip) => clip.startTime)).toEqual([0])
+    expect(marks()[0]?.anchorClipId).toBe('clip-1')
   })
 
-  it('is one edit, so one undo puts the lead-in and the beeps back together', () => {
-    useProjectStore.setState({ project: talking([0.2, 6.5, 12]) })
+  it('is one edit, so one undo puts the lead-in and the mark back together', () => {
+    useProjectStore.setState({ project: talking([1]) })
 
-    useProjectStore
-      .getState()
-      .addCountInBeeps({ beepAssetId: 'beep', countdownAssetId: 'countdown' })
+    useProjectStore.getState().addCountInBeeps({ beepAssetId: 'beep' })
     useProjectStore.getState().undo()
 
     expect(useProjectStore.getState().project.leadIn ?? 0).toBe(0)
@@ -1531,7 +1531,7 @@ describe('count-in beeps', () => {
   })
 
   it('replaces the marks from a previous go rather than doubling up', () => {
-    useProjectStore.setState({ project: talking([2, 6.5, 12]) })
+    useProjectStore.setState({ project: talking([3, 8, 13]) })
     useProjectStore.getState().addCountInBeeps({ beepAssetId: 'beep' })
 
     // The captions are redone and the second clip turns out to start talking
@@ -1539,23 +1539,23 @@ describe('count-in beeps', () => {
     useProjectStore.setState({
       project: {
         ...useProjectStore.getState().project,
-        captionCues: talking([2, 5.5, 12]).captionCues,
+        captionCues: talking([3, 7, 13]).captionCues,
       },
     })
     const outcome = useProjectStore.getState().addCountInBeeps({ beepAssetId: 'beep' })
 
     expect(outcome).toMatchObject({ added: 3, replaced: 3 })
-    expect(marks().map((clip) => clip.startTime)).toEqual([2, 5.5, 12])
+    expect(marks().map((clip) => clip.startTime)).toEqual([0, 4, 10])
   })
 
   it('leaves a count-in dropped by hand where it was put', () => {
-    useProjectStore.setState({ project: talking([2, 6.5, 12]) })
+    useProjectStore.setState({ project: talking([3, 8, 13]) })
     // What the buttons above this one place: somebody's own placement, which a
     // redo of the automatic marks has no business taking away.
     useProjectStore.getState().addAudioClip('countdown', {
       assetId: 'countdown',
       useConverted: false,
-      startTime: 0,
+      startTime: 20,
       inPoint: 0,
       duration: 3,
       label: COUNTDOWN_LABEL,
@@ -1567,7 +1567,7 @@ describe('count-in beeps', () => {
     expect(outcome.replaced).toBe(3)
     const byHand = stored().audioClips.filter((clip) => clip.label === COUNTDOWN_LABEL)
     expect(byHand).toHaveLength(1)
-    expect(byHand[0]?.startTime).toBe(0)
+    expect(byHand[0]?.startTime).toBe(20)
   })
 
   it('does nothing at all when no caption names a clip', () => {

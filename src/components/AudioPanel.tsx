@@ -25,8 +25,6 @@ import { ingestBlob } from '../lib/media'
 import { formatTime, leadInOf } from '../lib/timeline'
 import { planCountIns } from '../lib/countIns'
 import {
-  BEEP_ASSET_NAME,
-  BEEP_SPEC,
   COUNTDOWN_ASSET_NAME,
   COUNTDOWN_LABEL,
   COUNTDOWN_SPEC,
@@ -150,42 +148,34 @@ export function AudioPanel({
   }
 
   /**
-   * A beep on every clip's first word, read off the captions.
+   * A count-in leading into every clip's first word, read off the captions.
    *
    * The plan is worked out twice over — once here, once inside the store — and
-   * deliberately so. This one only decides which files have to exist, because
-   * generating them is asynchronous and an edit is not; the store's is the one
-   * that places anything, computed against the project as it stands at the
-   * moment of the edit rather than as it stood when the button was pressed.
+   * deliberately so. This one only decides whether the asset has to exist,
+   * because generating it is asynchronous and an edit is not; the store's is
+   * the one that places anything, computed against the project as it stands at
+   * the moment of the edit rather than as it stood when the button was pressed.
    */
   const addBeeps = async () => {
     setError(null)
     setPlacement(null)
     try {
-      const beep = await beepAsset(BEEP_ASSET_NAME, () => countdownWav(BEEP_SPEC))
-      const countdown =
-        plan.opening === null
-          ? undefined
-          : await beepAsset(COUNTDOWN_ASSET_NAME, () => countdownWav())
+      const beep = await beepAsset(COUNTDOWN_ASSET_NAME, () => countdownWav())
+      const outcome = addCountInBeeps({ beepAssetId: beep.id })
 
-      const outcome = addCountInBeeps({
-        beepAssetId: beep.id,
-        ...(countdown ? { countdownAssetId: countdown.id } : {}),
-      })
-
-      if (outcome.added === 0 && !outcome.opened) {
+      if (outcome.added === 0) {
         setPlacement('Nothing to mark — no caption on the timeline names the clip it came from.')
         return
       }
 
       setPlacement(
         [
-          `${outcome.added} beep${outcome.added === 1 ? '' : 's'} added, one on each clip’s first word.`,
+          `${outcome.added} count-in${outcome.added === 1 ? '' : 's'} added, one leading into each clip’s first word.`,
           outcome.replaced > 0
             ? `${outcome.replaced} from a previous go ${outcome.replaced === 1 ? 'was' : 'were'} replaced.`
             : '',
           outcome.opened
-            ? `The first clip talks from the off, so a count-in went in front of the picture — the video now starts at ${formatTime(outcome.leadIn)}.`
+            ? `The first clip talks too soon to fit its own count-in, so the picture was pushed back to make room — the video now starts at ${formatTime(outcome.leadIn)}.`
             : '',
           'Drag any of them along their lane to move a mark.',
         ]
@@ -354,10 +344,10 @@ export function AudioPanel({
       <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-3">
         <p className="text-sm font-medium">Mark every clip</p>
         <p className="text-xs leading-relaxed text-ink-dim">
-          One beep on each clip’s first word, read straight off the captions — so whoever performs
-          to the finished video hears where every line comes in. If the first clip talks from the
-          off, a full count-in goes in front of the picture as well, since there is otherwise no
-          run-up to it at all.
+          A count-in leading into each clip’s first word, read straight off the captions — the same{' '}
+          {COUNTDOWN_SPEC.beeps} beeps a second apart as above, so whoever performs to the finished
+          video hears where every line comes in. The very first clip is the one that can need the
+          picture pushed back to make room, since it has no earlier shot for the beeps to run over.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -367,7 +357,7 @@ export function AudioPanel({
             disabled={plan.beeps.length === 0}
             title={
               plan.beeps.length === 0
-                ? 'Add captions first — the beeps are placed on the words they find.'
+                ? 'Add captions first — the count-ins are placed on the words they find.'
                 : `Mark ${plan.beeps.length} clip${plan.beeps.length === 1 ? '' : 's'}`
             }
           >
@@ -385,9 +375,9 @@ export function AudioPanel({
             after a recaption, and "it replaces the last lot" is the part that
             would otherwise have to be found out by counting beeps. */}
         <p className="text-xs leading-relaxed text-ink-dim">
-          Press it again after redoing the captions and the marks are placed afresh — the beeps from
-          the previous go are replaced rather than doubled up. Count-ins you dropped by hand with
-          the buttons above are left where you put them.
+          Press it again after redoing the captions and the marks are placed afresh — the count-ins
+          from the previous go are replaced rather than doubled up. Count-ins you dropped by hand
+          with the buttons above are left where you put them.
         </p>
       </div>
 

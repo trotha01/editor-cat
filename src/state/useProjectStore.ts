@@ -52,7 +52,7 @@ import {
   type TimedWord,
 } from '../lib/captions'
 import { planCountIns } from '../lib/countIns'
-import { BEEP_LABEL, BEEP_SPEC, COUNTDOWN_LABEL, countdownSeconds } from '../lib/countdown'
+import { BEEP_LABEL, countdownSeconds } from '../lib/countdown'
 import { withTransition } from '../lib/transitions'
 import type { ExportRange } from '../lib/export/range'
 import {
@@ -140,13 +140,13 @@ export interface FixPlacement extends PlacementOutcome {
 
 /** What `addCountInBeeps` laid down, so the panel can say what changed. */
 export interface CountInPlacement {
-  /** Clips that got a beep on their first word. */
+  /** Clips that got a count-in leading into their first word. */
   added: number
-  /** Beeps from an earlier run that were taken away to make room for these. */
+  /** Marks from an earlier run that were taken away to make room for these. */
   replaced: number
-  /** True when a count-in went in front of the picture as well. */
+  /** True when the lead-in had to grow to fit the first clip's own count-in. */
   opened: boolean
-  /** The lead-in the picture ended up with, which the opening one sits in. */
+  /** The lead-in the picture ended up with. */
   leadIn: number
 }
 
@@ -285,25 +285,23 @@ interface ProjectState {
     retimed?: readonly { cueId: string; words: readonly SpokenTiming[]; offset: number }[],
   ) => FixPlacement
   /**
-   * Marks every clip's first word with a beep, as one edit.
+   * Marks every clip's first word with a count-in — the same three beeps a
+   * second apart as the buttons above, run into the word exactly the way one
+   * runs into the playhead — as one edit.
    *
    * One edit because it is one act, and because the parts of it depend on each
-   * other: the picture may be pushed back to fit a count-in in front of it, and
-   * every mark after that is measured against where the clips then are. An undo
-   * that took the beeps away and left the lead-in — or the other way about —
-   * would be half a step.
+   * other: the picture may be pushed back to fit the first clip's own count-in
+   * in front of it, and every mark after that is measured against where the
+   * clips then are. An undo that took the marks away and left the lead-in — or
+   * the other way about — would be half a step.
    *
-   * Where the beeps go is `planCountIns`, computed here from the project as it
+   * Where the marks go is `planCountIns`, computed here from the project as it
    * stands rather than passed in, so nothing can be laid against a timeline
    * that has moved on since the button was pressed. The caller's only job is
-   * the bytes: the assets have to exist before this runs, and generating them
-   * is asynchronous while an edit is not.
-   *
-   * `countdownAssetId` is optional because the opening count-in is only
-   * sometimes wanted — a caller that has looked at the plan and seen it is not
-   * needed has no reason to have ingested a file for it.
+   * the bytes: the asset has to exist before this runs, and generating it is
+   * asynchronous while an edit is not.
    */
-  addCountInBeeps: (assets: { beepAssetId: string; countdownAssetId?: string }) => CountInPlacement
+  addCountInBeeps: (assets: { beepAssetId: string }) => CountInPlacement
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -835,16 +833,16 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
     },
 
-    addCountInBeeps: ({ beepAssetId, countdownAssetId }) => {
+    addCountInBeeps: ({ beepAssetId }) => {
+      const before = leadInOf(get().project)
       const plan = planCountIns(get().project)
 
       let added = 0
       let replaced = 0
-      let opened = false
 
       mutate((current) => {
         // The lead-in first, so every clip is where it is finally going to be
-        // before a single beep is measured against it. Through `underClips`
+        // before a single mark is measured against it. Through `underClips`
         // like every other edit that moves the picture, which is what carries
         // the captions along with it — the same captions these marks come from.
         const shifted =
@@ -852,12 +850,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             ? current
             : underClips(current, { ...current, leadIn: clampLeadIn(plan.leadIn) })
 
-        // Beeps this feature laid last time go, rather than being added to.
-        // Pressing it again is redoing the marks — after a recaption, or after
-        // the picture was rearranged — and two beeps a frame apart on the same
-        // word is nobody's intent. Only the auto-placed ones: a count-in
-        // dropped by hand from the buttons above is somebody's placement and
-        // survives, which is what the label is there to tell them apart by.
+        // Marks this feature laid last time go, rather than being added to.
+        // Pressing it again is redoing them — after a recaption, or after the
+        // picture was rearranged — and two count-ins on the same word is
+        // nobody's intent. Only the auto-placed ones: a count-in dropped by
+        // hand from the buttons above is somebody's placement and survives,
+        // which is what the label is there to tell them apart by.
         const mine = new Set(
           shifted.audioTracks
             .filter((track) => track.kind === 'countdown')
@@ -871,59 +869,46 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         let tracks = shifted.audioTracks
         let clips = kept
 
-        const place = (clip: Omit<AudioClip, 'trackId'>) => {
-          const result = placeAudioClip(tracks, clips, {
-            kind: 'countdown',
-            newTrackId: newId('track'),
-            clip,
-          })
-          tracks = result.tracks
-          clips = result.clips
-        }
-
-        if (plan.opening !== null && countdownAssetId) {
-          place({
-            id: newId('aclip'),
-            assetId: countdownAssetId,
-            useConverted: false,
-            startTime: plan.opening,
-            inPoint: 0,
-            duration: countdownSeconds(),
-            label: COUNTDOWN_LABEL,
-          })
-          opened = true
-        }
-
         const positioned = new Map(
           layoutClips(shifted.clips, leadInOf(shifted)).map((entry) => [entry.clip.id, entry]),
         )
         for (const beep of plan.beeps) {
           const entry = positioned.get(beep.clipId)
           if (!entry) continue
-          place({
-            id: newId('aclip'),
-            assetId: beepAssetId,
-            useConverted: false,
-            startTime: entry.start + beep.offset,
-            inPoint: 0,
-            // Exact from the spec, like the count-in above: the file is
-            // generated, so its length is known rather than probed.
-            duration: countdownSeconds(BEEP_SPEC),
-            label: BEEP_LABEL,
-            // Anchored to the clip whose first word it marks, not merely to
-            // whatever clip it happens to land in. The two are the same today
-            // and come apart the moment a transition pulls the starts around —
-            // and a mark that stopped following its own shot would be worse
-            // than no mark, because it would still look placed.
-            anchorClipId: beep.clipId,
+          const result = placeAudioClip(tracks, clips, {
+            kind: 'countdown',
+            newTrackId: newId('track'),
+            clip: {
+              id: newId('aclip'),
+              assetId: beepAssetId,
+              useConverted: false,
+              // The tail of the three beeps runs into the word, the same way
+              // "Add leading into" runs a count-in into the playhead — so the
+              // beeps start a full count-in's length before it, not on it.
+              // Clamped at zero for the one case that can ask for less: the
+              // first clip, when `plan.leadIn` above did not have to grow
+              // because it was already long enough to hold the beeps.
+              startTime: Math.max(0, entry.start + beep.offset - countdownSeconds()),
+              inPoint: 0,
+              duration: countdownSeconds(),
+              label: BEEP_LABEL,
+              // Anchored to the clip whose first word it marks, not merely to
+              // whatever clip it happens to land in. The two are the same today
+              // and come apart the moment a transition pulls the starts around —
+              // and a mark that stopped following its own shot would be worse
+              // than no mark, because it would still look placed.
+              anchorClipId: beep.clipId,
+            },
           })
+          tracks = result.tracks
+          clips = result.clips
           added += 1
         }
 
         return { ...shifted, audioTracks: tracks, audioClips: clips }
       })
 
-      return { added, replaced, opened, leadIn: plan.leadIn }
+      return { added, replaced, opened: plan.leadIn > before, leadIn: plan.leadIn }
     },
 
     addFixedClipAudio: (clipId, clips, retimed) => {

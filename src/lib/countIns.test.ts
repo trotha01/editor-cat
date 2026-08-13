@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { OPENING_SILENCE, planCountIns } from './countIns'
+import { planCountIns } from './countIns'
 import { countdownSeconds } from './countdown'
 import type { CaptionCue, Clip, Project } from './types'
 
@@ -74,8 +74,8 @@ describe('planCountIns', () => {
       }),
     )
 
-    // Not a beep at the head of clip-2: nothing has been transcribed there, so
-    // a mark on its first frame would be announcing silence.
+    // Not a mark at the head of clip-2: nothing has been transcribed there, so
+    // a count-in on its first frame would be running into silence.
     expect(plan.beeps.map((beep) => beep.clipId)).toEqual(['clip-1', 'clip-3'])
   })
 
@@ -85,8 +85,8 @@ describe('planCountIns', () => {
         clips: [clip('clip-1', 5)],
         captionCues: [
           // A voiceover is transcribed too, and its cues are credited to the
-          // audio clip. It was placed by hand at the moment it belongs at,
-          // so there is nothing about it for a beep to announce.
+          // audio clip. It was placed by hand at the moment it belongs at, so
+          // there is nothing about it for a count-in to lead into.
           cue('vo', 1, 'aclip-1'),
           // And a caption typed by hand belongs to nobody.
           cue('typed', 2),
@@ -110,6 +110,8 @@ describe('planCountIns', () => {
 
     // 1.5s into its own shot, which is what survives the picture moving.
     expect(plan.beeps).toEqual([{ clipId: 'clip-2', offset: 1.5 }])
+    // clip-1 has no mark of its own, so nothing asks the lead-in to grow.
+    expect(plan.leadIn).toBe(4)
   })
 
   it('clamps a caption dragged in front of its own clip to the clip’s head', () => {
@@ -125,55 +127,55 @@ describe('planCountIns', () => {
     expect(plan.beeps).toEqual([{ clipId: 'clip-2', offset: 0 }])
   })
 
-  describe('the count-in in front of the picture', () => {
-    it('asks for one when the first clip talks from the off', () => {
+  describe('the lead-in in front of the first clip', () => {
+    it('grows just enough to fit the first clip’s own count-in when there is not room', () => {
       const plan = planCountIns(
         project({ clips: THREE_SHOTS, captionCues: [cue('a', 0.2, 'clip-1')] }),
       )
 
-      expect(plan.leadIn).toBe(countdownSeconds())
-      // At zero, with its tail meeting the first frame.
-      expect(plan.opening).toBe(0)
+      // The three beeps need a full count-in's length; 0.2s of it was already
+      // there, so the rest — 2.8s — is what the lead-in grows by.
+      expect(plan.leadIn).toBeCloseTo(countdownSeconds() - 0.2)
     })
 
-    it('does not when the first clip gives the viewer a beat first', () => {
+    it('leaves the lead-in alone once the first clip already gives it enough room', () => {
       const plan = planCountIns(
         project({
           clips: THREE_SHOTS,
-          captionCues: [cue('a', OPENING_SILENCE + 0.1, 'clip-1')],
+          captionCues: [cue('a', countdownSeconds() + 0.1, 'clip-1')],
         }),
       )
 
-      expect(plan.opening).toBeNull()
       expect(plan.leadIn).toBe(0)
     })
 
-    it('leaves a longer lead-in alone and still runs into the first frame', () => {
+    it('leaves a longer lead-in alone rather than pulling it in to fit', () => {
       const plan = planCountIns(
         project({
           clips: THREE_SHOTS,
-          // Ten seconds of black somebody asked for. Pulling it in to three to
-          // fit the beeps would be undoing their work rather than adding to it.
+          // Ten seconds of black somebody asked for. Pulling it in to fit the
+          // count-in exactly would be undoing their work rather than adding to
+          // it — the beeps can run into the word just as well from inside it.
           leadIn: 10,
           captionCues: [cue('a', 10.1, 'clip-1')],
         }),
       )
 
       expect(plan.leadIn).toBe(10)
-      expect(plan.opening).toBe(10 - countdownSeconds())
     })
 
-    it('does not count into a first clip that says nothing', () => {
+    it('does not grow the lead-in for a first clip that says nothing', () => {
       const plan = planCountIns(
         project({
           clips: THREE_SHOTS,
           // The second shot starts talking on its own first frame, which is no
-          // reason to count into a first shot that is silent.
+          // reason to push the picture back — clip-2 has clip-1's picture
+          // already playing in front of it for the beeps to run over.
           captionCues: [cue('b', 5.1, 'clip-2')],
         }),
       )
 
-      expect(plan.opening).toBeNull()
+      expect(plan.leadIn).toBe(0)
       expect(plan.beeps.map((beep) => beep.clipId)).toEqual(['clip-2'])
       expect(plan.beeps[0]?.offset).toBeCloseTo(0.1)
     })
@@ -181,6 +183,6 @@ describe('planCountIns', () => {
 
   it('has nothing to do with no captions at all', () => {
     const plan = planCountIns(project({ clips: THREE_SHOTS }))
-    expect(plan).toEqual({ opening: null, leadIn: 0, beeps: [] })
+    expect(plan).toEqual({ leadIn: 0, beeps: [] })
   })
 })
