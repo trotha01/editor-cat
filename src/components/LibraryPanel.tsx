@@ -34,7 +34,9 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   const project = useProjectStore((state) => state.project)
   const removeFromLibrary = useProjectStore((state) => state.removeFromLibrary)
   const addClip = useProjectStore((state) => state.addClip)
+  const addClips = useProjectStore((state) => state.addClips)
   const addVideoClip = useProjectStore((state) => state.addVideoClip)
+  const clips = useProjectStore((state) => state.project.clips)
 
   const assets = useMemo(() => libraryAssets(catalogue, project), [catalogue, project])
 
@@ -45,6 +47,21 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  // What "Add all" would put on the picture track. Sound is left out because
+  // there is no per-asset "Add" for it either — audio is placed from the Audio
+  // step, onto a lane of its own.
+  const picture = assets.filter((asset) => asset.kind !== 'audio')
+  // Already on the timeline is left where it is: pressing the button after
+  // adding a shot or two by hand should finish the job, not quietly lay a
+  // second copy of that shot alongside the first. A deliberate second copy is
+  // still one click on that asset's own "Add".
+  const onTimeline = new Set(clips.map((clip) => clip.assetId))
+  // Oldest first, which is the library read bottom to top: the strip is
+  // newest-first so that what you just generated is where you are looking, but
+  // a run of shots was generated in the order it is meant to play, and adding
+  // them the way they are listed would lay the whole piece out backwards.
+  const pending = picture.filter((asset) => !onTimeline.has(asset.id)).reverse()
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return
@@ -97,15 +114,29 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <Button onClick={() => fileInput.current?.click()} disabled={busy}>
-          <span aria-hidden>⬆️</span> Upload media
-        </Button>
         {driveReady ? (
           <Button onClick={() => void drive.start()} disabled={busy || drive.progress !== null}>
             {drive.progress ? <Spinner /> : <span aria-hidden>📁</span>}{' '}
             {drive.progress
               ? `Importing ${drive.progress.done} of ${drive.progress.total}…`
               : 'Import from Drive'}
+          </Button>
+        ) : null}
+        <Button onClick={() => fileInput.current?.click()} disabled={busy}>
+          <span aria-hidden>⬆️</span> Upload media
+        </Button>
+        {picture.length > 0 ? (
+          <Button
+            onClick={() => addClips(pending, currentTime)}
+            disabled={pending.length === 0}
+            title={
+              pending.length === 0
+                ? 'Everything in your library is already on the timeline'
+                : 'Add everything in your library to the picture track, oldest first'
+            }
+          >
+            <span aria-hidden>➕</span> Add all
+            {pending.length > 0 ? ` (${pending.length})` : ''}
           </Button>
         ) : null}
         <input

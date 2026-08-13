@@ -208,6 +208,12 @@ interface ProjectState {
    * time named there is no playhead to work from, so it goes on the end.
    */
   addClip: (asset: Asset, atTime?: number) => void
+  /**
+   * Puts several assets on the picture track at once, in the order given, as a
+   * single edit — one step for undo to take back, because "add all" is one act
+   * however many shots it turns out to be.
+   */
+  addClips: (assets: readonly Asset[], atTime?: number) => void
   removeClip: (clipId: string) => void
   selectClip: (clipId: string | null) => void
   moveClip: (from: number, to: number) => void
@@ -627,6 +633,28 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         return underClips(project, { ...project, clips })
       })
       set({ selectedClipId: clip.id })
+    },
+
+    addClips: (assets, atTime) => {
+      if (assets.length === 0) return
+      const added = assets.map((asset) => clipForAsset(asset, newId('clip')))
+      mutate((project) => {
+        const index =
+          atTime === undefined
+            ? project.clips.length
+            : insertIndexAt(project.clips, atTime, leadInOf(project))
+        const clips = [...project.clips]
+        // All of them go in together at the one point, keeping the order they
+        // were handed over in. Adding them one at a time through `addClip`
+        // would work out the same arrangement, but as a run of separate edits:
+        // undo would then have to be pressed once per shot to get back to where
+        // the timeline was before the button was pressed.
+        clips.splice(index, 0, ...added)
+        return underClips(project, { ...project, clips })
+      })
+      // The last one in, so the selection sits at the end of what just arrived
+      // rather than in the middle of it.
+      set({ selectedClipId: added[added.length - 1]?.id ?? null })
     },
 
     removeClip: (clipId) => {
