@@ -2,10 +2,14 @@
  * The word pages, as folders in the user's Drive.
  *
  * A folder per tier — "1st tier", "Classical", "ESL" — a folder per language
- * inside it, a folder per word inside that, that word's videos in the word
- * folder, and one small JSON file beside them holding the order and the labels
- * (see `SIDECAR_NAME` in lib/words.ts). This module is the half that talks to
- * Drive; the reconciling is pure and lives next to the model.
+ * inside it, a folder per word inside that, and that word's videos in the word
+ * folder. This module is the half that talks to Drive; the reconciling is pure
+ * and lives next to the model.
+ *
+ * Reading a shelf out of these folders is a one-time job now, not the way the
+ * page loads: the shelf itself lives on the account (lib/supabase/shelf.ts), and
+ * this is what an account with no shelf yet is built from — folders, the videos
+ * in them, and whatever an old `editor-cat.json` still says about the order.
  *
  * Everything here works under `drive.file`, which is both what makes it safe —
  * the app can see the folders it made and nothing else of anybody's Drive — and
@@ -19,8 +23,6 @@ import {
   isFolder,
   kindForMime,
   listChildren,
-  updateFileContent,
-  uploadFile,
   type DriveChild,
 } from './google/drive'
 import { mapLimited } from './concurrency'
@@ -113,24 +115,4 @@ async function readWord(folder: DriveChild, signal?: AbortSignal): Promise<RawWo
   }
 
   return { folderId: folder.id, name: folder.name, files, sidecar }
-}
-
-/**
- * Writes a word's order, labels and transcripts beside its videos.
- *
- * The file is looked up by name each time rather than remembered, which costs
- * one listing per write and buys a great deal: nothing has to store a second
- * Drive id, a sidecar deleted by hand simply comes back, and two machines
- * writing the same word converge on the one file instead of littering the folder
- * with copies.
- */
-export async function writeSidecar(wordFolderId: string, sidecar: WordSidecar): Promise<void> {
-  const blob = new Blob([JSON.stringify(sidecar, null, 2)], { type: 'application/json' })
-  const existing = (await listChildren(wordFolderId)).find((child) => child.name === SIDECAR_NAME)
-
-  if (existing) {
-    await updateFileContent(existing.id, blob)
-    return
-  }
-  await uploadFile(blob, { name: SIDECAR_NAME, parentId: wordFolderId })
 }

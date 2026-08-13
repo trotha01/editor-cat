@@ -192,7 +192,7 @@ export function WordVideos({ word }: { word: Word }) {
         <p className="text-xs leading-relaxed text-ink-dim">
           A video put in this word’s Drive folder from a phone, or from Drive itself, stays
           invisible here until you pick it — this app can only see the files it made and the ones
-          you hand it. Anything you add from elsewhere in Drive is moved into this word’s folder.
+          you hand it. Anything you add from elsewhere in Drive is filed into this word’s folder.
         </p>
       ) : null}
 

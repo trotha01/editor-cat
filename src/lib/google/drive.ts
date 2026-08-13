@@ -300,8 +300,8 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
  * folder is left alone rather than patched to where it is.
  *
  * The word pages are what needs this: a take handed over through the Picker from
- * somewhere else in Drive has to end up in the word's own folder, because that
- * folder is the list of takes and the next read rebuilds the run from it.
+ * somewhere else in Drive is filed under a word, and the folder for that word is
+ * where somebody opening their Drive on a phone will look for it.
  */
 export async function moveFile(fileId: string, parentId: string): Promise<void> {
   const response = await driveFetch(

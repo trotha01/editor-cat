@@ -221,6 +221,182 @@ export function isVideoAssetOrphaned(assetId: string, words: readonly Word[]): b
 
 /*
  * ---------------------------------------------------------------------------
+ * The shelf as the account holds it.
+ *
+ * One document per person — the three lists exactly as the page draws them —
+ * kept in Supabase beside the projects (lib/supabase/shelf.ts, and
+ * supabase/migrations/0009_word_shelf.sql for why it is a document rather than
+ * four tables).
+ *
+ * This is where the order, the labels and the transcripts live now. They used to
+ * be a small JSON file in every word folder in Drive, because a folder can hold
+ * files and cannot hold an order — which worked, and left a file in every folder
+ * somebody opens on their phone, and cost a listing and a download per word
+ * before a shelf could be drawn. The folders are still the shelf and still hold
+ * the videos; what a folder was never able to say is said here instead, in one
+ * read.
+ * ---------------------------------------------------------------------------
+ */
+
+/** The whole shelf as one value: what is stored, and what comes back. */
+export interface ShelfDoc {
+  version: 1
+  tiers: Tier[]
+  languages: Language[]
+  words: Word[]
+}
+
+export function buildShelfDoc(shelf: Shelf): ShelfDoc {
+  return { version: 1, tiers: shelf.tiers, languages: shelf.languages, words: shelf.words }
+}
+
+/**
+ * Reads a stored shelf back, keeping whatever of it makes sense.
+ *
+ * Defensive in the same way `parseSidecar` is, and for a related reason: this
+ * document may have been written by a version of the app that is ahead of this
+ * one, or by one that is behind it. An entry missing the fields that make it an
+ * entry is dropped rather than allowed to become a row on screen with no name
+ * and no id; a shelf that is not a shelf at all reads as an empty one, which is
+ * the same thing a fresh account is.
+ */
+export function parseShelfDoc(value: unknown): Shelf {
+  const raw = (value ?? {}) as Partial<ShelfDoc>
+
+  const tiers = list(raw.tiers).flatMap((entry) => {
+    const tier = entry as Partial<Tier>
+    if (!isId(tier.id) || typeof tier.name !== 'string') return []
+    return [{ id: tier.id, name: tier.name, createdAt: stamp(tier.createdAt), ...folder(tier) }]
+  })
+
+  const languages = list(raw.languages).flatMap((entry) => {
+    const language = entry as Partial<Language>
+    if (!isId(language.id) || !isId(language.tierId) || typeof language.name !== 'string') return []
+    return [
+      {
+        id: language.id,
+        tierId: language.tierId,
+        name: language.name,
+        createdAt: stamp(language.createdAt),
+        ...folder(language),
+      },
+    ]
+  })
+
+  const words = list(raw.words).flatMap((entry) => {
+    const word = entry as Partial<Word>
+    if (!isId(word.id) || !isId(word.languageId) || typeof word.text !== 'string') return []
+    return [
+      {
+        id: word.id,
+        languageId: word.languageId,
+        text: word.text,
+        videos: list(word.videos).flatMap((raw) => {
+          const video = raw as Partial<WordVideo>
+          if (!isId(video.id) || !isId(video.assetId)) return []
+          const transcript = typeof video.transcript === 'string' ? video.transcript : undefined
+          return [
+            {
+              id: video.id,
+              assetId: video.assetId,
+              role: ROLES.some((role) => role.id === video.role) ? video.role! : DEFAULT_ROLE,
+              ...(transcript ? { transcript } : {}),
+            },
+          ]
+        }),
+        createdAt: stamp(word.createdAt),
+        ...folder(word),
+      },
+    ]
+  })
+
+  return { tiers, languages, words }
+}
+
+function list(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+function isId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+/** A missing timestamp is treated as old, never as "just made here". See `mergeRemoteShelf`. */
+function stamp(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function folder(entry: { driveFolderId?: unknown }): { driveFolderId?: string } {
+  return isId(entry.driveFolderId) ? { driveFolderId: entry.driveFolderId } : {}
+}
+
+/**
+ * Folds what the account holds into what this browser had.
+ *
+ * The account's copy is the shelf. This browser's copy is a cache of it, so a
+ * read replaces what it has rather than adding to it — which is the only way a
+ * word deleted on a laptop can stay deleted on the desktop, and the reason this
+ * is a different operation from `mergeShelf` below, which folds in a folder tree
+ * that has no idea what has been deleted.
+ *
+ * With one exception, and it is the one that matters: anything made here since
+ * the last successful write is kept, and on a browser that has never had one,
+ * everything local is. That is work the account has not been told about yet — a
+ * word added on a train, a tier added while the connection was down, a shelf
+ * that predates the account having shelves at all — and treating the server's
+ * silence about it as a deletion would throw it away. Anything older than the
+ * last sync has been up there, and can be trusted to be missing on purpose.
+ *
+ * What this does not merge is two machines editing the same word at once: the
+ * account's copy of an entry wins over this browser's. Edits reach the server a
+ * beat after they are made, so the window is seconds wide, and the alternative —
+ * a field-by-field merge of a document nobody stamped — is guesswork.
+ */
+export function mergeRemoteShelf(remote: Shelf, local: Shelf, syncedAt: number): Shelf {
+  const withFresh = <T extends { id: string; createdAt: number; driveFolderId?: string }>(
+    theirs: T[],
+    ours: T[],
+  ): T[] => {
+    const ids = new Set(theirs.map((entry) => entry.id))
+    const folders = new Set(
+      theirs.flatMap((entry) => (entry.driveFolderId ? [entry.driveFolderId] : [])),
+    )
+
+    // A shelf that has never been up there is entirely unsent, whatever the
+    // timestamps say — which is what makes the first sync of a browser that has
+    // been using the page for months an addition rather than a wipe.
+    const unsent = (entry: T) => syncedAt === 0 || entry.createdAt >= syncedAt
+
+    // By folder as well as by id, because the same tier can honestly have two
+    // ids: two machines that each built their first shelf out of the same Drive
+    // folders made their own rows for it, and matching only on id would put both
+    // in the column.
+    const missing = (entry: T) =>
+      !ids.has(entry.id) && !(entry.driveFolderId && folders.has(entry.driveFolderId))
+
+    return [...theirs, ...ours.filter((entry) => missing(entry) && unsent(entry))]
+  }
+
+  // Top down, so a tier that has gone takes its languages with it and they take
+  // their words — including anything kept as fresh underneath something that
+  // the account no longer has.
+  const tiers = withFresh(remote.tiers, local.tiers)
+  const tierIds = new Set(tiers.map((tier) => tier.id))
+
+  const languages = withFresh(remote.languages, local.languages).filter((language) =>
+    tierIds.has(language.tierId),
+  )
+  const languageIds = new Set(languages.map((language) => language.id))
+
+  return {
+    tiers,
+    languages,
+    words: withFresh(remote.words, local.words).filter((word) => languageIds.has(word.languageId)),
+  }
+}
+
+/*
+ * ---------------------------------------------------------------------------
  * The shelf as Google Drive holds it.
  *
  * A folder per language, a folder per word inside it, and that word's videos in
@@ -228,11 +404,14 @@ export function isVideoAssetOrphaned(assetId: string, words: readonly Word[]): b
  * whole point: the shelf is legible in Drive without this app, and the files are
  * where you would go looking for them from a phone.
  *
- * A folder cannot hold an order, a label or a transcript, so each word folder
- * also gets one small JSON file listing its takes by Drive id. The folder still
- * says which videos there *are* — a take uploaded from another machine turns up
- * at the end of the run — and the sidecar says what they are and what order they
- * go in.
+ * The folders hold the videos and nothing else now: the order, the labels and
+ * the transcripts are the account's (see above). What is left here is reading a
+ * shelf *out* of Drive, which happens exactly once per account — when there is
+ * no shelf on the account yet and the folders are all there is to go on, as they
+ * are for anybody who used the app before this moved. That read still
+ * understands the old `editor-cat.json`, because it is where the order and the
+ * labels are for exactly as long as it takes to write them up. Nothing writes
+ * one any more.
  *
  * With one limit worth knowing, because it looks like a bug from the outside:
  * this app sees the files it made and the ones handed to it through the Picker,
@@ -240,13 +419,13 @@ export function isVideoAssetOrphaned(assetId: string, words: readonly Word[]): b
  * from a phone is really there and still invisible here, until it is picked —
  * which is what "Add from Drive" on the word page is for.
  *
- * Everything below is the pure half of that: what the file says, and how to
- * reconcile it with what this browser already had. The Drive calls themselves
- * are in lib/wordsDrive.ts.
+ * Everything below is the pure half of that: what the old file says, and how to
+ * reconcile a folder tree with what this browser already had. The Drive calls
+ * themselves are in lib/wordsDrive.ts.
  * ---------------------------------------------------------------------------
  */
 
-/** What the sidecar is called in every word folder. */
+/** What the old sidecar is called in every word folder. Read, never written. */
 export const SIDECAR_NAME = 'editor-cat.json'
 
 export interface SidecarEntry {
@@ -264,25 +443,8 @@ export interface WordSidecar {
   videos: SidecarEntry[]
 }
 
-/** What to write beside a word's videos. Takes with no Drive file yet are left out. */
-export function buildSidecar(
-  word: Word,
-  driveFileIdOf: (assetId: string) => string | undefined,
-): WordSidecar {
-  const videos: SidecarEntry[] = []
-  for (const video of word.videos) {
-    const driveFileId = driveFileIdOf(video.assetId)
-    // Nothing to name it by. It is either still uploading or failed to, and
-    // either way the next write picks it up.
-    if (!driveFileId) continue
-    const transcript = video.transcript?.trim()
-    videos.push({ driveFileId, role: video.role, ...(transcript ? { transcript } : {}) })
-  }
-  return { version: 1, word: word.text, videos }
-}
-
 /**
- * Reads a sidecar back, or gives up.
+ * Reads an old sidecar, or gives up.
  *
  * Anything unrecognisable is treated as absent rather than as an error: the file
  * sits in the user's own Drive where it can be edited, truncated by a failed

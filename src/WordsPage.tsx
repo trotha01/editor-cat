@@ -24,6 +24,7 @@ import { WordVideos } from './components/WordVideos'
 import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
 import { EDITOR_HASH } from './lib/route'
 import { languagesInTier, sortedTiers, wordsInLanguage } from './lib/words'
+import { useAuthStore } from './state/useAuthStore'
 import { useDriveStore } from './state/useDriveStore'
 import { useWordsStore } from './state/useWordsStore'
 
@@ -49,6 +50,7 @@ export function WordsPage() {
   const syncing = useWordsStore((state) => state.syncing)
   const syncError = useWordsStore((state) => state.syncError)
   const driveConnected = useDriveStore((state) => state.status === 'connected' && !!state.folder)
+  const signedIn = useAuthStore((state) => state.account !== null)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   /**
@@ -71,12 +73,16 @@ export function WordsPage() {
   }, [])
 
   useEffect(() => {
-    // Whenever there is a Drive to read, read it — which is not only on mount.
-    // A connection restored after the page was opened, or granted again after it
-    // lapsed, is the same event as arriving with one, and a shelf that only
-    // syncs on a reload would look like one that does not sync.
-    if (driveConnected) void useWordsStore.getState().syncFromDrive()
-  }, [driveConnected])
+    // Whenever there is an account to read the shelf off, read it — which is not
+    // only on mount. A sign-in that lands after the page was opened is the same
+    // event as arriving with one, and a shelf that only synced on a reload would
+    // look like one that does not sync.
+    //
+    // The Drive connection is watched as well, and for one reason: an account
+    // with no shelf yet is built from the folder tree, which needs a Drive to
+    // read. Everything after that first read is the account's.
+    if (signedIn || driveConnected) void useWordsStore.getState().syncShelf()
+  }, [signedIn, driveConnected])
 
   const tierList = useMemo(() => sortedTiers(tiers), [tiers])
   const languageList = useMemo(
@@ -103,7 +109,7 @@ export function WordsPage() {
         <h1 className="text-sm font-semibold">Word videos</h1>
         <p className="min-w-0 flex-1 truncate text-xs text-ink-dim">
           {syncing
-            ? 'Reading your Drive…'
+            ? 'Reading your shelf…'
             : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
         {syncing ? <Spinner className="text-ink-dim" /> : null}
@@ -228,11 +234,11 @@ export function WordsPage() {
               that could quietly go wrong on it. */}
           <DriveUploads />
 
-          {/* A failed read of Drive is worth saying and never worth blocking on:
-              what is on screen is this browser's copy of the shelf, which is
+          {/* A failed read or write is worth saying and never worth blocking
+              on: what is on screen is this browser's copy of the shelf, which is
               still a shelf. */}
           {syncError ? (
-            <Callout tone="warn" title="Google Drive">
+            <Callout tone="warn" title="Syncing your shelf">
               {syncError}
             </Callout>
           ) : null}

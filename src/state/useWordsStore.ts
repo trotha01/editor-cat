@@ -8,15 +8,26 @@
  * are in the asset catalogue and their bytes in the blob store, so what is kept
  * here is small: names, an order, and a line of transcript each.
  *
+ * The shelf itself — the three lists, in one document — belongs to the account
+ * (lib/supabase/shelf.ts). Every edit here writes to IndexedDB now and up to
+ * that document a beat later, so what this browser holds is a cache of something
+ * an account has, and a second machine reads the whole shelf in one query rather
+ * than starting empty.
+ *
  * And the same shelf is a tree of folders in the user's Drive: one per tier, one
  * per language inside it, one per word inside that, and that word's videos in
- * the word folder. The two are kept in step from here — every tier, language and
- * word gets its folder as it is made, every upload goes into the folder for its
- * word, every delete trashes what it was — so what IndexedDB holds is a fast
- * local copy of something that lives somewhere the user can open, and a second
- * machine reads the shelf back out of Drive rather than starting empty. Nothing
- * here needs Drive to work: with no connection the folder ids are simply absent,
- * and the page is the local one it was before.
+ * the word folder. That is where the *files* live and what makes the shelf
+ * legible in Drive without this app. It is kept in step from here — every tier,
+ * language and word gets its folder as it is made, every upload goes into the
+ * folder for its word, every delete trashes what it was — but it is no longer
+ * what the page is drawn from, and nothing writes a sidecar into it any more.
+ * The folders are read exactly once per account, to build the first shelf for
+ * somebody who has one in Drive from before this moved.
+ *
+ * Nothing here needs Drive to work: with no connection the folder ids are simply
+ * absent, and the page is the local one it was before. Nothing needs an account
+ * either — signed out, or on a deployment with no Supabase, the shelf is this
+ * browser's alone and every write above still happens.
  */
 import { create } from 'zustand'
 import {
@@ -32,17 +43,19 @@ import {
   putWord,
 } from '../lib/db'
 import {
-  buildSidecar,
+  buildShelfDoc,
   findLanguage,
   findTier,
   findWord,
   isVideoAssetOrphaned,
   languagesInTier,
+  mergeRemoteShelf,
   mergeShelf,
   newLanguage,
   newTier,
   newWord,
   newWordVideo,
+  parseShelfDoc,
   sameName,
   sortedTiers,
   withMovedVideo,
@@ -52,15 +65,21 @@ import {
   wordsInLanguage,
   type DiscoveredTier,
   type Language,
+  type Shelf,
   type Tier,
   type Word,
   type WordVideoRole,
 } from '../lib/words'
-import { findOrCreateFolder, readShelf, writeSidecar, type RawTier } from '../lib/wordsDrive'
+import { findOrCreateFolder, readShelf, type RawTier } from '../lib/wordsDrive'
 import { moveFile, renameFile, trashFile, type DriveFile } from '../lib/google/drive'
+import { fromRow, getAssets } from '../lib/supabase/assets'
+import { isSupabaseConfigured } from '../lib/supabase/client'
+import { getShelf, putShelf } from '../lib/supabase/shelf'
 import { createScheduler } from '../lib/sync/scheduler'
+import { recordAsset } from '../lib/sync/assetSync'
 import { newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
+import { isSignedIn } from './useAuthStore'
 import { useAssetStore } from './useAssetStore'
 import { useDriveStore } from './useDriveStore'
 import type { Asset } from '../lib/types'
@@ -76,24 +95,28 @@ interface WordsState {
   loading: boolean
   /** Set once the stores have been read, so a second visit keeps its selection. */
   loaded: boolean
-  /** True while the shelf is being read out of Drive. */
+  /** True while the shelf is being read off the account. */
   syncing: boolean
-  /** Why the last read of Drive failed, if it did. The local shelf still stands. */
+  /** Why the last read or write failed, if it did. The local shelf still stands. */
   syncError: string | null
 
   /**
-   * Reads both stores, then folds in whatever Drive holds. Does nothing on a
-   * page that has already been opened.
+   * Reads both stores, then folds in whatever the account holds. Does nothing on
+   * a page that has already been opened.
    */
   load: () => Promise<void>
   /**
-   * Reads the shelf out of Drive and folds it into this one.
+   * Reads the shelf off the account and folds it into this one.
    *
-   * Additive: it can only bring languages, words and takes in, never take them
-   * away, so a read that happens while the connection is patchy costs a delay
-   * rather than a list. Deleting is what deletes.
+   * The account's copy is the shelf and this browser's is a cache of it, so this
+   * takes rows away as well as bringing them in — a word deleted on a laptop is
+   * meant to stay deleted here. What it will not drop is work made on this
+   * machine since the last successful write; see `mergeRemoteShelf`.
+   *
+   * An account with no shelf yet is the migration: the folders in Drive are read
+   * once, and what comes out of them is written up.
    */
-  syncFromDrive: () => Promise<void>
+  syncShelf: () => Promise<void>
   /**
    * The Drive folder for a word, made — along with the language and tier folders
    * above it — if it is not there yet. Null when Drive is not connected, which
@@ -150,10 +173,13 @@ interface WordsState {
    * user's Drive, and invisible to the read of the shelf until it is picked.
    * This is what picking it does.
    *
-   * Each one is moved into the word's folder if it is not there already, because
-   * that folder is the word's list of takes and the next read rebuilds the run
-   * from it — a take left elsewhere would show up now and be gone by morning.
-   * The names it could not add come back, so the page can say which and why.
+   * Each one is moved into the word's folder if it is not there already. Not
+   * because anything would break otherwise — the run is the account's now, and a
+   * take plays from wherever in Drive it sits — but because the folder tree is
+   * the half of this shelf a person can open on their phone, and a word whose
+   * folder does not hold its takes has stopped being legible in the way the
+   * whole layout exists to be. The names it could not add come back, so the page
+   * can say which and why.
    */
   addDriveVideos: (wordId: string, files: readonly DriveFile[]) => Promise<string[]>
   setVideoRole: (wordId: string, videoId: string, role: WordVideoRole) => void
@@ -164,19 +190,44 @@ interface WordsState {
   selectedWord: () => Word | undefined
 }
 
-function persistWord(word: Word): void {
+/*
+ * Writing one row down, in two flavours.
+ *
+ * `persist*` is what an edit calls: store it here, and say the shelf has moved
+ * so it goes up to the account a beat later. `store*` is the same write without
+ * that second half, and exists for one caller — settling a shelf that has just
+ * been *read* off the account. Marking those dirty would send back what we were
+ * just told, which is a wasted round trip at best and two machines writing at
+ * each other at worst.
+ */
+function storeWord(word: Word): void {
   void putWord(word).catch(() => {
     // Best-effort, like the project store: losing the write must not lose the
     // edit that is already on screen.
   })
 }
 
-function persistLanguage(language: Language): void {
+function storeLanguage(language: Language): void {
   void putLanguage(language).catch(() => {})
 }
 
-function persistTier(tier: Tier): void {
+function storeTier(tier: Tier): void {
   void putTier(tier).catch(() => {})
+}
+
+function persistWord(word: Word): void {
+  storeWord(word)
+  markShelfDirty()
+}
+
+function persistLanguage(language: Language): void {
+  storeLanguage(language)
+  markShelfDirty()
+}
+
+function persistTier(tier: Tier): void {
+  storeTier(tier)
+  markShelfDirty()
 }
 
 /**
@@ -298,77 +349,206 @@ async function ensureLanguageFolder(languageId: string): Promise<string | null> 
   })
 }
 
-/**
- * Videos whose Drive copy is what the sidecar is written from, so a word is
- * marked for a fresh one the moment an upload finishes rather than never.
- *
- * Without this, a take added and then left alone would be uploaded, listed in
- * the folder, and missing from the file that says what order the takes go in —
- * because at the moment the word changed, the upload had not finished and the
- * take had no Drive id to write down.
- */
-let watchingUploads = false
-
-function watchUploads(): void {
-  if (watchingUploads) return
-  watchingUploads = true
-
-  const backedUp = () =>
-    new Set(
-      useAssetStore
-        .getState()
-        .assets.filter((asset) => asset.driveFileId)
-        .map((asset) => asset.id),
-    )
-
-  let known = backedUp()
-  useAssetStore.subscribe(() => {
-    const next = backedUp()
-    const fresh = [...next].filter((id) => !known.has(id))
-    known = next
-    if (fresh.length === 0) return
-
-    for (const word of useWordsStore.getState().words) {
-      if (word.videos.some((video) => fresh.includes(video.assetId))) markWordDirty(word.id)
-    }
-  })
+/** Whether there is an account to keep the shelf on. */
+function canSync(): boolean {
+  return isSupabaseConfigured() && isSignedIn()
 }
 
 /**
- * How long after the last edit the sidecar is rewritten.
+ * The version of the shelf row this session last saw, and when it last agreed
+ * with the account.
+ *
+ * The version is what makes a write safe: it goes up with every save, and a save
+ * that finds it moved is a save somebody else got in front of. Null means this
+ * session has not read the row yet, which is the same as saying the next write
+ * is an insert.
+ *
+ * `syncedAt` is per browser rather than per session, because what it answers is
+ * "which of the things on this machine has the account never been told about" —
+ * a question a tab that has just opened has to be able to answer about work the
+ * last one did offline. See `mergeRemoteShelf`.
+ */
+let shelfVersion: number | null = null
+
+const SYNCED_AT_KEY = 'editor-cat.words.syncedAt.v1'
+
+function syncedAt(): number {
+  try {
+    return Number(localStorage.getItem(SYNCED_AT_KEY)) || 0
+  } catch {
+    // Storage can be blocked outright. Zero is the safe answer: it treats
+    // everything local as fresh, which keeps work rather than dropping it.
+    return 0
+  }
+}
+
+function rememberSyncedAt(when: number): void {
+  try {
+    localStorage.setItem(SYNCED_AT_KEY, String(when))
+  } catch {
+    // Same as above, and with the same consequence: nothing worse than a merge
+    // that keeps too much.
+  }
+}
+
+/**
+ * How long after the last edit the shelf is written up.
  *
  * Long enough that dragging a run into order is one write rather than five, and
  * short enough that closing the tab a moment later has already saved it.
  */
-const SIDECAR_DELAY = 1200
+const SHELF_DELAY = 1200
 
-const dirtyWords = new Set<string>()
+const shelfWrites = createScheduler(async () => {
+  await pushShelf()
+}, SHELF_DELAY)
 
-const sidecarWrites = createScheduler(async () => {
-  const pending = [...dirtyWords]
-  dirtyWords.clear()
-  for (const wordId of pending) {
-    try {
-      await pushSidecar(wordId)
-    } catch {
-      // Best-effort, like every other write here: what is lost is the order and
-      // the labels reaching the other machine, not the edit on this one.
-    }
-  }
-}, SIDECAR_DELAY)
-
-function markWordDirty(wordId: string): void {
-  if (!driveRoot()) return
-  dirtyWords.add(wordId)
-  sidecarWrites.schedule()
+/**
+ * Says the shelf has changed and should be written up.
+ *
+ * Called by every edit rather than by the store's persistence helpers, so that
+ * the writes a *read* makes — settling merged rows back into IndexedDB — do not
+ * bounce straight back to the server as a change.
+ */
+function markShelfDirty(): void {
+  if (!canSync()) return
+  shelfWrites.schedule()
 }
 
-async function pushSidecar(wordId: string): Promise<void> {
-  const word = useWordsStore.getState().words.find((entry) => entry.id === wordId)
-  if (!word) return
-  const folderId = await useWordsStore.getState().ensureWordFolder(wordId)
-  if (!folderId) return
-  await writeSidecar(folderId, buildSidecar(word, driveFileIdOf))
+/** The three lists as they are right now, which is what gets written. */
+function lists(): Shelf {
+  const { tiers, languages, words } = useWordsStore.getState()
+  return { tiers, languages, words }
+}
+
+/**
+ * Writes the shelf to the account, re-reading once if somebody moved ahead.
+ *
+ * The retry is not optimism: this is one document per person, so a conflict is
+ * another tab or another machine of theirs, and the answer is always to take
+ * what is up there, fold this machine's work into it and write again — never to
+ * ask the user to reload, which is what a project conflict does.
+ */
+async function pushShelf(): Promise<void> {
+  if (!canSync()) return
+
+  try {
+    // Stamped before the write rather than after it: a word added while the
+    // request was in flight is not in the document being sent, and a stamp taken
+    // on the way back would call it sent. The next read would then treat it as
+    // deleted somewhere else.
+    const at = Date.now()
+    const landed = await putShelf(buildShelfDoc(lists()), shelfVersion)
+    if (landed !== null) {
+      shelfVersion = landed
+      rememberSyncedAt(at)
+      return
+    }
+
+    const stored = await getShelf()
+    if (!stored) return
+    shelfVersion = stored.version
+    applyRemote(parseShelfDoc(stored.doc))
+
+    const retriedAt = Date.now()
+    const second = await putShelf(buildShelfDoc(lists()), shelfVersion)
+    if (second === null) return
+    shelfVersion = second
+    rememberSyncedAt(retriedAt)
+  } catch (cause) {
+    // Best-effort, like every other write here: what is lost is the edit
+    // reaching the other machine, not the edit on this one. It goes up with the
+    // next change, and the message says why in the meantime.
+    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
+  }
+}
+
+/**
+ * Folds the account's shelf into this browser's, and writes the result down.
+ *
+ * The stored copy is the one that is settled against, so nothing is written back
+ * to IndexedDB or re-rendered for having been read — see `settle`. What the read
+ * took away is deleted locally too, bytes and all: a word deleted on a laptop
+ * otherwise leaves a row here and a file nothing on this machine can reach.
+ */
+function applyRemote(remote: Shelf): void {
+  const before = lists()
+  const merged = mergeRemoteShelf(remote, before, syncedAt())
+
+  const tiers = settle(merged.tiers, before.tiers, storeTier)
+  const languages = settle(merged.languages, before.languages, storeLanguage)
+  const words = settle(merged.words, before.words, storeWord)
+
+  useWordsStore.setState((state) => ({
+    tiers,
+    languages,
+    words,
+    ...settledSelection(state, { tiers, languages, words }),
+  }))
+
+  void Promise.all([
+    forgetOrphanedAssets(assetIdsOf(before.words), words),
+    ...gone(before.words, words).map((word) => dbDeleteWord(word.id).catch(() => {})),
+    ...gone(before.languages, languages).map((entry) => dbDeleteLanguage(entry.id).catch(() => {})),
+    ...gone(before.tiers, tiers).map((entry) => dbDeleteTier(entry.id).catch(() => {})),
+  ])
+}
+
+/**
+ * Builds a shelf out of the folders in Drive, for an account that has no shelf
+ * and a browser that has no copy of one.
+ *
+ * The migration, and the only thing that reads the folder tree now. Anybody who
+ * used the word pages before the shelf moved to the account has their tiers,
+ * languages, words and the order of every run in Drive and nowhere else — in the
+ * folders, and in the `editor-cat.json` beside each word's videos. This reads
+ * that once, and what it produces is written up like any other change.
+ *
+ * A failure here is reported and not thrown: an account with no shelf and a
+ * browser with one still has a shelf to save, and that must not be held up by
+ * Drive being slow or disconnected.
+ */
+async function importFromDrive(): Promise<void> {
+  const root = driveRoot()
+  if (!root) return
+
+  try {
+    const before = lists()
+    const discovered = await adoptDiscovered(await readShelf(root))
+    const merged = mergeShelf(before, discovered, driveFileIdOf)
+
+    useWordsStore.setState((state) => {
+      const tiers = settle(merged.tiers, before.tiers, storeTier)
+      const languages = settle(merged.languages, before.languages, storeLanguage)
+      const words = settle(merged.words, before.words, storeWord)
+      return { tiers, languages, words, ...settledSelection(state, { tiers, languages, words }) }
+    })
+  } catch (cause) {
+    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
+  }
+}
+
+/**
+ * Gives every take a catalogue entry on a machine that has never held one.
+ *
+ * The shelf names its videos by asset id, and the asset rows say what those are
+ * and which Drive file holds the bytes — the same trick `hydrateProject` does
+ * for a timeline, at the scale of a shelf. Without it a second machine draws a
+ * run of rows saying the file is not here, for files that are perfectly
+ * reachable.
+ */
+async function hydrateShelfAssets(words: readonly Word[]): Promise<void> {
+  const known = new Set(useAssetStore.getState().assets.map((asset) => asset.id))
+  const wanted = [...new Set(assetIdsOf(words))].filter((id) => !known.has(id))
+  if (wanted.length === 0) return
+
+  for (const row of await getAssets(wanted)) {
+    // A blob key names an IndexedDB entry on one machine and nothing anywhere
+    // else, so it is made here rather than carried.
+    const asset = fromRow(row, newId('blob'))
+    await putAsset(asset)
+    useAssetStore.getState().adopt(asset)
+  }
 }
 
 /**
@@ -397,6 +577,10 @@ async function catalogueVideo(file: {
 
   await putAsset(asset)
   useAssetStore.getState().adopt(asset)
+  // Recorded against the account as well, the way `ingestBlob` does for an
+  // upload (see Root.tsx): the shelf names its takes by asset id, so a machine
+  // that has never seen this file needs a row to resolve that id against.
+  void recordAsset(asset)
   return asset
 }
 
@@ -480,11 +664,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   syncError: null,
 
   load: async () => {
-    // Before the early return, not after it: what this watches for — an upload
-    // finishing — happens on every visit, while reading the stores happens on
-    // the first one.
-    watchUploads()
-
     // Leaving the page and coming back to it should come back to what was open,
     // and re-reading would put the selection back to the top of all three columns.
     if (get().loaded) return
@@ -512,45 +691,40 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       set({ tiers: [], languages: [], words: [], loading: false })
     }
 
-    // The local copy is on screen by now, and Drive is what says whether it is
-    // the whole shelf. Not awaited by the caller for exactly that reason: a
-    // machine that already has the words should draw them, not spin.
-    void get().syncFromDrive()
+    // The local copy is on screen by now, and the account is what says whether
+    // it is the whole shelf. Not awaited by the caller for exactly that reason:
+    // a machine that already has the words should draw them, not spin.
+    void get().syncShelf()
   },
 
-  syncFromDrive: async () => {
-    const root = driveRoot()
-    if (!root || get().syncing) return
+  syncShelf: async () => {
+    if (!canSync() || get().syncing) return
 
     set({ syncing: true, syncError: null })
     try {
-      const before = { tiers: get().tiers, languages: get().languages, words: get().words }
-      const discovered = await adoptDiscovered(await readShelf(root))
-      const merged = mergeShelf(before, discovered, driveFileIdOf)
+      // Before the read, for the same reason the write stamps before it goes:
+      // whatever is made while this is in flight has not been sent.
+      const at = Date.now()
+      const stored = await getShelf()
 
-      const tiers = settle(merged.tiers, before.tiers, persistTier)
-      const languages = settle(merged.languages, before.languages, persistLanguage)
-      const words = settle(merged.words, before.words, persistWord)
-      set({
-        tiers,
-        languages,
-        words,
-        syncing: false,
-        ...settledSelection(get(), { tiers, languages, words }),
-      })
+      if (!stored) {
+        // Nothing on the account yet. Either this machine is the one holding the
+        // shelf — the common case, everybody who used the page before it moved
+        // — or it has nothing and the folders in Drive are all there is to go on.
+        if (get().words.length === 0 && get().tiers.length === 0) await importFromDrive()
+        shelfVersion = null
+        set({ syncing: false })
+        // Written up rather than left: an account with no shelf and a browser
+        // with one is the migration, and it happens by saving.
+        markShelfDirty()
+        return
+      }
 
-      // What a read can take away, it takes the stored copy and the bytes of
-      // too: a word deleted on another machine otherwise leaves a row here and
-      // takes nothing on this machine can reach. Storage that only ever grows is
-      // the other way to lose somebody's work.
-      await Promise.all([
-        forgetOrphanedAssets(assetIdsOf(before.words), words),
-        ...gone(before.words, words).map((word) => dbDeleteWord(word.id).catch(() => {})),
-        ...gone(before.languages, languages).map((entry) =>
-          dbDeleteLanguage(entry.id).catch(() => {}),
-        ),
-        ...gone(before.tiers, tiers).map((entry) => dbDeleteTier(entry.id).catch(() => {})),
-      ])
+      shelfVersion = stored.version
+      applyRemote(parseShelfDoc(stored.doc))
+      await hydrateShelfAssets(get().words)
+      rememberSyncedAt(at)
+      set({ syncing: false })
     } catch (cause) {
       // The shelf on screen is still the shelf; what failed is finding out
       // whether it is missing anything.
@@ -633,6 +807,8 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       ...(state.selectedTierId === id ? openingSelection({ tiers, languages, words }) : {}),
     }))
 
+    // Deletes do not go through `persistTier` and friends, so they say so here.
+    markShelfDirty()
     await Promise.all([
       dbDeleteTier(id),
       ...doomedLanguages.map((language) => dbDeleteLanguage(language.id)),
@@ -696,6 +872,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         : {}),
     }))
 
+    markShelfDirty()
     await Promise.all([dbDeleteLanguage(id), ...doomed.map((word) => dbDeleteWord(word.id))]).catch(
       () => {},
     )
@@ -737,6 +914,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         : {}),
     }))
 
+    markShelfDirty()
     await dbDeleteWord(id).catch(() => {})
     await trashInDrive(doomed.driveFolderId)
     await forgetOrphanedAssets(assetIdsOf([doomed]), words)
@@ -831,6 +1009,8 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         const run = get().words.find((entry) => entry.id === wordId)?.videos ?? []
         if (known && run.some((video) => video.assetId === known.id)) continue
 
+        // Into the word's folder, so the tree still reads as the shelf it is
+        // meant to be. See the note on this action.
         if (folderId) await moveFile(file.id, folderId)
         get().addVideo(wordId, (known ?? (await catalogueVideo(file))).id)
       } catch (cause) {
@@ -979,11 +1159,11 @@ function settledSelection(state: WordsState, lists: Lists): Selection {
  * Applies a change to one word and writes the result down.
  *
  * Every edit to a word goes through here, which is what makes "each change is
- * saved" one rule rather than one per control — locally, and in the file beside
- * the videos that carries the order and the labels to the next machine.
+ * saved" one rule rather than one per control — in IndexedDB now, and on the
+ * account a beat later.
  */
 function mapWord(words: readonly Word[], wordId: string, change: (word: Word) => Word): Word[] {
-  markWordDirty(wordId)
+  markShelfDirty()
   return words.map((word) => {
     if (word.id !== wordId) return word
     const next = change(word)

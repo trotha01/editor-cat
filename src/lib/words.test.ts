@@ -11,12 +11,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  buildSidecar,
+  buildShelfDoc,
   findLanguage,
   findWord,
   isVideoAssetOrphaned,
   languagesInTier,
+  mergeRemoteShelf,
   mergeShelf,
+  parseShelfDoc,
   parseSidecar,
   roleLabel,
   sortedTiers,
@@ -487,38 +489,7 @@ describe('reading the shelf back out of Drive', () => {
   })
 })
 
-describe('the file written beside a word’s videos', () => {
-  it('names the takes by their Drive file, in the order they play', () => {
-    const run = word('w1', SPANISH.id, 'gato', [
-      { id: 'v1', assetId: 'asset_a', role: 'intro', transcript: ' Ready? ' },
-      { id: 'v2', assetId: 'asset_b', role: 'word' },
-    ])
-
-    expect(buildSidecar(run, (id) => ({ asset_a: 'f1', asset_b: 'f2' })[id])).toEqual({
-      version: 1,
-      word: 'gato',
-      videos: [
-        { driveFileId: 'f1', role: 'intro', transcript: 'Ready?' },
-        { driveFileId: 'f2', role: 'word' },
-      ],
-    })
-  })
-
-  it('leaves out a take that has nothing in Drive to name it by', () => {
-    const run = word('w1', SPANISH.id, 'gato', [video('v1', 'asset_uploading')])
-
-    expect(buildSidecar(run, () => undefined).videos).toEqual([])
-  })
-
-  it('reads its own writing back', () => {
-    const run = word('w1', SPANISH.id, 'gato', [
-      { id: 'v1', assetId: 'asset_a', role: 'outro', transcript: 'el gato' },
-    ])
-    const written = buildSidecar(run, () => 'f1')
-
-    expect(parseSidecar(JSON.stringify(written))).toEqual(written)
-  })
-
+describe('the old file beside a word’s videos', () => {
   it('treats a file that has been mangled as one that is not there', () => {
     expect(parseSidecar('not json at all')).toBeNull()
     expect(parseSidecar('{"version":1}')).toBeNull()
@@ -537,5 +508,120 @@ describe('the file written beside a word’s videos', () => {
     // The entry with no file is unusable and goes; the one with an unknown label
     // is a real take that simply gets the ordinary one.
     expect(parsed?.videos).toEqual([{ driveFileId: 'f1', role: 'word' }])
+  })
+})
+
+/**
+ * The shelf as the account holds it.
+ *
+ * Two of these are the whole reason the shelf moved off Drive and out of a file
+ * per word, and both only break somewhere expensive: a read that quietly drops
+ * work made offline, and a read that quietly brings back a word somebody deleted
+ * on their other machine. They pull in opposite directions, which is what makes
+ * "since the last successful write" the line between them rather than a
+ * preference for one of the two copies.
+ */
+describe('the shelf on the account', () => {
+  const shelf = (tiers: Tier[], languages: Language[], words: Word[]) => ({
+    tiers,
+    languages,
+    words,
+  })
+
+  /** A row made at a given moment, which is what the merge sorts on. */
+  const madeAt = <T extends { createdAt: number }>(entry: T, createdAt: number): T => ({
+    ...entry,
+    createdAt,
+  })
+
+  it('reads back exactly what it wrote', () => {
+    const local = shelf(
+      [{ ...FIRST, driveFolderId: 'folder_first' }],
+      [{ ...SPANISH, driveFolderId: 'folder_es' }],
+      [
+        word('w1', SPANISH.id, 'gato', [
+          { id: 'v1', assetId: 'asset_a', role: 'outro', transcript: 'el gato' },
+        ]),
+      ],
+    )
+
+    expect(parseShelfDoc(JSON.parse(JSON.stringify(buildShelfDoc(local))))).toEqual(local)
+  })
+
+  it('is an empty shelf when the document is nonsense, which is what a new account is', () => {
+    expect(parseShelfDoc(null)).toEqual({ tiers: [], languages: [], words: [] })
+    expect(parseShelfDoc('not a shelf')).toEqual({ tiers: [], languages: [], words: [] })
+    expect(parseShelfDoc({ tiers: 'no' })).toEqual({ tiers: [], languages: [], words: [] })
+  })
+
+  it('drops an entry with nothing to identify it by, and keeps the rest', () => {
+    const parsed = parseShelfDoc({
+      tiers: [FIRST, { name: 'No id' }],
+      languages: [SPANISH, { id: 'lang_x', name: 'No tier' }],
+      words: [
+        {
+          ...word('w1', SPANISH.id, 'gato'),
+          videos: [{ assetId: 'asset_a' }, video('v1', 'asset_a')],
+        },
+      ],
+    })
+
+    expect(parsed.tiers).toEqual([FIRST])
+    expect(parsed.languages).toEqual([SPANISH])
+    // A take with no id of its own cannot be re-ordered, renamed or removed, so
+    // it is not a row this page could draw.
+    expect(parsed.words[0]?.videos).toEqual([video('v1', 'asset_a')])
+  })
+
+  it('takes the account’s copy of the shelf over this browser’s', () => {
+    const remote = shelf(
+      [FIRST],
+      [SPANISH],
+      [word('w1', SPANISH.id, 'gato', [video('v1', 'asset_a')])],
+    )
+    const local = shelf(
+      [FIRST],
+      [SPANISH],
+      // The same word, as it was before somebody re-ordered it elsewhere.
+      [word('w1', SPANISH.id, 'gato', [video('v2', 'asset_b'), video('v1', 'asset_a')])],
+    )
+
+    const merged = mergeRemoteShelf(remote, local, 100)
+
+    expect(merged.words[0]?.videos).toEqual([video('v1', 'asset_a')])
+  })
+
+  it('lets a word deleted on another machine stay deleted', () => {
+    // A browser that has agreed with the account before: everything it holds
+    // from before then has been up there, so an absence is a deletion.
+    const local = shelf([FIRST], [SPANISH], [madeAt(word('w1', SPANISH.id, 'gato'), 50)])
+
+    const merged = mergeRemoteShelf(shelf([FIRST], [SPANISH], []), local, 100)
+
+    expect(merged.words).toEqual([])
+  })
+
+  it('keeps a word made here since the last write, which the account has not been told about', () => {
+    const offline = madeAt(word('w2', SPANISH.id, 'perro'), 150)
+    const local = shelf([FIRST], [SPANISH], [madeAt(word('w1', SPANISH.id, 'gato'), 50), offline])
+
+    const merged = mergeRemoteShelf(shelf([FIRST], [SPANISH], []), local, 100)
+
+    expect(merged.words).toEqual([offline])
+  })
+
+  it('drops a fresh word whose language the account no longer has', () => {
+    // Deleting a language deletes its words, and a word added here a moment
+    // before that reached us is still one of its words.
+    const local = shelf(
+      [FIRST],
+      [madeAt(SPANISH, 50)],
+      [madeAt(word('w1', SPANISH.id, 'gato'), 150)],
+    )
+
+    const merged = mergeRemoteShelf(shelf([FIRST], [], []), local, 100)
+
+    expect(merged.languages).toEqual([])
+    expect(merged.words).toEqual([])
   })
 })
