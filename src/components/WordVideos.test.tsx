@@ -281,6 +281,28 @@ describe('watching them together', () => {
     expect(player().currentTime).toBe(2)
   })
 
+  /**
+   * A drag fires a change event on every pointer move, and a take within
+   * reach of where the element already is does not need telling — seeking it
+   * anyway is what made dragging the bar stutter. Only a move big enough to
+   * matter reaches the element; the small ones still move the handle, since
+   * that reads off state rather than off the element's own clock.
+   */
+  it('does not reseek the element for a drag too small to matter, but does for one that is', () => {
+    const { player } = mount()
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Scrub through the run' }), {
+      target: { value: '0.1' },
+    })
+    expect(screen.getByText('0:00.1 / 0:08.0')).toBeInTheDocument()
+    expect(player().currentTime).toBe(0)
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Scrub through the run' }), {
+      target: { value: '1' },
+    })
+    expect(player().currentTime).toBe(1)
+  })
+
   it('counts where the run has got to as the take on screen plays', () => {
     const { player } = mount()
 

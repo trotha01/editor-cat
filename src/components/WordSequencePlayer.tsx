@@ -39,6 +39,16 @@ import { formatTime } from '../lib/timeline'
 import { roleLabel, type WordVideo, type WordVideoRole } from '../lib/words'
 import type { Asset } from '../lib/types'
 
+/**
+ * How far the element may drift from where the bar says it should be before we
+ * bother correcting it, in seconds. The same idea as the editor's own preview
+ * (`SEEK_TOLERANCE` in Preview.tsx): a drag fires this on every pointer move,
+ * and seeking a `<video>` on every one of those is what made scrubbing stutter
+ * — most of those moves are well under the tolerance and can just wait for the
+ * next one that isn't.
+ */
+const SEEK_TOLERANCE = 0.3
+
 /** A video and the file behind it. Entries whose bytes are missing never get here. */
 export interface PlayableVideo {
   video: WordVideo
@@ -149,7 +159,7 @@ export function WordSequencePlayer({
     setElapsed(offset)
     if (bounded === at) {
       const video = element.current
-      if (video) video.currentTime = offset
+      if (video && Math.abs(video.currentTime - offset) > SEEK_TOLERANCE) video.currentTime = offset
       return
     }
     pending.current = offset
@@ -227,7 +237,13 @@ export function WordSequencePlayer({
         </span>
       </div>
 
-      <div className="overflow-hidden rounded-lg bg-black">
+      {/* A fixed box rather than one sized off whichever take happens to be
+          loaded — the same reasoning as the editor's own preview. Without it,
+          the element's own height follows each take's native aspect ratio, so
+          the picture visibly grows and shrinks at every join. Letterboxing
+          inside an unchanging box, `object-contain`, is what the editor does
+          too. */}
+      <div className="relative aspect-video max-h-80 w-full overflow-hidden rounded-lg bg-black">
         <video
           ref={element}
           src={source.url ?? undefined}
@@ -236,7 +252,7 @@ export function WordSequencePlayer({
           // scrub bar that stops at the end of take two would be describing a
           // different video from the one on screen. The bar under it is ours
           // for exactly that reason — it runs the length of the word.
-          className="mx-auto max-h-80 w-full object-contain"
+          className="absolute inset-0 size-full object-contain"
           onEnded={advance}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
