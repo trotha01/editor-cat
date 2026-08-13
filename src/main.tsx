@@ -2,7 +2,6 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { SignInGate } from './components/SignInGate'
-import { StagingBadge } from './components/StagingBadge'
 import { installVersionGlobal } from './lib/version'
 import './index.css'
 
@@ -17,12 +16,6 @@ function mount(): void {
       <SignInGate>
         <App />
       </SignInGate>
-
-      {/* Outside the gate for the reason `VERSION` is installed before it: which
-          build this is has to be answerable from the screen that is refusing you
-          entry, which on staging is a screen you see often. Draws nothing at all
-          off the staging site — see src/lib/stagingBuild.ts. */}
-      <StagingBadge />
     </StrictMode>,
   )
 }
