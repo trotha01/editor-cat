@@ -13,6 +13,7 @@
 import { useEffect, useState } from 'react'
 import { getBlob, putBlob } from '../lib/db'
 import { downloadFile } from '../lib/google/drive'
+import { downloadAsset } from '../lib/r2/download'
 import { mapLimited } from '../lib/concurrency'
 import { probeMedia } from '../lib/media'
 import { useAssetStore } from '../state/useAssetStore'
@@ -49,20 +50,29 @@ export function useWordVideoBytes(assets: readonly Asset[]): { fetching: Set<str
       // the dependencies — see `key`.
       const catalogue = useAssetStore.getState().assets
       const wanted = key ? key.split(',') : []
-      const missing: { asset: Asset; driveFileId: string }[] = []
+      const missing: { asset: Asset; r2Key?: string; driveFileId?: string }[] = []
 
       for (const id of wanted) {
         const asset = catalogue.find((entry) => entry.id === id)
-        if (!asset?.driveFileId) continue
+        // Our own storage first, Drive only for takes that predate the move.
+        // R2 is faster and needs no Drive connection, which is what lets a
+        // second device fill a word in with no Google grant at all.
+        if (!asset?.r2Key && !asset?.driveFileId) continue
         if (await getBlob(asset.blobKey)) continue
-        missing.push({ asset, driveFileId: asset.driveFileId })
+        missing.push({
+          asset,
+          ...(asset.r2Key ? { r2Key: asset.r2Key } : {}),
+          ...(asset.driveFileId ? { driveFileId: asset.driveFileId } : {}),
+        })
       }
       if (cancelled || missing.length === 0) return
 
-      await mapLimited(missing, DOWNLOAD_CONCURRENCY, async ({ asset, driveFileId }) => {
+      await mapLimited(missing, DOWNLOAD_CONCURRENCY, async ({ asset, r2Key, driveFileId }) => {
         mark(asset.id, true)
         try {
-          const blob = await downloadFile(driveFileId)
+          const blob = r2Key
+            ? await downloadAsset(r2Key)
+            : await downloadFile(driveFileId as string)
           if (cancelled) return
           await putBlob(asset.blobKey, blob)
 

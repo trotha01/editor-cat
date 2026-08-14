@@ -30,18 +30,28 @@ const project = (extra: Partial<Project> = {}): Project => ({
 describe('planFor', () => {
   it('does nothing when the bytes are already in this browser', () => {
     expect(planFor(true, 'drive_1')).toBe('ready')
-    // Local bytes win even with no Drive copy — nothing needs fetching.
-    expect(planFor(true, undefined)).toBe('ready')
+    expect(planFor(true, undefined, 'asset/h/a1')).toBe('ready')
+    // Local bytes win over every remote copy — nothing needs fetching.
+    expect(planFor(true, 'drive_1', 'asset/h/a1')).toBe('ready')
   })
 
-  it('downloads when the bytes are absent but Drive has them', () => {
+  it('prefers our own storage over Drive', () => {
+    // Faster, and it needs no Drive connection at all — which is the real win:
+    // a second device can fill a project in with no Google grant.
+    expect(planFor(false, 'drive_1', 'asset/h/a1')).toBe('r2')
+    expect(planFor(false, undefined, 'asset/h/a1')).toBe('r2')
+  })
+
+  it('still falls back to Drive for anything that predates the move', () => {
     expect(planFor(false, 'drive_1')).toBe('download')
+    expect(planFor(false, 'drive_1', undefined)).toBe('download')
   })
 
   it('reports missing when there is nowhere to fetch from', () => {
-    // Generated before Drive was connected: the timeline references it, but
+    // Generated before anything was connected: the timeline references it, but
     // the bytes only ever existed on the machine that made them.
     expect(planFor(false, undefined)).toBe('missing')
+    expect(planFor(false, undefined, undefined)).toBe('missing')
   })
 })
 

@@ -15,6 +15,7 @@ import { setIngestListener } from './lib/media'
 import { recordAsset } from './lib/sync/assetSync'
 import { useAssetStore } from './state/useAssetStore'
 import { useDriveStore } from './state/useDriveStore'
+import { useR2Store } from './state/useR2Store'
 
 export function Root() {
   const route = useRoute()
@@ -32,6 +33,10 @@ export function Root() {
     // in: the word pages name the folder for their word, and everything else
     // takes the folder the user chose.
     setIngestListener((asset, blob, options) => {
+      // Both, for now. R2 is where the bytes are going; Drive is still written
+      // until the migration has run and it can be removed, so that a browser
+      // mid-way through the move can still find anything either way.
+      useR2Store.getState().uploadAsset(asset, blob)
       useDriveStore.getState().uploadAsset(asset, blob, options.driveParentId)
       void recordAsset(asset, blob.size)
     })

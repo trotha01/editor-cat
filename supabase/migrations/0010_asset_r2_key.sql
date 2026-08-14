@@ -1,0 +1,31 @@
+-- Where an asset's bytes live in our own storage.
+--
+-- Until now the only durable copy of a generated image, a rendered clip, a
+-- recording or a word-shelf take was the user's own Google Drive, and
+-- `drive_file_id` (0001) was how a second machine found it again. That had two
+-- properties worth naming, because we are giving one up and keeping the other:
+-- the files were legible in Drive without this app, and they cost the user
+-- their own quota rather than ours.
+--
+-- What it cost in return was an entire OAuth integration, a second consent
+-- screen at sign-in, and a scope (`drive.file`) narrow enough that a file the
+-- user dropped into one of our own folders by hand was invisible to us. It also
+-- meant a machine with no Drive connection could hold a project it could not
+-- fill in.
+--
+-- So the bytes move to Cloudflare R2, in a private bucket reached by short-lived
+-- presigned URLs, and this column is how they are found. It sits *beside*
+-- `drive_file_id` rather than replacing it: both are populated during the
+-- migration, hydration prefers this one, and Drive is removed only once nothing
+-- is left that needs it.
+--
+-- Nullable, and nullable permanently. An asset that has not finished uploading
+-- yet has no key, and neither does one made on a browser that never reached the
+-- network — in both cases the bytes are in IndexedDB and the row is still worth
+-- having, because it is what lets the timeline draw before anything is fetched.
+
+alter table assets add column if not exists r2_key text;
+
+-- Not indexed. Every read of this column is by asset id or as part of a whole
+-- row already being fetched, and an index on a nullable text column that
+-- nothing filters by is a write cost with no reader.

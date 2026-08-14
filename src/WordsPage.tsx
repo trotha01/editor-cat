@@ -26,6 +26,7 @@ import { useFileDrop } from './hooks/useFileDrop'
 import { usePersistedState } from './hooks/usePersistedState'
 import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
 import { DriveUploads } from './components/DriveUploads'
+import { UploadStatus } from './components/UploadStatus'
 import { FeedbackBubble } from './components/FeedbackBubble'
 import { RenameField } from './components/RenameField'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -406,6 +407,7 @@ export function WordsPage() {
               have moved on to the next word. This is an upload page above all
               else, so a backup that silently did not happen is the worst thing
               that could quietly go wrong on it. */}
+          <UploadStatus />
           <DriveUploads />
 
           {/* A failed read or write is worth saying and never worth blocking
