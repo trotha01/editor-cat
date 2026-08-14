@@ -34,8 +34,6 @@ import { WordSequencePlayer, type PlayableVideo } from './WordSequencePlayer'
 import { Button, Callout, EmptyState, Spinner, TextArea } from './ui'
 import { useFileDrop } from '../hooks/useFileDrop'
 import { useWordVideoBytes } from '../hooks/useWordVideoBytes'
-import { toDisplayMessage } from '../lib/errors'
-import { isPickerConfigured, pickVideos } from '../lib/google/picker'
 import { formatTime } from '../lib/timeline'
 import {
   roleHint,
@@ -46,7 +44,6 @@ import {
   type WordVideoRole,
 } from '../lib/words'
 import { useAssetStore } from '../state/useAssetStore'
-import { useDriveStore } from '../state/useDriveStore'
 import { useWordsStore } from '../state/useWordsStore'
 import type { Asset } from '../lib/types'
 
@@ -56,12 +53,10 @@ export function WordVideos({ word }: { word: Word }) {
   const uploading = useWordsStore((state) => state.uploading)
   const uploadError = useWordsStore((state) => state.uploadError)
   const setTranscript = useWordsStore((state) => state.setTranscript)
-  const driveReady = useDriveStore((state) => state.status === 'connected' && state.folder !== null)
 
   /** This word's upload, when the batch that is running is this word's. */
   const busy = uploading?.wordId === word.id ? uploading : null
   /** True while the Picker is open and what came back is being filed. */
-  const [picking, setPicking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -139,47 +134,10 @@ export function WordVideos({ word }: { word: Word }) {
 
   // The takes this word's area is dropped on. Off while a batch is running, so
   // a second armful of files cannot be dropped onto one that is still going.
-  const { over: dropping, dropProps } = useFileDrop(
-    (files) => void upload(files),
-    !!uploading || picking,
-  )
+  const { over: dropping, dropProps } = useFileDrop((files) => void upload(files), !!uploading)
 
   /** Whatever went wrong last, whichever door it came in by. */
   const problem = error ?? uploadError
-
-  /**
-   * Takes videos that are already in Drive and files them under this word.
-   *
-   * The answer to the one thing this app cannot do on its own: it sees the files
-   * it made and the ones you hand it, so a take recorded on a phone and dropped
-   * into the word's folder is in Drive and nowhere on this page until it is
-   * picked. Google's own window does the browsing — see lib/google/picker.ts.
-   */
-  const addFromDrive = async () => {
-    setPicking(true)
-    setError(null)
-    try {
-      // Made now if the word has never been in Drive, so the Picker opens where
-      // this word's takes belong rather than at the top of the shelf.
-      const folderId = await useWordsStore.getState().ensureWordFolder(word.id)
-      if (!folderId) {
-        setError('Connect Google Drive in Settings to add videos from it.')
-        return
-      }
-
-      const picked = await pickVideos(folderId)
-      if (picked.length === 0) return
-
-      const failed = await useWordsStore.getState().addDriveVideos(word.id, picked)
-      if (failed.length > 0) {
-        setError(`${failed.length} of ${picked.length} could not be added. ${failed[0]}`)
-      }
-    } catch (cause) {
-      setError(toDisplayMessage(cause))
-    } finally {
-      setPicking(false)
-    }
-  }
 
   return (
     // The whole of a word's area is the target, player and rows included: a
@@ -201,32 +159,10 @@ export function WordVideos({ word }: { word: Word }) {
           aria-label={`Upload videos for ${word.text}`}
           onChange={(event) => void upload(event.target.files)}
         />
-
-        {/* Only where there is a Drive to pick from and a Picker to pick with:
-            the button is the whole feature, and one that opens a dialog this
-            deployment cannot show is worse than no button. */}
-        {driveReady && isPickerConfigured() ? (
-          <Button onClick={() => void addFromDrive()} disabled={!!busy || picking}>
-            {picking ? <Spinner /> : <span aria-hidden>📁</span>}
-            {picking ? 'Adding…' : 'Add from Drive'}
-          </Button>
-        ) : null}
       </div>
 
-      {/* Said out loud, because the alternative is somebody staring at an empty
-          word whose folder they can see is full. This app only ever gets the
-          files it made and the ones you hand it — that narrowness is the point
-          of the one scope it asks for, and this is the door in. */}
-      {driveReady && isPickerConfigured() ? (
-        <p className="text-xs leading-relaxed text-ink-dim">
-          A video put in this word’s Drive folder from a phone, or from Drive itself, stays
-          invisible here until you pick it — this app can only see the files it made and the ones
-          you hand it. Anything you add from elsewhere in Drive is filed into this word’s folder.
-        </p>
-      ) : null}
-
-      {/* One place for every door's failures: a file that would not ingest reads
-          the same whether it was picked, dropped or taken from Drive. */}
+      {/* One place for every door's failures: a file that would not ingest
+          reads the same whether it was picked or dropped. */}
       {problem ? (
         <Callout tone="error" title="Could not add that file">
           {problem}

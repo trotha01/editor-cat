@@ -1,14 +1,13 @@
 /**
  * Who is signed in, and the way back out.
  *
- * Signing out is here rather than in the auth store's own callers because it has
- * to reach two stores at once, and the dependency only runs one way: the Drive
- * store already knows about auth, so auth must not learn about Drive. A
- * component is where the two legitimately meet.
+ * Signing out used to have to reach two stores at once, because Drive held a
+ * copy of someone's Google credentials that had to be cleared whether or not
+ * the sign-out round trip succeeded. There is no Drive any more, so this is
+ * back to being one call.
  */
 import { Button } from './ui'
 import { requiresSignIn, useAuthStore } from '../state/useAuthStore'
-import { useDriveStore } from '../state/useDriveStore'
 
 export function AccountSettings() {
   const account = useAuthStore((state) => state.account)
@@ -18,9 +17,6 @@ export function AccountSettings() {
   if (!requiresSignIn()) return null
 
   const leave = async () => {
-    // Drive first: it is this browser's copy of someone's credentials, and it
-    // must be gone whether or not the sign-out round trip succeeds.
-    useDriveStore.getState().forget()
     await signOut()
   }
 

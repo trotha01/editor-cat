@@ -13,7 +13,6 @@ import { Transport } from './components/Transport'
 import { SettingsDialog } from './components/SettingsDialog'
 import { ExportDialog } from './components/ExportDialog'
 import { FeedbackBubble } from './components/FeedbackBubble'
-import { DriveUploads } from './components/DriveUploads'
 import { UploadStatus } from './components/UploadStatus'
 import { HydrationStatus } from './components/HydrationStatus'
 import { ProjectPicker } from './components/ProjectPicker'
@@ -198,7 +197,6 @@ export default function App() {
             {/* Outside the tab panel: a backup started from the Image tab must
                 still be able to report a failure once you have moved on. */}
             <UploadStatus />
-            <DriveUploads />
 
             <div className="rounded-xl border border-line bg-surface p-4">
               {tab === 'idea' ? <IdeaPanel /> : null}

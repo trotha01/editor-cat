@@ -26,22 +26,12 @@ export interface Asset {
   /** What prompt produced this, for provenance in the library. */
   prompt?: string
   /**
-   * The file's id in the user's Drive, once it has been backed up there (or if
-   * it was imported from there). Its presence is what stops the uploader from
-   * sending the same bytes back to Drive a second time.
-   */
-  driveFileId?: string
-  /**
    * Where the bytes live in our own storage, once they have got there.
    *
-   * Preferred over `driveFileId` when both are present: it is faster, and it
-   * needs no Drive connection at all — which is the real win, since a second
-   * device can fill a project in without the user ever granting Drive.
-   *
-   * Its presence is also what stops the uploader sending the same bytes a
-   * second time, the same job `driveFileId` does for Drive. Absent until the
-   * upload finishes, so an asset made offline is a row with bytes only in
-   * IndexedDB, which is still worth having: it is what lets the timeline draw.
+   * Its presence is what stops the uploader sending the same bytes a second
+   * time. Absent until the upload finishes, so an asset made offline is a row
+   * with bytes only in IndexedDB, which is still worth having: it is what lets
+   * the timeline draw before anything has been fetched.
    */
   r2Key?: string
   createdAt: number

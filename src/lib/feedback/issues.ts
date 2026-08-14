@@ -199,11 +199,9 @@ export function shelfContext(summary: {
   languages: number
   words: number
   videosOnOpenWord: number
-  driveConnected: boolean
 }): string {
   return [
     `Shelf: ${summary.tiers} tiers, ${summary.languages} languages, ${summary.words} words`,
     `Open word: ${summary.videosOnOpenWord} videos`,
-    `Drive: ${summary.driveConnected ? 'connected' : 'not connected'}`,
   ].join('\n')
 }

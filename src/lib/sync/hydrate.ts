@@ -3,14 +3,13 @@
  *
  * Opening a project on a second device gives you a document full of asset ids
  * and an empty IndexedDB. The metadata rows say what those assets are — enough
- * to lay the timeline out immediately — and their `r2_key` (or, for anything
- * that predates the move, their `drive_file_id`) says where the bytes live.
+ * to lay the timeline out immediately — and their `r2_key` says where the bytes
+ * live.
  *
  * Metadata is restored first and bytes second, on purpose: the editor is
  * usable, scrubbable and re-orderable while the downloads are still running.
  */
 import { getAssets, fromRow } from '../supabase/assets'
-import { downloadFile } from '../google/drive'
 import { downloadAsset } from '../r2/download'
 import { getBlob, putAsset, putBlob } from '../db'
 import { mapLimited } from '../concurrency'
@@ -23,30 +22,22 @@ import type { Asset, Project } from '../types'
 export type HydrationAction =
   /** Bytes are already in this browser. */
   | 'ready'
-  /** Bytes must come down from our own storage. */
-  | 'r2'
-  /** Bytes must come down from Drive. */
+  /** Bytes must come down from storage. */
   | 'download'
-  /** Nothing to fetch: never backed up anywhere this browser can reach. */
+  /** Nothing to fetch: never backed up, or the upload never finished. */
   | 'missing'
 
 /**
- * Where to get one asset's bytes from, in the order worth trying.
+ * Where to get one asset's bytes from.
  *
  * The local blob first, because it is free and instant — an asset already in
- * IndexedDB is not worth a round trip to anywhere. Then R2, which is faster
- * than Drive and, more importantly, needs no Drive connection at all: a second
- * device can fill a project in without the user ever having granted Drive.
- * Drive last, for anything that predates the move and has not been migrated.
+ * IndexedDB is not worth a round trip. Otherwise storage, if the upload got
+ * there; an asset with no key is one whose bytes only ever existed on the
+ * machine that made them.
  */
-export function planFor(
-  hasLocalBlob: boolean,
-  driveFileId: string | undefined,
-  r2Key?: string | undefined,
-): HydrationAction {
+export function planFor(hasLocalBlob: boolean, r2Key: string | undefined): HydrationAction {
   if (hasLocalBlob) return 'ready'
-  if (r2Key) return 'r2'
-  return driveFileId ? 'download' : 'missing'
+  return r2Key ? 'download' : 'missing'
 }
 
 /**
@@ -107,12 +98,10 @@ export async function hydrateProject(
 
   await mapLimited(all, DOWNLOAD_CONCURRENCY, async (asset) => {
     try {
-      const action = planFor(Boolean(await getBlob(asset.blobKey)), asset.driveFileId, asset.r2Key)
+      const action = planFor(Boolean(await getBlob(asset.blobKey)), asset.r2Key)
 
-      if (action === 'r2' && asset.r2Key) {
+      if (action === 'download' && asset.r2Key) {
         await putBlob(asset.blobKey, await downloadAsset(asset.r2Key))
-      } else if (action === 'download' && asset.driveFileId) {
-        await putBlob(asset.blobKey, await downloadFile(asset.driveFileId))
       } else if (action === 'missing') {
         failures.push(asset.name)
       }

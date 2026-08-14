@@ -57,7 +57,6 @@ import {
   isVideoAssetOrphaned,
   languagesInTier,
   mergeRemoteShelf,
-  mergeShelf,
   newLanguage,
   newTier,
   newWord,
@@ -70,15 +69,12 @@ import {
   withVideoPatch,
   withoutVideo,
   wordsInLanguage,
-  type DiscoveredTier,
   type Language,
   type Shelf,
   type Tier,
   type Word,
   type WordVideoRole,
 } from '../lib/words'
-import { findOrCreateFolder, readShelf, type RawTier } from '../lib/wordsDrive'
-import { moveFile, renameFile, trashFile, untrashFile, type DriveFile } from '../lib/google/drive'
 import { fromRow, getAssets } from '../lib/supabase/assets'
 import { isSupabaseConfigured } from '../lib/supabase/client'
 import { getShelf, putShelf } from '../lib/supabase/shelf'
@@ -88,8 +84,6 @@ import { ingestBlob, newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
 import { isSignedIn } from './useAuthStore'
 import { useAssetStore } from './useAssetStore'
-import { useDriveStore } from './useDriveStore'
-import type { Asset } from '../lib/types'
 
 interface WordsState {
   tiers: Tier[]
@@ -145,12 +139,6 @@ interface WordsState {
    * once, and what comes out of them is written up.
    */
   syncShelf: () => Promise<void>
-  /**
-   * The Drive folder for a word, made — along with the language and tier folders
-   * above it — if it is not there yet. Null when Drive is not connected, which
-   * is the signal to carry on locally.
-   */
-  ensureWordFolder: (wordId: string) => Promise<string | null>
 
   /** Steps the shelf back to what it was before the last edit, if there was one. */
   undo: () => void
@@ -213,24 +201,6 @@ interface WordsState {
    * report each other's progress.
    */
   addLocalVideos: (wordId: string, files: readonly File[]) => Promise<void>
-  /**
-   * Puts videos that are already in Drive on the end of a word's run.
-   *
-   * For the files this app cannot see by itself: `drive.file` grants it what it
-   * created and what the user hands it through the Picker, and nothing else — so
-   * a take dropped into the word's folder from a phone is in the folder, in the
-   * user's Drive, and invisible to the read of the shelf until it is picked.
-   * This is what picking it does.
-   *
-   * Each one is moved into the word's folder if it is not there already. Not
-   * because anything would break otherwise — the run is the account's now, and a
-   * take plays from wherever in Drive it sits — but because the folder tree is
-   * the half of this shelf a person can open on their phone, and a word whose
-   * folder does not hold its takes has stopped being legible in the way the
-   * whole layout exists to be. The names it could not add come back, so the page
-   * can say which and why.
-   */
-  addDriveVideos: (wordId: string, files: readonly DriveFile[]) => Promise<string[]>
   /**
    * Labels one take, or takes its label off — `undefined` is a label somebody
    * chose to remove, not a missing argument. Only the takes between the ends of
@@ -332,97 +302,6 @@ function changed(before: Shelf, after: Shelf): boolean {
   )
 }
 
-/**
- * The folder the shelf is kept in, or null when Drive is not in play.
- *
- * Every Drive call below starts here, which is what makes "works without Google"
- * one check rather than a scattering of them: no connection, no folder ids, and
- * the page is the local one it was before.
- */
-function driveRoot(): string | null {
-  const { status, folder } = useDriveStore.getState()
-  return status === 'connected' && folder ? folder.id : null
-}
-
-/** Which Drive file backs a take. The one name this browser and Drive share. */
-function driveFileIdOf(assetId: string): string | undefined {
-  return useAssetStore.getState().byId(assetId)?.driveFileId
-}
-
-/**
- * Folder requests in flight, so two of them never make two folders.
- *
- * Real: uploading three takes at once asks for the same word folder three times
- * within a few milliseconds, and `findOrCreateFolder` cannot see a folder that
- * another call has not finished creating.
- */
-const folderRequests = new Map<string, Promise<string | null>>()
-
-function onceOnly(key: string, run: () => Promise<string | null>): Promise<string | null> {
-  const existing = folderRequests.get(key)
-  if (existing) return existing
-
-  const request = run()
-    .catch((cause: unknown) => {
-      // Reported rather than thrown: a folder that could not be made means the
-      // backup lands in the chosen folder instead of this word's, which is worth
-      // saying and not worth failing an upload over.
-      useWordsStore.setState({ syncError: toDisplayMessage(cause) })
-      return null
-    })
-    .finally(() => folderRequests.delete(key))
-
-  folderRequests.set(key, request)
-  return request
-}
-
-/** The Drive folder for a tier, made under the chosen folder if it is not there. */
-function ensureTierFolder(tierId: string): Promise<string | null> {
-  const tier = useWordsStore.getState().tiers.find((entry) => entry.id === tierId)
-  if (!tier) return Promise.resolve(null)
-  if (tier.driveFolderId) return Promise.resolve(tier.driveFolderId)
-
-  const root = driveRoot()
-  if (!root) return Promise.resolve(null)
-
-  return onceOnly(`tier:${tierId}`, async () => {
-    const folderId = await findOrCreateFolder(tier.name, root)
-    useWordsStore.setState((state) => ({
-      tiers: state.tiers.map((entry) => {
-        if (entry.id !== tierId) return entry
-        const next = { ...entry, driveFolderId: folderId }
-        persistTier(next)
-        return next
-      }),
-    }))
-    return folderId
-  })
-}
-
-/** The Drive folder for a language, made inside its tier's folder. */
-async function ensureLanguageFolder(languageId: string): Promise<string | null> {
-  const language = useWordsStore.getState().languages.find((entry) => entry.id === languageId)
-  if (!language) return null
-  if (language.driveFolderId) return language.driveFolderId
-
-  const parent = await ensureTierFolder(language.tierId)
-  if (!parent) return null
-
-  return await onceOnly(`language:${languageId}`, async () => {
-    const folderId = await findOrCreateFolder(language.name, parent)
-    useWordsStore.setState((state) => ({
-      languages: state.languages.map((entry) => {
-        if (entry.id !== languageId) return entry
-        const next = { ...entry, driveFolderId: folderId }
-        persistLanguage(next)
-        return next
-      }),
-    }))
-    return folderId
-  })
-}
-
-/** Whether there is an account to keep the shelf on. */
 function canSync(): boolean {
   return isSupabaseConfigured() && isSignedIn()
 }
@@ -629,66 +508,6 @@ function applyRemote(remote: Shelf): void {
   ])
 }
 
-/**
- * Builds a shelf out of the folders in Drive, for an account that has no shelf
- * and a browser that has no copy of one.
- *
- * The migration, and the only thing that reads the folder tree now. Anybody who
- * used the word pages before the shelf moved to the account has their tiers,
- * languages, words and the order of every run in Drive and nowhere else — in the
- * folders, and in the `editor-cat.json` beside each word's videos. This reads
- * that once, and what it produces is written up like any other change.
- *
- * A failure here is reported and not thrown: an account with no shelf and a
- * browser with one still has a shelf to save, and that must not be held up by
- * Drive being slow or disconnected.
- */
-async function importFromDrive(): Promise<void> {
-  const root = driveRoot()
-  if (!root) return
-
-  try {
-    const before = lists()
-    const discovered = await adoptDiscovered(await readShelf(root))
-    const merged = mergeShelf(before, discovered, driveFileIdOf)
-
-    useWordsStore.setState((state) => {
-      const tiers = settle(merged.tiers, before.tiers, storeTier)
-      const languages = settle(merged.languages, before.languages, storeLanguage)
-      const words = settle(merged.words, before.words, storeWord)
-      return { tiers, languages, words, ...settledSelection(state, { tiers, languages, words }) }
-    })
-  } catch (cause) {
-    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
-  }
-}
-
-/**
- * Gives every take a catalogue entry, wherever the entry has to come from — and
- * makes sure the account could give one to the next machine that asks.
- *
- * The shelf names its videos by asset id and by nothing else, so an id that
- * resolves to nothing is a row saying the file is not on this machine and a take
- * the player will not draw at all — for a file sitting in the word's own Drive
- * folder. Three places can answer, in this order:
- *
- *  - the catalogue, when it has already been read;
- *  - this browser's own store, which the catalogue is a read of and which can
- *    still be loading when the account answers first (see Root.tsx). "Not in the
- *    catalogue" is not "not on this machine", and treating it as such would file
- *    a second entry over the first — with a fresh blob key, and so with none of
- *    the bytes the old key still names;
- *  - the account's asset rows, which are how a machine that has never held the
- *    file learns what it is and which Drive file holds it. The same trick
- *    `hydrateProject` does for a timeline, at the scale of a shelf.
- *
- * And it answers back. A take this browser holds that the account has never
- * heard of is written up, because plenty are: nothing recorded a row for a take
- * catalogued out of the folder tree until the shelf moved to the account, so a
- * shelf built from those names ids no other machine can resolve — which is a
- * second machine seeing a word's whole run as files it has not got, with no way
- * to ever fetch them.
- */
 async function hydrateShelfAssets(words: readonly Word[]): Promise<void> {
   const ids = [...new Set(assetIdsOf(words))]
   if (ids.length === 0) return
@@ -715,98 +534,6 @@ async function hydrateShelfAssets(words: readonly Word[]): Promise<void> {
   }
 }
 
-/**
- * A catalogue entry for a video that is in Drive and not on this machine.
- *
- * Names only: the bytes follow when the word is opened (see
- * hooks/useWordVideoBytes.ts), and `blobKey` is where they will land. Both ways
- * a Drive video reaches a word — found by a read of the shelf, or handed over
- * through the Picker — come through here, so a file is catalogued the same way
- * whichever door it came in by.
- */
-async function catalogueVideo(file: {
-  id: string
-  name: string
-  mimeType: string
-}): Promise<Asset> {
-  const asset = {
-    id: newId('asset'),
-    kind: 'video',
-    blobKey: newId('blob'),
-    mimeType: file.mimeType,
-    name: file.name,
-    driveFileId: file.id,
-    createdAt: Date.now(),
-  } satisfies Asset
-
-  await putAsset(asset)
-  useAssetStore.getState().adopt(asset)
-  // Recorded against the account as well, the way `ingestBlob` does for an
-  // upload (see Root.tsx): the shelf names its takes by asset id, so a machine
-  // that has never seen this file needs a row to resolve that id against.
-  void recordAsset(asset)
-  return asset
-}
-
-/** The catalogue entry for a Drive file, if this browser already has one. */
-function assetForDriveFile(driveFileId: string): Asset | undefined {
-  return useAssetStore.getState().assets.find((asset) => asset.driveFileId === driveFileId)
-}
-
-/**
- * Gives every video file found in Drive a catalogue entry, so the shelf can name
- * it before any of its bytes are here.
- *
- * Metadata first and bytes second, exactly as hydration does for a project: the
- * page draws the whole run immediately, and the takes fill in as they come down
- * (see hooks/useWordVideoBytes.ts). A file this browser already knows is matched
- * by its Drive id rather than fetched a second time.
- */
-async function adoptDiscovered(tiers: readonly RawTier[]): Promise<DiscoveredTier[]> {
-  const byDriveId = new Map(
-    useAssetStore
-      .getState()
-      .assets.flatMap((asset) => (asset.driveFileId ? [[asset.driveFileId, asset] as const] : [])),
-  )
-
-  const discovered: DiscoveredTier[] = []
-  for (const tier of tiers) {
-    const languages = []
-    for (const language of tier.languages) {
-      const words = []
-      for (const word of language.words) {
-        const videos = []
-        for (const file of word.files) {
-          let asset = byDriveId.get(file.id)
-          if (asset) {
-            // Recorded against the account even though this browser already had
-            // it, because the shelf about to be built out of these names it by
-            // asset id: a file catalogued here before there were rows to record
-            // is one no other machine could ever resolve.
-            void recordAsset(asset)
-          } else {
-            asset = await catalogueVideo(file)
-            byDriveId.set(file.id, asset)
-          }
-          videos.push({ driveFileId: file.id, assetId: asset.id })
-        }
-        words.push({ folderId: word.folderId, name: word.name, videos, sidecar: word.sidecar })
-      }
-      languages.push({ folderId: language.folderId, name: language.name, words })
-    }
-    discovered.push({ folderId: tier.folderId, name: tier.name, languages })
-  }
-  return discovered
-}
-
-/**
- * Keeps the object that was already there when a merge changed nothing about it.
- *
- * Two jobs at once, both of which matter every time the page is opened: nothing
- * is written back to IndexedDB for having been read, and nothing on screen
- * re-renders — so a sync landing while somebody is typing in a transcript box
- * leaves that box alone.
- */
 function settle<T extends { id: string }>(
   next: readonly T[],
   previous: readonly T[],
@@ -869,55 +596,12 @@ function recordStep(key?: string): void {
   }))
 }
 
-/**
- * Carries across a step what the stack does not own: which folder in Drive a row
- * is.
- *
- * A folder is made a beat after the row that wanted it (see `ensureTierFolder`),
- * so a step taken inside that beat is a picture of a row that did not know its
- * folder yet — and restoring it verbatim would forget a folder that exists,
- * leaving the next rename and the next delete pointing at nothing and the next
- * upload filed somewhere else. Nothing on the stack ever changes a folder id, so
- * the one this browser knows now is always the right one.
- */
-function withKnownFolders<T extends { id: string; driveFolderId?: string }>(
-  restored: readonly T[],
-  current: readonly T[],
-): T[] {
-  const folders = new Map(
-    current.flatMap((entry) =>
-      entry.driveFolderId ? [[entry.id, entry.driveFolderId] as const] : [],
-    ),
-  )
-  return restored.map((entry) => {
-    const folderId = folders.get(entry.id)
-    return !entry.driveFolderId && folderId ? { ...entry, driveFolderId: folderId } : entry
-  })
-}
-
-/**
- * Puts a shelf from the stack back — on screen, in storage, on the account and
- * in Drive.
- *
- * The settling is the same one a read from the account does, and for the same
- * two reasons: rows that came back are written down and rows that went away are
- * deleted, while anything the step did not touch keeps the object it already
- * had, so nothing on screen re-renders for a step it was not in.
- *
- * What this deliberately does not do is take bytes away. A redo may want the
- * take an undone add pointed at, and another word may be playing it either way;
- * bytes nothing lists any more are what Settings clears.
- */
 function restoreShelf(next: Shelf): void {
   const before = lists()
 
-  const tiers = settle(withKnownFolders(next.tiers, before.tiers), before.tiers, storeTier)
-  const languages = settle(
-    withKnownFolders(next.languages, before.languages),
-    before.languages,
-    storeLanguage,
-  )
-  const words = settle(withKnownFolders(next.words, before.words), before.words, storeWord)
+  const tiers = settle(next.tiers, before.tiers, storeTier)
+  const languages = settle(next.languages, before.languages, storeLanguage)
+  const words = settle(next.words, before.words, storeWord)
 
   useWordsStore.setState((state) => ({
     tiers,
@@ -941,69 +625,9 @@ function restoreShelf(next: Shelf): void {
   // Drive ids those rows are the only place to read.
   void (async () => {
     if (canSync()) await hydrateShelfAssets(words).catch(() => {})
-    await untrashRestored(before, { tiers, languages, words })
   })()
 }
 
-/** What a step has brought back: in the shelf being restored and not in the one being left. */
-function returned<T extends { id: string }>(before: readonly T[], after: readonly T[]): T[] {
-  return gone(after, before)
-}
-
-/**
- * Takes back out of the Drive bin whatever a step has just put back on the
- * shelf.
- *
- * Deleting on this page really does delete over there (see `trashInDrive`), so
- * an undo that stopped at this browser would restore a word whose folder is in
- * the bin: rows on screen, nothing to play, and a second machine that reads the
- * shelf and finds the files gone.
- *
- * Only the topmost thing that came back is asked for, because trashing a folder
- * took what was inside it along and untrashing it brings the same back. And
- * whatever trashing is still in flight is waited for first — an undo pressed a
- * moment after a delete would otherwise take a file out of the bin before the
- * delete had finished putting it in.
- */
-async function untrashRestored(before: Shelf, after: Shelf): Promise<void> {
-  if (!driveRoot()) return
-  await binWork
-
-  const tiers = returned(before.tiers, after.tiers)
-  const languages = returned(before.languages, after.languages)
-  const words = returned(before.words, after.words)
-
-  const backTiers = new Set(tiers.map((tier) => tier.id))
-  const backLanguages = new Set(languages.map((language) => language.id))
-  const backWords = new Set(words.map((word) => word.id))
-
-  await Promise.all([
-    ...tiers.map((tier) => untrashInDrive(tier.driveFolderId)),
-    ...languages
-      .filter((language) => !backTiers.has(language.tierId))
-      .map((language) => untrashInDrive(language.driveFolderId)),
-    ...words
-      .filter((word) => !backLanguages.has(word.languageId))
-      .map((word) => untrashInDrive(word.driveFolderId)),
-    // The takes that came back on their own, into a word that never went away.
-    // Anything inside a folder above came back when that folder did.
-    ...after.words
-      .filter((word) => !backWords.has(word.id))
-      .flatMap((word) => {
-        const kept = before.words.find((entry) => entry.id === word.id)
-        if (!kept) return []
-        const had = new Set(kept.videos.map((video) => video.id))
-        return word.videos
-          .filter((video) => !had.has(video.id))
-          .map((video) => untrashInDrive(driveFileIdOf(video.assetId)))
-      }),
-  ])
-}
-
-/**
- * Puts a take on the end of a word's run without touching the stack, for the two
- * callers that own their step themselves.
- */
 function appendVideo(wordId: string, assetId: string): void {
   useWordsStore.setState((state) => ({
     words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
@@ -1081,7 +705,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         // Nothing on the account yet. Either this machine is the one holding the
         // shelf — the common case, everybody who used the page before it moved
         // — or it has nothing and the folders in Drive are all there is to go on.
-        if (get().words.length === 0 && get().tiers.length === 0) await importFromDrive()
         shelfVersion = null
         set({ syncing: false })
         // Written up rather than left: an account with no shelf and a browser
@@ -1100,28 +723,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       // whether it is missing anything.
       set({ syncing: false, syncError: toDisplayMessage(cause) })
     }
-  },
-
-  ensureWordFolder: async (wordId) => {
-    const word = get().words.find((entry) => entry.id === wordId)
-    if (!word) return null
-    if (word.driveFolderId) return word.driveFolderId
-
-    const parent = await ensureLanguageFolder(word.languageId)
-    if (!parent) return null
-
-    return await onceOnly(`word:${wordId}`, async () => {
-      const folderId = await findOrCreateFolder(word.text, parent)
-      set((state) => ({
-        words: state.words.map((entry) => {
-          if (entry.id !== wordId) return entry
-          const next = { ...entry, driveFolderId: folderId }
-          persistWord(next)
-          return next
-        }),
-      }))
-      return folderId
-    })
   },
 
   undo: () => {
@@ -1173,7 +774,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     // Its folder, made now rather than when the first video arrives: adding a
     // tier is what it means to want one, and a folder waiting in Drive is where
     // somebody would file things from a phone.
-    void ensureTierFolder(tier.id)
   },
 
   selectTier: (id) => {
@@ -1195,7 +795,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const doomedIds = new Set(doomedLanguages.map((language) => language.id))
     const doomedWords = get().words.filter((word) => doomedIds.has(word.languageId))
     const assetIds = assetIdsOf(doomedWords)
-    const folderId = doomed.driveFolderId
 
     const tiers = get().tiers.filter((tier) => tier.id !== id)
     const languages = get().languages.filter((language) => language.tierId !== id)
@@ -1216,7 +815,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     ]).catch(() => {})
     // One call takes the languages, their words and their videos with it,
     // because trashing a folder trashes everything inside it.
-    await trashInDrive(folderId)
     await forgetOrphanedAssets(assetIds, words)
   },
 
@@ -1240,8 +838,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       // Nothing in it yet, so nothing to be looking at.
       selectedWordId: null,
     }))
-
-    void ensureLanguageFolder(language.id)
   },
 
   selectLanguage: (id) => {
@@ -1265,7 +861,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     recordStep()
     const doomed = get().words.filter((word) => word.languageId === id)
     const assetIds = assetIdsOf(doomed)
-    const folderId = language.driveFolderId
 
     const languages = get().languages.filter((language) => language.id !== id)
     const words = get().words.filter((word) => word.languageId !== id)
@@ -1283,7 +878,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     )
     // One call takes the words and their videos with it, because trashing a
     // folder trashes what is inside it.
-    await trashInDrive(folderId)
     await forgetOrphanedAssets(assetIds, words)
   },
 
@@ -1302,8 +896,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     const word = newWord(languageId, trimmed)
     persistWord(word)
     set((state) => ({ words: [...state.words, word], selectedWordId: word.id }))
-
-    void get().ensureWordFolder(word.id)
   },
 
   selectWord: (id) => set({ selectedWordId: id }),
@@ -1323,7 +915,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 
     markShelfDirty()
     await dbDeleteWord(id).catch(() => {})
-    await trashInDrive(doomed.driveFolderId)
     await forgetOrphanedAssets(assetIdsOf([doomed]), words)
   },
 
@@ -1344,7 +935,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         return next
       }),
     }))
-    void renameInDrive(tier.driveFolderId, trimmed)
     return true
   },
 
@@ -1365,7 +955,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         return next
       }),
     }))
-    void renameInDrive(language.driveFolderId, trimmed)
     return true
   },
 
@@ -1382,7 +971,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     // beside the videos names the word it is for, and a stale name in it would
     // be the one the next machine reads.
     set((state) => ({ words: mapWord(state.words, id, (entry) => ({ ...entry, text: trimmed })) }))
-    void renameInDrive(word.driveFolderId, trimmed)
     return true
   },
 
@@ -1398,7 +986,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     if (!asset || !trimmed || asset.name === trimmed) return
 
     void useAssetStore.getState().update(assetId, { name: trimmed })
-    void renameInDrive(asset.driveFileId, trimmed)
   },
 
   addVideo: (wordId, assetId) => {
@@ -1413,12 +1000,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 
     set({ uploading: { wordId, done: 0, total: chosen.length }, uploadError: null })
     try {
-      // Asked for once, before the first byte is read: it is the same folder for
-      // every file in this batch, and making it is what stops six uploads racing
-      // to create six of it. Null when there is no Drive to make it in, which
-      // sends the backup nowhere and the file nowhere but here.
-      const driveParentId = (await get().ensureWordFolder(wordId)) ?? undefined
-
       for (const [done, file] of chosen.entries()) {
         set({ uploading: { wordId, done, total: chosen.length } })
         // Worth saying rather than skipping quietly: dropping a folder, or the
@@ -1428,7 +1009,7 @@ export const useWordsStore = create<WordsState>((set, get) => ({
           set({ uploadError: `"${file.name}" is not a video.` })
           continue
         }
-        const asset = await ingestBlob(file, { kind: 'video', name: file.name, driveParentId })
+        const asset = await ingestBlob(file, { kind: 'video', name: file.name })
         // Into the catalogue but into no project's library: this belongs to a
         // word, not to whatever timeline happens to be open.
         useAssetStore.getState().adopt(asset)
@@ -1439,50 +1020,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     } finally {
       set({ uploading: null })
     }
-  },
-
-  addDriveVideos: async (wordId, files) => {
-    if (!get().words.some((entry) => entry.id === wordId)) return []
-
-    // Asked for once, before the first file: the folder is the same for all of
-    // them, and this is where a word that has never been in Drive gets one.
-    const folderId = await get().ensureWordFolder(wordId)
-    const failed: string[] = []
-    /**
-     * One step for the whole pick, the way the editor makes "add all" one: six
-     * takes chosen in one dialog are one thing somebody did, however many of
-     * them turn out to be new. Recorded on the way to the first that is, so a
-     * pick that adds nothing leaves nothing to walk back through.
-     */
-    let recorded = false
-
-    for (const file of files) {
-      try {
-        const known = assetForDriveFile(file.id)
-        // Picking a take the run already has is a no-op rather than a second
-        // row: the Picker opens in the word's own folder, so the takes already
-        // listed here are the ones most likely to be picked by mistake. Read
-        // from the store each time, since the loop is adding to it.
-        const run = get().words.find((entry) => entry.id === wordId)?.videos ?? []
-        if (known && run.some((video) => video.assetId === known.id)) continue
-
-        // Into the word's folder, so the tree still reads as the shelf it is
-        // meant to be. See the note on this action.
-        if (folderId) await moveFile(file.id, folderId)
-        const asset = known ?? (await catalogueVideo(file))
-        if (!recorded) {
-          recordStep()
-          recorded = true
-        }
-        appendVideo(wordId, asset.id)
-      } catch (cause) {
-        // One take that would not move leaves the rest of the pick alone. The
-        // video is still in Drive and still theirs; what failed is filing it.
-        failed.push(`${file.name}: ${toDisplayMessage(cause)}`)
-      }
-    }
-
-    return failed
   },
 
   setVideoRole: (wordId, videoId, role) => {
@@ -1515,7 +1052,6 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     // Every take names an asset, so nothing found means nothing to remove — and
     // nothing for an undo to walk back through either.
     if (!assetId) return
-    const driveFileId = driveFileIdOf(assetId)
 
     recordStep()
     set((state) => ({
@@ -1524,8 +1060,8 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 
     // Only once nothing else lists it, and for the same reason the bytes go:
     // another word playing the same take still wants the file it plays.
-    if (isVideoAssetOrphaned(assetId, get().words)) await trashInDrive(driveFileId)
-    await forgetOrphanedAssets([assetId], get().words)
+    if (isVideoAssetOrphaned(assetId, get().words))
+      await forgetOrphanedAssets([assetId], get().words)
   },
 
   selectedWord: () => {
@@ -1554,78 +1090,11 @@ useWordsStore.subscribe((state, previous) => {
   rememberSelection(state)
 })
 
-/**
- * Renames a folder or a file over in Drive, if there is one and Drive is there
- * to take it.
- *
- * The id never changes, which is what makes this a rename rather than a move:
- * everything on both sides — the merge, the sidecar, the catalogue — points at
- * ids, so the new name is the only thing that travels.
- */
-async function renameInDrive(fileId: string | undefined, name: string): Promise<void> {
-  if (!fileId || !driveRoot()) return
-  try {
-    await renameFile(fileId, name)
-  } catch (cause) {
-    // The name on screen and in this browser has already changed, so what is
-    // left is a folder in Drive still called the old thing. Worth saying;
-    // nothing is lost, and renaming again retries it.
-    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
-  }
-}
-
-/**
- * The trashing that has not landed yet.
- *
- * An undo takes back out of the bin what a delete put in it, and the two are a
- * second apart at most — so the untrash waits for this rather than racing it,
- * because a `trashed: true` that arrives after the `trashed: false` leaves the
- * file in the bin and the shelf saying it is not.
- */
-let binWork: Promise<unknown> = Promise.resolve()
-
-/**
- * Puts a folder or a file in the Drive bin, if there is one and Drive is there
- * to take it.
- *
- * Deleting here really does delete over there, which is a departure from the
- * rest of the app — the Library is emphatic that your Drive copy is left alone.
- * The difference is that this shelf *is* the folder tree: a take removed from a
- * word and left sitting in that word's folder would simply be found again on the
- * next read, and come back from the dead. Drive's own bin is what makes that
- * safe rather than final — and what an undo reaches into.
- */
-async function trashInDrive(fileId: string | undefined): Promise<void> {
-  if (!fileId || !driveRoot()) return
-  const work = trashFile(fileId).catch((cause: unknown) => {
-    // Worth saying, and not worth undoing the delete over: what is left is an
-    // item in Drive that this shelf no longer lists, which the next read will
-    // offer back rather than lose.
-    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
-  })
-  binWork = Promise.all([binWork, work])
-  await work
-}
-
-/** Takes one back out again, for an undo. See `untrashRestored`. */
-async function untrashInDrive(fileId: string | undefined): Promise<void> {
-  if (!fileId || !driveRoot()) return
-  try {
-    await untrashFile(fileId)
-  } catch (cause) {
-    // The row is back on the shelf either way, which is what was asked for. What
-    // is left is a folder in the bin that this shelf lists — worth saying, since
-    // its takes will not play until it is restored from Drive itself.
-    useWordsStore.setState({ syncError: toDisplayMessage(cause) })
-  }
-}
-
 /** The three lists, in whatever state they are in. */
 type Lists = Pick<WordsState, 'tiers' | 'languages' | 'words'>
 
 type Selection = Pick<WordsState, 'selectedTierId' | 'selectedLanguageId' | 'selectedWordId'>
 
-/** The first language of a tier and the first word of that, for the columns below it. */
 function belowTier(
   lists: Lists,
   tierId: string | null,

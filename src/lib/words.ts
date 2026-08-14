@@ -102,14 +102,6 @@ export interface Word {
   text: string
   videos: WordVideo[]
   createdAt: number
-  /**
-   * The folder in Drive this word's videos live in, once there is one.
-   *
-   * Absent while Drive is not connected, or until the folder has been made —
-   * which is the same thing as saying the page still works with no Google at
-   * all, and links itself up when there is one.
-   */
-  driveFolderId?: string
 }
 
 export interface Language {
@@ -118,8 +110,6 @@ export interface Language {
   tierId: string
   name: string
   createdAt: number
-  /** The folder in Drive holding this language's words. See `Word`. */
-  driveFolderId?: string
 }
 
 /**
@@ -135,8 +125,6 @@ export interface Tier {
   id: string
   name: string
   createdAt: number
-  /** The folder in Drive holding this tier's languages. */
-  driveFolderId?: string
 }
 
 export function newTier(name: string): Tier {
@@ -285,6 +273,19 @@ export function buildShelfDoc(shelf: Shelf): ShelfDoc {
 }
 
 /**
+ * The whole shelf, as one value.
+ *
+ * Three flat lists rather than a tree, because that is how every screen wants
+ * it: a tier list, the languages under the selected tier, the words under the
+ * selected language. Nesting would make every read a walk.
+ */
+export interface Shelf {
+  tiers: Tier[]
+  languages: Language[]
+  words: Word[]
+}
+
+/**
  * Reads a stored shelf back, keeping whatever of it makes sense.
  *
  * Defensive in the same way `parseSidecar` is, and for a related reason: this
@@ -300,7 +301,7 @@ export function parseShelfDoc(value: unknown): Shelf {
   const tiers = list(raw.tiers).flatMap((entry) => {
     const tier = entry as Partial<Tier>
     if (!isId(tier.id) || typeof tier.name !== 'string') return []
-    return [{ id: tier.id, name: tier.name, createdAt: stamp(tier.createdAt), ...folder(tier) }]
+    return [{ id: tier.id, name: tier.name, createdAt: stamp(tier.createdAt) }]
   })
 
   const languages = list(raw.languages).flatMap((entry) => {
@@ -312,7 +313,6 @@ export function parseShelfDoc(value: unknown): Shelf {
         tierId: language.tierId,
         name: language.name,
         createdAt: stamp(language.createdAt),
-        ...folder(language),
       },
     ]
   })
@@ -339,7 +339,6 @@ export function parseShelfDoc(value: unknown): Shelf {
           ]
         }),
         createdAt: stamp(word.createdAt),
-        ...folder(word),
       },
     ]
   })
@@ -360,26 +359,20 @@ function stamp(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-function folder(entry: { driveFolderId?: unknown }): { driveFolderId?: string } {
-  return isId(entry.driveFolderId) ? { driveFolderId: entry.driveFolderId } : {}
-}
-
 /**
  * Folds what the account holds into what this browser had.
  *
  * The account's copy is the shelf. This browser's copy is a cache of it, so a
  * read replaces what it has rather than adding to it — which is the only way a
- * word deleted on a laptop can stay deleted on the desktop, and the reason this
- * is a different operation from `mergeShelf` below, which folds in a folder tree
- * that has no idea what has been deleted.
+ * word deleted on a laptop can stay deleted on the desktop.
  *
  * With one exception, and it is the one that matters: anything made here since
  * the last successful write is kept, and on a browser that has never had one,
  * everything local is. That is work the account has not been told about yet — a
- * word added on a train, a tier added while the connection was down, a shelf
- * that predates the account having shelves at all — and treating the server's
- * silence about it as a deletion would throw it away. Anything older than the
- * last sync has been up there, and can be trusted to be missing on purpose.
+ * word added on a train, a tier added while the connection was down — and
+ * treating the server's silence about it as a deletion would throw it away.
+ * Anything older than the last sync has been up there, and can be trusted to be
+ * missing on purpose.
  *
  * What this does not merge is two machines editing the same word at once: the
  * account's copy of an entry wins over this browser's. Edits reach the server a
@@ -387,28 +380,15 @@ function folder(entry: { driveFolderId?: unknown }): { driveFolderId?: string } 
  * a field-by-field merge of a document nobody stamped — is guesswork.
  */
 export function mergeRemoteShelf(remote: Shelf, local: Shelf, syncedAt: number): Shelf {
-  const withFresh = <T extends { id: string; createdAt: number; driveFolderId?: string }>(
-    theirs: T[],
-    ours: T[],
-  ): T[] => {
+  const withFresh = <T extends { id: string; createdAt: number }>(theirs: T[], ours: T[]): T[] => {
     const ids = new Set(theirs.map((entry) => entry.id))
-    const folders = new Set(
-      theirs.flatMap((entry) => (entry.driveFolderId ? [entry.driveFolderId] : [])),
-    )
 
     // A shelf that has never been up there is entirely unsent, whatever the
     // timestamps say — which is what makes the first sync of a browser that has
     // been using the page for months an addition rather than a wipe.
     const unsent = (entry: T) => syncedAt === 0 || entry.createdAt >= syncedAt
 
-    // By folder as well as by id, because the same tier can honestly have two
-    // ids: two machines that each built their first shelf out of the same Drive
-    // folders made their own rows for it, and matching only on id would put both
-    // in the column.
-    const missing = (entry: T) =>
-      !ids.has(entry.id) && !(entry.driveFolderId && folders.has(entry.driveFolderId))
-
-    return [...theirs, ...ours.filter((entry) => missing(entry) && unsent(entry))]
+    return [...theirs, ...ours.filter((entry) => !ids.has(entry.id) && unsent(entry))]
   }
 
   // Top down, so a tier that has gone takes its languages with it and they take
@@ -427,301 +407,4 @@ export function mergeRemoteShelf(remote: Shelf, local: Shelf, syncedAt: number):
     languages,
     words: withFresh(remote.words, local.words).filter((word) => languageIds.has(word.languageId)),
   }
-}
-
-/*
- * ---------------------------------------------------------------------------
- * The shelf as Google Drive holds it.
- *
- * A folder per language, a folder per word inside it, and that word's videos in
- * that folder — which is the layout somebody would build by hand, and is the
- * whole point: the shelf is legible in Drive without this app, and the files are
- * where you would go looking for them from a phone.
- *
- * The folders hold the videos and nothing else now: the order, the labels and
- * the transcripts are the account's (see above). What is left here is reading a
- * shelf *out* of Drive, which happens exactly once per account — when there is
- * no shelf on the account yet and the folders are all there is to go on, as they
- * are for anybody who used the app before this moved. That read still
- * understands the old `editor-cat.json`, because it is where the order and the
- * labels are for exactly as long as it takes to write them up. Nothing writes
- * one any more.
- *
- * With one limit worth knowing, because it looks like a bug from the outside:
- * this app sees the files it made and the ones handed to it through the Picker,
- * and nothing else in anybody's Drive. So a video dropped into a word folder
- * from a phone is really there and still invisible here, until it is picked —
- * which is what "Add from Drive" on the word page is for.
- *
- * Everything below is the pure half of that: what the old file says, and how to
- * reconcile a folder tree with what this browser already had. The Drive calls
- * themselves are in lib/wordsDrive.ts.
- * ---------------------------------------------------------------------------
- */
-
-/** What the old sidecar is called in every word folder. Read, never written. */
-export const SIDECAR_NAME = 'editor-cat.json'
-
-export interface SidecarEntry {
-  /** The Drive file, which is what survives being renamed or re-catalogued. */
-  driveFileId: string
-  /** Absent for an unlabelled take, exactly as on the take itself. */
-  role?: WordVideoRole
-  transcript?: string
-}
-
-export interface WordSidecar {
-  version: 1
-  /** The word itself, so the file makes sense opened on its own in Drive. */
-  word: string
-  /** The takes, in the order they play. */
-  videos: SidecarEntry[]
-}
-
-/**
- * Reads an old sidecar, or gives up.
- *
- * Anything unrecognisable is treated as absent rather than as an error: the file
- * sits in the user's own Drive where it can be edited, truncated by a failed
- * write, or replaced by something else entirely, and none of that is worth
- * refusing to show a folder of videos over. What is lost is the order and the
- * labels, which the folder itself can still be read without.
- */
-export function parseSidecar(text: string): WordSidecar | null {
-  try {
-    const parsed: unknown = JSON.parse(text)
-    if (!parsed || typeof parsed !== 'object') return null
-    const raw = parsed as Partial<WordSidecar>
-    if (!Array.isArray(raw.videos)) return null
-
-    const videos: SidecarEntry[] = []
-    for (const entry of raw.videos as unknown[]) {
-      if (!entry || typeof entry !== 'object') continue
-      const candidate = entry as Partial<SidecarEntry>
-      if (typeof candidate.driveFileId !== 'string' || !candidate.driveFileId) continue
-      videos.push({
-        driveFileId: candidate.driveFileId,
-        // Anything that is not one of the three reads as no label rather than as
-        // the default one: an unlabelled take is a thing somebody can mean now,
-        // so guessing on their behalf would put a word back that they took off.
-        ...(ROLES.some((role) => role.id === candidate.role)
-          ? { role: candidate.role as WordVideoRole }
-          : {}),
-        ...(typeof candidate.transcript === 'string' ? { transcript: candidate.transcript } : {}),
-      })
-    }
-    return { version: 1, word: typeof raw.word === 'string' ? raw.word : '', videos }
-  } catch {
-    return null
-  }
-}
-
-/** A video file found in a word's folder, with the catalogue entry for its bytes. */
-export interface DiscoveredVideo {
-  driveFileId: string
-  assetId: string
-}
-
-export interface DiscoveredWord {
-  folderId: string
-  name: string
-  /** The video files in the folder, in the order Drive listed them. */
-  videos: DiscoveredVideo[]
-  sidecar: WordSidecar | null
-}
-
-export interface DiscoveredLanguage {
-  folderId: string
-  name: string
-  words: DiscoveredWord[]
-}
-
-export interface DiscoveredTier {
-  folderId: string
-  name: string
-  languages: DiscoveredLanguage[]
-}
-
-/** The three lists the page is drawn from, passed around together. */
-export interface Shelf {
-  tiers: Tier[]
-  languages: Language[]
-  words: Word[]
-}
-
-/**
- * Folds what Drive holds into what this browser already had.
- *
- * Matched by folder id before name, which is what makes the three things that
- * actually happen all land where they should: a shelf opened on a second machine
- * arrives whole, a language added here while offline adopts the folder it is
- * later found to have, and nothing is duplicated by being seen twice.
- *
- * The folder tree is taken at its word in both directions. Anything with a
- * folder id that the read did not turn up has been deleted from somewhere else,
- * and goes — otherwise a word deleted on a laptop would sit on the desktop
- * forever with no way to get rid of it, which is the same resurrection problem
- * as a take that will not stay deleted, only from the other end. What is never
- * dropped is anything with no folder id at all: that is work made here that
- * Drive has not been told about yet, and its absence over there says nothing.
- *
- * A word's run of takes is rebuilt rather than merged item by item, for the same
- * reason: the question "which videos does this word have" has an answer in the
- * folder, and half-believing it is how takes come back from the dead. Local takes
- * still on their way up are the exception, again because they are not yet
- * something Drive could have an opinion about.
- */
-export function mergeShelf(
-  local: Shelf,
-  discovered: readonly DiscoveredTier[],
-  driveFileIdOf: (assetId: string) => string | undefined,
-): Shelf {
-  const tiers = [...local.tiers]
-  const languages = [...local.languages]
-  const words = [...local.words]
-
-  // Every folder the read turned up, so that what it did not turn up can be
-  // told apart from what it was never asked about.
-  const seen = new Set<string>()
-  for (const tier of discovered) {
-    seen.add(tier.folderId)
-    for (const language of tier.languages) {
-      seen.add(language.folderId)
-      for (const word of language.words) seen.add(word.folderId)
-    }
-  }
-
-  const put = <T extends { id: string }>(list: T[], next: T) => {
-    const at = list.findIndex((entry) => entry.id === next.id)
-    if (at >= 0) list[at] = next
-    else list.push(next)
-    return next
-  }
-
-  for (const foundTier of discovered) {
-    const matchedTier =
-      tiers.find((entry) => entry.driveFolderId === foundTier.folderId) ??
-      tiers.find((entry) => !entry.driveFolderId && sameName(entry.name, foundTier.name))
-
-    const tier = put(tiers, {
-      ...(matchedTier ?? newTier(foundTier.name)),
-      driveFolderId: foundTier.folderId,
-    })
-
-    for (const found of foundTier.languages) {
-      const matched =
-        languages.find((entry) => entry.driveFolderId === found.folderId) ??
-        // Only within this tier: the same language name under two tiers is two
-        // shelves, and matching across them would merge somebody's ESL French
-        // into their first-tier French.
-        languages.find(
-          (entry) =>
-            entry.tierId === tier.id && !entry.driveFolderId && sameName(entry.name, found.name),
-        )
-
-      const language = put(languages, {
-        ...(matched ?? newLanguage(tier.id, found.name)),
-        tierId: tier.id,
-        driveFolderId: found.folderId,
-      })
-
-      for (const foundWord of found.words) {
-        const matchedWord =
-          words.find((entry) => entry.driveFolderId === foundWord.folderId) ??
-          words.find(
-            (entry) =>
-              entry.languageId === language.id &&
-              !entry.driveFolderId &&
-              sameName(entry.text, foundWord.name),
-          )
-        const word = matchedWord ?? newWord(language.id, foundWord.name)
-
-        put(words, {
-          ...word,
-          languageId: language.id,
-          driveFolderId: foundWord.folderId,
-          videos: mergeVideos(word, foundWord, driveFileIdOf),
-        })
-      }
-    }
-  }
-
-  // Pruned from the top down, so a tier that has gone takes its languages with
-  // it and they take their words — exactly as trashing its folder in Drive took
-  // everything underneath.
-  const keptTiers = tiers.filter((entry) => !entry.driveFolderId || seen.has(entry.driveFolderId))
-  const tierIds = new Set(keptTiers.map((entry) => entry.id))
-
-  const keptLanguages = languages.filter(
-    (entry) => tierIds.has(entry.tierId) && (!entry.driveFolderId || seen.has(entry.driveFolderId)),
-  )
-  const languageIds = new Set(keptLanguages.map((entry) => entry.id))
-
-  return {
-    tiers: keptTiers,
-    languages: keptLanguages,
-    words: words.filter(
-      (entry) =>
-        languageIds.has(entry.languageId) &&
-        (!entry.driveFolderId || seen.has(entry.driveFolderId)),
-    ),
-  }
-}
-
-/**
- * One word's run, rebuilt from its folder.
- *
- * The order is the sidecar's, then whatever else is in the folder — which is how
- * a take uploaded from another machine, or just handed over through the Picker,
- * joins the end of the run rather than being ignored. A take the sidecar names
- * takes its label and transcript from there,
- * because that file is what the machine that made the edit wrote down; one it
- * does not name keeps whatever this browser had for it.
- */
-function mergeVideos(
-  word: Word,
-  found: DiscoveredWord,
-  driveFileIdOf: (assetId: string) => string | undefined,
-): WordVideo[] {
-  const localByDriveId = new Map<string, WordVideo>()
-  for (const video of word.videos) {
-    const driveFileId = driveFileIdOf(video.assetId)
-    if (driveFileId) localByDriveId.set(driveFileId, video)
-  }
-
-  const inFolder = new Map(found.videos.map((video) => [video.driveFileId, video] as const))
-  const taken = new Set<string>()
-  const run: WordVideo[] = []
-
-  const take = (driveFileId: string, entry?: SidecarEntry) => {
-    const discovered = inFolder.get(driveFileId)
-    if (!discovered || taken.has(driveFileId)) return
-    taken.add(driveFileId)
-
-    const existing = localByDriveId.get(driveFileId)
-    // Both taken from the sidecar wholesale where it names the take, absences
-    // included: a label somebody removed on another machine is written down as
-    // an absence, and falling back to what this browser still had would be how
-    // it came back.
-    const transcript = entry ? entry.transcript : existing?.transcript
-    const role = entry ? entry.role : existing?.role
-    run.push({
-      // Kept where there is one, so a sync mid-edit does not pull the row out
-      // from under a cursor that is in its transcript box.
-      id: existing?.id ?? newId('wv'),
-      assetId: discovered.assetId,
-      ...(role ? { role } : {}),
-      ...(transcript ? { transcript } : {}),
-    })
-  }
-
-  for (const entry of found.sidecar?.videos ?? []) take(entry.driveFileId, entry)
-  for (const video of found.videos) take(video.driveFileId)
-
-  // Still on their way up, so not yet anything Drive could have told us about.
-  for (const video of word.videos) {
-    if (!driveFileIdOf(video.assetId)) run.push(video)
-  }
-
-  return run
 }

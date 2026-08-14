@@ -1,11 +1,10 @@
 /**
  * Asset metadata.
  *
- * The bytes are never here — they are in our own R2 bucket, in the user's Drive
- * while that still exists, and in IndexedDB. What this table carries is
- * everything needed to *find* them again: the R2 key and the Drive file id,
- * plus the dimensions and durations that let a timeline lay itself out before a
- * single byte has been fetched.
+ * The bytes are never here — they are in our own R2 bucket and in IndexedDB.
+ * What this table carries is everything needed to *find* them again: the R2
+ * key, plus the dimensions and durations that let a timeline lay itself out
+ * before a single byte has been fetched.
  */
 import { supabase } from './client'
 import type { Asset } from '../types'
@@ -20,7 +19,6 @@ interface AssetRow {
   duration: number | null
   prompt: string | null
   source_url: string | null
-  drive_file_id: string | null
   r2_key: string | null
   byte_size: number | null
   created_at: string
@@ -37,7 +35,6 @@ function toRow(asset: Asset, byteSize?: number) {
     duration: asset.duration ?? null,
     prompt: asset.prompt ?? null,
     source_url: asset.sourceUrl ?? null,
-    drive_file_id: asset.driveFileId ?? null,
     r2_key: asset.r2Key ?? null,
     byte_size: byteSize ?? null,
     created_at: new Date(asset.createdAt).toISOString(),
@@ -63,7 +60,6 @@ export function fromRow(row: AssetRow, blobKey: string): Asset {
     ...(row.duration !== null ? { duration: row.duration } : {}),
     ...(row.prompt !== null ? { prompt: row.prompt } : {}),
     ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
-    ...(row.drive_file_id !== null ? { driveFileId: row.drive_file_id } : {}),
     ...(row.r2_key !== null ? { r2Key: row.r2_key } : {}),
   }
 }
