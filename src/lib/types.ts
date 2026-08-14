@@ -426,10 +426,27 @@ export interface Project {
 export interface Publication {
   /** The `mintspace.videos` row id. */
   videoId: string
-  /** The object in the Mintspace bucket, so the file goes with the row. */
-  storagePath: string
-  /** Public URL of the file, which plays on its own. */
+  /**
+   * The id the R2 prefix was built from, so the files can be found again.
+   *
+   * A fresh one per publish, never reused even on a retry: the objects under a
+   * prefix are served with a year-long cache, so a prefix that once held a
+   * failed attempt would keep serving it from the edge.
+   */
+  publicationId: string
+  /** The prefix everything landed under, for teardown. */
+  r2Prefix: string
+  /**
+   * Every object this publication wrote.
+   *
+   * Recorded rather than discovered, so taking a video down is a known-length
+   * batch delete that cannot half-finish against a listing that timed out.
+   */
+  r2Keys: string[]
+  /** Public URL of the playlist, which is what the feed row points at. */
   videoUrl: string
+  /** Public URL of the poster frame, if one was extracted. */
+  posterUrl?: string
   /**
    * SHA-256 of the exported file, hex.
    *

@@ -16,7 +16,9 @@ import type { Asset, CaptionCue, Project, Publication } from '../lib/types'
 
 const PUBLICATION: Publication = {
   videoId: 'video-1',
-  storagePath: 'uid-1/export_fixed.mp4',
+  publicationId: 'export_fixed',
+  r2Prefix: 'v1/uid-1/export_fixed/',
+  r2Keys: ['v1/uid-1/export_fixed/index.m3u8'],
   videoUrl: 'https://cdn.example/uid-1/export_fixed.mp4',
   digest: 'deadbeef',
   caption: 'hello',

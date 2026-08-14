@@ -1,23 +1,43 @@
 /**
  * Publishing a finished export into Mintspace.
  *
- * Mintspace is a vertical video feed with its own Supabase project behind it —
- * a `videos` row per post, and the file itself in a public bucket. Both are
- * written straight from the browser under Mintspace's own row level security,
- * which is why there is no endpoint here and nothing server-side to configure:
- * the session doing the writing is the user's own Mintspace account, and the
- * rules that decide what it may write are the same ones the feed itself runs
- * under. Uploads land in `<uid>/…`, rows carry `user_id = auth.uid()`, and
+ * Mintspace is a vertical video feed with its own Supabase project behind it: a
+ * `videos` row per post. The row is written straight from the browser under
+ * Mintspace's own row level security — the session doing the writing is the
+ * user's own Mintspace account, and the rules that decide what it may write are
+ * the same ones the feed itself runs under, so `user_id = auth.uid()` and
  * anything else is refused by the database rather than by this file.
  *
- * The order matters and is not arbitrary. The file goes up first and the row
- * second, because a row is what makes a post appear: a row pointing at an
+ * The *video* no longer goes to Mintspace's storage bucket. It goes to
+ * Cloudflare R2, behind a CDN, as an HLS package: a playlist, an init segment
+ * and a segment every few seconds. R2 charges nothing for egress, which is the
+ * whole reason — a feed is a place where the same file is fetched over and over
+ * by people who did not ask for it by name. (Cloudflare Stream would do this
+ * too and is not used: its per-delivered-minute price is around a hundred times
+ * R2's at any view volume worth having.)
+ *
+ * That split means publishing now needs *both* identities. Auth0 says you may
+ * spend this deployment's storage at all; the Mintspace session says whose
+ * prefix the files belong under, and it has to be that one — the feed row is
+ * owned by the Mintspace uid, and keying the objects by the Auth0 subject
+ * instead is what would let a later delete remove the row, derive a different
+ * prefix, find nothing, and report success. See netlify/lib/mintspaceToken.ts.
+ *
+ * The order matters and is not arbitrary, at both levels. Files go up before
+ * the row, because a row is what makes a post appear: a row pointing at an
  * upload that failed is a broken card in everybody's feed, while an upload with
- * no row is an orphaned object nobody ever sees. Failing between the two is
- * therefore made to fail the harmless way round.
+ * no row is an orphaned object nobody ever sees. And *within* the upload,
+ * segments and poster go before the playlist, because a playlist that exists
+ * has to imply its segments exist — publishing it first and losing a segment
+ * gives a card that spins forever, which is strictly worse than an invisible
+ * orphan. Failing anywhere is made to fail the harmless way round.
  */
-import { mintspace, mintspaceSiteUrl, MINTSPACE_BUCKET } from './client'
+import { mintspace, mintspaceSiteUrl } from './client'
 import { newId } from '../media'
+import { deletePublication, uploadFiles, type UploadFile } from '../r2/upload'
+import { publicUrl } from '../r2/client'
+import { contentTypeFor, PLAYLIST_NAME, POSTER_NAME } from '../export/hlsArgs'
+import type { HlsPackage } from '../export/render'
 
 /** Matches the `char_length(caption) <= 300` check on mintspace.videos. */
 export const CAPTION_MAX_LENGTH = 300
@@ -31,10 +51,15 @@ export interface MintspaceAccount {
 
 export interface PublishedVideo {
   id: string
-  /** The public URL of the uploaded file, which plays on its own. */
+  /** The id the prefix was built from, needed again to take it down. */
+  publicationId: string
+  /** The public URL of the playlist, which is what the feed row points at. */
   videoUrl: string
-  /** The object in the bucket, kept so the file can be deleted with the row. */
-  storagePath: string
+  posterUrl: string | null
+  /** The prefix everything landed under. */
+  prefix: string
+  /** Every object written, so teardown never has to ask the bucket. */
+  keys: string[]
   /** Where to send someone to see it in the feed, if this build knows. */
   siteUrl: string
 }
@@ -109,8 +134,10 @@ export async function signOut(): Promise<void> {
 }
 
 export interface PublishRequest {
-  /** The rendered MP4. */
-  video: Blob
+  /** The streaming package: segments, init segment, playlist — in upload order. */
+  hls: HlsPackage
+  /** The first frame, if one was extracted. */
+  poster?: Blob
   caption: string
   onStage?: (stage: string) => void
 }
@@ -126,7 +153,7 @@ export interface PublishRequest {
  * to get wrong.
  */
 export async function publishVideo(request: PublishRequest): Promise<PublishedVideo> {
-  const { video, caption, onStage } = request
+  const { hls, poster, caption, onStage } = request
   const client = mintspace()
 
   const account = await currentAccount()
@@ -134,25 +161,62 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
     throw new Error('Sign in to Mintspace before publishing.')
   }
 
-  const storage = client.storage.from(MINTSPACE_BUCKET)
-  // Namespaced by account id, which is what Mintspace's storage policy checks:
-  // the first folder segment has to be your own uid.
-  const videoPath = `${account.id}/${newId('export')}.mp4`
+  // The Mintspace session's own access token, which /api/r2 verifies to work
+  // out whose prefix these files belong under. Sent rather than the Auth0 one
+  // because the *feed row* is owned by this account, and keying the objects by
+  // the other identity is what would let a delete report success over files it
+  // never found. See netlify/lib/mintspaceToken.ts.
+  const { data: session } = await client.auth.getSession()
+  const mintspaceToken = session.session?.access_token ?? null
+  if (!mintspaceToken) throw new Error('Sign in to Mintspace before publishing.')
+
+  // Fresh every time, never reused on a retry: these objects are served with a
+  // year-long cache, so a prefix that once held a failed attempt would keep
+  // serving it from the edge long after it was replaced.
+  const publicationId = newId('export')
+
+  const files: UploadFile[] = hls.files.map((file) => ({
+    name: file.name,
+    blob: file.blob,
+    contentType: file.contentType,
+  }))
+
+  // The poster goes *before* the playlist, for the same reason the segments do:
+  // once the playlist exists the row can be written, and a row whose poster is
+  // still uploading is a card with a blank frame.
+  if (poster) {
+    files.splice(files.length - 1, 0, {
+      name: POSTER_NAME,
+      blob: poster,
+      contentType: contentTypeFor(POSTER_NAME),
+    })
+  }
 
   onStage?.('Uploading the video…')
-  const { error: uploadError } = await storage.upload(videoPath, video, {
-    contentType: 'video/mp4',
-    upsert: false,
+  const uploaded = await uploadFiles({
+    scope: 'publication',
+    publicationId,
+    mintspaceToken,
+    files,
+    onProgress: (done, total) => onStage?.(`Uploading the video… ${done}/${total}`),
   })
-  if (uploadError) throw uploadError
 
-  const videoUrl = storage.getPublicUrl(videoPath).data.publicUrl
+  const keyFor = new Map(uploaded.objects.map((object) => [object.name, object.key]))
+  const playlistKey = keyFor.get(PLAYLIST_NAME)
+  if (!playlistKey) throw new Error('The playlist did not finish uploading.')
+
+  const videoUrl = publicUrl(playlistKey)
+  const posterKey = poster ? keyFor.get(POSTER_NAME) : undefined
+  const posterUrl = posterKey ? publicUrl(posterKey) : null
 
   onStage?.('Adding it to the feed…')
   const trimmed = caption.trim()
-  // `poster_url` is left off entirely rather than sent as null: Mintspace shows
-  // the video's own first frame when there is none, which is the whole of what
-  // a poster would have bought here.
+  // `poster_url` is sent now, where it used to be left off. Dropping the
+  // progressive MP4 is what changed: `preload="metadata"` no longer paints a
+  // first frame while the manifest is being fetched, so a feed of HLS cards
+  // with no posters is a feed of black rectangles for the first moment of every
+  // scroll. Still omitted rather than nulled when there is none — Mintspace
+  // falls back to the video's own first decoded frame.
   const { data, error } = await client
     .from('videos')
     .insert({
@@ -161,6 +225,13 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
       // an empty string would be a caption that happens to say nothing.
       caption: trimmed.length > 0 ? trimmed : null,
       video_url: videoUrl,
+      ...(posterUrl ? { poster_url: posterUrl } : {}),
+      // Where the bytes live, on the row rather than only in the project
+      // document. This is the only authoritative record of what is still
+      // referenced: Mintspace's own retention purge deletes rows without
+      // touching storage, and it has no credentials to clean up with, so
+      // without this a purged video's objects become unenumerable garbage.
+      storage_prefix: uploaded.prefix,
     })
     .select('id')
     .single()
@@ -168,8 +239,11 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
 
   return {
     id: String((data as { id?: unknown })?.id ?? ''),
+    publicationId,
     videoUrl,
-    storagePath: videoPath,
+    posterUrl,
+    prefix: uploaded.prefix,
+    keys: uploaded.objects.map((object) => object.key),
     siteUrl: mintspaceSiteUrl(),
   }
 }
@@ -177,7 +251,10 @@ export async function publishVideo(request: PublishRequest): Promise<PublishedVi
 /** What `deleteVideo` needs to find a post again and prove it may remove it. */
 export interface DeletableVideo {
   videoId: string
-  storagePath: string
+  /** The id the prefix was built from. */
+  publicationId: string
+  /** Every object to remove, as the publish recorded them. */
+  r2Keys: string[]
   /** The account that published it; nobody else's session can delete it. */
   accountId: string
 }
@@ -218,22 +295,40 @@ export async function deleteVideo(video: DeletableVideo): Promise<DeleteOutcome>
     )
   }
 
+  const { data: session } = await client.auth.getSession()
+  const mintspaceToken = session.session?.access_token ?? null
+
   // `.select()` is what makes this answerable: without it a delete that matched
   // nothing looks exactly like one that matched a row.
   const { data, error } = await client.from('videos').delete().eq('id', video.videoId).select('id')
   if (error) throw error
   const rowDeleted = Array.isArray(data) && data.length > 0
 
-  const { error: fileError } = await client.storage
-    .from(MINTSPACE_BUCKET)
-    .remove([video.storagePath])
-  if (fileError) {
+  // Within the prefix the order is irrelevant — nothing references any of it
+  // once the row is gone. Driven from the recorded keys rather than a listing,
+  // so this is a known-length batch that cannot half-finish against a query
+  // that timed out.
+  // Deliberately uninitialised: both paths below must decide, and a default
+  // would let a branch added later fall through to a value nobody chose.
+  let fileDeleted: boolean
+  try {
+    const outcome = await deletePublication({
+      publicationId: video.publicationId,
+      keys: video.r2Keys,
+      mintspaceToken,
+    })
+    fileDeleted = outcome.failed.length === 0
+    if (!fileDeleted) {
+      console.warn('Mintspace video row deleted, but some files remain', outcome.failed)
+    }
+  } catch (cause) {
     // Worth reporting, not worth failing: the post is already out of the feed,
-    // and the file left behind is unreachable without the row that named it.
-    console.warn('Mintspace video row deleted, but its file remains', fileError)
+    // and the files left behind are unreachable without the row that named them.
+    console.warn('Mintspace video row deleted, but its files remain', cause)
+    fileDeleted = false
   }
 
-  return { rowDeleted, fileDeleted: !fileError }
+  return { rowDeleted, fileDeleted }
 }
 
 /**

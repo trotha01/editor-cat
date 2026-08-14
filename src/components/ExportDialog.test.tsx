@@ -29,8 +29,20 @@ vi.mock('../lib/media', async (importOriginal) => {
 })
 
 const RENDERED = new Blob(['mp4'], { type: 'video/mp4' })
+
+/** The streaming package renderTimeline returns alongside the MP4. */
+const HLS = {
+  playlist: '#EXTM3U\n',
+  files: [
+    {
+      name: 'index.m3u8',
+      blob: new Blob(['#EXTM3U'], { type: 'application/vnd.apple.mpegurl' }),
+      contentType: 'application/vnd.apple.mpegurl',
+    },
+  ],
+}
 type RenderOptions = Parameters<typeof import('../lib/export/timelineRender').renderTimeline>[0]
-const renderTimeline = vi.fn<(options: RenderOptions) => Promise<Blob>>()
+const renderTimeline = vi.fn<(options: RenderOptions) => Promise<{ blob: Blob; hls?: unknown }>>()
 
 vi.mock('../lib/export/timelineRender', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/export/timelineRender')>()
@@ -51,7 +63,10 @@ vi.mock('../lib/mintspace/client', () => ({
 const publishVideo = vi.fn().mockResolvedValue({
   id: 'v1',
   videoUrl: 'https://cdn/v1.mp4',
-  storagePath: 'uid-1/v1.mp4',
+  publicationId: 'v1',
+  prefix: 'v1/uid-1/v1/',
+  keys: ['v1/uid-1/v1/index.m3u8'],
+  posterUrl: null,
   siteUrl: '',
 })
 
@@ -74,7 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
   configured.value = true
-  renderTimeline.mockResolvedValue(RENDERED)
+  renderTimeline.mockResolvedValue({ blob: RENDERED, hls: HLS })
   useProjectStore.setState({ project: { ...emptyProject(), clips: [CLIP] }, exportRange: null })
   useAssetStore.setState({ assets: [], loading: false })
 })
@@ -381,7 +396,7 @@ describe('the render itself', () => {
 
     await waitFor(() => expect(publishVideo).toHaveBeenCalled())
     expect(renderTimeline).toHaveBeenCalledTimes(1)
-    expect(publishVideo).toHaveBeenCalledWith(expect.objectContaining({ video: RENDERED }))
+    expect(publishVideo).toHaveBeenCalledWith(expect.objectContaining({ hls: HLS }))
   })
 
   it('encodes again once the settings no longer describe what is on hand', async () => {
@@ -405,7 +420,7 @@ describe('the render itself', () => {
     // On the project document, which is what syncs and what survives a reload.
     const publications = useProjectStore.getState().project.publications ?? []
     expect(publications).toHaveLength(1)
-    expect(publications[0]).toMatchObject({ videoId: 'v1', storagePath: 'uid-1/v1.mp4' })
+    expect(publications[0]).toMatchObject({ videoId: 'v1', r2Prefix: 'v1/uid-1/v1/' })
 
     // Straight after, it reads as news and says nothing about being already up.
     expect(await screen.findByText('Published')).toBeInTheDocument()
