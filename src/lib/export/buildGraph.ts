@@ -25,6 +25,7 @@
  * each blend begins. Nothing else in the graph moves — the padding, the layers
  * and the captions all still go on afterwards, in that order.
  */
+import { forceKeyframesExpr } from './hlsArgs'
 
 /**
  * How a clip comes in from the one before it.
@@ -140,6 +141,18 @@ export interface ExportSpec {
   /** 18 is visually lossless, 28 is small. 23 is a good middle. */
   crf?: number
   preset?: string
+  /**
+   * Force a keyframe every N seconds, so a later `-c copy` pass can cut the
+   * file into segments of that length.
+   *
+   * Absent leaves the argv exactly as it was, which is what an export destined
+   * for download wants — extra keyframes cost bitrate and buy nothing there.
+   * Set it when the output is going to be packaged as HLS, and set it to the
+   * same number as `-hls_time`: a segmenter can only cut at a keyframe, so
+   * asking for four-second segments over a stream whose keyframes land every
+   * eight silently yields eight-second ones. See `HLS_SEGMENT_SECONDS`.
+   */
+  keyframeSeconds?: number
 }
 
 export interface ExportPlan {
@@ -551,6 +564,13 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     '-r',
     String(fps),
   )
+
+  // Only when the output is destined for segmenting. libx264's own defaults —
+  // a 250-frame GOP plus scene cuts — put keyframes wherever the edit happens
+  // to fall, and `-c copy` can only split there.
+  if (spec.keyframeSeconds !== undefined && spec.keyframeSeconds > 0) {
+    args.push('-force_key_frames', forceKeyframesExpr(spec.keyframeSeconds))
+  }
 
   if (hasAudio) {
     args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000')
