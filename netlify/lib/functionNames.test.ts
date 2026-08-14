@@ -47,6 +47,7 @@ describe('netlify/functions directory', () => {
       'github.ts',
       'google.ts',
       'media.ts',
+      'r2.ts',
     ])
   })
 })

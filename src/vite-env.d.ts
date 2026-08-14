@@ -41,6 +41,13 @@ interface ImportMetaEnv {
   readonly VITE_MINTSPACE_SUPABASE_URL?: string
   readonly VITE_MINTSPACE_SUPABASE_ANON_KEY?: string
   readonly VITE_MINTSPACE_URL?: string
+  /**
+   * The Cloudflare custom domain bound to the public R2 bucket — the origin
+   * every published video's URL is built on. Not a secret: it is in every feed
+   * card. Unset means the R2 publish path is off and says so, rather than
+   * building URLs against nothing.
+   */
+  readonly VITE_R2_PUBLIC_BASE?: string
 }
 
 interface ImportMeta {

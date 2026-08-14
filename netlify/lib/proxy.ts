@@ -34,6 +34,35 @@
 /** Hosts the media proxy is allowed to fetch from. Suffix match on the hostname. */
 export const MEDIA_HOST_ALLOWLIST = ['fal.media', 'fal.run', 'fal.ai', 'elevenlabs.io'] as const
 
+/**
+ * The hostname of this deployment's own media CDN, if it has one.
+ *
+ * Read from `VITE_R2_PUBLIC_BASE` — the Cloudflare custom domain bound to the
+ * public R2 bucket. It is not a secret (it is in every feed URL), which is why
+ * the `VITE_` form is the one that exists.
+ *
+ * The proxy should almost never be used for it: R2 is configured with CORS, so
+ * the browser fetches these directly. This is the same fallback the fal hosts
+ * get, for the same reason — a CORS policy we do not control at the moment we
+ * need it, and media that must arrive same-origin rather than taint the export
+ * canvas. A misconfigured bucket should degrade to slow, not to broken.
+ */
+export function mediaCdnHost(): string | null {
+  const base = (process.env.VITE_R2_PUBLIC_BASE ?? '').trim()
+  if (!base) return null
+  try {
+    return new URL(base).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+/** Every host the proxy will fetch from, including this deployment's own CDN. */
+export function allowedMediaHosts(): string[] {
+  const cdn = mediaCdnHost()
+  return cdn ? [...MEDIA_HOST_ALLOWLIST, cdn] : [...MEDIA_HOST_ALLOWLIST]
+}
+
 /** Header names that must never appear in a log line. */
 const SECRET_HEADERS = new Set(['authorization', 'xi-api-key', 'x-fal-key', 'cookie'])
 
@@ -91,13 +120,12 @@ export function isAllowedMediaUrl(
   }
 
   const host = url.hostname.toLowerCase()
-  const allowed = MEDIA_HOST_ALLOWLIST.some(
-    (suffix) => host === suffix || host.endsWith(`.${suffix}`),
-  )
+  const allowlist = allowedMediaHosts()
+  const allowed = allowlist.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))
   if (!allowed) {
     return {
       ok: false,
-      reason: `Host "${host}" is not on the media allowlist. Allowed: ${MEDIA_HOST_ALLOWLIST.join(', ')}.`,
+      reason: `Host "${host}" is not on the media allowlist. Allowed: ${allowlist.join(', ')}.`,
     }
   }
 
