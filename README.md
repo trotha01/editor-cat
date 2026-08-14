@@ -313,15 +313,18 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    UUIDs — see [migrating an existing project](#migrating-an-existing-project).
    `0007` added the one-row-per-user table holding the Drive folder each account
    wrote into, and `0011` drops it again along with `assets.drive_file_id`, now
-   that media lives in [our own storage](#where-your-media-lives). `0008` makes
+   that media lives in [our own storage](#where-your-media-lives) and the two
+   one-shot repairs that put it there have run. `0008` makes
    deleting a project reversible: a `deleted_at` column, plus the two functions
    that stamp it and sweep up after 90 days. `0010` adds `assets.r2_key`, which
    is how a second machine finds an asset's bytes.
 
-   **Run `0011` last, and only once nothing is left in Drive.** It throws away
-   the last record of where an unmigrated file lives. The file itself is still
-   in the user's Drive — nothing here ever deleted one — but nothing would be
-   able to find it from the asset any more.
+   **`0011` was the last one, and it was destructive in two directions.** It
+   dropped `assets.drive_file_id`, the record of where an unmigrated file lived,
+   and `drive_folders`, the root the word-take repair walked down from. Both had
+   to outlive the repairs that read them — which is why it is numbered after
+   `0010` rather than folded into it, and why a fresh deployment simply runs the
+   whole sequence and never notices.
 
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
    What Supabase needs instead is Auth0 registered as a third-party auth
@@ -396,66 +399,14 @@ choose a folder, and a scope so narrow that a video you dropped into one of the
 app's own folders by hand was invisible to it. Getting in took three steps; it
 takes one now.
 
-### Moving what is still in Drive
-
-An account that used the app before the move has files up there, and only there.
-Nothing fetches them any more: hydration and the word pages both look for an R2
-key and skip an asset that has none, so an unmigrated take arrives with no bytes
-and a word's run reads as zero-length — which looks like a layout bug and is
-not.
-
-**Settings → Move your media** does the copy. It appears only while something is
-left to move, counts what that is from the account's own rows rather than from
-this browser, and disappears once the count reaches zero. It is idempotent and
-resumable: each file is uploaded _and_ recorded before the next one starts, so a
-closed tab loses at most the file in flight and a second run skips everything
-already carrying a key. Local bytes are used when this browser has them, so the
-machine that made the work does not fetch it back from Drive to send it
-somewhere else.
-
-Nothing is deleted from your Drive, and the panel says so before the button
-rather than after.
-
-### Recovering word takes that were never catalogued
-
-A second, different repair, and it exists because two paths built the word
-shelf. A video uploaded through the editor went through `ingestBlob`, which
-catalogues it and waits for the result. A video discovered by walking the Drive
-folder tree was catalogued with a fire-and-forget call that nobody awaited and
-nothing retried — and when those did not land, the take kept its place in the
-shelf and lost the only thing that could find its bytes.
-
-While Drive was the fallback this was invisible: the take played, and no asset
-row was needed to do it. Removing Drive is what surfaced it, as whole words
-reading "the file for this one is not on this machine".
-
-The migration above cannot help, because it moves assets the account _knows_
-about and these have no row at all. **Settings → Recover your word videos** does
-this one. It finds every take with no asset row, walks down from the folder in
-`drive_folders` — tier, then language, then word, matched by name — and pairs a
-word's takes with its folder's files by position: the old `editor-cat.json`
-sidecar's order where one still exists, the folder's own order otherwise. Each
-file is downloaded, put in R2, catalogued, and only then does the take get
-repointed. Take ids, roles and transcripts are untouched; the broken pointer is
-the only thing that changes.
-
-**A word whose counts disagree is left completely alone** and named in the
-report. Pairing three takes against five files is a guess, and the wrong guess
-is silent — every take would have a video, each the wrong one, and finding out
-means watching all of them.
-
-### When Drive can finally go
-
-These two panels are the last things in the app that read Drive, and they are on
-their way out: `src/lib/google/`, `/api/google/*`, `netlify/lib/tokenVault.ts`,
-`AUTH0_BACKEND_CLIENT_ID`, `AUTH0_BACKEND_CLIENT_SECRET` and
-`assets.drive_file_id` all go together once both report nothing left to do.
-
-**Run `0011` only at that point.** It drops `assets.drive_file_id`, which is the
-last record of where an unmigrated file lives — and it drops `drive_folders`,
-which is the root the recovery walks down from. Without that row the folder tree
-is unreachable: `drive.file` scope means the app can only see files it created,
-and it finds them by walking, not by searching.
+**Anything that was in Drive is in R2 now.** Two one-shot repairs moved it —
+one for assets the account had a Drive id for, one for word takes whose asset
+row the old folder walk had never written — and both went with the integration
+once they had run. `src/lib/google/`, `/api/google/*`, `netlify/lib/tokenVault.ts`,
+`AUTH0_BACKEND_CLIENT_ID`, `AUTH0_BACKEND_CLIENT_SECRET`, `drive_folders` and
+`assets.drive_file_id` are all gone. Files left in anybody's Drive are still
+there — nothing here ever deleted one — and are no longer reachable from this
+app.
 
 Set up the bucket under [deploying to Netlify](#deploying-to-netlify);
 `.env.example` explains each variable and why the two buckets are separate.

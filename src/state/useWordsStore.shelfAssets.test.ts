@@ -83,7 +83,6 @@ function assetRow(extra: Record<string, unknown> = {}) {
     duration: null,
     prompt: null,
     source_url: null,
-    drive_file_id: 'drive_1',
     r2_key: 'asset/hash/asset_1',
     byte_size: 10,
     created_at: '2026-08-11T12:00:00.000Z',
@@ -100,7 +99,6 @@ function localRecord(extra: Partial<Asset> = {}): Asset {
     mimeType: 'video/mp4',
     name: 'take.mp4',
     createdAt: 0,
-    driveFileId: 'drive_1',
     ...extra,
   }
 }

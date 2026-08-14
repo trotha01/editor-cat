@@ -178,33 +178,6 @@ describe('beginGoogleSignIn', () => {
   })
 })
 
-describe('connectDrive', () => {
-  it('asks the My Account API for the Drive scope, on the SDK’s own spelling', async () => {
-    // `redirectUri` camel and top-level, `authorization_params` snake, and
-    // `login_hint` snake inside it — the connect flow's option names differ from
-    // `loginWithRedirect`'s, and getting one wrong fails silently as a consent
-    // screen that asks which account again.
-    await client.connectDrive('someone@example.com')
-
-    expect(connectAccountWithRedirect).toHaveBeenCalledWith({
-      connection: 'google-oauth2',
-      scopes: ['https://www.googleapis.com/auth/drive.file'],
-      redirectUri: window.location.origin,
-      authorization_params: { login_hint: 'someone@example.com' },
-    })
-  })
-
-  it('omits the hint rather than sending an empty one when the address is unknown', async () => {
-    // `login_hint: ''` is not the same as no hint: Google reads it as an account
-    // to preselect and finds none.
-    await client.connectDrive()
-
-    const options = connectAccountWithRedirect.mock.calls[0]?.[0] as Record<string, unknown>
-    expect(options.authorization_params).toBeUndefined()
-    expect(options.scopes).toEqual(['https://www.googleapis.com/auth/drive.file'])
-  })
-})
-
 describe('adoptRedirect on a finished Drive grant', () => {
   it('recognises `connect_code` and hands it to the same callback', async () => {
     // The connect flow comes back with `connect_code` rather than `code`. The

@@ -3,9 +3,9 @@
  *
  * The bytes are in IndexedDB either way, so this never interrupts and never
  * blocks an edit — that is the "local first, cloud second" rule the sync
- * scheduler is built around. But it is more insistent than the Drive version it
- * sits beside, and deliberately so: Drive was a *second* backup, so a failure
- * there cost redundancy and nothing else. Once Drive is gone this is the only
+ * scheduler is built around. But it is more insistent than the Drive uploader
+ * it replaced, and deliberately so: Drive was a *second* backup, so a failure
+ * there cost redundancy and nothing else. With Drive gone this is the only
  * copy besides this browser's, and "not backed up" stops being a footnote and
  * starts being the difference between a slow morning and lost work.
  *

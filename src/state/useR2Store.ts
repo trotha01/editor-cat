@@ -7,8 +7,7 @@
  * takes all reach durable storage by one route that none of them knows about.
  *
  * **The idempotence guard is the load-bearing line here.** An asset that
- * already carries an `r2Key` is never uploaded again. Drive's version of this
- * (`if (asset.driveFileId) return`) is one line in useDriveStore, and losing it
+ * already carries an `r2Key` is never uploaded again. Losing that one line
  * would not have crashed anything — it would have re-uploaded every asset on
  * every ingest, which on somebody else's bill is a bug that gets noticed a
  * month later by an invoice.
