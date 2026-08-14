@@ -76,6 +76,12 @@ try {
   step('app loads')
 
   // --- Image generation, including the AI prompt rewrite -------------------
+  // Asked for by name rather than assumed. The editor opens on Idea, and this
+  // walk used to start on Image because Image used to be the first tab; adding
+  // one in front of it broke the whole run at its second step, with a locator
+  // timeout that says nothing about tabs. Every other tab here is clicked
+  // explicitly, and now so is this one.
+  await page.getByRole('button', { name: /2 · Image/ }).click()
   await page.fill('#prompt-image', 'a lighthouse on a cliff at dusk')
   await page.getByRole('button', { name: /Improve with AI/ }).click()
   await page.waitForSelector('text=Suggested image prompt', { timeout: 20000 })
