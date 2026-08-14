@@ -518,13 +518,32 @@ async function hydrateShelfAssets(words: readonly Word[]): Promise<void> {
     // Read afresh each time round rather than snapshotted: the catalogue's own
     // load can land in the middle of this, and so can the line below.
     const held = useAssetStore.getState().byId(id) ?? (await getAsset(id))
+    const row = rows.get(id)
+
     if (held) {
-      if (!rows.has(id)) void recordAsset(held)
-      if (!useAssetStore.getState().byId(id)) useAssetStore.getState().adopt(held)
+      if (!row) {
+        void recordAsset(held)
+        if (!useAssetStore.getState().byId(id)) useAssetStore.getState().adopt(held)
+        continue
+      }
+
+      // The account can know something this record does not. An `r2_key`
+      // written by the Drive migration, or by another machine's upload, lands
+      // on the row and never reaches a browser that already had its own copy
+      // of the metadata — and this used to take `held` and never look. A take
+      // whose bytes are sitting in storage then read as "not on this machine"
+      // for good, because `useWordVideoBytes` skips anything with no key.
+      //
+      // The blob key stays local: it names an IndexedDB entry on this machine
+      // and nothing anywhere else.
+      const merged = row.r2_key && held.r2Key !== row.r2_key ? { ...held, r2Key: row.r2_key } : held
+      if (merged !== held) await putAsset(merged)
+      if (merged !== held || !useAssetStore.getState().byId(id)) {
+        useAssetStore.getState().adopt(merged)
+      }
       continue
     }
 
-    const row = rows.get(id)
     if (!row) continue
     // A blob key names an IndexedDB entry on one machine and nothing anywhere
     // else, so it is made here rather than carried.
