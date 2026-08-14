@@ -18,11 +18,17 @@ const uploadFiles = vi.fn()
 const update = vi.fn()
 const recordAsset = vi.fn()
 
+class StorageUnconfiguredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StorageUnconfiguredError'
+  }
+}
+
 vi.mock('../lib/r2/upload', () => ({
   uploadFiles: (request: unknown) => uploadFiles(request) as unknown,
+  StorageUnconfiguredError,
 }))
-
-vi.mock('../lib/r2/client', () => ({ isR2Configured: () => true }))
 
 vi.mock('../lib/sync/assetSync', () => ({
   recordAsset: (asset: unknown, size: number) => recordAsset(asset, size) as unknown,
@@ -58,7 +64,7 @@ async function settle() {
 }
 
 beforeEach(() => {
-  useR2Store.setState({ uploads: [], failed: [] })
+  useR2Store.setState({ uploads: [], failed: [], storageAvailable: true })
   uploadFiles.mockResolvedValue({
     prefix: 'asset/hash/',
     objects: [{ name: 'asset_1', key: 'asset/hash/asset_1' }],
@@ -194,15 +200,54 @@ describe('a failing upload', () => {
 })
 
 describe('when there is nowhere to upload to', () => {
-  it('does nothing at all', async () => {
-    vi.doMock('../lib/r2/client', () => ({ isR2Configured: () => false }))
-    vi.resetModules()
-    const { useR2Store: store } = await import('./useR2Store')
+  // A deployment with no R2 credentials is not a deployment whose uploads are
+  // failing, and the difference is the whole reason this is asked rather than
+  // guessed. Nothing in the browser can see the server's environment — the
+  // previous version inferred it from VITE_R2_PUBLIC_BASE, which is the feed's
+  // CDN domain and is never touched on this path, so a working private bucket
+  // sat unused whenever the public half had not been set up yet.
 
-    store.getState().uploadAsset(asset(), BLOB)
+  it('stops asking once the endpoint says it has no credentials', async () => {
+    uploadFiles.mockRejectedValue(new StorageUnconfiguredError('Set R2_ACCOUNT_ID, …'))
+
+    useR2Store.getState().uploadAsset(asset(), BLOB)
+    await settle()
+    expect(uploadFiles).toHaveBeenCalledTimes(1)
+
+    useR2Store.getState().uploadAsset(asset({ id: 'asset_2' }), BLOB)
     await settle()
 
-    expect(uploadFiles).not.toHaveBeenCalled()
-    vi.doUnmock('../lib/r2/client')
+    // Still one: the second ingest never asked. Retrying three times with
+    // backoff, per asset, against an answer that cannot change is the shape
+    // this guards against.
+    expect(uploadFiles).toHaveBeenCalledTimes(1)
+    expect(useR2Store.getState().storageAvailable).toBe(false)
+  })
+
+  it('does not accuse the user of losing work', async () => {
+    uploadFiles.mockRejectedValue(new StorageUnconfiguredError('Set R2_ACCOUNT_ID, …'))
+
+    useR2Store.getState().uploadAsset(asset(), BLOB)
+    await settle()
+
+    // "Not backed up" is true but useless here: it is a fact about the
+    // deployment, and there is no button in this browser that fixes it.
+    expect(useR2Store.getState().failed).toEqual([])
+    expect(useR2Store.getState().uploads).toEqual([])
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('still reports an ordinary refusal, which is a different thing', async () => {
+    // The one that must keep working: a 403, a dead connection, a file over the
+    // cap. Those are about this upload, they can be retried, and silence about
+    // them is how work gets lost.
+    vi.useFakeTimers()
+    uploadFiles.mockRejectedValue(new Error('R2 refused it (403).'))
+
+    useR2Store.getState().uploadAsset(asset(), BLOB)
+    await vi.advanceTimersByTimeAsync(30000)
+
+    expect(useR2Store.getState().failed).toHaveLength(1)
+    expect(useR2Store.getState().storageAvailable).toBe(true)
   })
 })

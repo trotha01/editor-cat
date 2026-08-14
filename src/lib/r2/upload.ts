@@ -78,6 +78,26 @@ async function headers(request: UploadRequest): Promise<Record<string, string>> 
   }
 }
 
+/**
+ * This deployment has no storage behind it at all.
+ *
+ * Distinct from a failed upload, and the distinction matters to the caller: a
+ * 503 from `/api/r2` is the endpoint reporting that *its own* environment is
+ * incomplete, not that these bytes were refused. Every later attempt gets the
+ * same answer, so retrying is waste and telling somebody their work is "not
+ * backed up" is misleading — nothing on this deployment was ever going to back
+ * it up, and there is nothing they can do about it from a browser.
+ *
+ * Whether R2 is configured is a fact about the server, which is why this is
+ * discovered by asking rather than guessed at from a build-time variable.
+ */
+export class StorageUnconfiguredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StorageUnconfiguredError'
+  }
+}
+
 async function errorFrom(response: Response, fallback: string): Promise<Error> {
   try {
     const body = (await response.json()) as { error?: string; detail?: string }
@@ -121,7 +141,13 @@ export async function uploadFiles(request: UploadRequest): Promise<UploadResult>
     }),
   })
 
-  if (!signResponse.ok) throw await errorFrom(signResponse, 'Could not prepare the upload')
+  if (!signResponse.ok) {
+    const error = await errorFrom(signResponse, 'Could not prepare the upload')
+    // The endpoint answers 503 with the names of the variables it is missing.
+    // See StorageUnconfiguredError for why that is not the same as a failure.
+    if (signResponse.status === 503) throw new StorageUnconfiguredError(error.message)
+    throw error
+  }
 
   const signed = (await signResponse.json()) as {
     prefix: string

@@ -22,8 +22,7 @@
  * state is legible and the upload is retried.
  */
 import { create } from 'zustand'
-import { uploadFiles } from '../lib/r2/upload'
-import { isR2Configured } from '../lib/r2/client'
+import { StorageUnconfiguredError, uploadFiles } from '../lib/r2/upload'
 import { recordAsset } from '../lib/sync/assetSync'
 import { useAssetStore } from './useAssetStore'
 import { isSignedIn } from './useAuthStore'
@@ -42,6 +41,18 @@ interface R2State {
   uploads: UploadJob[]
   /** Assets whose upload gave up, kept so the UI can offer to try again. */
   failed: UploadJob[]
+  /**
+   * Whether this deployment has storage behind it.
+   *
+   * Starts true and is turned off only by `/api/r2` saying so, because nothing
+   * on this side can know: it is a fact about the server's environment. An
+   * earlier version guessed at it with `isR2Configured()`, which reads
+   * `VITE_R2_PUBLIC_BASE` — but that is the *public* CDN domain, and this path
+   * never dereferences it. Assets go to the private bucket by presigned URL
+   * against the S3 endpoint, so gating them on the feed's hostname meant a
+   * deployment could have working storage and refuse to use it.
+   */
+  storageAvailable: boolean
   uploadAsset: (asset: Asset, blob: Blob) => void
   retryFailed: () => void
   clearFailed: (assetId: string) => void
@@ -67,12 +78,13 @@ const pending = new Map<string, Blob>()
 export const useR2Store = create<R2State>((set, get) => ({
   uploads: [],
   failed: [],
+  storageAvailable: true,
 
   uploadAsset: (asset, blob) => {
     // Already ours: this asset has been backed up, or was restored from storage
     // in the first place. Without this, every ingest re-uploads everything.
     if (asset.r2Key) return
-    if (!isR2Configured() || !isSignedIn()) return
+    if (!get().storageAvailable || !isSignedIn()) return
 
     pending.set(asset.id, blob)
 
@@ -122,6 +134,18 @@ export const useR2Store = create<R2State>((set, get) => ({
           set((state) => ({ uploads: state.uploads.filter((e) => e.assetId !== asset.id) }))
           return
         } catch (cause) {
+          if (cause instanceof StorageUnconfiguredError) {
+            // Not this upload's failure, and every later one would be told the
+            // same thing. Going quiet is the honest answer: a "not backed up"
+            // card here would be about the deployment rather than about
+            // anything the person looking at it did, or could fix.
+            pending.delete(asset.id)
+            set((state) => ({
+              storageAvailable: false,
+              uploads: state.uploads.filter((entry) => entry.assetId !== asset.id),
+            }))
+            return
+          }
           lastError = cause
         }
       }
