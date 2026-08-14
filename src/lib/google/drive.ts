@@ -1,28 +1,39 @@
 /**
  * Reading files back out of Drive, and nothing else.
  *
- * **This module exists to be deleted.** It is what the one-shot in
- * `../r2/migrate.ts` fetches with, and once every account's bytes are in R2 it
- * and everything under `google/` goes. Drive is no longer where this app keeps
- * anything: media is written to our own bucket at ingest, and the folder tree
- * that used to *be* the word shelf is gone — `word_shelves.doc` was always the
- * real record of it.
+ * **This module exists to be deleted.** It is what the one-shots in
+ * `../r2/migrate.ts` and `../r2/recoverShelf.ts` read with, and once every
+ * account's bytes are in R2 it and everything under `google/` goes. Drive is no
+ * longer where this app keeps anything.
  *
- * So this is a much smaller thing than the Drive client it replaces. That one
- * covered folders, uploads, renames, moves, trashing and the Picker, because
- * Drive was the storage. All of that stayed deleted; what came back is one
- * request — download a file by id — plus the retry behaviour around it, which
- * is the part worth keeping rather than rewriting.
+ * Much smaller than the Drive client it replaces, which covered uploads,
+ * renames, moves, trashing and the Picker because Drive *was* the storage. All
+ * of that stayed deleted. What is here is what reading needs: fetch a file by
+ * id, and list what is in a folder.
+ *
+ * The listing came back for a reason worth writing down. Two ingest paths built
+ * this app's word shelf, and only one of them recorded an asset row: files
+ * uploaded through the editor did, and files discovered by walking the Drive
+ * folder tree were recorded with a fire-and-forget call that did not always
+ * land. A take from the second path has bytes in Drive, an entry in the shelf,
+ * and nothing in between — so there is no `drive_file_id` to look it up by, and
+ * the folder tree is the only remaining route to it.
+ *
+ * **Nothing here writes.** `createFolder`, `updateFileContent`, `renameFile`,
+ * `moveFile` and `trashFile` all stayed deleted, and should stay that way: this
+ * is a recovery path out of somebody's Drive, not a way back into it.
  *
  * `drive.file` is still the scope, and it is still per-file: this reaches
- * exactly the files this app created, which is exactly the set that has a
- * `drive_file_id` in the assets table. It is also why the migration cannot be
- * done from outside the app — a different OAuth client cannot see these files
- * at all.
+ * exactly the files this app created. It is also why none of this can be done
+ * from outside the app — a different OAuth client cannot see these files at all.
  */
 import { accessToken, invalidateToken } from './gis'
+import type { AssetKind } from '../types'
 
 const API = 'https://www.googleapis.com/drive/v3'
+
+/** What Drive calls a folder, as a mime type. */
+export const FOLDER_MIME = 'application/vnd.google-apps.folder'
 
 /** Shared by every call, so shared drives behave like My Drive. */
 const SHARED_DRIVE_PARAMS = 'supportsAllDrives=true&includeItemsFromAllDrives=true'
@@ -159,4 +170,63 @@ export async function downloadFile(fileId: string, signal?: AbortSignal): Promis
     { signal },
   )
   return await response.blob()
+}
+
+/** One thing inside a folder — a file, or a folder of its own. */
+export interface DriveChild {
+  id: string
+  name: string
+  mimeType: string
+}
+
+export function isFolder(child: DriveChild): boolean {
+  return child.mimeType === FOLDER_MIME
+}
+
+/** Which of our kinds a Drive file is, or null for something we cannot use. */
+export function kindForMime(mimeType: string): AssetKind | null {
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType.startsWith('video/')) return 'video'
+  if (mimeType.startsWith('audio/')) return 'audio'
+  return null
+}
+
+/**
+ * What is inside a folder, as far as this app is allowed to see.
+ *
+ * Trashed items are left out: a folder somebody deleted has not gone anywhere
+ * Drive cannot get it back from, but it has stopped being part of the shelf,
+ * and listing it would put it back on screen.
+ *
+ * Paged through to the end rather than taking the first hundred. A word folder
+ * holds a handful of takes, but the folder holding every language of a big
+ * shelf can be long, and a list that silently stops is a language that silently
+ * vanishes.
+ *
+ * The ordering is load-bearing here in a way it was not before. Recovery pairs
+ * a word's takes with the files in its folder by position, so `name` order is
+ * what makes a second run agree with the first — see `recoverShelf.ts`, which
+ * prefers the old sidecar's order when there is one and falls back to this.
+ */
+export async function listChildren(parentId: string, signal?: AbortSignal): Promise<DriveChild[]> {
+  const children: DriveChild[] = []
+  let pageToken: string | undefined
+
+  do {
+    const params = new URLSearchParams({
+      q: `'${parentId}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType)',
+      pageSize: '200',
+      orderBy: 'folder, name',
+      ...(pageToken ? { pageToken } : {}),
+    })
+    const response = await driveFetch(`${API}/files?${params.toString()}&${SHARED_DRIVE_PARAMS}`, {
+      signal,
+    })
+    const body = (await response.json()) as { files?: DriveChild[]; nextPageToken?: string }
+    children.push(...(body.files ?? []))
+    pageToken = body.nextPageToken
+  } while (pageToken)
+
+  return children
 }

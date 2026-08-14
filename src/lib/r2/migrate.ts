@@ -80,7 +80,7 @@ export interface MigrationSummary {
  * catalogue has never held, and `load` folds in only ids it does not already
  * have — so neither one alone refreshes a record that is present but stale.
  */
-async function recordKey(asset: Asset, r2Key: string, byteSize?: number): Promise<void> {
+export async function recordKey(asset: Asset, r2Key: string, byteSize?: number): Promise<void> {
   const next: Asset = { ...asset, r2Key }
   await upsertAsset(next, byteSize)
   await putAsset(next)

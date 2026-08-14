@@ -416,12 +416,46 @@ somewhere else.
 Nothing is deleted from your Drive, and the panel says so before the button
 rather than after.
 
-This is the last thing in the app that reads Drive, and it is on its way out:
-when every account has been moved, `src/lib/google/`, `/api/google/*`,
-`netlify/lib/tokenVault.ts`, `AUTH0_BACKEND_CLIENT_ID`, `AUTH0_BACKEND_CLIENT_SECRET`
-and `assets.drive_file_id` all go together. Run `0011` at that point and not
-before: it drops the column, which is the last record of where an unmigrated
-file lives.
+### Recovering word takes that were never catalogued
+
+A second, different repair, and it exists because two paths built the word
+shelf. A video uploaded through the editor went through `ingestBlob`, which
+catalogues it and waits for the result. A video discovered by walking the Drive
+folder tree was catalogued with a fire-and-forget call that nobody awaited and
+nothing retried — and when those did not land, the take kept its place in the
+shelf and lost the only thing that could find its bytes.
+
+While Drive was the fallback this was invisible: the take played, and no asset
+row was needed to do it. Removing Drive is what surfaced it, as whole words
+reading "the file for this one is not on this machine".
+
+The migration above cannot help, because it moves assets the account _knows_
+about and these have no row at all. **Settings → Recover your word videos** does
+this one. It finds every take with no asset row, walks down from the folder in
+`drive_folders` — tier, then language, then word, matched by name — and pairs a
+word's takes with its folder's files by position: the old `editor-cat.json`
+sidecar's order where one still exists, the folder's own order otherwise. Each
+file is downloaded, put in R2, catalogued, and only then does the take get
+repointed. Take ids, roles and transcripts are untouched; the broken pointer is
+the only thing that changes.
+
+**A word whose counts disagree is left completely alone** and named in the
+report. Pairing three takes against five files is a guess, and the wrong guess
+is silent — every take would have a video, each the wrong one, and finding out
+means watching all of them.
+
+### When Drive can finally go
+
+These two panels are the last things in the app that read Drive, and they are on
+their way out: `src/lib/google/`, `/api/google/*`, `netlify/lib/tokenVault.ts`,
+`AUTH0_BACKEND_CLIENT_ID`, `AUTH0_BACKEND_CLIENT_SECRET` and
+`assets.drive_file_id` all go together once both report nothing left to do.
+
+**Run `0011` only at that point.** It drops `assets.drive_file_id`, which is the
+last record of where an unmigrated file lives — and it drops `drive_folders`,
+which is the root the recovery walks down from. Without that row the folder tree
+is unreachable: `drive.file` scope means the app can only see files it created,
+and it finds them by walking, not by searching.
 
 Set up the bucket under [deploying to Netlify](#deploying-to-netlify);
 `.env.example` explains each variable and why the two buckets are separate.

@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react'
 import { Button, Callout, Modal } from './ui'
 import { AccountSettings } from './AccountSettings'
 import { StorageMigration } from './StorageMigration'
+import { ShelfRecovery } from './ShelfRecovery'
 import { ProjectSettings } from './ProjectSettings'
 import { clearAll, estimateUsage, formatBytes } from '../lib/db'
 import { isMockEnabled } from '../lib/mock'
@@ -79,6 +80,7 @@ export function SettingsDialog({
         <AccountSettings />
 
         <StorageMigration />
+        <ShelfRecovery />
 
         <div className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-3">
           <p className="text-sm font-medium">Stored media</p>

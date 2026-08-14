@@ -408,3 +408,67 @@ export function mergeRemoteShelf(remote: Shelf, local: Shelf, syncedAt: number):
     words: withFresh(remote.words, local.words).filter((word) => languageIds.has(word.languageId)),
   }
 }
+
+/**
+ * The sidecar the word pages used to keep beside a folder's videos.
+ *
+ * Read, never written. Nothing has produced one since the shelf moved onto the
+ * account, and `word_shelves.doc` is the record now — but the ones already
+ * sitting in people's Drive folders still say which take came first and what it
+ * was labelled, and that is exactly what recovery needs when it has to pair a
+ * word's takes back up with its files. See `lib/r2/recoverShelf.ts`.
+ */
+export const SIDECAR_NAME = 'editor-cat.json'
+
+export interface SidecarEntry {
+  /** The Drive file, which is what survives being renamed or re-catalogued. */
+  driveFileId: string
+  /** Absent for an unlabelled take, exactly as on the take itself. */
+  role?: WordVideoRole
+  transcript?: string
+}
+
+export interface WordSidecar {
+  version: 1
+  /** The word itself, so the file makes sense opened on its own in Drive. */
+  word: string
+  /** The takes, in the order they play. */
+  videos: SidecarEntry[]
+}
+
+/**
+ * Reads an old sidecar, or gives up.
+ *
+ * Anything unrecognisable is treated as absent rather than as an error: the
+ * file sits in the user's own Drive where it can be edited, truncated by a
+ * failed write, or replaced by something else entirely, and none of that is
+ * worth refusing to read a folder of videos over. What is lost is the order and
+ * the labels, which the folder itself can still be read without.
+ */
+export function parseSidecar(text: string): WordSidecar | null {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!parsed || typeof parsed !== 'object') return null
+    const raw = parsed as Partial<WordSidecar>
+    if (!Array.isArray(raw.videos)) return null
+
+    const videos: SidecarEntry[] = []
+    for (const entry of raw.videos as unknown[]) {
+      if (!entry || typeof entry !== 'object') continue
+      const candidate = entry as Partial<SidecarEntry>
+      if (typeof candidate.driveFileId !== 'string' || !candidate.driveFileId) continue
+      videos.push({
+        driveFileId: candidate.driveFileId,
+        // Anything that is not one of the three reads as no label rather than
+        // as the default one: an unlabelled take is a thing somebody can mean.
+        ...(ROLES.some((role) => role.id === candidate.role)
+          ? { role: candidate.role as WordVideoRole }
+          : {}),
+        ...(typeof candidate.transcript === 'string' ? { transcript: candidate.transcript } : {}),
+      })
+    }
+    return { version: 1, word: typeof raw.word === 'string' ? raw.word : '', videos }
+  } catch {
+    return null
+  }
+}

@@ -326,7 +326,7 @@ function VideoRow({
           <p className="flex items-center gap-1.5 text-xs text-ink-dim">
             {fetching ? (
               <>
-                <Spinner className="size-3" /> Fetching from Drive…
+                <Spinner className="size-3" /> Fetching…
               </>
             ) : asset ? (
               `${asset.duration ? formatTime(asset.duration) : 'video'}${
