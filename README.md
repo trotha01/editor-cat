@@ -396,6 +396,33 @@ choose a folder, and a scope so narrow that a video you dropped into one of the
 app's own folders by hand was invisible to it. Getting in took three steps; it
 takes one now.
 
+### Moving what is still in Drive
+
+An account that used the app before the move has files up there, and only there.
+Nothing fetches them any more: hydration and the word pages both look for an R2
+key and skip an asset that has none, so an unmigrated take arrives with no bytes
+and a word's run reads as zero-length — which looks like a layout bug and is
+not.
+
+**Settings → Move your media** does the copy. It appears only while something is
+left to move, counts what that is from the account's own rows rather than from
+this browser, and disappears once the count reaches zero. It is idempotent and
+resumable: each file is uploaded _and_ recorded before the next one starts, so a
+closed tab loses at most the file in flight and a second run skips everything
+already carrying a key. Local bytes are used when this browser has them, so the
+machine that made the work does not fetch it back from Drive to send it
+somewhere else.
+
+Nothing is deleted from your Drive, and the panel says so before the button
+rather than after.
+
+This is the last thing in the app that reads Drive, and it is on its way out:
+when every account has been moved, `src/lib/google/`, `/api/google/*`,
+`netlify/lib/tokenVault.ts`, `AUTH0_BACKEND_CLIENT_ID`, `AUTH0_BACKEND_CLIENT_SECRET`
+and `assets.drive_file_id` all go together. Run `0011` at that point and not
+before: it drops the column, which is the last record of where an unmigrated
+file lives.
+
 Set up the bucket under [deploying to Netlify](#deploying-to-netlify);
 `.env.example` explains each variable and why the two buckets are separate.
 

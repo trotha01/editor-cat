@@ -39,14 +39,19 @@ describe('netlify/functions directory', () => {
     // `session.ts` was here until Supabase started trusting Auth0 directly. It
     // minted the Supabase session the browser used to carry; with nothing to
     // mint, keeping it would deploy an endpoint whose only remaining effect
-    // would be to hand out a credential nothing accepts. `google.ts` went the
-    // same way with Drive: it exchanged a caller's token for a Google one
-    // through Auth0's Token Vault, and there is nothing left to spend one on.
+    // would be to hand out a credential nothing accepts.
+    //
+    // `google.ts` is the one with an end date. It exchanges a caller's token
+    // for a Google one through Auth0's Token Vault, and the only thing left
+    // that spends one is the migration in src/lib/r2/migrate.ts. When every
+    // account's files are in R2 it goes, along with everything under
+    // src/lib/google/ — and this assertion is what will notice.
     expect(names).toEqual([
       'anthropic.ts',
       'elevenlabs.ts',
       'fal.ts',
       'github.ts',
+      'google.ts',
       'media.ts',
       'r2.ts',
     ])

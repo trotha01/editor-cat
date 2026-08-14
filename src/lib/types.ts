@@ -34,6 +34,16 @@ export interface Asset {
    * the timeline draw before anything has been fetched.
    */
   r2Key?: string
+  /**
+   * The file's id in the user's Drive, for anything that was backed up there
+   * before this app owned its own storage.
+   *
+   * Read-only now, and on its way out: nothing writes one any more, and the
+   * only thing that reads it is the one-shot in `lib/r2/migrate.ts`. An asset
+   * carrying this and no `r2Key` is one whose bytes have not been moved across
+   * yet. Migration 0011 drops the column, and this field goes with it.
+   */
+  driveFileId?: string
   createdAt: number
 }
 
