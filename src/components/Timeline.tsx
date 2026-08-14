@@ -143,7 +143,7 @@ function ClipCard({
   entry: PositionedClip
   asset: Asset | undefined
   /**
-   * True while this project's media is still being restored from Drive, so an
+   * True while this project's media is still being restored from storage, so an
    * asset that has not shown up in the library yet is still on its way rather
    * than gone.
    */
@@ -620,7 +620,7 @@ export function Timeline({
   const hydrating = useProjectsStore((state) => state.hydration !== null)
   // While either of these is true, a clip whose asset has not shown up yet is
   // still on its way rather than actually gone — the library's own first load
-  // and a project's media coming back from Drive both leave a gap here before
+  // and a project's media coming back from storage both leave a gap here before
   // the asset appears.
   const mediaLoading = assetsLoading || hydrating
 

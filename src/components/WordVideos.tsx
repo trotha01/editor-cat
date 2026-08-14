@@ -12,9 +12,9 @@
  * intro and its outro by virtue of being the ends (`roleInRun`), so the only
  * label a row offers is the optional "Word" on the takes in between.
  *
- * Getting the takes here has three doors as well — the upload button, the Drive
- * Picker, and files dragged straight onto this area off the desktop, which is
- * how anyone with a folder of takes open beside the browser would try it first.
+ * Getting the takes here has two doors — the upload button, and files dragged
+ * straight onto this area off the desktop, which is how anyone with a folder of
+ * takes open beside the browser would try it first.
  */
 import { useMemo, useRef, useState } from 'react'
 import {
@@ -56,7 +56,7 @@ export function WordVideos({ word }: { word: Word }) {
 
   /** This word's upload, when the batch that is running is this word's. */
   const busy = uploading?.wordId === word.id ? uploading : null
-  /** True while the Picker is open and what came back is being filed. */
+  /** Whatever the last upload went wrong with, so it can be said once. */
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -91,8 +91,8 @@ export function WordVideos({ word }: { word: Word }) {
     [entries],
   )
 
-  // The takes of the word that is open, fetched from Drive if this browser has
-  // never held them — which is every take of every word on a second machine.
+  // The takes of the word that is open, fetched from storage if this browser
+  // has never held them — which is every take of every word on a second machine.
   const { fetching } = useWordVideoBytes(useMemo(() => playable.map((e) => e.asset), [playable]))
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
@@ -326,7 +326,7 @@ function VideoRow({
           <p className="flex items-center gap-1.5 text-xs text-ink-dim">
             {fetching ? (
               <>
-                <Spinner className="size-3" /> Fetching from Drive…
+                <Spinner className="size-3" /> Fetching…
               </>
             ) : asset ? (
               `${asset.duration ? formatTime(asset.duration) : 'video'}${
@@ -392,10 +392,12 @@ function VideoRow({
           className="shrink-0"
           onClick={() => void removeVideo(wordId, video.id)}
           aria-label={`Remove ${name}`}
-          // Unlike the Library, this does reach Drive — the word's folder is
-          // the word's list of takes, so one left in it would come back on the
-          // next read. Drive's bin is what makes that recoverable.
-          title="Remove this video. The file goes to your Google Drive bin."
+          // This used to reach into somebody's Drive and bin the file, because
+          // the word's *folder* was the word's list of takes and one left
+          // behind would come back on the next read. The shelf document is that
+          // list now, so taking a take off a word is the whole of it — the copy
+          // in storage is left where it is.
+          title="Remove this video from the word."
         >
           <span aria-hidden>🗑</span>
         </Button>

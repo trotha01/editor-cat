@@ -13,7 +13,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
  *
  * The menu is also where projects are deleted, from a trash icon a few pixels
  * from the row that switches to one — and what that destroys is hours of work
- * this app cannot reconstruct: the media is recoverable from Drive, the
+ * this app cannot reconstruct: the media is recoverable from storage, the
  * arrangement of it is not. So the rule those tests hold is narrow and worth
  * stating plainly: clicking the button must not delete anything. Only answering
  * the question does.

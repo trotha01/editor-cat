@@ -210,6 +210,26 @@ interface WordsState {
   setTranscript: (wordId: string, videoId: string, transcript: string) => void
   moveVideo: (wordId: string, from: number, to: number) => void
   removeVideo: (wordId: string, videoId: string) => Promise<void>
+  /**
+   * Points a take at the asset its file was just recovered into.
+   *
+   * For `lib/r2/recoverShelf.ts` and nothing else. Deliberately not an undo
+   * step: what this changes is a pointer that was broken, and offering to put
+   * it back the way it was — pointing at nothing — is not a thing anybody
+   * means by Ctrl+Z. Same reasoning as `recordPublication` on the project
+   * store.
+   */
+  repairVideo: (wordId: string, videoId: string, assetId: string) => void
+  /**
+   * Writes the shelf up now rather than after the quiet period.
+   *
+   * For anything that has just made a burst of changes and then wants to ask
+   * the *account* a question about them. Shelf writes are debounced by
+   * `SHELF_DELAY`, and every change resets it — so a hundred repairs in a row
+   * push once, 1.2s after the last one, and a read taken before that gets a
+   * snapshot from the middle of the run. See `lib/r2/recoverShelf.ts`.
+   */
+  flushShelf: () => Promise<void>
 
   selectedWord: () => Word | undefined
 }
@@ -1046,6 +1066,19 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideoPatch(word, videoId, { role })),
     }))
+  },
+
+  repairVideo: (wordId, videoId, assetId) => {
+    // No `recordStep`: see the declaration. `mapWord` still persists and marks
+    // the shelf dirty, which is what carries the repair to the account so the
+    // next machine does not have to do it again.
+    set((state) => ({
+      words: mapWord(state.words, wordId, (word) => withVideoPatch(word, videoId, { assetId })),
+    }))
+  },
+
+  flushShelf: async () => {
+    await shelfWrites.flush()
   },
 
   setTranscript: (wordId, videoId, transcript) => {

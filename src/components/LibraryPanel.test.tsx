@@ -34,15 +34,6 @@ vi.mock('../hooks/useAssetUrl', () => ({
   useAssetUrl: () => 'blob:fake',
 }))
 
-vi.mock('../hooks/useDriveImport', () => ({
-  useDriveImport: () => ({ progress: null, error: null, start: () => Promise.resolve() }),
-}))
-
-vi.mock('../state/useDriveStore', () => ({
-  useDriveStore: (selector: (state: { status: string; folder: null }) => unknown) =>
-    selector({ status: 'disconnected', folder: null }),
-}))
-
 // The real store's actions, captured once so each test can be reset back to
 // them — a test that swaps in a spy for one action must not leave that spy
 // behind for the next describe block.
@@ -134,7 +125,7 @@ describe('deleting a row', () => {
   })
 
   it('keeps the bytes when another project still wants them', async () => {
-    // The same asset can be in two libraries — importing a Drive file that is
+    // The same asset can be in two libraries — adding a file that is
     // already here adopts the copy — and this button is about this project.
     listProjects.mockResolvedValue([
       { ...emptyProject('other'), libraryAssetIds: [MINE.id] },

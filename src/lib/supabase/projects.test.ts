@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { daysLeft, fromStored, RETENTION_DAYS, toDoc } from './projects'
-import { defaultCaptionStyle } from '../captions'
-import type { CaptionCue, CaptionTrack, Project } from '../types'
+import { captionCuesOf, captionTracksOf, defaultCaptionStyle } from '../captions'
+import type { CaptionCue, CaptionTrack, Project, Publication } from '../types'
 
 const track: CaptionTrack = {
   id: 'ctrack-1',
@@ -32,6 +32,53 @@ function project(overrides: Partial<Project> = {}): Project {
     height: 1280,
     fps: 30,
     ...overrides,
+  }
+}
+
+const publication: Publication = {
+  videoId: 'video-1',
+  publicationId: 'export_abc',
+  r2Prefix: 'v1/uid-1/export_abc/',
+  r2Keys: ['v1/uid-1/export_abc/index.m3u8', 'v1/uid-1/export_abc/seg00000.m4s'],
+  videoUrl: 'https://cdn.example/v1/uid-1/export_abc/index.m3u8',
+  posterUrl: 'https://cdn.example/v1/uid-1/export_abc/poster.jpg',
+  digest: 'deadbeef',
+  sourceKey: 'cafebabe',
+  caption: 'hello',
+  publishedAt: '2026-08-11T12:00:00.000Z',
+  accountId: 'uid-1',
+  username: 'ada',
+}
+
+/**
+ * A project with every optional field set.
+ *
+ * The point of it: `toDoc` decides what reaches the account, and a field it
+ * does not carry is lost on the next open with nothing failing in between. A
+ * fixture that only sets the fields somebody remembered proves only that those
+ * are carried — which is how four of them (`videoTracks`, `videoClips`,
+ * `libraryAssetIds`, `publications`) came to be dropped while the round-trip
+ * test below sat there passing.
+ */
+function fullProject(): Project {
+  return {
+    ...project({ captionTracks: [track], captionCues: [cue] }),
+    videoTracks: [{ id: 'vtrack-1', name: 'Overlay', hidden: false, opacity: 0.8 }],
+    videoClips: [
+      {
+        id: 'vclip-1',
+        trackId: 'vtrack-1',
+        assetId: 'asset-2',
+        startTime: 1,
+        inPoint: 0,
+        duration: 3,
+        muted: true,
+        volume: 0.5,
+      },
+    ],
+    libraryAssetIds: ['asset-1', 'asset-2'],
+    leadIn: 1.5,
+    publications: [publication],
   }
 }
 
@@ -71,21 +118,64 @@ describe('toDoc', () => {
     expect('captionCues' in doc).toBe(false)
   })
 
-  it('drops the keys again when the last caption is deleted', () => {
-    // The document is replaced wholesale on every save, so omitting an empty
-    // list is how a deletion reaches the server rather than being ignored.
-    const doc = toDoc(project({ captionTracks: [], captionCues: [] }))
-    expect('captionCues' in doc).toBe(false)
+  /**
+   * These two used to assert the key was *absent* for an empty list. It is now
+   * carried as `[]`, and nothing can tell the difference: `captionCuesOf` and
+   * `captionTracksOf` both read `?? NO_CUES` / `?? NO_TRACKS`, so absent and
+   * empty are the same answer to every reader.
+   *
+   * The requirement underneath was never about the key. It is that the
+   * document is replaced wholesale, so deleting the last caption has to reach
+   * the server rather than leave the old ones there — which is what these
+   * check now.
+   */
+  it('lets a deletion of the last caption reach the server', () => {
+    const reopened = roundTrip(project({ captionTracks: [], captionCues: [] }))
+    expect(captionCuesOf(reopened)).toEqual([])
   })
 
   it('keeps a caption track that has been emptied of captions', () => {
-    const doc = toDoc(project({ captionTracks: [track], captionCues: [] }))
-    expect(doc.captionTracks).toEqual([track])
-    expect('captionCues' in doc).toBe(false)
+    const reopened = roundTrip(project({ captionTracks: [track], captionCues: [] }))
+    expect(captionTracksOf(reopened)).toEqual([track])
+    expect(captionCuesOf(reopened)).toEqual([])
   })
 })
 
 describe('a project through a save and an open', () => {
+  it('comes back whole, every field of it', () => {
+    // The assertion that matters, against a project that actually has
+    // something in every field. Anything `toDoc` fails to carry is not an
+    // error anywhere — the edit works, the save reports success, and the loss
+    // shows up on the next open, on this machine or another.
+    const source = fullProject()
+
+    expect(roundTrip(source)).toEqual(source)
+  })
+
+  it('keeps a published video published', () => {
+    // Named on its own because of what it costs when it goes. `publications`
+    // is what answers "is this already in the feed?", so losing it does not
+    // look like data loss — it looks like the dedupe guard deciding this
+    // export is new, and offers to put a second copy of the same video up.
+    const reopened = roundTrip(fullProject())
+
+    expect(reopened.publications).toEqual([publication])
+  })
+
+  it('keeps the picture layered over the picture', () => {
+    const source = fullProject()
+    const reopened = roundTrip(source)
+
+    expect(reopened.videoTracks).toEqual(source.videoTracks)
+    expect(reopened.videoClips).toEqual(source.videoClips)
+  })
+
+  it("keeps the project's own library", () => {
+    // What the Library panel draws. Without it a second machine opens the
+    // project with an empty library and no way to reach files it does hold.
+    expect(roundTrip(fullProject()).libraryAssetIds).toEqual(['asset-1', 'asset-2'])
+  })
+
   it('comes back with its captions identical', () => {
     const source = project({ captionTracks: [track], captionCues: [cue] })
     const reopened = roundTrip(source)
