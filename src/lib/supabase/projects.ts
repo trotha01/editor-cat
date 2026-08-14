@@ -63,23 +63,33 @@ interface ProjectRow {
   updated_at: string
 }
 
-/** Splits the editable document away from the identity fields around it. */
+/**
+ * Splits the editable document away from the identity fields around it.
+ *
+ * By omission rather than by listing what to keep, and that is the whole point.
+ * This used to name each field, which meant every field added to `Project`
+ * afterwards had to be remembered here as well — and because all of them are
+ * optional, forgetting one was not a type error. Four had been forgotten:
+ * `videoTracks` and `videoClips` (the layered picture, schema 4),
+ * `libraryAssetIds`, and `publications`, whose own doc comment in types.ts says
+ * it is "on the project document, and therefore synced".
+ *
+ * The failure that shape produces is the worst kind. Editing works, saving
+ * reports success, and the loss only appears on the next open on some other
+ * machine — or on this one, after the remote document is applied over the local
+ * one. A published video stopped being recognised as published, so the guard
+ * against putting the same export in the feed twice quietly stopped guarding.
+ *
+ * `ProjectDoc` is already declared as `Omit<Project, 'id' | 'name' |
+ * 'voiceovers'>`, so this now says the same thing the type says, and the next
+ * field added is carried without anybody having to notice.
+ *
+ * `voiceovers` stays out because it is the pre-multitrack legacy list, read by
+ * `migrateProject` on the way in and never written back.
+ */
 export function toDoc(project: Project): ProjectDoc {
-  return {
-    clips: project.clips,
-    audioTracks: project.audioTracks,
-    audioClips: project.audioClips,
-    width: project.width,
-    height: project.height,
-    fps: project.fps,
-    // Only written when there is one, so documents that never had a lead-in
-    // stay byte-identical and an older client reading one is unaffected.
-    ...(project.leadIn ? { leadIn: project.leadIn } : {}),
-    // Same reasoning for captions: a project with none writes neither key, so
-    // adding the feature does not rewrite every stored document.
-    ...(project.captionTracks?.length ? { captionTracks: project.captionTracks } : {}),
-    ...(project.captionCues?.length ? { captionCues: project.captionCues } : {}),
-  }
+  const { id: _id, name: _name, voiceovers: _voiceovers, ...doc } = project
+  return doc
 }
 
 export function fromStored(stored: StoredProject): Project {
