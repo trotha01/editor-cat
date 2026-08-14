@@ -29,6 +29,7 @@ import { useWordsStore } from '../state/useWordsStore'
 
 export function ShelfRecovery() {
   const repairVideo = useWordsStore((state) => state.repairVideo)
+  const flushShelf = useWordsStore((state) => state.flushShelf)
 
   const [words, setWords] = useState<UnreachableWord[] | null>(isSupabaseConfigured() ? null : [])
   const [connected, setConnected] = useState<boolean | null>(null)
@@ -90,6 +91,11 @@ export function ShelfRecovery() {
         onRepaired: repairVideo,
       })
       setSummary(result)
+      // Written up before the count is retaken, because the count is a question
+      // for the *account* and shelf writes are debounced — every repair resets
+      // the timer, so without this the re-read lands on a snapshot from partway
+      // through the run and reports takes that were repaired seconds ago.
+      await flushShelf()
       setWords(await unreachableWords())
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))

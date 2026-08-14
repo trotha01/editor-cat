@@ -220,6 +220,16 @@ interface WordsState {
    * store.
    */
   repairVideo: (wordId: string, videoId: string, assetId: string) => void
+  /**
+   * Writes the shelf up now rather than after the quiet period.
+   *
+   * For anything that has just made a burst of changes and then wants to ask
+   * the *account* a question about them. Shelf writes are debounced by
+   * `SHELF_DELAY`, and every change resets it — so a hundred repairs in a row
+   * push once, 1.2s after the last one, and a read taken before that gets a
+   * snapshot from the middle of the run. See `lib/r2/recoverShelf.ts`.
+   */
+  flushShelf: () => Promise<void>
 
   selectedWord: () => Word | undefined
 }
@@ -1065,6 +1075,10 @@ export const useWordsStore = create<WordsState>((set, get) => ({
     set((state) => ({
       words: mapWord(state.words, wordId, (word) => withVideoPatch(word, videoId, { assetId })),
     }))
+  },
+
+  flushShelf: async () => {
+    await shelfWrites.flush()
   },
 
   setTranscript: (wordId, videoId, transcript) => {
