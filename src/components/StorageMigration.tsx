@@ -33,7 +33,7 @@ export function StorageMigration() {
   // effect below, so there is no render that sets state on its way to the same
   // answer.
   const [count, setCount] = useState<PendingCount | null>(() =>
-    isSupabaseConfigured() ? null : { pending: 0, schema: 'ready' },
+    isSupabaseConfigured() ? null : { pending: 0, stale: 0, schema: 'ready' },
   )
   const [countError, setCountError] = useState<string | null>(null)
   const [progress, setProgress] = useState<{
@@ -75,7 +75,7 @@ export function StorageMigration() {
         // would have explained why disappeared, and the failure looked like an
         // absent feature.
         if (cancelled) return
-        setCount({ pending: 0, schema: 'ready' })
+        setCount({ pending: 0, stale: 0, schema: 'ready' })
         setCountError(cause instanceof Error ? cause.message : String(cause))
       })
     return () => {
@@ -85,7 +85,7 @@ export function StorageMigration() {
 
   if (count === null || connected === null) return null
 
-  const { pending, schema } = count
+  const { pending, stale, schema } = count
 
   // What decides whether this exists is whether there is anything to say, not
   // whether the Drive grant is live. An account with files still up there needs
@@ -97,7 +97,7 @@ export function StorageMigration() {
   // is the intended end of all this, and a permanent warning about a finished
   // job is just noise.
   if (schema === 'drive-id-dropped') return null
-  if (pending === 0 && !summary && !countError) return null
+  if (pending === 0 && stale === 0 && !summary && !countError) return null
 
   const run = async () => {
     setError(null)
@@ -124,7 +124,9 @@ export function StorageMigration() {
         <p className="mt-1 text-xs leading-relaxed text-ink-dim">
           {pending > 0
             ? `${pending} file${pending === 1 ? '' : 's'} still live only in your Google Drive. Moving them here means this app stops needing Drive at all — a new machine can fill a project in without granting Google anything.`
-            : 'Everything has been moved.'}
+            : stale > 0
+              ? `${stale} file${stale === 1 ? ' has' : 's have'} already been moved, but this browser does not know where ${stale === 1 ? 'it' : 'they'} went — so ${stale === 1 ? 'it will' : 'they will'} not play here. Nothing needs downloading again; this just brings this machine back into step.`
+              : 'Everything has been moved.'}
         </p>
         <p className="mt-1 text-xs leading-relaxed text-ink-dim">
           {/* Said before they press it, not after. Somebody deciding whether to
@@ -145,7 +147,7 @@ export function StorageMigration() {
           Run <code>supabase/migrations/0010_asset_r2_key.sql</code> first. It adds the column this
           records a move into, and until it exists there is nowhere to write the result.
         </Callout>
-      ) : connected === false ? (
+      ) : connected === false && pending > 0 ? (
         <div>
           <Callout tone="warn">
             Reconnect Google Drive to move these across. It is asked for once, to read the files,
@@ -178,10 +180,18 @@ export function StorageMigration() {
           </div>
         </div>
       ) : (
-        pending > 0 && (
+        (pending > 0 || stale > 0) && (
           <div>
             <Button onClick={() => void run()}>
-              Move {pending} file{pending === 1 ? '' : 's'}
+              {pending > 0 ? (
+                <>
+                  Move {pending} file{pending === 1 ? '' : 's'}
+                </>
+              ) : (
+                <>
+                  Fix {stale} file{stale === 1 ? '' : 's'}
+                </>
+              )}
             </Button>
           </div>
         )
@@ -192,6 +202,9 @@ export function StorageMigration() {
       {summary ? (
         <Callout tone={summary.failed.length > 0 ? 'warn' : 'info'}>
           Moved {summary.moved} file{summary.moved === 1 ? '' : 's'}.
+          {summary.reconciled > 0
+            ? ` Pointed this browser at ${summary.reconciled} more that had already moved.`
+            : ''}
           {summary.failed.length > 0 ? (
             <>
               {' '}

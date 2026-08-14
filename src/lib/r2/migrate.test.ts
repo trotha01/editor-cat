@@ -17,6 +17,9 @@ const downloadFile = vi.fn()
 const uploadFiles = vi.fn()
 const getBlob = vi.fn()
 const putBlob = vi.fn()
+const listLocalAssets = vi.fn()
+const putAsset = vi.fn()
+const adopt = vi.fn()
 
 vi.mock('../supabase/assets', async () => {
   const actual = await vi.importActual<typeof import('../supabase/assets')>('../supabase/assets')
@@ -42,6 +45,14 @@ vi.mock('./upload', () => ({
 vi.mock('../db', () => ({
   getBlob: (key: string) => getBlob(key) as unknown,
   putBlob: (key: string, blob: Blob) => putBlob(key, blob) as unknown,
+  listAssets: () => listLocalAssets() as unknown,
+  putAsset: (asset: unknown) => putAsset(asset) as unknown,
+}))
+
+// The catalogue on screen. A key that reaches Postgres and IndexedDB but not
+// here is one that plays on the next reload and not before.
+vi.mock('../../state/useAssetStore', () => ({
+  useAssetStore: { getState: () => ({ adopt }) },
 }))
 
 const { countPending, migrateDriveToR2, pendingOf } = await import('./migrate')
@@ -80,12 +91,28 @@ function withoutColumn(entry: ReturnType<typeof row>, column: string) {
   return copy as ReturnType<typeof row>
 }
 
+/** This browser's own record of an asset, which is where `blobKey` lives. */
+function localAsset(id: string, extra: Partial<Asset> = {}): Asset {
+  return {
+    id,
+    kind: 'video',
+    blobKey: `blob_${id}`,
+    mimeType: 'video/mp4',
+    name: `${id}.mp4`,
+    createdAt: 0,
+    driveFileId: `drive_${id}`,
+    ...extra,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   listAssets.mockResolvedValue([row('a1'), row('a2')])
+  listLocalAssets.mockResolvedValue([localAsset('a1'), localAsset('a2')])
   getBlob.mockResolvedValue(null)
   downloadFile.mockResolvedValue(BLOB)
   putBlob.mockResolvedValue(undefined)
+  putAsset.mockResolvedValue(undefined)
   upsertAsset.mockResolvedValue(undefined)
   uploadFiles.mockImplementation(
     (request: { files: { name: string }[] }) =>
@@ -130,7 +157,27 @@ describe('countPending', () => {
     // The local catalogue is only what this machine has heard about; the count
     // has to be honest on a second device.
     listAssets.mockResolvedValue([row('a1'), row('a2', { r2_key: 'asset/h/a2' }), row('a3')])
-    await expect(countPending()).resolves.toEqual({ pending: 2, schema: 'ready' })
+    listLocalAssets.mockResolvedValue([])
+    await expect(countPending()).resolves.toEqual({ pending: 2, stale: 0, schema: 'ready' })
+  })
+
+  it('counts a record this browser holds that has not heard the file moved', async () => {
+    // The state a migration leaves behind when it writes the key to the account
+    // and nowhere else: the row says the bytes are in storage, this machine
+    // does not, and the video does not play here.
+    listAssets.mockResolvedValue([row('a1', { r2_key: 'asset/h/a1' })])
+    listLocalAssets.mockResolvedValue([localAsset('a1')])
+
+    await expect(countPending()).resolves.toEqual({ pending: 0, stale: 1, schema: 'ready' })
+  })
+
+  it('does not count one it has simply never heard of', async () => {
+    // Absent, not stale. `hydrateProject` fetches those from the account when a
+    // project needs them, key and all, so there is nothing here to fix.
+    listAssets.mockResolvedValue([row('a1', { r2_key: 'asset/h/a1' })])
+    listLocalAssets.mockResolvedValue([])
+
+    await expect(countPending()).resolves.toMatchObject({ stale: 0 })
   })
 
   /**
@@ -162,7 +209,11 @@ describe('countPending', () => {
       // and a permanent warning about a finished job is just noise.
       listAssets.mockResolvedValue([withoutColumn(row('a1'), 'drive_file_id')])
 
-      await expect(countPending()).resolves.toEqual({ pending: 0, schema: 'drive-id-dropped' })
+      await expect(countPending()).resolves.toEqual({
+        pending: 0,
+        stale: 0,
+        schema: 'drive-id-dropped',
+      })
     })
   })
 
@@ -200,6 +251,78 @@ describe('migrateDriveToR2', () => {
 
     expect(uploadFiles).toHaveBeenCalledTimes(2)
     expect(summary).toMatchObject({ moved: 2, skipped: 0, failed: [] })
+  })
+
+  /**
+   * The bug that made a successful migration look like a broken app.
+   *
+   * The key went to the account's row and nowhere else. But the row is what a
+   * *second* machine reads; this one reads its own IndexedDB record and the
+   * catalogue in memory, and both still said the asset had no key. So
+   * `useWordVideoBytes` skipped every take at `!asset?.r2Key`, `planFor`
+   * called it 'missing', and the migration reported moving everything while
+   * every video stayed dark.
+   */
+  describe('recording where a file went', () => {
+    it('tells the account, this browser, and the screen', async () => {
+      await migrateDriveToR2()
+
+      expect(upsertAsset).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'a1', r2Key: 'asset/hash/a1' }),
+        BLOB.size,
+      )
+      expect(putAsset).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'a1', r2Key: 'asset/hash/a1' }),
+      )
+      expect(adopt).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'a1', r2Key: 'asset/hash/a1' }),
+      )
+    })
+
+    it("keeps this browser's blob key rather than inventing one", async () => {
+      // The account's table has no blob_key — it is per machine — so `fromRow`
+      // has to be handed one. Minting a fresh id instead meant `getBlob` looked
+      // where nothing was filed and `putBlob` stored the download somewhere
+      // nothing would ever look, so the bytes were fetched and then lost.
+      getBlob.mockResolvedValue(BLOB)
+
+      await migrateDriveToR2()
+
+      expect(getBlob).toHaveBeenCalledWith('blob_a1')
+      expect(downloadFile).not.toHaveBeenCalled()
+      expect(putAsset).toHaveBeenCalledWith(expect.objectContaining({ blobKey: 'blob_a1' }))
+    })
+  })
+
+  describe('a browser left behind by an earlier run', () => {
+    it('points it at files the account had already moved, without moving them again', async () => {
+      // Nothing to download and nothing to upload: these files went across on
+      // some previous run. All that is wrong is that this machine never heard,
+      // which on its own is enough to leave every video dark.
+      listAssets.mockResolvedValue([
+        row('a1', { r2_key: 'asset/hash/a1' }),
+        row('a2', { r2_key: 'asset/hash/a2' }),
+      ])
+
+      const summary = await migrateDriveToR2()
+
+      expect(summary).toMatchObject({ moved: 0, reconciled: 2, failed: [] })
+      expect(uploadFiles).not.toHaveBeenCalled()
+      expect(downloadFile).not.toHaveBeenCalled()
+      expect(adopt).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'a1', r2Key: 'asset/hash/a1', blobKey: 'blob_a1' }),
+      )
+    })
+
+    it('leaves alone a record that already agrees', async () => {
+      listAssets.mockResolvedValue([row('a1', { r2_key: 'asset/hash/a1' })])
+      listLocalAssets.mockResolvedValue([localAsset('a1', { r2Key: 'asset/hash/a1' })])
+
+      const summary = await migrateDriveToR2()
+
+      expect(summary.reconciled).toBe(0)
+      expect(putAsset).not.toHaveBeenCalled()
+    })
   })
 
   it('records each key before starting the next, so a closed tab keeps the work', async () => {
