@@ -8,15 +8,13 @@
  */
 import { useMemo, useRef, useState } from 'react'
 import { AssetThumb } from './AssetThumb'
-import { Button, Callout, EmptyState, Spinner } from './ui'
+import { Button, Callout, EmptyState } from './ui'
 import { ingestBlob } from '../lib/media'
 import { listProjects } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { isAssetOrphaned, libraryAssets } from '../lib/library'
 import { formatTime } from '../lib/timeline'
-import { useDriveImport } from '../hooks/useDriveImport'
 import { useAssetStore } from '../state/useAssetStore'
-import { useDriveStore } from '../state/useDriveStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { Asset, AssetKind } from '../lib/types'
 
@@ -39,10 +37,6 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   const clips = useProjectStore((state) => state.project.clips)
 
   const assets = useMemo(() => libraryAssets(catalogue, project), [catalogue, project])
-
-  const driveReady = useDriveStore((state) => state.status === 'connected' && state.folder !== null)
-
-  const drive = useDriveImport()
 
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -89,10 +83,8 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
    * Takes a file out of this project's library, and out of storage with it —
    * but only if nothing else on this machine still wants the bytes.
    *
-   * The same asset can be in more than one project's library: importing a Drive
-   * file that is already here adopts the copy rather than fetching a second one.
-   * So the catalogue entry only goes when no other project lists the file or
-   * uses it, and the copy in the user's Drive is never touched by any of this.
+   * The same asset can be in more than one project's library, so the catalogue
+   * entry only goes when no other project lists the file or uses it.
    */
   const forget = async (asset: Asset) => {
     removeFromLibrary(asset.id)
@@ -114,14 +106,6 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        {driveReady ? (
-          <Button onClick={() => void drive.start()} disabled={busy || drive.progress !== null}>
-            {drive.progress ? <Spinner /> : <span aria-hidden>📁</span>}{' '}
-            {drive.progress
-              ? `Importing ${drive.progress.done} of ${drive.progress.total}…`
-              : 'Import from Drive'}
-          </Button>
-        ) : null}
         <Button onClick={() => fileInput.current?.click()} disabled={busy}>
           <span aria-hidden>⬆️</span> Upload media
         </Button>
@@ -152,12 +136,6 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
       {error ? (
         <Callout tone="error" title="Could not add that file">
           {error}
-        </Callout>
-      ) : null}
-
-      {drive.error ? (
-        <Callout tone="error" title="Import from Drive">
-          {drive.error}
         </Callout>
       ) : null}
 
@@ -211,7 +189,7 @@ export function LibraryPanel({ currentTime = 0 }: { currentTime?: number }) {
                 <Button
                   variant="ghost"
                   onClick={() => void forget(asset)}
-                  title="Remove from this project's library. Your Drive copy is left alone."
+                  title="Remove from this project's library."
                   aria-label={`Remove ${asset.name} from the library`}
                 >
                   🗑

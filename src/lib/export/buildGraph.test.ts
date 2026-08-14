@@ -976,3 +976,62 @@ describe('buildExportPlan', () => {
     })
   })
 })
+
+describe('keyframes for HLS packaging', () => {
+  it('adds nothing at all when it is not asked for', () => {
+    // A download-destined export must keep the argv it always had: extra
+    // keyframes cost bitrate and buy nothing unless the file is being segmented.
+    const { args } = buildExportPlan({ ...base, clips: [img('a.png', 4)], audio: [] })
+    expect(args).not.toContain('-force_key_frames')
+    expect(args).not.toContain('-sc_threshold')
+    expect(args).not.toContain('-g')
+  })
+
+  it('forces a keyframe on every segment boundary when it is', () => {
+    const { args } = buildExportPlan({
+      ...base,
+      clips: [img('a.png', 4)],
+      audio: [],
+      keyframeSeconds: 4,
+    })
+    expect(args[args.indexOf('-force_key_frames') + 1]).toBe('expr:gte(t,n_forced*4)')
+  })
+
+  it('does not suppress scene-cut keyframes', () => {
+    // `-sc_threshold 0` is the reflex recipe and the wrong one here: it costs
+    // visible quality at exactly the frames a cuts-based editor produces most,
+    // and extra keyframes between the forced boundaries cost the segmenter
+    // nothing.
+    const { args } = buildExportPlan({
+      ...base,
+      clips: [img('a.png', 4)],
+      audio: [],
+      keyframeSeconds: 4,
+    })
+    expect(args).not.toContain('-sc_threshold')
+  })
+
+  it('ignores a nonsensical interval rather than emitting one', () => {
+    for (const keyframeSeconds of [0, -1]) {
+      const { args } = buildExportPlan({
+        ...base,
+        clips: [img('a.png', 4)],
+        audio: [],
+        keyframeSeconds,
+      })
+      expect(args).not.toContain('-force_key_frames')
+    }
+  })
+
+  it('sits with the other video encoder options', () => {
+    const { args } = buildExportPlan({
+      ...base,
+      clips: [img('a.png', 4)],
+      audio: [],
+      keyframeSeconds: 4,
+    })
+    // Before the muxer flags, or ffmpeg would apply it to nothing.
+    expect(args.indexOf('-force_key_frames')).toBeGreaterThan(args.indexOf('-c:v'))
+    expect(args.indexOf('-force_key_frames')).toBeLessThan(args.indexOf('-movflags'))
+  })
+})

@@ -31,10 +31,18 @@ import {
   type MintspaceAccount,
 } from '../lib/mintspace/publish'
 import type { Project, Publication } from '../lib/types'
+import type { HlsPackage } from '../lib/export/render'
 
 export interface MintspacePublishProps {
   /** Renders the timeline to an MP4 — or hands back one already rendered. */
-  render: () => Promise<Blob>
+  /**
+   * The finished export, encoded if it has not been already.
+   *
+   * Carries the streaming package alongside the MP4 because rendering once has
+   * to cover both destinations — the file somebody downloads to check is the
+   * one that gets published, not a second render at the same settings.
+   */
+  render: () => Promise<{ blob: Blob; hls?: HlsPackage; poster?: Blob }>
   /**
    * The project being published, for the videos it is already up as. Whole
    * rather than just the list, so the duplicate check reads it the same way
@@ -143,13 +151,13 @@ export function MintspacePublish(props: MintspacePublishProps) {
     onBusyChange(true)
 
     try {
-      const video = await render()
+      const rendered = await render()
 
       // Asked of the finished file rather than of the project, and asked before
       // a byte is uploaded: this is the whole of "do not post the same video
       // twice", and the answer is only knowable once there is a file to hash.
       setStage('Checking it is not already up…')
-      const digest = await sha256Hex(video)
+      const digest = await sha256Hex(rendered.blob)
       const already = publishedAs(project, digest)
       if (already) {
         // A refusal rather than a failure, so it is titled as one. Nothing has
@@ -163,11 +171,26 @@ export function MintspacePublish(props: MintspacePublishProps) {
         return
       }
 
-      const result = await publishVideo({ video, caption, onStage: setStage })
+      if (!rendered.hls) {
+        // Packaging is asked for whenever this deployment can publish, so a
+        // missing package means the render predates that decision or the site
+        // is not set up for storage — either way there is nothing to upload.
+        throw new Error('This site is not set up to store published videos.')
+      }
+
+      const result = await publishVideo({
+        hls: rendered.hls,
+        ...(rendered.poster ? { poster: rendered.poster } : {}),
+        caption,
+        onStage: setStage,
+      })
       const publication: Publication = {
         videoId: result.id,
-        storagePath: result.storagePath,
+        publicationId: result.publicationId,
+        r2Prefix: result.prefix,
+        r2Keys: result.keys,
         videoUrl: result.videoUrl,
+        ...(result.posterUrl ? { posterUrl: result.posterUrl } : {}),
         digest: digest ?? '',
         sourceKey: sourceKey ?? undefined,
         caption: caption.trim() || null,
@@ -199,7 +222,8 @@ export function MintspacePublish(props: MintspacePublishProps) {
     try {
       await deleteVideo({
         videoId: entry.videoId,
-        storagePath: entry.storagePath,
+        publicationId: entry.publicationId,
+        r2Keys: entry.r2Keys,
         accountId: entry.accountId,
       })
       // Forgotten whether or not there was still a row to delete. A post that
@@ -434,20 +458,36 @@ export function MintspacePublish(props: MintspacePublishProps) {
 /**
  * Where to go and watch a published video.
  *
- * The feed itself when this build knows where that is, and the file otherwise —
- * Mintspace has no per-video route, so there is no third option that would land
- * on the post itself.
+ * The feed itself when this build knows where that is. Mintspace has no
+ * per-video route, so there is no third option that would land on the post
+ * itself.
+ *
+ * When it does not know, this used to link the uploaded file, which was an MP4
+ * and played anywhere. It is now an HLS playlist, which plays natively only in
+ * Safari and downloads as a text file everywhere else — so the link goes to the
+ * poster frame instead, which really does open in any browser, and is labelled
+ * as the still it is rather than as the video it is not.
  */
 function VideoLink({ publication }: { publication: Publication }) {
   const site = mintspaceSiteUrl()
+  if (site) {
+    return (
+      <a className="underline underline-offset-2" href={site} target="_blank" rel="noreferrer">
+        Open Mintspace
+      </a>
+    )
+  }
+
+  if (!publication.posterUrl) return null
+
   return (
     <a
       className="underline underline-offset-2"
-      href={site || publication.videoUrl}
+      href={publication.posterUrl}
       target="_blank"
       rel="noreferrer"
     >
-      {site ? 'Open Mintspace' : 'Open the video'}
+      See the first frame
     </a>
   )
 }

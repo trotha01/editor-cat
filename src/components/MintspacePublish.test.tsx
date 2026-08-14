@@ -54,6 +54,26 @@ const { MintspacePublish } = await import('./MintspacePublish')
 const ADA: MintspaceAccount = { id: 'uid-1', email: 'ada@example.com', username: 'ada' }
 const VIDEO = new Blob(['mp4'], { type: 'video/mp4' })
 
+/** What ExportDialog's `render` hands over: the MP4 plus its streaming package. */
+const HLS = {
+  playlist: '#EXTM3U\n',
+  files: [
+    {
+      name: 'seg00001.m4s',
+      blob: new Blob(['a'], { type: 'video/iso.segment' }),
+      contentType: 'video/iso.segment',
+    },
+    { name: 'init.mp4', blob: new Blob(['i'], { type: 'video/mp4' }), contentType: 'video/mp4' },
+    {
+      name: 'index.m3u8',
+      blob: new Blob(['#EXTM3U'], { type: 'application/vnd.apple.mpegurl' }),
+      contentType: 'application/vnd.apple.mpegurl',
+    },
+  ],
+}
+
+const RENDERED = { blob: VIDEO, hls: HLS }
+
 const PROJECT: Project = {
   id: 'p',
   name: 'p',
@@ -67,8 +87,10 @@ const PROJECT: Project = {
 
 const POSTED: Publication = {
   videoId: 'video-1',
-  storagePath: 'uid-1/export_fixed.mp4',
-  videoUrl: 'https://cdn.example/uid-1/export_fixed.mp4',
+  publicationId: 'export_fixed',
+  r2Prefix: 'v1/uid-1/export_fixed/',
+  r2Keys: ['v1/uid-1/export_fixed/index.m3u8', 'v1/uid-1/export_fixed/seg00001.m4s'],
+  videoUrl: 'https://cdn.example/v1/uid-1/export_fixed/index.m3u8',
   digest: 'deadbeef',
   caption: 'declensions, hour 4',
   publishedAt: '2026-08-11T12:00:00.000Z',
@@ -86,7 +108,7 @@ async function digestOfVideo(): Promise<string> {
 
 function setup(overrides: Partial<Parameters<typeof MintspacePublish>[0]> = {}) {
   const props = {
-    render: vi.fn().mockResolvedValue(VIDEO),
+    render: vi.fn().mockResolvedValue(RENDERED),
     project: PROJECT,
     crf: 23,
     empty: false,
@@ -109,8 +131,11 @@ beforeEach(() => {
   currentAccount.mockResolvedValue(ADA)
   publishVideo.mockResolvedValue({
     id: 'video-1',
-    videoUrl: 'https://cdn.example/uid-1/export.mp4',
-    storagePath: 'uid-1/export.mp4',
+    publicationId: 'export_new',
+    videoUrl: 'https://cdn.example/v1/uid-1/export_new/index.m3u8',
+    posterUrl: 'https://cdn.example/v1/uid-1/export_new/poster.jpg',
+    prefix: 'v1/uid-1/export_new/',
+    keys: ['v1/uid-1/export_new/index.m3u8'],
     siteUrl: '',
   })
   deleteVideo.mockResolvedValue({ rowDeleted: true, fileDeleted: true })
@@ -193,7 +218,7 @@ describe('publishing', () => {
     await waitFor(() => expect(publishVideo).toHaveBeenCalled())
     expect(props.render).toHaveBeenCalled()
     expect(publishVideo).toHaveBeenCalledWith(
-      expect.objectContaining({ video: VIDEO, caption: 'declensions, hour 4' }),
+      expect.objectContaining({ hls: HLS, caption: 'declensions, hour 4' }),
     )
   })
 
@@ -203,8 +228,11 @@ describe('publishing', () => {
     fireEvent.click(await screen.findByRole('button', { name: /publish to mintspace/i }))
 
     expect(await screen.findByText('Published')).toBeInTheDocument()
-    const link = await screen.findByRole('link', { name: /open the video/i })
-    expect(link).toHaveAttribute('href', 'https://cdn.example/uid-1/export.mp4')
+    // The playlist is deliberately not linked: it plays natively only in
+    // Safari and downloads as a text file everywhere else. The poster does open
+    // in any browser, so that is what the fallback offers.
+    const link = await screen.findByRole('link', { name: /first frame/i })
+    expect(link).toHaveAttribute('href', 'https://cdn.example/v1/uid-1/export_new/poster.jpg')
   })
 
   it('says it is published without also calling it already published', async () => {
@@ -360,7 +388,7 @@ describe('videos this project is already up as', () => {
 
     await waitFor(() => expect(publishVideo).toHaveBeenCalled())
     expect(props.onPublished).toHaveBeenCalledWith(
-      expect.objectContaining({ videoId: 'video-1', storagePath: 'uid-1/export.mp4' }),
+      expect.objectContaining({ videoId: 'video-1', r2Prefix: 'v1/uid-1/export_new/' }),
     )
   })
 
@@ -376,7 +404,8 @@ describe('videos this project is already up as', () => {
     // Both fingerprints, so the next export is recognisable before *and* after
     // it is rendered.
     expect(publication.sourceKey).toMatch(/^[0-9a-f]{64}$/)
-    expect(publication.storagePath).toBe('uid-1/export.mp4')
+    expect(publication.publicationId).toBe('export_new')
+    expect(publication.r2Keys).toEqual(['v1/uid-1/export_new/index.m3u8'])
     // Non-empty, or nothing downstream can recognise this file again.
     expect(publication.digest).toMatch(/^[0-9a-f]{64}$/)
   })
@@ -403,7 +432,8 @@ describe('deleting a published video', () => {
     await waitFor(() => expect(deleteVideo).toHaveBeenCalled())
     expect(deleteVideo).toHaveBeenCalledWith({
       videoId: 'video-1',
-      storagePath: 'uid-1/export_fixed.mp4',
+      publicationId: 'export_fixed',
+      r2Keys: ['v1/uid-1/export_fixed/index.m3u8', 'v1/uid-1/export_fixed/seg00001.m4s'],
       accountId: 'uid-1',
     })
     expect(props.onForget).toHaveBeenCalledWith('video-1')

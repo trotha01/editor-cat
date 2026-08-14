@@ -33,7 +33,6 @@ import {
 import { toDisplayMessage } from '../lib/errors'
 import { orientationOf } from '../lib/orientation'
 import { BUILD } from '../lib/version'
-import { useDriveStore } from '../state/useDriveStore'
 import { useProjectStore } from '../state/useProjectStore'
 import { useWordsStore } from '../state/useWordsStore'
 
@@ -294,13 +293,11 @@ function projectSummary(): string {
 
 function shelfSummary(): string {
   const { tiers, languages, words, selectedWord } = useWordsStore.getState()
-  const { status, folder } = useDriveStore.getState()
 
   return shelfContext({
     tiers: tiers.length,
     languages: languages.length,
     words: words.length,
     videosOnOpenWord: selectedWord()?.videos.length ?? 0,
-    driveConnected: status === 'connected' && folder !== null,
   })
 }

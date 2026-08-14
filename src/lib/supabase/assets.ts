@@ -1,10 +1,15 @@
 /**
  * Asset metadata.
  *
- * The bytes are never here — they are in the user's Drive and in IndexedDB.
- * What this table carries is everything needed to *find* them again: the
- * Drive file id, plus the dimensions and durations that let a timeline lay
- * itself out before a single byte has been fetched.
+ * The bytes are never here — they are in our own R2 bucket and in IndexedDB.
+ * What this table carries is everything needed to *find* them again: the R2
+ * key, plus the dimensions and durations that let a timeline lay itself out
+ * before a single byte has been fetched.
+ *
+ * `drive_file_id` is the exception, and a temporary one: nothing writes it any
+ * more, and it is read by exactly one thing — the migration that moves an
+ * account's Drive files into R2. Migration 0011 drops the column once that has
+ * run everywhere, which is why it must not run before.
  */
 import { supabase } from './client'
 import type { Asset } from '../types'
@@ -20,6 +25,7 @@ interface AssetRow {
   prompt: string | null
   source_url: string | null
   drive_file_id: string | null
+  r2_key: string | null
   byte_size: number | null
   created_at: string
 }
@@ -36,6 +42,7 @@ function toRow(asset: Asset, byteSize?: number) {
     prompt: asset.prompt ?? null,
     source_url: asset.sourceUrl ?? null,
     drive_file_id: asset.driveFileId ?? null,
+    r2_key: asset.r2Key ?? null,
     byte_size: byteSize ?? null,
     created_at: new Date(asset.createdAt).toISOString(),
   }
@@ -61,6 +68,7 @@ export function fromRow(row: AssetRow, blobKey: string): Asset {
     ...(row.prompt !== null ? { prompt: row.prompt } : {}),
     ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
     ...(row.drive_file_id !== null ? { driveFileId: row.drive_file_id } : {}),
+    ...(row.r2_key !== null ? { r2Key: row.r2_key } : {}),
   }
 }
 

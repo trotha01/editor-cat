@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Callout, Field, Modal, Select, Spinner, TextInput } from './ui'
 import { MintspacePublish } from './MintspacePublish'
 import { exportPlan, renderTimeline } from '../lib/export/timelineRender'
+import type { HlsPackage } from '../lib/export/render'
 import { exportRangeOf, type ExportRange } from '../lib/export/range'
 import type { RenderProgress } from '../lib/export/render'
 import { downloadBlob } from '../lib/media'
@@ -11,6 +12,7 @@ import { formatBytes } from '../lib/db'
 import { toDisplayMessage } from '../lib/errors'
 import { exportPresetsFor, orientationOf, type ExportPreset } from '../lib/orientation'
 import { isMintspaceConfigured } from '../lib/mintspace/client'
+import { isR2Configured } from '../lib/r2/client'
 import { usePersistedState } from '../hooks/usePersistedState'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectStore } from '../state/useProjectStore'
@@ -106,6 +108,15 @@ function sameRange(a: ExportRange | undefined, b: ExportRange | undefined): bool
 /** A finished render, stamped with the settings that produced it. */
 interface RenderedFile {
   blob: Blob
+  /**
+   * The streaming package, when this deployment can publish.
+   *
+   * Held alongside the MP4 rather than made on demand, so that rendering once
+   * still covers both destinations — download the file to check it, then
+   * publish, and what goes up is built from the very bytes that were checked.
+   */
+  hls?: HlsPackage
+  poster?: Blob
   crf: number
   width: number
   height: number
@@ -124,6 +135,15 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const timelineRange = useProjectStore((state) => state.exportRange)
   const setTimelineRange = useProjectStore((state) => state.setExportRange)
   const assets = useAssetStore((state) => state.assets)
+
+  /**
+   * Whether a finished export has anywhere to go besides this machine.
+   *
+   * Both halves are needed: Mintspace is the feed the row goes in, and R2 is
+   * where the video itself is served from. With either missing the dialog only
+   * downloads, and the render skips packaging entirely.
+   */
+  const canPublish = isMintspaceConfigured() && isR2Configured()
 
   // Remembered across exports, and across sessions: someone who publishes
   // everything to Mintspace at Best quality should not be re-choosing both on
@@ -255,22 +275,36 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
    * costs one encode rather than two — and publishes the very bytes that were
    * checked rather than an identically-configured second render of them.
    */
-  const render = async (): Promise<Blob> => {
-    if (current) return current.blob
+  const render = async (): Promise<RenderedFile> => {
+    if (current) return current
 
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      const blob = await renderTimeline({
+      const result = await renderTimeline({
         project,
         assets,
         crf,
         range,
         onProgress: setProgress,
         signal: controller.signal,
+        // Asked for whenever publishing is possible, not only when it has been
+        // chosen: forcing keyframes changes the encoded bytes, so packaging
+        // only on demand would mean a second render for anyone who downloads a
+        // file to check it and then decides to publish that.
+        hls: canPublish,
       })
-      setRendered({ blob, crf, width: project.width, height: project.height, range })
-      return blob
+      const file: RenderedFile = {
+        blob: result.blob,
+        ...(result.hls ? { hls: result.hls } : {}),
+        ...(result.poster ? { poster: result.poster } : {}),
+        crf,
+        width: project.width,
+        height: project.height,
+        range,
+      }
+      setRendered(file)
+      return file
     } finally {
       setProgress(null)
       abortRef.current = null
@@ -282,7 +316,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     setDownloaded(null)
 
     try {
-      const blob = await render()
+      const { blob } = await render()
       downloadBlob(blob, `${project.name.replace(/[^\w -]/g, '') || 'export'}.mp4`)
       setDownloaded(blob)
     } catch (cause) {

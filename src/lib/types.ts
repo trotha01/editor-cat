@@ -26,9 +26,22 @@ export interface Asset {
   /** What prompt produced this, for provenance in the library. */
   prompt?: string
   /**
-   * The file's id in the user's Drive, once it has been backed up there (or if
-   * it was imported from there). Its presence is what stops the uploader from
-   * sending the same bytes back to Drive a second time.
+   * Where the bytes live in our own storage, once they have got there.
+   *
+   * Its presence is what stops the uploader sending the same bytes a second
+   * time. Absent until the upload finishes, so an asset made offline is a row
+   * with bytes only in IndexedDB, which is still worth having: it is what lets
+   * the timeline draw before anything has been fetched.
+   */
+  r2Key?: string
+  /**
+   * The file's id in the user's Drive, for anything that was backed up there
+   * before this app owned its own storage.
+   *
+   * Read-only now, and on its way out: nothing writes one any more, and the
+   * only thing that reads it is the one-shot in `lib/r2/migrate.ts`. An asset
+   * carrying this and no `r2Key` is one whose bytes have not been moved across
+   * yet. Migration 0011 drops the column, and this field goes with it.
    */
   driveFileId?: string
   createdAt: number
@@ -426,10 +439,27 @@ export interface Project {
 export interface Publication {
   /** The `mintspace.videos` row id. */
   videoId: string
-  /** The object in the Mintspace bucket, so the file goes with the row. */
-  storagePath: string
-  /** Public URL of the file, which plays on its own. */
+  /**
+   * The id the R2 prefix was built from, so the files can be found again.
+   *
+   * A fresh one per publish, never reused even on a retry: the objects under a
+   * prefix are served with a year-long cache, so a prefix that once held a
+   * failed attempt would keep serving it from the edge.
+   */
+  publicationId: string
+  /** The prefix everything landed under, for teardown. */
+  r2Prefix: string
+  /**
+   * Every object this publication wrote.
+   *
+   * Recorded rather than discovered, so taking a video down is a known-length
+   * batch delete that cannot half-finish against a listing that timed out.
+   */
+  r2Keys: string[]
+  /** Public URL of the playlist, which is what the feed row points at. */
   videoUrl: string
+  /** Public URL of the poster frame, if one was extracted. */
+  posterUrl?: string
   /**
    * SHA-256 of the exported file, hex.
    *

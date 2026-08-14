@@ -12,7 +12,7 @@
  * list you look things up in: a tier — "1st tier", "Classical", "ESL" — then a
  * language taught in it, then a word of that language. Everything to the right
  * of them is about the one word that is selected, and the three columns are the
- * same three levels of folder the shelf is kept as in Drive.
+ * same three levels the shelf is kept as.
  *
  * Below `lg` there is no room to put three lists beside the videos, so the same
  * three columns become a strip along the bottom of the window saying what is
@@ -25,7 +25,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useFileDrop } from './hooks/useFileDrop'
 import { usePersistedState } from './hooks/usePersistedState'
 import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
-import { DriveUploads } from './components/DriveUploads'
+import { UploadStatus } from './components/UploadStatus'
 import { FeedbackBubble } from './components/FeedbackBubble'
 import { RenameField } from './components/RenameField'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -34,19 +34,7 @@ import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './c
 import { EDITOR_HASH } from './lib/route'
 import { languagesInTier, sortedTiers, wordsInLanguage } from './lib/words'
 import { useAuthStore } from './state/useAuthStore'
-import { useDriveStore } from './state/useDriveStore'
 import { useWordsStore } from './state/useWordsStore'
-
-/**
- * What deleting also does, when there is a folder in Drive to do it to.
- *
- * Said out loud because it is a departure from the rest of the app, where your
- * Drive copy is always left alone. Here the folder is the shelf, so a delete
- * that stopped at this browser would be undone by the next read.
- */
-function binNote(inDrive: boolean): string {
-  return inDrive ? '\n\nThe folder goes to your Google Drive bin, where you can get it back.' : ''
-}
 
 export function WordsPage() {
   const tiers = useWordsStore((state) => state.tiers)
@@ -60,7 +48,6 @@ export function WordsPage() {
   const syncError = useWordsStore((state) => state.syncError)
   const canUndo = useWordsStore((state) => state.canUndo())
   const canRedo = useWordsStore((state) => state.canRedo())
-  const driveConnected = useDriveStore((state) => state.status === 'connected' && !!state.folder)
   const signedIn = useAuthStore((state) => state.account !== null)
 
   // The shelf's stack rather than the open project's — this page never opened
@@ -103,12 +90,8 @@ export function WordsPage() {
     // only on mount. A sign-in that lands after the page was opened is the same
     // event as arriving with one, and a shelf that only synced on a reload would
     // look like one that does not sync.
-    //
-    // The Drive connection is watched as well, and for one reason: an account
-    // with no shelf yet is built from the folder tree, which needs a Drive to
-    // read. Everything after that first read is the account's.
-    if (signedIn || driveConnected) void useWordsStore.getState().syncShelf()
-  }, [signedIn, driveConnected])
+    if (signedIn) void useWordsStore.getState().syncShelf()
+  }, [signedIn])
 
   const tierList = useMemo(() => sortedTiers(tiers), [tiers])
   const languageList = useMemo(
@@ -198,8 +181,8 @@ export function WordsPage() {
           <span aria-hidden>🎬</span> Editor
         </LinkButton>
         {/* The same dialog the editor opens, minus the project section: the
-            account, the Drive folder this shelf lives in, and what this browser
-            is storing are all as much this page's business as the editor's. It
+            account and what this browser is storing are as much this page's
+            business as the editor's. It
             sits last here as it does there, so it is in the same place on both
             pages. */}
         <Button onClick={() => setSettingsOpen(true)}>
@@ -243,8 +226,7 @@ export function WordsPage() {
               if (
                 count > 0 &&
                 !window.confirm(
-                  `Delete "${doomed?.name}" and its ${count} language${count === 1 ? '' : 's'}?` +
-                    binNote(driveConnected && !!doomed?.driveFolderId),
+                  `Delete "${doomed?.name}" and its ${count} language${count === 1 ? '' : 's'}?`,
                 )
               ) {
                 return
@@ -282,8 +264,7 @@ export function WordsPage() {
               if (
                 count > 0 &&
                 !window.confirm(
-                  `Delete "${doomed?.name}" and its ${count} word${count === 1 ? '' : 's'}?` +
-                    binNote(driveConnected && !!doomed?.driveFolderId),
+                  `Delete "${doomed?.name}" and its ${count} word${count === 1 ? '' : 's'}?`,
                 )
               ) {
                 return
@@ -345,8 +326,7 @@ export function WordsPage() {
               if (
                 count > 0 &&
                 !window.confirm(
-                  `Delete "${doomed?.text}" and its ${count} video${count === 1 ? '' : 's'}?` +
-                    binNote(driveConnected && !!doomed?.driveFolderId),
+                  `Delete "${doomed?.text}" and its ${count} video${count === 1 ? '' : 's'}?`,
                 )
               ) {
                 return
@@ -402,11 +382,11 @@ export function WordsPage() {
             screen just as the list of takes got long enough to need it. */}
         <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
           {/* Outside the word, and drawn whether or not one is open: an upload
-              that failed to reach Drive is still worth saying so about after you
-              have moved on to the next word. This is an upload page above all
-              else, so a backup that silently did not happen is the worst thing
-              that could quietly go wrong on it. */}
-          <DriveUploads />
+              that failed is still worth saying so about after you have moved on
+              to the next word. This is an upload page above all else, so a
+              backup that silently did not happen is the worst thing that could
+              quietly go wrong on it. */}
+          <UploadStatus />
 
           {/* A failed read or write is worth saying and never worth blocking
               on: what is on screen is this browser's copy of the shelf, which is
@@ -426,19 +406,6 @@ export function WordsPage() {
                     {tier ? `${tier.name} · ` : ''}
                     {language.name}
                   </span>
-                ) : null}
-                {/* The other end of the link, made visible: these videos are in a
-                    folder the user owns, and the fastest way to believe that is
-                    to be able to open it. */}
-                {word.driveFolderId ? (
-                  <a
-                    href={`https://drive.google.com/drive/folders/${word.driveFolderId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-ink-dim underline decoration-dotted hover:text-ink"
-                  >
-                    Open the Drive folder
-                  </a>
                 ) : null}
               </div>
               <WordVideos word={word} />

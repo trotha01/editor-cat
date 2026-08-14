@@ -15,7 +15,13 @@
  * sound — and a summary derived independently of the render is a summary free
  * to be wrong about it.
  */
-import { renderProject, type ExportAsset, type RenderProgress, type RenderRequest } from './render'
+import {
+  renderProject,
+  type ExportAsset,
+  type HlsPackage,
+  type RenderProgress,
+  type RenderRequest,
+} from './render'
 import { buildAssFile } from './assCaptions'
 import { captionFonts } from './captionFonts'
 import { exportRangeOf, type ExportRange } from './range'
@@ -103,10 +109,27 @@ export interface TimelineRenderOptions {
   range?: ExportRange
   onProgress?: (progress: RenderProgress) => void
   signal?: AbortSignal
+  /**
+   * Also package the result for streaming.
+   *
+   * Asked for whenever this deployment can publish, not only when the user has
+   * chosen to — otherwise "render once, download to check it, then publish the
+   * file you checked" would need a second encode, since forcing keyframes
+   * changes the bytes. Packaging itself is a stream copy and costs seconds.
+   */
+  hls?: boolean
+}
+
+export interface TimelineRenderResult {
+  blob: Blob
+  hls?: HlsPackage
+  poster?: Blob
 }
 
 /** Renders the project to an MP4, exactly as the preview shows it. */
-export async function renderTimeline(options: TimelineRenderOptions): Promise<Blob> {
+export async function renderTimeline(
+  options: TimelineRenderOptions,
+): Promise<TimelineRenderResult> {
   const { project, assets, crf, range, onProgress, signal } = options
   const plan = exportPlan(project, assets)
   // Fitted here rather than taken on trust: the range was chosen against
@@ -199,7 +222,7 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
         }
       : undefined
 
-  const { blob } = await renderProject(
+  const result = await renderProject(
     {
       clips,
       overlays,
@@ -212,9 +235,14 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
       ...(captions ? { captions } : {}),
       ...(fitted ? { range: fitted } : {}),
       crf,
+      ...(options.hls ? { hls: {} } : {}),
     },
     { onProgress, signal },
   )
 
-  return blob
+  return {
+    blob: result.blob,
+    ...(result.hls ? { hls: result.hls } : {}),
+    ...(result.poster ? { poster: result.poster } : {}),
+  }
 }
