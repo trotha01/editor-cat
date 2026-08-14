@@ -57,15 +57,61 @@ export function pendingOf(assets: Asset[]): Asset[] {
 }
 
 /**
+ * Whether the database is in a state where anything can be moved.
+ *
+ * Three answers rather than a boolean, because the two failures need opposite
+ * responses: one is a migration that has not been run, and the other is one
+ * that has been run too early.
+ */
+export type SchemaState =
+  /** Both columns present. Normal. */
+  | 'ready'
+  /** 0010 has not been run, so there is nowhere to record a move. */
+  | 'missing-r2-key'
+  /** 0011 has been run, so nothing can be found in Drive any more. */
+  | 'drive-id-dropped'
+
+export interface PendingCount {
+  /** Assets whose bytes are still only in Drive. */
+  pending: number
+  schema: SchemaState
+}
+
+/**
  * How much is left to move, asked of the account rather than of this browser.
  *
  * The catalogue in memory is only what this machine has heard about; the
  * account's rows are the whole picture, which is what makes the count honest
  * on a second device.
+ *
+ * **`listAssets` selects `*`,** so a column that has not been added yet comes
+ * back *absent* rather than null — and `undefined === null` is false. An
+ * earlier version compared against null directly, which meant a database
+ * without 0010 counted zero pending, and the panel that would have said so
+ * hid itself instead. Both columns are therefore checked for existence before
+ * anything is counted, and the count itself matches `pendingOf` exactly:
+ * whatever is truthy, rather than whatever is not literally null.
  */
-export async function countPending(): Promise<number> {
+export async function countPending(): Promise<PendingCount> {
   const rows = await listAssets()
-  return rows.filter((row) => row.drive_file_id !== null && row.r2_key === null).length
+  const sample = rows[0]
+
+  if (sample && !('r2_key' in sample)) {
+    // Still worth a number: it is how many files are waiting on that migration.
+    return {
+      pending: rows.filter((row) => Boolean(row.drive_file_id)).length,
+      schema: 'missing-r2-key',
+    }
+  }
+
+  if (sample && !('drive_file_id' in sample)) {
+    return { pending: 0, schema: 'drive-id-dropped' }
+  }
+
+  return {
+    pending: rows.filter((row) => Boolean(row.drive_file_id) && !row.r2_key).length,
+    schema: 'ready',
+  }
 }
 
 export interface MigrateOptions {

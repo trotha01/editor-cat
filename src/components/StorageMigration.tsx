@@ -13,16 +13,29 @@
  */
 import { useEffect, useState } from 'react'
 import { Button, Callout } from './ui'
-import { countPending, migrateDriveToR2, type MigrationSummary } from '../lib/r2/migrate'
+import {
+  countPending,
+  migrateDriveToR2,
+  type MigrationSummary,
+  type PendingCount,
+} from '../lib/r2/migrate'
 import { connectionStatus } from '../lib/google/connection'
 import { connectDrive } from '../lib/auth0/client'
+import { isSupabaseConfigured } from '../lib/supabase/client'
 import { useAssetStore } from '../state/useAssetStore'
 
 export function StorageMigration() {
   const reloadAssets = useAssetStore((state) => state.load)
   const [connected, setConnected] = useState<boolean | null>(null)
 
-  const [pending, setPending] = useState<number | null>(null)
+  // A deployment with no Supabase has no asset rows to ask about, so it settles
+  // on "nothing to move" without a request. Decided here rather than in the
+  // effect below, so there is no render that sets state on its way to the same
+  // answer.
+  const [count, setCount] = useState<PendingCount | null>(() =>
+    isSupabaseConfigured() ? null : { pending: 0, schema: 'ready' },
+  )
+  const [countError, setCountError] = useState<string | null>(null)
   const [progress, setProgress] = useState<{
     done: number
     total: number
@@ -50,26 +63,41 @@ export function StorageMigration() {
   }, [])
 
   useEffect(() => {
+    if (!isSupabaseConfigured()) return
     let cancelled = false
     void countPending()
-      .then((count) => {
-        if (!cancelled) setPending(count)
+      .then((result) => {
+        if (!cancelled) setCount(result)
       })
-      .catch(() => {
-        // Not worth reporting: the section simply does not appear, which is the
-        // same thing it does on an account with nothing to move.
-        if (!cancelled) setPending(0)
+      .catch((cause: unknown) => {
+        // Reported, not swallowed. A count that cannot be taken used to set
+        // zero, which reads as "nothing to move" — so the one screen that
+        // would have explained why disappeared, and the failure looked like an
+        // absent feature.
+        if (cancelled) return
+        setCount({ pending: 0, schema: 'ready' })
+        setCountError(cause instanceof Error ? cause.message : String(cause))
       })
     return () => {
       cancelled = true
     }
   }, [])
 
-  // The count is what decides whether this exists, not the Drive grant. An
-  // account with files still up there needs to be told so even when the grant
-  // has lapsed — otherwise the one screen that would explain what is left, and
-  // offer the reconnect that fixes it, is the screen that hides itself.
-  if (pending === null || connected === null || (pending === 0 && !summary)) return null
+  if (count === null || connected === null) return null
+
+  const { pending, schema } = count
+
+  // What decides whether this exists is whether there is anything to say, not
+  // whether the Drive grant is live. An account with files still up there needs
+  // to be told so *especially* when the grant has lapsed — otherwise the screen
+  // that would explain it, and offer the reconnect that fixes it, is the screen
+  // that hides itself.
+  //
+  // `drive-id-dropped` is the one state that stays quiet: 0011 has run, which
+  // is the intended end of all this, and a permanent warning about a finished
+  // job is just noise.
+  if (schema === 'drive-id-dropped') return null
+  if (pending === 0 && !summary && !countError) return null
 
   const run = async () => {
     setError(null)
@@ -79,7 +107,7 @@ export function StorageMigration() {
       setSummary(result)
       // The catalogue in memory still says these files are only in Drive.
       await reloadAssets()
-      setPending(await countPending())
+      setCount(await countPending())
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -106,7 +134,18 @@ export function StorageMigration() {
         </p>
       </div>
 
-      {connected === false ? (
+      {countError ? (
+        <Callout tone="warn">Could not check what is left to move: {countError}</Callout>
+      ) : null}
+
+      {schema === 'missing-r2-key' ? (
+        <Callout tone="warn">
+          {/* The failure this panel used to hide behind. Named precisely,
+              because the fix is one file and the symptom is silence. */}
+          Run <code>supabase/migrations/0010_asset_r2_key.sql</code> first. It adds the column this
+          records a move into, and until it exists there is nowhere to write the result.
+        </Callout>
+      ) : connected === false ? (
         <div>
           <Callout tone="warn">
             Reconnect Google Drive to move these across. It is asked for once, to read the files,

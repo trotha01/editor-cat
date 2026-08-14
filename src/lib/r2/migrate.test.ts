@@ -39,8 +39,6 @@ vi.mock('./upload', () => ({
   uploadFiles: (request: unknown) => uploadFiles(request) as unknown,
 }))
 
-vi.mock('./client', () => ({ isR2Configured: () => true }))
-
 vi.mock('../db', () => ({
   getBlob: (key: string) => getBlob(key) as unknown,
   putBlob: (key: string, blob: Blob) => putBlob(key, blob) as unknown,
@@ -67,6 +65,19 @@ function row(id: string, extra: Record<string, unknown> = {}) {
     created_at: '2026-08-11T12:00:00.000Z',
     ...extra,
   }
+}
+
+/**
+ * A row as Postgres returns it when that column does not exist.
+ *
+ * The distinction this whole group turns on: `select('*')` omits an absent
+ * column rather than reporting it as null, so the value is `undefined` — and
+ * `undefined === null` is false.
+ */
+function withoutColumn(entry: ReturnType<typeof row>, column: string) {
+  const copy: Record<string, unknown> = { ...entry }
+  delete copy[column]
+  return copy as ReturnType<typeof row>
 }
 
 beforeEach(() => {
@@ -119,7 +130,67 @@ describe('countPending', () => {
     // The local catalogue is only what this machine has heard about; the count
     // has to be honest on a second device.
     listAssets.mockResolvedValue([row('a1'), row('a2', { r2_key: 'asset/h/a2' }), row('a3')])
-    await expect(countPending()).resolves.toBe(2)
+    await expect(countPending()).resolves.toEqual({ pending: 2, schema: 'ready' })
+  })
+
+  /**
+   * `listAssets` selects `*`, so a column that does not exist yet is *absent*
+   * from every row rather than null. Comparing it against null therefore
+   * answers "no" for every asset, and the count comes out zero on a database
+   * where in fact nothing has been moved at all.
+   *
+   * That failure is silent by shape: zero pending is also what a finished
+   * account looks like, so the panel that would have explained it hides
+   * itself, and a missing migration presents as a missing feature.
+   */
+  describe('a database that is not ready', () => {
+    it('says 0010 has not been run, instead of reporting nothing to do', async () => {
+      const first = withoutColumn(row('a1'), 'r2_key')
+      const second = withoutColumn(row('a2', { drive_file_id: null }), 'r2_key')
+      listAssets.mockResolvedValue([first, second])
+
+      const result = await countPending()
+
+      expect(result.schema).toBe('missing-r2-key')
+      // Still a number, because it is exactly how many files are waiting on
+      // that one migration being run.
+      expect(result.pending).toBe(1)
+    })
+
+    it('goes quiet once 0011 has dropped the Drive column', async () => {
+      // The intended end of all this. Nothing can be found in Drive any more,
+      // and a permanent warning about a finished job is just noise.
+      listAssets.mockResolvedValue([withoutColumn(row('a1'), 'drive_file_id')])
+
+      await expect(countPending()).resolves.toEqual({ pending: 0, schema: 'drive-id-dropped' })
+    })
+  })
+
+  it('counts the same assets pendingOf would move', async () => {
+    // The two answer the same question about the same rows, and a disagreement
+    // shows up as a panel offering to move files it then skips.
+    const rows = [
+      row('a1'),
+      row('a2', { r2_key: 'asset/h/a2' }),
+      row('a3', { drive_file_id: null }),
+    ]
+    listAssets.mockResolvedValue(rows)
+
+    const counted = (await countPending()).pending
+    const moved = pendingOf(
+      rows.map((entry) => ({
+        id: entry.id,
+        kind: 'video' as const,
+        blobKey: entry.id,
+        mimeType: 'video/mp4',
+        name: entry.id,
+        createdAt: 0,
+        ...(entry.drive_file_id ? { driveFileId: entry.drive_file_id } : {}),
+        ...(entry.r2_key ? { r2Key: entry.r2_key } : {}),
+      })),
+    ).length
+
+    expect(counted).toBe(moved)
   })
 })
 
