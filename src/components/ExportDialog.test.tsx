@@ -442,7 +442,15 @@ describe('the render itself', () => {
 
     reopen(view)
 
-    expect(await screen.findByText(/already in the mintspace feed/i)).toBeInTheDocument()
+    // Longer than the default second, because what this waits for is a real
+    // hash: `sourceKeyOf` is deliberately not stubbed — the dedupe it drives is
+    // the thing under test — and reopening remounts the panel, so the document
+    // is hashed again from scratch. On a loaded CI runner that has come in over
+    // a second, which failed here as "the text is not there" rather than as
+    // "the text is late".
+    expect(
+      await screen.findByText(/already in the mintspace feed/i, undefined, { timeout: 5000 }),
+    ).toBeInTheDocument()
     expect(screen.queryByText('Published')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /render and republish/i })).toBeDisabled()
   })
