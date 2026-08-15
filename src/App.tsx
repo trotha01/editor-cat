@@ -25,7 +25,7 @@ import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
 import { useProjectStore } from './state/useProjectStore'
 import { installFlushOnExit, useProjectsStore } from './state/useProjectsStore'
 import { useSettingsStore } from './state/useSettingsStore'
-import { WORDS_HASH } from './lib/route'
+import { TRAINING_HASH, WORDS_HASH } from './lib/route'
 import { isMockEnabled } from './lib/mock'
 
 const TABS = [
@@ -114,10 +114,13 @@ export default function App() {
           <span aria-hidden>↷</span>
         </Button>
 
-        {/* The other page. Up here rather than in the step nav, because it is
-            not a step of this project — it is somewhere else to be. */}
+        {/* The other pages. Up here rather than in the step nav, because they
+            are not steps of this project — they are somewhere else to be. */}
         <LinkButton href={WORDS_HASH} title="Upload and order videos for a word">
           <span aria-hidden>🔤</span> Words
+        </LinkButton>
+        <LinkButton href={TRAINING_HASH} title="Upload photos for a LoRA training set">
+          <span aria-hidden>🧠</span> Training
         </LinkButton>
 
         <Button variant="primary" onClick={() => setExportOpen(true)} disabled={clipCount === 0}>

@@ -58,6 +58,7 @@ beforeEach(() => {
   process.env.R2_SECRET_ACCESS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
   process.env.R2_BUCKET_PUBLIC = 'editor-cat-media'
   process.env.R2_BUCKET_PRIVATE = 'editor-cat-private'
+  process.env.R2_BUCKET_TRAINING = 'editor-cat-training'
   process.env.MINTSPACE_SUPABASE_URL = 'https://mintspace.supabase.co'
 })
 
@@ -327,6 +328,150 @@ describe('POST /api/r2/uploads', () => {
       expect(response.status).toBe(200)
       expect(mintspaceUser).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('a training set', () => {
+  const PHOTOS = [
+    { name: 'img-0001.jpg', contentType: 'image/jpeg', bytes: 3_000_000 },
+    { name: 'img-0002.heic', contentType: 'image/heic', bytes: 2_000_000 },
+  ]
+
+  it('signs into the training bucket under a prefix the caller never named', async () => {
+    const response = await handler(
+      post('uploads', {
+        scope: 'training',
+        setId: 'my-cat-lora',
+        // Read by nothing. The set name is the only part of the prefix a client
+        // contributes, and it is one validated segment.
+        prefix: 'set/someone-else/',
+        items: PHOTOS,
+      }),
+    )
+    expect(response.status).toBe(200)
+
+    const body = (await response.json()) as {
+      prefix: string
+      bucket: string
+      urls: { key: string; url: string }[]
+    }
+
+    expect(body.bucket).toBe('training')
+    expect(body.prefix).toMatch(/^set\/[0-9a-f]{32}\/my-cat-lora\/$/)
+    expect(body.prefix).not.toContain('google-oauth2')
+    expect(body.urls[0]?.key).toBe(`${body.prefix}img-0001.jpg`)
+    expect(new URL(body.urls[1]!.url).host).toContain('acct123')
+    expect(new URL(body.urls[1]!.url).pathname).toContain('/editor-cat-training/')
+  })
+
+  it('needs no Mintspace token — this is not a publication', async () => {
+    const response = await handler(
+      post('uploads', { scope: 'training', setId: 'lora', items: PHOTOS }),
+    )
+    expect(response.status).toBe(200)
+    expect(mintspaceUser).not.toHaveBeenCalled()
+  })
+
+  it('names the missing variable when the site has no training bucket', async () => {
+    delete process.env.R2_BUCKET_TRAINING
+
+    const refused = await handler(
+      post('uploads', { scope: 'training', setId: 'lora', items: PHOTOS }),
+    )
+    expect(refused.status).toBe(503)
+    expect(JSON.stringify(await refused.json())).toContain('R2_BUCKET_TRAINING')
+
+    // And the rest of the app is untouched by that: the training bucket is the
+    // one this deployment may not have.
+    const asset = await handler(
+      post('uploads', {
+        scope: 'asset',
+        items: [{ name: 'asset_1', contentType: 'video/mp4', bytes: 10 }],
+      }),
+    )
+    expect(asset.status).toBe(200)
+  })
+
+  it('refuses a set name that is not one safe segment', async () => {
+    for (const setId of ['../..', 'a/b', 'a.b', '', 'my lora']) {
+      const response = await handler(post('uploads', { scope: 'training', setId, items: PHOTOS }))
+      expect(response.status, `should refuse "${setId}"`).toBe(400)
+    }
+  })
+
+  it('refuses a set with no name at all, which would widen the prefix', async () => {
+    const response = await handler(post('uploads', { scope: 'training', items: PHOTOS }))
+    expect(response.status).toBe(400)
+  })
+
+  it('stores stills and clips, but not audio or anything that renders', async () => {
+    for (const contentType of ['audio/mpeg', 'text/html', 'image/svg+xml']) {
+      const response = await handler(
+        post('uploads', {
+          scope: 'training',
+          setId: 'lora',
+          items: [{ name: 'x.bin', contentType, bytes: 10 }],
+        }),
+      )
+      expect(response.status, `should refuse ${contentType}`).toBe(400)
+    }
+  })
+
+  it('lists what a set already holds, as bare names', async () => {
+    // The listing is what makes an interrupted upload of four hundred photos
+    // resumable, so the shape it comes back in is worth pinning down.
+    // R2 itself is the one thing not stood up here, so the bucket's answer is
+    // built from whatever prefix the handler actually asked about — which is
+    // also how the prefix derivation gets checked on this path.
+    const asked: string[] = []
+    const listed = vi.fn(async (request: Request) => {
+      const prefix = new URL(request.url).searchParams.get('prefix') ?? ''
+      asked.push(prefix)
+      return new Response(
+        `<?xml version="1.0"?><ListBucketResult>
+           <Key>${prefix}img-0001.jpg</Key>
+           <Key>${prefix}img-0002.jpg</Key>
+           <IsTruncated>false</IsTruncated>
+         </ListBucketResult>`,
+        { status: 200 },
+      )
+    })
+    vi.stubGlobal('fetch', listed)
+
+    try {
+      const response = await handler(post('lists', { scope: 'training', setId: 'lora' }))
+      expect(response.status).toBe(200)
+
+      const body = (await response.json()) as { prefix: string; names: string[] }
+      expect(body.prefix).toMatch(/^set\/[0-9a-f]{32}\/lora\/$/)
+      expect(asked).toEqual([body.prefix])
+      // Bare names, because what the browser holds is names: it compares them
+      // against the files it is about to send.
+      expect(body.names).toEqual(['img-0001.jpg', 'img-0002.jpg'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('will not list anything but a training set', async () => {
+    // Publications are public and the asset prefix is the account's whole
+    // library; neither is something this endpoint enumerates.
+    expect((await handler(post('lists', { scope: 'asset' }))).status).toBe(400)
+    expect(
+      (await handler(post('lists', { scope: 'publication', publicationId: 'p' }, WITH_MINTSPACE)))
+        .status,
+    ).toBe(400)
+  })
+
+  it('refuses to delete a key belonging to another account', async () => {
+    const response = await handler(
+      post('deletes', {
+        scope: 'training',
+        setId: 'lora',
+        keys: ['set/00000000000000000000000000000000/lora/img-0001.jpg'],
+      }),
+    )
+    expect(response.status).toBe(403)
   })
 })
 

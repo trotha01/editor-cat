@@ -15,6 +15,7 @@ const CONFIG: R2Config = {
   secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
   publicBucket: 'editor-cat-media',
   privateBucket: 'editor-cat-private',
+  trainingBucket: 'editor-cat-training',
 }
 
 /** Pinned so a signature is reproducible rather than a function of the clock. */
@@ -50,7 +51,23 @@ describe('r2Config', () => {
       secretAccessKey: 'secret',
       publicBucket: 'pub',
       privateBucket: 'priv',
+      trainingBucket: null,
     })
+  })
+
+  it('treats the training bucket as optional, so a site without one still stores media', () => {
+    process.env.R2_ACCOUNT_ID = 'acct123'
+    process.env.R2_ACCESS_KEY_ID = 'key'
+    process.env.R2_SECRET_ACCESS_KEY = 'secret'
+    process.env.R2_BUCKET_PUBLIC = 'pub'
+    process.env.R2_BUCKET_PRIVATE = 'priv'
+
+    // It arrived long after the other two and buys one page. A deployment that
+    // never sets it should lose the training uploader and nothing else.
+    expect(r2Config()?.trainingBucket).toBeNull()
+
+    process.env.R2_BUCKET_TRAINING = 'train'
+    expect(r2Config()?.trainingBucket).toBe('train')
   })
 
   it('ignores whitespace, which is how a pasted secret usually arrives', () => {
@@ -80,6 +97,17 @@ describe('objectUrl', () => {
     expect(objectUrl(CONFIG, 'private', 'asset/hash/asset_1')).toBe(
       'https://acct123.r2.cloudflarestorage.com/editor-cat-private/asset/hash/asset_1',
     )
+    expect(objectUrl(CONFIG, 'training', 'set/hash/my-lora/img-0001.jpg')).toBe(
+      'https://acct123.r2.cloudflarestorage.com/editor-cat-training/set/hash/my-lora/img-0001.jpg',
+    )
+  })
+
+  it('refuses to address a bucket this deployment has not set up', () => {
+    // Signing against a bucket named `undefined` would come back as an opaque
+    // 403 from R2, a long way from the missing variable that caused it.
+    expect(() =>
+      objectUrl({ ...CONFIG, trainingBucket: null }, 'training', 'set/h/s/a.jpg'),
+    ).toThrow(/R2_BUCKET_TRAINING/)
   })
 
   it('keeps the key separators as separators', () => {

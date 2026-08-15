@@ -27,6 +27,7 @@ need **no key at all**. Signing in is the whole of the way in.
 | **5 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Three navigation columns on the left — a tier ("1st tier", "Classical", "ESL"), then a language taught in it, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. Anything can be **renamed** with the ✏️ beside it — a tier, a language, a word or a take. Each column **folds to a strip** with the « beside its name, and stays folded next time. **Settings** and the **report bubble** are here as well, the same ones the editor has. The **player** above the rows plays the whole run back to back, moving to the next take on its own — click the picture to start or stop it, drag the bar under it to scrub across the whole word, and correct the transcript of the take on screen in the box below it. The shelf itself is **kept on your account**, so it opens the same on your next machine in one query, and the takes are in [the same storage](#where-your-media-lives) as everything else the app makes. See [The word shelf](#the-word-shelf).               |
+| **Training**     | A third page, reached from **Training** in the header (`#/training`), for putting the photos of a **LoRA training set** into storage — 200–400 of them in one sitting, which is what a LoRA usually wants. Name the set, drop a folder in (or **Choose a folder**, which takes a camera roll whole), and every photo is listed with the name it will be stored under before anything is sent. Photos go straight from this browser to a **bucket of their own**, one folder per set, and are deliberately _not_ catalogued the way the rest of the app's media is: nothing here is a clip, a take or an asset. The page is **resumable** — it asks the bucket what the set already holds, so re-picking the same folder after a dropped connection uploads only what is missing — and one photo that fails never costs the run, it is listed and **Retry failed** sends only those. JPEG, PNG, WebP, HEIC, AVIF and TIFF, plus MP4, WebM and MOV for clips you mean to pull frames out of later; nothing is resized or re-encoded. See [Training sets](#training-sets).                                                                                                                                                                                                                                                                  |
 | **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## What you need
@@ -409,7 +410,9 @@ there — nothing here ever deleted one — and are no longer reachable from thi
 app.
 
 Set up the bucket under [deploying to Netlify](#deploying-to-netlify);
-`.env.example` explains each variable and why the two buckets are separate.
+`.env.example` explains each variable and why the buckets are separate. Photos
+for a LoRA go somewhere else again — see [training sets](#training-sets), which
+is the one part of the app that stores something it never reads back.
 
 ### Setting up Auth0
 
@@ -625,6 +628,52 @@ Google's refresh token never reached this codebase. Both are gone with Drive:
 signing in asks Google for a name and an address, and nothing else, so there is
 no token to store, exchange, or lose.
 
+## Training sets
+
+The **Training** page (`#/training`) exists for one errand: getting the two to
+four hundred photos a LoRA is trained on into storage, in a folder somebody can
+hand to a trainer. It shares the upload endpoint with everything else here and
+almost nothing else.
+
+**A bucket of its own** (`R2_BUCKET_TRAINING`), keyed
+`set/<hashed account>/<set name>/`. A prefix inside the private bucket would have
+been less to set up and worse to live with: a training set is the one thing here
+that gets handed over — to a trainer, to a machine with a token scoped to it, to
+a collaborator — and none of that should ever come within a policy of somebody's
+media. It is also the only bucket a deployment may skip: leave the variable unset
+and this page says so while the rest of the app is untouched.
+
+**Nothing it uploads is catalogued.** Every other route into storage goes through
+the ingest hook in `src/Root.tsx`, which backs the bytes up, writes an asset row
+and keeps a copy in IndexedDB. A training photo is not a clip, a take or an asset
+— the app never plays it back — so this page sits outside that hook entirely and
+uploads straight from the file the browser was given. Four hundred photos would
+otherwise fill IndexedDB with a library nothing ever reads.
+
+**It is resumable, and that is what shapes the rest.** Four hundred photos is
+fifteen to forty minutes, so some runs will be interrupted. Before an upload the
+page asks the bucket what the set already holds (`POST /api/r2/lists`, training
+scope only), and every file is named as a **pure function of its filename** —
+`IMG_0142 (1).HEIC` becomes `img_0142-1.heic` every time — so picking the same
+folder again lines up with what is already there and sends only what is missing.
+That is why the names are not simply numbered `0001.jpg`: a counter would be
+tidier and would make resuming impossible. `src/lib/training/names.ts` holds the
+rules, and its tests check them against the endpoint's own `isSafeName` rather
+than a second copy of it.
+
+**One file failing costs one file.** Signatures are minted twenty-five at a time,
+just before each batch is sent, because a presigned URL lives fifteen minutes and
+a long set does not finish inside one. Each photo retries on its own for a
+dropped connection, and not at all for a refusal — a 400 will be a 400 again —
+and the failures come back as a list with **Retry failed** beside it rather than
+as an exception that discards the three hundred that worked.
+
+**What it stores:** JPEG, PNG, WebP, HEIC, HEIF, AVIF and TIFF, plus MP4, WebM
+and MOV. HEIC matters more than it looks: most of an iPhone camera roll is HEIC,
+and browsers often hand it over with no content type at all, so the type is taken
+from the extension when the browser has no opinion. No audio, and nothing that a
+browser would render as a page.
+
 ## Publishing to Mintspace (optional)
 
 [Mintspace](https://github.com/trotha01/mintspace) is a vertical video feed —
@@ -821,10 +870,15 @@ needs](#what-sign-in-needs).
 `VITE_R2_PUBLIC_BASE` is the Cloudflare custom domain the public bucket is
 served from. Without them the editor still runs on this browser alone: nothing
 is backed up, nothing fills in on a second machine, and publishing is not
-offered. Scope the API token to those two buckets with Object Read & Write and
-nothing else — never account-wide. `.env.example` explains why there are two
-buckets, and spells out the CORS policy, which is the thing most likely to be
+offered. Scope the API token to those buckets with Object Read & Write and
+nothing else — never account-wide. `.env.example` explains why the buckets are
+separate, and spells out the CORS policy, which is the thing most likely to be
 wrong in a way nothing reports.
+
+**`R2_BUCKET_TRAINING`** is a third bucket, and the only one that is optional on
+its own: it holds [training sets](#training-sets) and nothing else. Left unset,
+the Training page says the site has nowhere to put one and every other feature
+carries on unchanged.
 
 **`GITHUB_TOKEN` and `GITHUB_REPO`** are optional, and only decide whether the
 report bubble can file anything. Without them the editor is unchanged and the
@@ -1298,12 +1352,15 @@ shelf of words with a handful of whole takes filed under each. They share media
 storage and nothing else — no timeline, no clips, no export — so putting it in
 the step nav would have made it step six of a project it has nothing to do with.
 Which page is on screen comes off the URL hash (`src/lib/route.ts`), which is
-about as much router as two pages need, and it is the hash rather than the path
+about as much router as three pages need, and it is the hash rather than the path
 because Auth0 returns from Google to this same URL with `code` and `state` in the
 _query_ string: the hash is the one part of the address that return cannot
-disturb. `src/Root.tsx` picks between the two and owns the pair of things both
-need — the asset catalogue and the ingest hook — so a video uploaded for a word
-reaches storage by exactly the route a generated image does.
+disturb. `src/Root.tsx` picks between them and owns the pair of things the editor
+and the words page both need — the asset catalogue and the ingest hook — so a
+video uploaded for a word reaches storage by exactly the route a generated image
+does. [The training page](#training-sets) is the exception, and deliberately
+outside that hook: what it uploads is never played back here, so it is never
+catalogued.
 
 **A word's videos are ordered by hand, and the labels are only labels.** Intro,
 Word and Outro say what a take _is_; they do not say where it goes. The run plays

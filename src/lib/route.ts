@@ -1,9 +1,9 @@
 /**
  * Which page the address bar is asking for.
  *
- * The app is two pages now — the editor, and the word pages — so it needs some
- * way of being asked for one. That is the whole of what this does: no router, no
- * nested routes, no history stack of its own.
+ * The app is three pages now — the editor, the word pages, and the training
+ * uploader — so it needs some way of being asked for one. That is the whole of
+ * what this does: no router, no nested routes, no history stack of its own.
  *
  * In the hash rather than the path for two reasons. Auth0 comes back from Google
  * to this same URL carrying `code` and `state` in the *query* string, and the
@@ -14,14 +14,18 @@
  */
 import { useSyncExternalStore } from 'react'
 
-export type Route = 'editor' | 'words'
+export type Route = 'editor' | 'words' | 'training'
 
 export const EDITOR_HASH = '#/'
 export const WORDS_HASH = '#/words'
+export const TRAINING_HASH = '#/training'
 
 /** Anything unrecognised is the editor, which is what a bare URL asks for. */
 export function routeFromHash(hash: string): Route {
-  return hash.replace(/^#\/?/, '').toLowerCase() === 'words' ? 'words' : 'editor'
+  const name = hash.replace(/^#\/?/, '').toLowerCase()
+  if (name === 'words') return 'words'
+  if (name === 'training') return 'training'
+  return 'editor'
 }
 
 function subscribe(onChange: () => void): () => void {

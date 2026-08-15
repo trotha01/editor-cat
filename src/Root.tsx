@@ -10,6 +10,7 @@
 import { useEffect } from 'react'
 import App from './App'
 import { WordsPage } from './WordsPage'
+import { TrainingPage } from './TrainingPage'
 import { useRoute } from './lib/route'
 import { setIngestListener } from './lib/media'
 import { recordAsset } from './lib/sync/assetSync'
@@ -36,5 +37,10 @@ export function Root() {
     return () => setIngestListener(null)
   }, [])
 
-  return route === 'words' ? <WordsPage /> : <App />
+  if (route === 'words') return <WordsPage />
+  // Deliberately outside the ingest hook above: a training set is a few hundred
+  // photos on their way to a trainer, not media this app plays back, so it is
+  // neither catalogued nor kept in IndexedDB. It uploads and forgets.
+  if (route === 'training') return <TrainingPage />
+  return <App />
 }

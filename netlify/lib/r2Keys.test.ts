@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ASSET_CONTENT_TYPES,
   MAX_OBJECTS_PER_REQUEST,
+  TRAINING_CONTENT_TYPES,
   assetPrefix,
   hashSubject,
   isAllowedContentType,
@@ -11,6 +12,7 @@ import {
   keysUnder,
   publicationPrefix,
   publicationPrefixFor,
+  trainingPrefixFor,
 } from './r2Keys'
 
 describe('isSafeName', () => {
@@ -168,6 +170,42 @@ describe('content types', () => {
     for (const type of ASSET_CONTENT_TYPES) {
       expect(isAllowedContentType('asset', type)).toBe(true)
     }
+  })
+
+  it('allows the stills a LoRA is trained on, including what a phone hands over', () => {
+    for (const type of TRAINING_CONTENT_TYPES) {
+      expect(isAllowedContentType('training', type)).toBe(true)
+    }
+    // The one worth naming: most of an iPhone camera roll is HEIC, and a
+    // training uploader that refused it would refuse most of a camera roll.
+    expect(isAllowedContentType('training', 'image/heic')).toBe(true)
+  })
+
+  it('keeps audio and pages out of a training set', () => {
+    expect(isAllowedContentType('training', 'audio/mpeg')).toBe(false)
+    expect(isAllowedContentType('training', 'text/html')).toBe(false)
+    expect(isAllowedContentType('training', 'image/svg+xml')).toBe(false)
+  })
+})
+
+describe('trainingPrefixFor', () => {
+  it('puts one set under the hashed subject, one folder per LoRA', async () => {
+    const hash = await hashSubject('auth0|abc')
+    expect(trainingPrefixFor(hash, 'my-cat-lora')).toEqual({
+      ok: true,
+      prefix: `set/${hash}/my-cat-lora/`,
+    })
+  })
+
+  it('refuses a set name that would climb out of the account', () => {
+    // The set name is the only piece of any prefix in this file that a client
+    // contributes, so it is the only one worth attacking.
+    expect(trainingPrefixFor('hash', '..').ok).toBe(false)
+    expect(trainingPrefixFor('hash', 'a/b').ok).toBe(false)
+    expect(trainingPrefixFor('hash', 'a.b').ok).toBe(false)
+    // An empty name would collapse to "everything this account has ever
+    // uploaded for training", which a delete would then happily empty.
+    expect(trainingPrefixFor('hash', '').ok).toBe(false)
   })
 })
 

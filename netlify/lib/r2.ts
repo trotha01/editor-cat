@@ -12,6 +12,11 @@
  *    no domain, and every read is a short-lived presigned GET. Those URLs are
  *    unique per issue and therefore miss cache by design, which is fine —
  *    they are fetched once per device and then live in IndexedDB.
+ *  - the **training** bucket holds LoRA training sets: a few hundred photos
+ *    uploaded in one sitting and then handed to a trainer, rather than anything
+ *    this app plays back. It is optional, and a deployment without it keeps
+ *    every other feature — which is why it is the one bucket whose absence does
+ *    not make `r2Config()` null.
  *
  * Signing is `aws4fetch` rather than hand-rolled. The precedent next door in
  * auth0.ts is JWT *verification*, where both ends are ours and a mistake fails
@@ -33,10 +38,18 @@ export interface R2Config {
   secretAccessKey: string
   publicBucket: string
   privateBucket: string
+  /**
+   * Where training sets go, or null where this deployment has not made one.
+   *
+   * Nullable rather than required because it arrived long after the other two
+   * and buys a single page: a site that never sets it should lose the training
+   * uploader and nothing else, not stop storing media altogether.
+   */
+  trainingBucket: string | null
 }
 
-/** Which of the two buckets an operation is against. */
-export type BucketKind = 'public' | 'private'
+/** Which of the buckets an operation is against. */
+export type BucketKind = 'public' | 'private' | 'training'
 
 /**
  * R2 has no regions to choose between, and its S3 endpoint wants this exact
@@ -72,16 +85,43 @@ export function r2Config(): R2Config | null {
   const secretAccessKey = (process.env.R2_SECRET_ACCESS_KEY ?? '').trim()
   const publicBucket = (process.env.R2_BUCKET_PUBLIC ?? '').trim()
   const privateBucket = (process.env.R2_BUCKET_PRIVATE ?? '').trim()
+  const trainingBucket = (process.env.R2_BUCKET_TRAINING ?? '').trim()
 
   if (!accountId || !accessKeyId || !secretAccessKey || !publicBucket || !privateBucket) {
     return null
   }
 
-  return { accountId, accessKeyId, secretAccessKey, publicBucket, privateBucket }
+  return {
+    accountId,
+    accessKeyId,
+    secretAccessKey,
+    publicBucket,
+    privateBucket,
+    trainingBucket: trainingBucket || null,
+  }
 }
 
-export function bucketName(config: R2Config, kind: BucketKind): string {
-  return kind === 'public' ? config.publicBucket : config.privateBucket
+/** The bucket a kind names, or null where this deployment has not set one up. */
+export function bucketName(config: R2Config, kind: BucketKind): string | null {
+  if (kind === 'public') return config.publicBucket
+  if (kind === 'private') return config.privateBucket
+  return config.trainingBucket
+}
+
+/**
+ * The bucket a kind names, or a throw.
+ *
+ * Only the training bucket can be missing, and the endpoint answers 503 for it
+ * before anything here is reached — so this is the assertion that keeps that
+ * check honest rather than a path anyone is expected to take. Signing against a
+ * bucket named `undefined` would fail as an opaque 403 much further away.
+ */
+function requireBucket(config: R2Config, kind: BucketKind): string {
+  const bucket = bucketName(config, kind)
+  if (!bucket) {
+    throw new Error(`This site has no ${kind} bucket: set R2_BUCKET_${kind.toUpperCase()}.`)
+  }
+  return bucket
 }
 
 /**
@@ -92,7 +132,7 @@ export function bucketName(config: R2Config, kind: BucketKind): string {
  * the browser builds and this file never sees.
  */
 export function objectUrl(config: R2Config, kind: BucketKind, key: string): string {
-  const bucket = bucketName(config, kind)
+  const bucket = requireBucket(config, kind)
   // Encoded per segment so a key can hold anything the validator allows without
   // the path being reinterpreted. `aws4fetch` re-encodes for the canonical
   // request itself; this is about producing a URL that resolves.
@@ -211,7 +251,7 @@ export async function listPrefix(
   prefix: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string[]> {
-  const bucket = bucketName(config, kind)
+  const bucket = requireBucket(config, kind)
   const aws = client(config)
   const keys: string[] = []
   let token: string | undefined

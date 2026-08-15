@@ -31,7 +31,7 @@ import { RenameField } from './components/RenameField'
 import { SettingsDialog } from './components/SettingsDialog'
 import { WordVideos } from './components/WordVideos'
 import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
-import { EDITOR_HASH } from './lib/route'
+import { EDITOR_HASH, TRAINING_HASH } from './lib/route'
 import { languagesInTier, sortedTiers, wordsInLanguage } from './lib/words'
 import { useAuthStore } from './state/useAuthStore'
 import { useWordsStore } from './state/useWordsStore'
@@ -179,6 +179,9 @@ export function WordsPage() {
 
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
+        </LinkButton>
+        <LinkButton href={TRAINING_HASH} title="Upload photos for a LoRA training set">
+          <span aria-hidden>🧠</span> Training
         </LinkButton>
         {/* The same dialog the editor opens, minus the project section: the
             account and what this browser is storing are as much this page's

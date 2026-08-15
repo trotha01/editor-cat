@@ -24,6 +24,11 @@
  *  - **Generated media and word takes** are keyed by a hash of the Auth0
  *    subject. These URLs are presigned rather than public, and a raw subject
  *    (`google-oauth2|104372…`) has no business appearing in a key at all.
+ *  - **Training sets** are keyed by the same subject hash and then by a set
+ *    name the uploader chooses — one folder per LoRA, which is the shape the
+ *    trainer wants the photos handed over in. The set name is the only piece a
+ *    client contributes to any prefix in this file, and it is validated as one
+ *    safe id segment, exactly like a publication id.
  */
 
 /**
@@ -85,7 +90,29 @@ export const ASSET_CONTENT_TYPES = [
   'audio/mp4',
 ] as const
 
-export type Scope = 'publication' | 'asset'
+/**
+ * What a training set may hold.
+ *
+ * Wider than the asset list on the image side and narrower on the audio one: a
+ * LoRA is trained on stills, and a phone hands over `image/heic` for most of
+ * them — refusing those would refuse the majority of a camera roll. Video is
+ * here because the same page takes clips to pull frames out of later. There is
+ * no audio, because nothing about this bucket is played.
+ */
+export const TRAINING_CONTENT_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'image/avif',
+  'image/tiff',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+] as const
+
+export type Scope = 'publication' | 'asset' | 'training'
 
 export function isSafeName(name: string): boolean {
   return SAFE_NAME.test(name)
@@ -96,7 +123,9 @@ export function isSafeId(id: string): boolean {
 }
 
 export function allowedContentTypes(scope: Scope): readonly string[] {
-  return scope === 'publication' ? PUBLICATION_CONTENT_TYPES : ASSET_CONTENT_TYPES
+  if (scope === 'publication') return PUBLICATION_CONTENT_TYPES
+  if (scope === 'training') return TRAINING_CONTENT_TYPES
+  return ASSET_CONTENT_TYPES
 }
 
 export function isAllowedContentType(scope: Scope, contentType: string): boolean {
@@ -135,6 +164,11 @@ export function assetPrefix(subjectHash: string): string {
   return `asset/${subjectHash}/`
 }
 
+/** Where one account's photos for one training set live. */
+export function trainingPrefix(subjectHash: string, setId: string): string {
+  return `set/${subjectHash}/${setId}/`
+}
+
 export type PrefixResult = { ok: true; prefix: string } | { ok: false; reason: string }
 
 /**
@@ -152,6 +186,24 @@ export function publicationPrefixFor(mintspaceUid: string, publicationId: string
     return { ok: false, reason: 'That publication id is not a shape we store under.' }
   }
   return { ok: true, prefix: publicationPrefix(mintspaceUid, publicationId) }
+}
+
+/**
+ * The prefix one training set may touch.
+ *
+ * The subject hash is derived from a verified token by the caller, so the only
+ * thing checked here is the set name — which does come from the client, and is
+ * about to become a path segment. `isSafeId` excludes dots and slashes, so
+ * there is nothing in it to normalise or escape.
+ */
+export function trainingPrefixFor(subjectHash: string, setId: string): PrefixResult {
+  if (!isSafeId(setId)) {
+    return {
+      ok: false,
+      reason: 'A set name may only hold letters, numbers, dashes and underscores.',
+    }
+  }
+  return { ok: true, prefix: trainingPrefix(subjectHash, setId) }
 }
 
 /**

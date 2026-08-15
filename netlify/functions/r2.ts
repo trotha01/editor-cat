@@ -22,15 +22,18 @@ import {
   isUnderPrefix,
   keysUnder,
   publicationPrefixFor,
+  trainingPrefixFor,
 } from '../lib/r2Keys'
 import { mintspaceConfig, mintspaceUser } from '../lib/mintspaceToken'
 
 /**
  * Minting URLs the browser uploads to and downloads from.
  *
- *   POST /api/r2/uploads    -> presigned PUTs for one publication or asset set
+ *   POST /api/r2/uploads    -> presigned PUTs for one publication, asset set or
+ *                              training set
  *   POST /api/r2/downloads  -> presigned GETs, private bucket only
- *   POST /api/r2/deletes    -> remove one publication's objects
+ *   POST /api/r2/lists      -> the names already in one training set
+ *   POST /api/r2/deletes    -> remove one publication's or training set's objects
  *
  * **No bytes pass through here.** The browser PUTs straight to R2, which is what
  * keeps a sixty-megabyte export clear of the six-megabyte function payload
@@ -215,9 +218,37 @@ async function resolveTarget(
   scope: Scope,
   payload: Record<string, unknown>,
   subject: string,
+  config: R2Config,
 ): Promise<{ ok: true; prefix: string; kind: BucketKind } | { ok: false; response: Response }> {
   if (scope === 'asset') {
     return { ok: true, prefix: assetPrefix(await hashSubject(subject)), kind: 'private' }
+  }
+
+  if (scope === 'training') {
+    // The one bucket a deployment may not have. Answered separately from the
+    // 503 above, and naming only the variable that is actually missing, so that
+    // "this site stores media but not training sets" is legible as its own
+    // state rather than reading as broken storage.
+    if (!config.trainingBucket) {
+      return {
+        ok: false,
+        response: jsonError(
+          503,
+          'This site is not set up for training sets.',
+          "Set R2_BUCKET_TRAINING in the site's environment variables.",
+        ),
+      }
+    }
+
+    const setId = payload.setId
+    if (typeof setId !== 'string') {
+      return { ok: false, response: jsonError(400, 'Name the set these files belong to.') }
+    }
+
+    const prefix = trainingPrefixFor(await hashSubject(subject), setId)
+    if (!prefix.ok) return { ok: false, response: jsonError(400, prefix.reason) }
+
+    return { ok: true, prefix: prefix.prefix, kind: 'training' }
   }
 
   const account = await mintspaceAccount(request)
@@ -235,15 +266,17 @@ async function resolveTarget(
 }
 
 function parseScope(value: unknown): Scope | null {
-  return value === 'publication' || value === 'asset' ? value : null
+  return value === 'publication' || value === 'asset' || value === 'training' ? value : null
 }
+
+const SCOPES = 'Expected "publication", "asset" or "training".'
 
 async function uploads(request: Request, config: R2Config, subject: string): Promise<Response> {
   const payload = await body(request)
   if (!payload) return jsonError(400, 'That request could not be read.')
 
   const scope = parseScope(payload.scope)
-  if (!scope) return jsonError(400, 'Unknown scope.', 'Expected "publication" or "asset".')
+  if (!scope) return jsonError(400, 'Unknown scope.', SCOPES)
 
   const parsed = parseObjects(payload.items)
   if (!parsed.ok) return jsonError(400, 'That upload was refused.', parsed.reason)
@@ -261,7 +294,7 @@ async function uploads(request: Request, config: R2Config, subject: string): Pro
     }
   }
 
-  const target = await resolveTarget(request, scope, payload, subject)
+  const target = await resolveTarget(request, scope, payload, subject, config)
   if (!target.ok) return target.response
 
   const keys = keysUnder(
@@ -318,14 +351,56 @@ async function downloads(request: Request, config: R2Config, subject: string): P
   return json({ urls })
 }
 
+/**
+ * What is already in one training set.
+ *
+ * Training scope only, and it exists for one thing: uploading four hundred
+ * photos is long enough that it will sometimes be interrupted, and a page that
+ * cannot see what already arrived can only offer to send all four hundred
+ * again. Nothing else in this app asks the bucket what it holds — the editor's
+ * catalogue is Supabase — but a training set has no catalogue, and giving it one
+ * would be a second copy of the truth to keep in step.
+ */
+async function lists(request: Request, config: R2Config, subject: string): Promise<Response> {
+  const payload = await body(request)
+  if (!payload) return jsonError(400, 'That request could not be read.')
+
+  const scope = parseScope(payload.scope)
+  if (scope !== 'training') {
+    return jsonError(400, 'Only a training set can be listed.', SCOPES)
+  }
+
+  const target = await resolveTarget(request, scope, payload, subject, config)
+  if (!target.ok) return target.response
+
+  let keys: string[]
+  try {
+    keys = await listPrefix(config, target.kind, target.prefix)
+  } catch (error) {
+    return jsonError(
+      502,
+      'Could not read what is already in that set.',
+      error instanceof Error ? error.message : String(error),
+    )
+  }
+
+  // Names rather than keys, because that is what the browser holds: it compares
+  // them against the files it is about to send. The prefix goes back too, so a
+  // caller that does want keys can rebuild them without knowing the scheme.
+  return json({
+    prefix: target.prefix,
+    names: keys.map((key) => key.slice(target.prefix.length)),
+  })
+}
+
 async function deletes(request: Request, config: R2Config, subject: string): Promise<Response> {
   const payload = await body(request)
   if (!payload) return jsonError(400, 'That request could not be read.')
 
   const scope = parseScope(payload.scope)
-  if (!scope) return jsonError(400, 'Unknown scope.', 'Expected "publication" or "asset".')
+  if (!scope) return jsonError(400, 'Unknown scope.', SCOPES)
 
-  const target = await resolveTarget(request, scope, payload, subject)
+  const target = await resolveTarget(request, scope, payload, subject, config)
   if (!target.ok) return target.response
 
   // Named keys are the usual path: a publication records exactly what it wrote,
@@ -381,6 +456,7 @@ export default async (request: Request): Promise<Response> => {
 
   if (route === 'uploads') return await uploads(request, config, subject)
   if (route === 'downloads') return await downloads(request, config, subject)
+  if (route === 'lists') return await lists(request, config, subject)
   if (route === 'deletes') return await deletes(request, config, subject)
 
   return jsonError(404, 'No such endpoint.')
