@@ -295,6 +295,28 @@ export async function auth0User(token: string, config: Auth0Config): Promise<Aut
   return { id: payload.sub, email: typeof email === 'string' ? email : '' }
 }
 
+/**
+ * The `sub` a token claims, with nothing checked at all.
+ *
+ * **This does not prove anything and must never be used as though it did.** It
+ * exists for exactly one job: the ID token the browser sends alongside its
+ * access token (`x-supabase-authorization`) is verified by PostgREST rather than
+ * here — different audience, different consumer — so this side cannot call
+ * `auth0User` on it. What it can do is refuse to *use* an ID token that claims
+ * to be somebody else, which is what this reads.
+ *
+ * That check is meaningful only because it is paired with a real one: a forged
+ * token is refused by PostgREST, so it returns no rows, and a genuine token
+ * belonging to another account is refused here, so it is never sent. Neither
+ * half is sufficient alone, and this half is the insufficient one. See
+ * netlify/lib/shelfShares.ts.
+ */
+export function unverifiedSubject(token: string): string | null {
+  const payload = decodeSegment(token.split('.')[1] ?? '')
+  if (!isRecord(payload)) return null
+  return typeof payload.sub === 'string' && payload.sub ? payload.sub : null
+}
+
 /** Test seam: forget the cached signing keys, and the rate limit on refetching. */
 export function resetForTests(): void {
   cache = null

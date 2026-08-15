@@ -3,10 +3,12 @@ import {
   ASSET_CONTENT_TYPES,
   MAX_OBJECTS_PER_REQUEST,
   assetPrefix,
+  assetPrefixesFor,
   hashSubject,
   isAllowedContentType,
   isSafeId,
   isSafeName,
+  isUnderAnyPrefix,
   isUnderPrefix,
   keysUnder,
   publicationPrefix,
@@ -175,5 +177,44 @@ describe('assetPrefix', () => {
   it('namespaces by the hashed subject', async () => {
     const hash = await hashSubject('auth0|abc')
     expect(assetPrefix(hash)).toBe(`asset/${hash}/`)
+  })
+})
+
+/**
+ * The plural form, for a caller who is on somebody else's word shelf.
+ *
+ * The set is still derived from subjects rather than sent by the client — see
+ * shelfShares.ts — so what is worth pinning here is only that widening the
+ * question to several prefixes did not loosen it for any one of them.
+ */
+describe('several prefixes at once', () => {
+  it('accepts a key under any of them', async () => {
+    const mine = assetPrefix(await hashSubject('auth0|me'))
+    const theirs = assetPrefix(await hashSubject('auth0|them'))
+
+    expect(isUnderAnyPrefix(`${theirs}asset_1`, [mine, theirs])).toBe(true)
+    expect(isUnderAnyPrefix(`${mine}asset_1`, [mine, theirs])).toBe(true)
+  })
+
+  it('refuses a key under none of them', async () => {
+    const mine = assetPrefix(await hashSubject('auth0|me'))
+    expect(isUnderAnyPrefix('asset/00000000000000000000000000000000/x', [mine])).toBe(false)
+  })
+
+  it('refuses everything when the set is empty', () => {
+    expect(isUnderAnyPrefix('asset/whatever/x', [])).toBe(false)
+  })
+
+  it('still refuses traversal, whichever prefix it starts from', async () => {
+    const mine = assetPrefix(await hashSubject('auth0|me'))
+    const theirs = assetPrefix(await hashSubject('auth0|them'))
+    expect(isUnderAnyPrefix(`${theirs}../../etc`, [mine, theirs])).toBe(false)
+  })
+
+  it('derives one prefix per subject, in order', async () => {
+    expect(await assetPrefixesFor(['auth0|me', 'auth0|them'])).toEqual([
+      assetPrefix(await hashSubject('auth0|me')),
+      assetPrefix(await hashSubject('auth0|them')),
+    ])
   })
 })

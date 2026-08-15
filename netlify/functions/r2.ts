@@ -16,14 +16,17 @@ import {
   MAX_REQUEST_BYTES,
   type Scope,
   assetPrefix,
+  assetPrefixesFor,
   hashSubject,
   isAllowedContentType,
   isSafeId,
+  isUnderAnyPrefix,
   isUnderPrefix,
   keysUnder,
   publicationPrefixFor,
 } from '../lib/r2Keys'
 import { mintspaceConfig, mintspaceUser } from '../lib/mintspaceToken'
+import { shelfCounterparts } from '../lib/shelfShares'
 
 /**
  * Minting URLs the browser uploads to and downloads from.
@@ -45,6 +48,13 @@ import { mintspaceConfig, mintspaceUser } from '../lib/mintspaceToken'
  * unlike the Supabase paths in this app, there is no database waiting to refuse
  * a write to somebody else's folder. r2Keys.ts holds the derivation and its
  * tests.
+ *
+ * Sharing a word shelf makes that sentence plural on the read path and nowhere
+ * else. A caller may now be entitled to prefixes besides their own, but the
+ * *set* is still derived here rather than sent: lib/shelfShares.ts asks the
+ * database which subjects the caller shares a shelf with, and the prefixes are
+ * hashed from those. Uploads are untouched — everything anyone writes still
+ * lands under their own subject, whoever's shelf they are filing it into.
  *
  * Uploading a publication needs *both* identities: the Auth0 session that gates
  * every endpoint here, and a Mintspace session that decides whose prefix the
@@ -284,11 +294,33 @@ async function uploads(request: Request, config: R2Config, subject: string): Pro
 }
 
 /**
- * Presigned GETs for the caller's own objects.
+ * The Auth0 ID token, when the browser sent one.
+ *
+ * A second identity in a header of its own, exactly as publishing does with
+ * Mintspace's — and for a related reason: this one is not interchangeable with
+ * the `authorization` token either. That is the access token, minted for this
+ * site's API; this is the ID token, which is what Supabase accepts. Only used to
+ * ask the database who the caller shares a shelf with, and only after its
+ * subject has been checked against the verified one. See lib/shelfShares.ts.
+ */
+function supabaseIdToken(request: Request): string | null {
+  const header = request.headers.get('x-supabase-authorization') ?? ''
+  if (!header.toLowerCase().startsWith('bearer ')) return null
+  return header.slice(7).trim() || null
+}
+
+/**
+ * Presigned GETs for objects the caller may read.
  *
  * Private bucket only, by construction: the public one is served from a custom
  * domain and needs no signature at all, so a signed URL for it would be a
  * pointless credential to hand out.
+ *
+ * Their own files are the whole of it until a word shelf is shared, and that
+ * case still costs nothing: keys under the caller's own prefix are settled
+ * without asking anybody. Only a key that is *not* theirs sends this looking,
+ * which is what keeps the ordinary hydration of an ordinary project exactly the
+ * request it was before shares existed.
  */
 async function downloads(request: Request, config: R2Config, subject: string): Promise<Response> {
   const payload = await body(request)
@@ -301,13 +333,28 @@ async function downloads(request: Request, config: R2Config, subject: string): P
     return jsonError(400, `That is more than ${MAX_OBJECTS_PER_REQUEST} keys.`)
   }
 
-  const prefix = assetPrefix(await hashSubject(subject))
-  for (const key of keys) {
-    // The client names keys here because it is echoing back what an upload
-    // returned. Checked against the prefix we would have derived anyway, so a
-    // guessed key belonging to someone else is refused rather than signed.
-    if (!isUnderPrefix(key, prefix)) {
-      return jsonError(403, 'That file does not belong to this account.')
+  // The client names keys here because it is echoing back what an upload
+  // returned. Checked against the prefixes we would have derived anyway, so a
+  // guessed key belonging to someone else is refused rather than signed.
+  const own = assetPrefix(await hashSubject(subject))
+  const foreign = keys.filter((key) => !isUnderPrefix(key, own))
+
+  if (foreign.length > 0) {
+    const shared = await shelfCounterparts(subject, supabaseIdToken(request))
+
+    // Not a 403. The question of whether these files are the caller's to read
+    // was never answered, and telling somebody their collaborator's takes do not
+    // belong to them — when the truth is that a lookup failed — sends them to
+    // undo a share that was working.
+    if (shared.degraded) {
+      return jsonError(502, 'Could not check which shelves you are on just now.', shared.reason)
+    }
+
+    const allowed = [own, ...(await assetPrefixesFor(shared.subjects))]
+    for (const key of foreign) {
+      if (!isUnderAnyPrefix(key, allowed)) {
+        return jsonError(403, 'That file does not belong to a shelf you are on.')
+      }
     }
   }
 

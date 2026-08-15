@@ -29,7 +29,12 @@ vi.mock('../lib/supabase/assets', async (importOriginal) => ({
 }))
 
 vi.mock('../lib/supabase/client', () => ({ isSupabaseConfigured: () => true }))
-vi.mock('./useAuthStore', () => ({ isSignedIn: () => true }))
+vi.mock('./useAuthStore', () => ({
+  isSignedIn: () => true,
+  // The shelf a read or a write is about is now a row picked by subject, not
+  // "the only one this token can see", so a signed-in test has to say who.
+  currentSubject: () => 'google-oauth2|me',
+}))
 vi.mock('../lib/sync/assetSync', () => ({
   recordAsset: (asset: unknown) => recordAsset(asset) as unknown,
 }))

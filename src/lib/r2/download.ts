@@ -11,14 +11,39 @@
  * and never stored. Caching one in IndexedDB beside the asset would be a
  * stale-auth bug waiting for a slow week.
  */
-import { auth0Token } from '../auth0/client'
+import { auth0IdToken, auth0Token } from '../auth0/client'
 import { mapLimited } from '../concurrency'
 
 /** Signed for long enough that a large take on a slow line still finishes. */
 const SIGN_BATCH = 64
 
+/**
+ * Both tokens, because a key on a shared shelf is not settled by either alone.
+ *
+ * `authorization` is the access token, minted for this site's API, and it is
+ * what proves who is asking. `x-supabase-authorization` is the ID token, which
+ * is the one Supabase accepts — the endpoint uses it to ask the database which
+ * shelves this account is on, as this account, rather than holding a
+ * service-role key that could ask about anybody. See netlify/lib/shelfShares.ts
+ * for why the second one cannot be substituted for the first.
+ *
+ * A failure to produce the ID token is not a failure to download: the endpoint
+ * only consults it for a key that is not the caller's own, which is the
+ * uncommon case, and it answers plainly when it needed one and had none.
+ */
+async function tokens(): Promise<Record<string, string>> {
+  const [access, id] = await Promise.all([
+    auth0Token().catch(() => null),
+    auth0IdToken().catch(() => null),
+  ])
+  return {
+    ...(access ? { authorization: `Bearer ${access}` } : {}),
+    ...(id ? { 'x-supabase-authorization': `Bearer ${id}` } : {}),
+  }
+}
+
 async function sign(keys: string[], signal?: AbortSignal): Promise<Map<string, string>> {
-  const token = await auth0Token()
+  const auth = await tokens()
   const urls = new Map<string, string>()
 
   // Batched rather than one request per key: hydrating a project asks for every
@@ -30,7 +55,7 @@ async function sign(keys: string[], signal?: AbortSignal): Promise<Map<string, s
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...auth,
       },
       signal,
       body: JSON.stringify({ keys: batch }),

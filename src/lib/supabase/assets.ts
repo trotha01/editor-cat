@@ -8,6 +8,7 @@
 
  */
 import { supabase } from './client'
+import { currentAccount } from '../auth0/client'
 import type { Asset } from '../types'
 
 interface AssetRow {
@@ -103,11 +104,32 @@ export async function getAssets(ids: string[]): Promise<AssetRow[]> {
   return rows.flat()
 }
 
-/** The whole library, for populating a machine that has never seen it. */
+/**
+ * The whole library, for populating a machine that has never seen it.
+ *
+ * Nothing calls this today — the local catalogue is read from IndexedDB, and a
+ * project's assets are fetched by id through `getAssets` — but the filter it
+ * carries is not optional if anything ever does. Row-level security used to make
+ * "the caller's own rows" the only possible answer to an unfiltered select. It no
+ * longer does: sharing a word shelf widens the read policy to whoever is on it
+ * (supabase/migrations/0012_shelf_shares.sql), so an unfiltered select here would
+ * blend a collaborator's images and clips into this browser's library.
+ *
+ * Their *takes* are a different matter and still arrive: the shelf names them by
+ * id, and `getAssets` fetches those. That is the line this draws — what a shared
+ * shelf points at, not everything its owner has ever made.
+ *
+ * Signed out there is nobody to filter to and nothing to fetch, so the answer is
+ * an empty library rather than a query.
+ */
 export async function listAssets(): Promise<AssetRow[]> {
+  const account = currentAccount()
+  if (!account) return []
+
   const { data, error } = await supabase()
     .from('assets')
     .select('*')
+    .eq('user_id', account.id)
     .order('created_at', { ascending: false })
   if (error) throw new Error(error.message)
   return (data ?? []) as AssetRow[]

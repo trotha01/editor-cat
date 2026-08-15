@@ -209,3 +209,20 @@ export function isUnderPrefix(key: string, prefix: string): boolean {
   // No nesting and no traversal: everything we write is one flat level down.
   return isSafeName(rest)
 }
+
+/**
+ * The same question against a set of prefixes.
+ *
+ * A caller has more than one once word shelves can be shared: their own, and
+ * one per person they share a shelf with. The set is still derived here from
+ * subjects the caller was proved entitled to — see netlify/lib/shelfShares.ts —
+ * so the sentence at the top of this file is unchanged, only pluralised.
+ */
+export function isUnderAnyPrefix(key: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => isUnderPrefix(key, prefix))
+}
+
+/** The asset prefix for each of a set of subjects. */
+export async function assetPrefixesFor(subjects: readonly string[]): Promise<string[]> {
+  return await Promise.all(subjects.map(async (subject) => assetPrefix(await hashSubject(subject))))
+}

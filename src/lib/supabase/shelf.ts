@@ -12,6 +12,14 @@
  * the shelf is one document per person rather than a document per project, so
  * the answer is always "re-read, fold ours in, write again" and never "tell the
  * user to reload". That is why a stale write returns null rather than throwing.
+ *
+ * **Every call names whose shelf it means.** It did not used to: there was
+ * exactly one row a caller could see, so a bare select with no filter and a
+ * `maybeSingle` was the whole read. Shares broke that — a member can now see
+ * their own row *and* the owner's, and `maybeSingle` answers a second row with
+ * an error rather than a choice — so the owner is a parameter, and passing your
+ * own subject is what "my shelf" now looks like. See
+ * supabase/migrations/0012_shelf_shares.sql.
  */
 import { supabase } from './client'
 
@@ -30,11 +38,19 @@ interface ShelfRow {
 /** What this client writes. Bumped when the document's shape moves on. */
 export const SHELF_SCHEMA_VERSION = 1
 
-/** The account's shelf, or null when there has never been one. */
-export async function getShelf(): Promise<StoredShelf | null> {
+/**
+ * One account's shelf, or null when there has never been one.
+ *
+ * `ownerId` is the subject whose shelf is wanted — your own, or somebody who
+ * has shared theirs with you. Row-level security is still what decides whether
+ * the answer is a row or nothing; this filter is what makes the question
+ * singular.
+ */
+export async function getShelf(ownerId: string): Promise<StoredShelf | null> {
   const { data, error } = await supabase()
     .from('word_shelves')
     .select('doc,schema_version,version')
+    .eq('user_id', ownerId)
     .maybeSingle()
 
   if (error) throw new Error(error.message)
@@ -57,8 +73,9 @@ export async function getShelf(): Promise<StoredShelf | null> {
 export async function putShelf(
   doc: unknown,
   expectedVersion: number | null,
+  ownerId: string,
 ): Promise<number | null> {
-  if (expectedVersion === null) return await insertShelf(doc)
+  if (expectedVersion === null) return await insertShelf(doc, ownerId)
 
   const { data, error } = await supabase()
     .from('word_shelves')
@@ -68,6 +85,10 @@ export async function putShelf(
       version: expectedVersion + 1,
       updated_at: new Date().toISOString(),
     })
+    // Both, and neither is redundant: the subject picks the row and the version
+    // picks the moment. Without the first, a member's save would find the one
+    // row a bare update could still see and write the wrong shelf.
+    .eq('user_id', ownerId)
     .eq('version', expectedVersion)
     .select('version')
     .maybeSingle()
@@ -78,10 +99,19 @@ export async function putShelf(
   return data ? (data as { version: number }).version : null
 }
 
-async function insertShelf(doc: unknown): Promise<number | null> {
+/**
+ * The first write of all.
+ *
+ * `user_id` is sent rather than defaulted now that it is not always the caller.
+ * In practice this only ever runs for your own shelf — a shelf you were invited
+ * to already had a row before anybody could be invited to it — but sending the
+ * subject means the one case that could exist is spelled out rather than
+ * silently landing on whoever happens to be signed in.
+ */
+async function insertShelf(doc: unknown, ownerId: string): Promise<number | null> {
   const { data, error } = await supabase()
     .from('word_shelves')
-    .insert({ doc, schema_version: SHELF_SCHEMA_VERSION })
+    .insert({ user_id: ownerId, doc, schema_version: SHELF_SCHEMA_VERSION })
     .select('version')
     .maybeSingle()
 

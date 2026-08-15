@@ -29,6 +29,7 @@ import { UploadStatus } from './components/UploadStatus'
 import { FeedbackBubble } from './components/FeedbackBubble'
 import { RenameField } from './components/RenameField'
 import { SettingsDialog } from './components/SettingsDialog'
+import { ShelfPicker, SharingDialog } from './components/ShelfSharing'
 import { WordVideos } from './components/WordVideos'
 import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
 import { EDITOR_HASH } from './lib/route'
@@ -56,6 +57,7 @@ export function WordsPage() {
   useUndoRedoShortcut(useWordsStore)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sharingOpen, setSharingOpen] = useState(false)
   /**
    * Which of the three lists the narrow layout has open over the player, if any.
    *
@@ -90,7 +92,16 @@ export function WordsPage() {
     // only on mount. A sign-in that lands after the page was opened is the same
     // event as arriving with one, and a shelf that only synced on a reload would
     // look like one that does not sync.
-    if (signedIn) void useWordsStore.getState().syncShelf()
+    //
+    // Which shelf comes first, because it decides which row the read is of: an
+    // invitation is claimed, the list is settled, and only then is there a shelf
+    // to read. `loadShelves` reads it itself when the answer moved, and the call
+    // below covers the ordinary case where it did not.
+    if (!signedIn) return
+    void (async () => {
+      await useWordsStore.getState().loadShelves()
+      await useWordsStore.getState().syncShelf()
+    })()
   }, [signedIn])
 
   const tierList = useMemo(() => sortedTiers(tiers), [tiers])
@@ -155,6 +166,17 @@ export function WordsPage() {
             : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
         {busy ? <Spinner className="text-ink-dim" /> : null}
+
+        {/* Whose shelf, and who else is on it. Next to each other and before the
+            undo pair, because between them they say what the page is looking at
+            — and the picker is absent altogether until there is more than one
+            shelf to look at. */}
+        <ShelfPicker />
+        {signedIn ? (
+          <Button onClick={() => setSharingOpen(true)}>
+            <span aria-hidden>👥</span> Share
+          </Button>
+        ) : null}
 
         {/* The same pair as the editor's, in the same shape and the same corner
             of the header: adding a language, dragging a run into order and
@@ -436,6 +458,8 @@ export function WordsPage() {
         onClose={() => setSettingsOpen(false)}
         showProject={false}
       />
+
+      <SharingDialog open={sharingOpen} onClose={() => setSharingOpen(false)} />
 
       {/* Fixed to the corner of the window rather than placed in the layout, the
           same as in the editor — and told it is on this page, so a report says

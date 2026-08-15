@@ -78,11 +78,18 @@ import {
 import { fromRow, getAssets } from '../lib/supabase/assets'
 import { isSupabaseConfigured } from '../lib/supabase/client'
 import { getShelf, putShelf } from '../lib/supabase/shelf'
+import { claimInvitations, listShares } from '../lib/supabase/shares'
+import {
+  resolveActiveShelf,
+  shelfScopedKey,
+  shelvesAvailable,
+  type ShelfChoice,
+} from '../lib/shelves'
 import { createScheduler } from '../lib/sync/scheduler'
 import { recordAsset } from '../lib/sync/assetSync'
 import { ingestBlob, newId } from '../lib/media'
 import { toDisplayMessage } from '../lib/errors'
-import { isSignedIn } from './useAuthStore'
+import { currentSubject, isSignedIn } from './useAuthStore'
 import { useAssetStore } from './useAssetStore'
 
 interface WordsState {
@@ -100,6 +107,19 @@ interface WordsState {
   syncing: boolean
   /** Why the last read or write failed, if it did. The local shelf still stands. */
   syncError: string | null
+
+  /**
+   * Whose shelf is on screen: this account's own subject, or the subject of
+   * somebody who has shared theirs.
+   *
+   * Null before anything is known — signed out, on a deployment with no
+   * Supabase, or in the moment before the first read. All three mean the same
+   * thing to everything downstream: the shelf in this browser, belonging to
+   * nobody in particular yet.
+   */
+  shelfOwnerId: string | null
+  /** Every shelf this account can open. One entry — their own — until invited. */
+  shelves: ShelfChoice[]
   /**
    * The batch of files being filed into a word right now — which word, and how
    * many of them are in.
@@ -139,6 +159,28 @@ interface WordsState {
    * once, and what comes out of them is written up.
    */
   syncShelf: () => Promise<void>
+
+  /**
+   * Works out which shelves this account can open, and settles on one.
+   *
+   * Claims any invitation waiting for this account's address first, which is
+   * what turns "somebody typed my email" into a shelf that exists — see
+   * `claimInvitations`. Then reads the list, and falls back to your own shelf if
+   * the one this browser was last on is no longer shared with you.
+   *
+   * Safe to call whenever: it is a query and a settle, and it leaves the shelf
+   * on screen alone unless the answer has actually moved.
+   */
+  loadShelves: () => Promise<void>
+  /**
+   * Opens somebody else's shelf, or comes back to your own.
+   *
+   * Everything on screen is replaced, and so is this browser's copy: the local
+   * stores hold one shelf at a time, so switching clears them and reads the new
+   * one off the account. Anything not yet written up goes up first — a switch
+   * must not be a way to lose the last edit.
+   */
+  switchShelf: (ownerId: string) => Promise<void>
 
   /** Steps the shelf back to what it was before the last edit, if there was one. */
   undo: () => void
@@ -327,6 +369,18 @@ function canSync(): boolean {
 }
 
 /**
+ * The shelf a read or a write is about.
+ *
+ * Falls back to the caller's own subject rather than waiting for `loadShelves`,
+ * so a save that lands between signing in and the share list coming back goes to
+ * the right row instead of nowhere. Null only when there is nobody to attribute
+ * it to, which is the same condition `canSync` refuses on.
+ */
+function syncOwner(): string | null {
+  return activeOwner() ?? subject()
+}
+
+/**
  * The version of the shelf row this session last saw, and when it last agreed
  * with the account.
  *
@@ -342,11 +396,57 @@ function canSync(): boolean {
  */
 let shelfVersion: number | null = null
 
+/**
+ * Whose shelf this browser's copy is of.
+ *
+ * Remembered rather than derived, and read *before* the local stores are, for a
+ * reason that only shows up on the second visit: the three IndexedDB stores hold
+ * one shelf and say nothing about whose it is, so this is the only thing that
+ * knows whether what is about to be read belongs to the account that is opening
+ * the page. When it turns out not to — a share taken away, or somebody else
+ * signing in on the same machine — `settleShelfOwner` is what clears it out
+ * rather than merging two shelves into one.
+ */
+const SHELF_OWNER_KEY = 'editor-cat.words.shelfOwner.v1'
+
+function rememberedShelfOwner(): string | null {
+  try {
+    return localStorage.getItem(SHELF_OWNER_KEY)
+  } catch {
+    return null
+  }
+}
+
+function rememberShelfOwner(ownerId: string | null): void {
+  try {
+    if (ownerId) localStorage.setItem(SHELF_OWNER_KEY, ownerId)
+    else localStorage.removeItem(SHELF_OWNER_KEY)
+  } catch {
+    // Storage blocked. The page works; what is lost is opening on the same
+    // shelf next time, which falls back to your own.
+  }
+}
+
+/** The subject signed in right now, or null. */
+function subject(): string | null {
+  return currentSubject()
+}
+
+/** Which shelf everything below is about. */
+function activeOwner(): string | null {
+  return useWordsStore.getState().shelfOwnerId
+}
+
+/** A per-shelf storage key. Your own shelf keeps the bare one — see shelves.ts. */
+function scoped(base: string): string {
+  return shelfScopedKey(base, activeOwner(), subject())
+}
+
 const SYNCED_AT_KEY = 'editor-cat.words.syncedAt.v1'
 
 function syncedAt(): number {
   try {
-    return Number(localStorage.getItem(SYNCED_AT_KEY)) || 0
+    return Number(localStorage.getItem(scoped(SYNCED_AT_KEY))) || 0
   } catch {
     // Storage can be blocked outright. Zero is the safe answer: it treats
     // everything local as fresh, which keeps work rather than dropping it.
@@ -356,10 +456,18 @@ function syncedAt(): number {
 
 function rememberSyncedAt(when: number): void {
   try {
-    localStorage.setItem(SYNCED_AT_KEY, String(when))
+    localStorage.setItem(scoped(SYNCED_AT_KEY), String(when))
   } catch {
     // Same as above, and with the same consequence: nothing worse than a merge
     // that keeps too much.
+  }
+}
+
+function forgetSyncedAt(): void {
+  try {
+    localStorage.removeItem(scoped(SYNCED_AT_KEY))
+  } catch {
+    // Nothing to undo, and the consequence is the harmless direction again.
   }
 }
 
@@ -387,7 +495,7 @@ function storedId(value: unknown): string | null {
 
 function rememberedSelection(): Selection {
   try {
-    const raw = localStorage.getItem(SELECTION_KEY)
+    const raw = localStorage.getItem(scoped(SELECTION_KEY))
     if (!raw) return NOTHING_SELECTED
     const parsed = JSON.parse(raw) as Partial<Record<keyof Selection, unknown>>
     return {
@@ -412,7 +520,7 @@ function rememberSelection({
     // Picked apart rather than written whole: the caller hands over the store,
     // and the three lists have no business in localStorage.
     localStorage.setItem(
-      SELECTION_KEY,
+      scoped(SELECTION_KEY),
       JSON.stringify({ selectedTierId, selectedLanguageId, selectedWordId }),
     )
   } catch {
@@ -460,6 +568,8 @@ function lists(): Shelf {
  */
 async function pushShelf(): Promise<void> {
   if (!canSync()) return
+  const owner = syncOwner()
+  if (!owner) return
 
   try {
     // Stamped before the write rather than after it: a word added while the
@@ -467,20 +577,20 @@ async function pushShelf(): Promise<void> {
     // on the way back would call it sent. The next read would then treat it as
     // deleted somewhere else.
     const at = Date.now()
-    const landed = await putShelf(buildShelfDoc(lists()), shelfVersion)
+    const landed = await putShelf(buildShelfDoc(lists()), shelfVersion, owner)
     if (landed !== null) {
       shelfVersion = landed
       rememberSyncedAt(at)
       return
     }
 
-    const stored = await getShelf()
+    const stored = await getShelf(owner)
     if (!stored) return
     shelfVersion = stored.version
     applyRemote(parseShelfDoc(stored.doc))
 
     const retriedAt = Date.now()
-    const second = await putShelf(buildShelfDoc(lists()), shelfVersion)
+    const second = await putShelf(buildShelfDoc(lists()), shelfVersion, owner)
     if (second === null) return
     shelfVersion = second
     rememberSyncedAt(retriedAt)
@@ -667,6 +777,89 @@ function restoreShelf(next: Shelf): void {
   })()
 }
 
+/**
+ * Whether two shelf owners name the same shelf.
+ *
+ * Null is not a shelf of its own: it is what this browser calls yours before
+ * anybody has signed in, so `null` and your own subject have to compare equal or
+ * the first sign-in of every visit would look like a switch and throw the local
+ * shelf away. Same rule `shelfScopedKey` follows, for the same reason.
+ */
+function sameShelf(a: string | null, b: string | null): boolean {
+  const me = subject()
+  return (a ?? me) === (b ?? me)
+}
+
+/**
+ * Empties this browser's copy of whatever shelf it is holding.
+ *
+ * The three IndexedDB stores hold one shelf between them, so opening a
+ * different one means clearing rather than merging: `mergeRemoteShelf` is built
+ * to keep local rows the account has not been told about, which is exactly the
+ * wrong instinct when those rows belong to a different shelf entirely — it would
+ * graft your tiers onto somebody else's and then write the result back to them.
+ *
+ * The takes' *bytes* stay. They live in the asset and blob stores keyed by asset
+ * id, which no shelf owns, and re-downloading a gigabyte of video to come back
+ * to a shelf you were on five minutes ago is not a saving.
+ *
+ * Called with the owner already pointing at the shelf being *entered*, which is
+ * not an accident: emptying the selection wakes the subscriber that writes the
+ * selection down, and under the old owner that would erase where you were on the
+ * shelf you are leaving — the one thing a reload is supposed to bring back.
+ */
+async function clearLocalShelf(): Promise<void> {
+  const { tiers, languages, words } = lists()
+
+  shelfVersion = null
+  useWordsStore.setState({
+    tiers: [],
+    languages: [],
+    words: [],
+    ...NOTHING_SELECTED,
+    past: [],
+    future: [],
+  })
+
+  await Promise.all([
+    ...words.map((word) => dbDeleteWord(word.id).catch(() => {})),
+    ...languages.map((entry) => dbDeleteLanguage(entry.id).catch(() => {})),
+    ...tiers.map((entry) => dbDeleteTier(entry.id).catch(() => {})),
+  ])
+}
+
+/**
+ * Points this browser at a shelf, clearing what it held if that is a move.
+ *
+ * Answers whether anything actually changed, which is what tells the caller to
+ * go and read the new one. Pending writes go up first and against the shelf they
+ * were made on — the flush happens before the owner moves — because a switch
+ * must never be a way to lose the last edit.
+ */
+async function settleShelfOwner(next: string | null): Promise<boolean> {
+  const moved = !sameShelf(activeOwner(), next)
+
+  if (moved) {
+    // Only when there is something waiting. `flush` fires whether or not
+    // anything changed, and a switch is not an edit — flushing unconditionally
+    // would write the shelf you are leaving back exactly as you found it, and
+    // bump its version for the other machines reading it.
+    if (shelfWrites.pending()) {
+      if (canSync()) await shelfWrites.flush()
+      else shelfWrites.cancel()
+    }
+    // While the shelf being left is still the active one, because that is whose
+    // stamp this is. Everything after this line is about the one being entered.
+    forgetSyncedAt()
+  }
+
+  rememberShelfOwner(next)
+  useWordsStore.setState({ shelfOwnerId: next })
+
+  if (moved) await clearLocalShelf()
+  return moved
+}
+
 function appendVideo(wordId: string, assetId: string): void {
   useWordsStore.setState((state) => ({
     words: mapWord(state.words, wordId, (word) => withVideo(word, newWordVideo(assetId))),
@@ -684,6 +877,11 @@ export const useWordsStore = create<WordsState>((set, get) => ({
   loaded: false,
   syncing: false,
   syncError: null,
+  // Read straight out of storage rather than left null and filled in later: the
+  // selection and the sync stamp are keyed by it, and a `load` that ran before
+  // it was known would read one shelf's keys for another's.
+  shelfOwnerId: rememberedShelfOwner(),
+  shelves: [],
   uploading: null,
   uploadError: null,
   past: [],
@@ -732,13 +930,15 @@ export const useWordsStore = create<WordsState>((set, get) => ({
 
   syncShelf: async () => {
     if (!canSync() || get().syncing) return
+    const owner = syncOwner()
+    if (!owner) return
 
     set({ syncing: true, syncError: null })
     try {
       // Before the read, for the same reason the write stamps before it goes:
       // whatever is made while this is in flight has not been sent.
       const at = Date.now()
-      const stored = await getShelf()
+      const stored = await getShelf(owner)
 
       if (!stored) {
         // Nothing on the account yet. Either this machine is the one holding the
@@ -748,7 +948,13 @@ export const useWordsStore = create<WordsState>((set, get) => ({
         set({ syncing: false })
         // Written up rather than left: an account with no shelf and a browser
         // with one is the migration, and it happens by saving.
-        markShelfDirty()
+        //
+        // Only ever your own. On somebody else's shelf an empty answer means
+        // they have not saved one yet — or that the share went away between the
+        // list and this read — and either way writing this browser's words into
+        // their row would be inventing a shelf on their behalf out of a cache of
+        // something else.
+        if (owner === subject()) markShelfDirty()
         return
       }
 
@@ -762,6 +968,47 @@ export const useWordsStore = create<WordsState>((set, get) => ({
       // whether it is missing anything.
       set({ syncing: false, syncError: toDisplayMessage(cause) })
     }
+  },
+
+  loadShelves: async () => {
+    if (!canSync()) return
+    const me = subject()
+    if (!me) return
+
+    try {
+      // First, because it is what makes an invitation into a shelf. Cheap when
+      // there is nothing to claim — one filtered update matching no rows — and
+      // the alternative is somebody being told to reload the page after being
+      // invited to something.
+      await claimInvitations()
+
+      const available = shelvesAvailable(await listShares(), me)
+      set({ shelves: available })
+
+      // A shelf that is no longer on the list is a share that was taken away
+      // while this browser was pointed at it. `resolveActiveShelf` answers your
+      // own, and the settle below is what empties the copy of theirs.
+      const moved = await settleShelfOwner(resolveActiveShelf(activeOwner(), available, me))
+      if (moved) await get().syncShelf()
+    } catch (cause) {
+      // The shelf on screen still works and still saves. What is unknown is
+      // whether there are others, which is worth saying and not worth stopping
+      // for.
+      set({ syncError: toDisplayMessage(cause) })
+    }
+  },
+
+  switchShelf: async (ownerId) => {
+    if (!canSync()) return
+    // Only somewhere this account has actually been let in. Not a security
+    // check — the policies are — but a picker that could be handed any subject
+    // at all would fail as an unexplained empty shelf rather than as nothing.
+    if (!get().shelves.some((shelf) => shelf.ownerId === ownerId)) return
+    if (sameShelf(activeOwner(), ownerId)) return
+
+    set({ syncError: null })
+    await settleShelfOwner(ownerId)
+    await get().syncShelf()
   },
 
   undo: () => {

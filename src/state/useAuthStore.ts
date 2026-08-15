@@ -127,3 +127,17 @@ export const useAuthStore = create<AuthState>((set) => ({
 export function isSignedIn(): boolean {
   return useAuthStore.getState().account !== null
 }
+
+/**
+ * The Auth0 subject signed in right now, or null.
+ *
+ * From the same place `isSignedIn` reads, deliberately. `currentAccount()` in
+ * lib/auth0/client.ts answers the same question from the SDK's own cache, and
+ * for a caller that needs *both* — "is anyone signed in, and who" — taking one
+ * from each opens a window where the first says yes and the second says nobody.
+ * That window is what decides which row a shelf is saved to, so it is not one to
+ * leave open.
+ */
+export function currentSubject(): string | null {
+  return useAuthStore.getState().account?.id ?? null
+}

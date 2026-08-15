@@ -15,9 +15,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  */
 const requireSession = vi.fn()
 const mintspaceUser = vi.fn()
+const shelfCounterparts = vi.fn()
 
 vi.mock('./auth', () => ({
   requireSession: (request: Request) => requireSession(request) as unknown,
+}))
+
+vi.mock('./shelfShares', () => ({
+  shelfCounterparts: (subject: string, idToken: string | null) =>
+    shelfCounterparts(subject, idToken) as unknown,
 }))
 
 vi.mock('./mintspaceToken', async () => {
@@ -31,7 +37,21 @@ vi.mock('./mintspaceToken', async () => {
 const handler = (await import('../functions/r2')).default
 
 const AUTH0_SUB = 'google-oauth2|104372000000000000000'
+const THEIR_SUB = 'google-oauth2|555555555555555555555'
 const MINTSPACE_UID = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
+
+/**
+ * A key under the other account's prefix, derived the same way the endpoint
+ * would derive it.
+ *
+ * Computed rather than written out, because the prefix is a hash and a
+ * hand-copied one is a test that passes for the wrong reason the day the
+ * derivation changes.
+ */
+async function theirKey(): Promise<string> {
+  const { assetPrefix, hashSubject } = await import('./r2Keys')
+  return `${assetPrefix(await hashSubject(THEIR_SUB))}asset_9`
+}
 
 function post(route: string, payload: unknown, headers: Record<string, string> = {}): Request {
   return new Request(`https://site.example/api/r2/${route}`, {
@@ -52,6 +72,9 @@ const SEGMENTS = [
 beforeEach(() => {
   requireSession.mockResolvedValue({ ok: true, userId: AUTH0_SUB, email: null })
   mintspaceUser.mockResolvedValue({ id: MINTSPACE_UID })
+  // Nobody, and known to be nobody: the default is an account that shares no
+  // shelves, which is what almost every account is.
+  shelfCounterparts.mockResolvedValue({ subjects: [], degraded: false })
 
   process.env.R2_ACCOUNT_ID = 'acct123'
   process.env.R2_ACCESS_KEY_ID = 'AKIAIOSFODNN7EXAMPLE'
@@ -374,6 +397,79 @@ describe('POST /api/r2/downloads', () => {
     // so a signed URL for it would be a credential handed out for nothing.
     const response = await handler(post('downloads', { keys: [`v1/${MINTSPACE_UID}/p/init.mp4`] }))
     expect(response.status).toBe(403)
+  })
+
+  /**
+   * A take on a shelf somebody shared, which lives under *their* prefix.
+   *
+   * Everyone's uploads land under their own subject whoever's shelf they are
+   * filing into — the ingest path has one hook for the whole app — so reaching a
+   * collaborator's take is by definition reaching a foreign prefix. What decides
+   * is `shelfShares`, mocked here because the alternative is standing up a
+   * Supabase project to prove that a set with one entry in it has one entry.
+   */
+  describe('a shelf somebody else owns', () => {
+    it('signs a key under a subject the caller shares a shelf with', async () => {
+      shelfCounterparts.mockResolvedValue({ subjects: [THEIR_SUB], degraded: false })
+
+      const response = await handler(post('downloads', { keys: [await theirKey()] }))
+      expect(response.status).toBe(200)
+    })
+
+    it('refuses that same key once the share is gone', async () => {
+      shelfCounterparts.mockResolvedValue({ subjects: [], degraded: false })
+
+      const response = await handler(post('downloads', { keys: [await theirKey()] }))
+      expect(response.status).toBe(403)
+    })
+
+    it('answers 502, not 403, when the share could not be checked', async () => {
+      // The difference matters: 403 sends somebody to undo a share that was
+      // working, over a lookup that failed and will succeed on the next try.
+      shelfCounterparts.mockResolvedValue({ subjects: [], degraded: true, reason: 'timed out' })
+
+      const response = await handler(post('downloads', { keys: [await theirKey()] }))
+      expect(response.status).toBe(502)
+    })
+
+    it('does not ask at all for the caller’s own keys', async () => {
+      const uploaded = (await (
+        await handler(
+          post('uploads', {
+            scope: 'asset',
+            items: [{ name: 'asset_1', contentType: 'video/mp4', bytes: 10 }],
+          }),
+        )
+      ).json()) as { urls: { key: string }[] }
+
+      const response = await handler(post('downloads', { keys: [uploaded.urls[0]?.key] }))
+
+      expect(response.status).toBe(200)
+      expect(shelfCounterparts).not.toHaveBeenCalled()
+    })
+
+    it('still refuses a key belonging to nobody on the list', async () => {
+      shelfCounterparts.mockResolvedValue({ subjects: [THEIR_SUB], degraded: false })
+
+      const response = await handler(
+        post('downloads', { keys: ['asset/00000000000000000000000000000000/theirs'] }),
+      )
+      expect(response.status).toBe(403)
+    })
+
+    it('passes the ID token through rather than inventing an identity', async () => {
+      shelfCounterparts.mockResolvedValue({ subjects: [THEIR_SUB], degraded: false })
+
+      await handler(
+        post(
+          'downloads',
+          { keys: [await theirKey()] },
+          { 'x-supabase-authorization': 'Bearer id-token' },
+        ),
+      )
+
+      expect(shelfCounterparts).toHaveBeenCalledWith(AUTH0_SUB, 'id-token')
+    })
   })
 })
 
