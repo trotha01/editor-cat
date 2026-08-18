@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   audibleClipsAt,
+  audioCutTargetAt,
   audioEnd,
   createTrack,
   defaultTracks,
@@ -13,6 +14,7 @@ import {
   retypeTrack,
   placeAudioClip,
   rangesOverlap,
+  splitAudioClipAt,
   trackHasRoom,
 } from './audioTracks'
 import type { AudioClip, AudioTrack, AudioTrackKind, Project } from './types'
@@ -284,6 +286,93 @@ describe('moveAudioClip', () => {
 
     expect(result.moved).toBe(true)
     expect(result.clips.find((entry) => entry.id === 'beeps')?.startTime).toBe(2)
+  })
+})
+
+describe('splitAudioClipAt', () => {
+  const clips = [clip('a', 't1', 4, 10)]
+
+  it('cuts a clip into two halves that cover what the one clip covered', () => {
+    const result = splitAudioClipAt(clips, 'a', 7, () => 'new')
+
+    expect(result?.clips.map((entry) => [entry.id, entry.startTime, entry.duration])).toEqual([
+      ['a', 4, 3],
+      ['new', 7, 7],
+    ])
+  })
+
+  it('carries the source forward, so the halves still play what the clip played', () => {
+    const sourced = [{ ...clip('a', 't1', 4, 10), inPoint: 30 }]
+    const result = splitAudioClipAt(sourced, 'a', 7, () => 'new')
+
+    // The second half starts three seconds further into the same file, which is
+    // exactly the three seconds the first half now plays.
+    expect(result?.clips[1]?.inPoint).toBe(33)
+    expect(result?.clips[1]?.assetId).toBe(result?.clips[0]?.assetId)
+    expect(result?.clips[1]?.trackId).toBe('t1')
+  })
+
+  it('keeps both halves anchored to the shot the clip was performed against', () => {
+    // Re-anchoring the second half to whatever shot it now starts over would let
+    // the two be pulled apart — and land on top of each other — the next time
+    // either shot moved.
+    const anchored = [{ ...clip('a', 't1', 4, 10), anchorClipId: 'shot-1' }]
+    const result = splitAudioClipAt(anchored, 'a', 7, () => 'new')
+
+    expect(result?.clips.map((entry) => entry.anchorClipId)).toEqual(['shot-1', 'shot-1'])
+  })
+
+  it('selects the half after the cut', () => {
+    expect(splitAudioClipAt(clips, 'a', 7, () => 'new')?.clipId).toBe('new')
+  })
+
+  it('leaves the other clips alone, in place', () => {
+    const two = [clip('a', 't1', 4, 10), clip('b', 't2', 0, 30)]
+    const result = splitAudioClipAt(two, 'a', 7, () => 'new')
+
+    expect(result?.clips.map((entry) => entry.id)).toEqual(['a', 'new', 'b'])
+  })
+
+  it('refuses a cut on the clip’s own edges, which would leave nothing behind', () => {
+    expect(splitAudioClipAt(clips, 'a', 4, () => 'new')).toBeNull()
+    expect(splitAudioClipAt(clips, 'a', 14, () => 'new')).toBeNull()
+  })
+
+  it('refuses a cut outside the clip entirely', () => {
+    expect(splitAudioClipAt(clips, 'a', 1, () => 'new')).toBeNull()
+    expect(splitAudioClipAt(clips, 'a', 20, () => 'new')).toBeNull()
+  })
+
+  it('refuses a cut that would leave a sliver', () => {
+    expect(splitAudioClipAt(clips, 'a', 4.01, () => 'new')).toBeNull()
+    expect(splitAudioClipAt(clips, 'a', 13.99, () => 'new')).toBeNull()
+  })
+
+  it('is a no-op for an unknown clip', () => {
+    expect(splitAudioClipAt(clips, 'missing', 7, () => 'new')).toBeNull()
+  })
+
+  it('never mutates the clips it was given', () => {
+    const original = [clip('a', 't1', 4, 10)]
+    splitAudioClipAt(original, 'a', 7, () => 'new')
+    expect(original).toEqual([clip('a', 't1', 4, 10)])
+  })
+})
+
+describe('audioCutTargetAt', () => {
+  const clips = [clip('a', 't1', 4, 10), clip('b', 't2', 0, 30)]
+
+  it('answers with the named clip when a cut can land in it', () => {
+    expect(audioCutTargetAt(clips, 'a', 7)?.id).toBe('a')
+  })
+
+  it('answers with nothing when no clip is named', () => {
+    // What stops the button cutting whatever the playhead happens to cross.
+    expect(audioCutTargetAt(clips, null, 7)).toBeNull()
+  })
+
+  it('answers with nothing when the playhead is outside the named clip', () => {
+    expect(audioCutTargetAt(clips, 'a', 2)).toBeNull()
   })
 })
 

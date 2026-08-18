@@ -1581,3 +1581,99 @@ describe('count-in beeps', () => {
     expect(useProjectStore.getState().project.audioClips).toEqual([])
   })
 })
+
+describe('cutting an audio clip', () => {
+  /** A project with one music bed, selected, running from 2s to 12s. */
+  function withMusic(): void {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 2,
+            inPoint: 0,
+            duration: 10,
+            label: 'song.mp3',
+          },
+        ],
+      },
+      selectedAudioClipId: 'aclip-1',
+    })
+  }
+
+  it('cuts the selected clip into two halves, and writes them down', () => {
+    withMusic()
+
+    expect(useProjectStore.getState().cutAudioAt(5)).toBe(true)
+
+    expect(
+      stored().audioClips.map((clip) => [clip.startTime, clip.duration, clip.inPoint]),
+    ).toEqual([
+      [2, 3, 0],
+      [5, 7, 3],
+    ])
+  })
+
+  it('selects the half behind the cut, so a second cut lands there', () => {
+    withMusic()
+
+    useProjectStore.getState().cutAudioAt(5)
+    const behind = useProjectStore.getState().project.audioClips[1]
+    expect(useProjectStore.getState().selectedAudioClipId).toBe(behind?.id)
+
+    // Which is what makes cutting twice and deleting the middle work at all.
+    useProjectStore.getState().cutAudioAt(8)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(3)
+  })
+
+  it('cuts the clip it is given rather than the selected one', () => {
+    // What the clip's own ⋯ menu uses: the press is on that clip, so it is the
+    // one that gets cut whatever happens to be selected at the time.
+    withMusic()
+    useProjectStore.setState({ selectedAudioClipId: null })
+
+    expect(useProjectStore.getState().cutAudioAt(5, 'aclip-1')).toBe(true)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('refuses when nothing is selected, leaving the audio alone', () => {
+    withMusic()
+    useProjectStore.setState({ selectedAudioClipId: null })
+
+    expect(useProjectStore.getState().cutAudioAt(5)).toBe(false)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+
+  it('refuses when the playhead is not inside the selected clip', () => {
+    withMusic()
+
+    expect(useProjectStore.getState().cutAudioAt(0.5)).toBe(false)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+
+  it('snaps the cut to a frame, so it lands where a cut in the picture would', () => {
+    withMusic()
+
+    // A millisecond past a frame line. The picture would round back to it, and
+    // the sound under the same playhead has to land on the same instant rather
+    // than a millisecond off it.
+    useProjectStore.setState({ project: { ...useProjectStore.getState().project, fps: 25 } })
+    useProjectStore.getState().cutAudioAt(5.001)
+
+    expect(useProjectStore.getState().project.audioClips[1]?.startTime).toBe(5)
+  })
+
+  it('can be undone in one step', () => {
+    withMusic()
+
+    useProjectStore.getState().cutAudioAt(5)
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+})

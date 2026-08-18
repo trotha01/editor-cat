@@ -52,7 +52,7 @@ import {
   totalDuration,
   zoomFromPinch,
 } from '../lib/timeline'
-import { audioEnd } from '../lib/audioTracks'
+import { audioCutTargetAt, audioEnd } from '../lib/audioTracks'
 import { transitionRoomAt } from '../lib/transitions'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
@@ -608,6 +608,7 @@ export function Timeline({
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
   const trim = useProjectStore((state) => state.trim)
   const cutAt = useProjectStore((state) => state.cutAt)
+  const cutAudioAt = useProjectStore((state) => state.cutAudioAt)
   const removeCut = useProjectStore((state) => state.removeCut)
   const exportRange = useProjectStore((state) => state.exportRange)
   const setExportRange = useProjectStore((state) => state.setExportRange)
@@ -721,6 +722,31 @@ export function Timeline({
     [project.clips, currentTime, project.fps, leadIn],
   )
 
+  // The same question of the sound, asked only of the clip that is selected.
+  // Selecting one is how you say which of the lanes sounding at that moment you
+  // meant — with none selected the button belongs to the picture, as it always
+  // did, rather than cutting a music bed somebody had merely scrolled past.
+  const audioCutTarget = useMemo(
+    () =>
+      audioCutTargetAt(
+        project.audioClips,
+        selectedAudioClipId,
+        snapToFrame(currentTime, project.fps),
+      ),
+    [project.audioClips, selectedAudioClipId, currentTime, project.fps],
+  )
+
+  // Both tracks behind one button and one key. The audio has first claim
+  // because it had to be selected to be a candidate at all, and the store
+  // refuses a cut it cannot make — so this falls through to the picture without
+  // having to ask the same question twice.
+  const cut = useCallback(
+    (time: number) => {
+      if (!cutAudioAt(time)) cutAt(time)
+    },
+    [cutAudioAt, cutAt],
+  )
+
   // The shortcut reads the playhead from a ref so it can be registered once.
   // Depending on `currentTime` directly would tear the listener down and put it
   // back on every animation frame of playback, for one key.
@@ -737,7 +763,7 @@ export function Timeline({
       if (event.key === 's' || event.key === 'S') {
         event.preventDefault()
         // Already a no-op where nothing can be cut, so it needs no guard here.
-        cutAt(playheadRef.current)
+        cut(playheadRef.current)
       } else if (event.key === 'i' || event.key === 'I') {
         // In point, same letter editors from Premiere to iMovie use for it.
         event.preventDefault()
@@ -750,7 +776,7 @@ export function Timeline({
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cutAt, markExportStart, markExportEnd, exportDuration])
+  }, [cut, markExportStart, markExportEnd, exportDuration])
 
   // Picture, overlay video and audio clips each keep their own selection, so
   // this checks all three rather than just the picture track's — Delete is
@@ -787,11 +813,13 @@ export function Timeline({
   const frameLines = framePx >= MIN_FRAME_LINE_PX
   const canReachFrames = framePixels(MAX_ZOOM, project.fps) >= MIN_FRAME_LINE_PX
 
-  const cutTitle = cutTarget
-    ? `Cut at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
-    : clipAtTime(project.clips, currentTime, leadIn)
-      ? `Too close to the edge of this clip — a cut has to leave ${MIN_CLIP_DURATION}s on both sides.`
-      : 'Park the playhead over a clip to cut it.'
+  const cutTitle = audioCutTarget
+    ? `Cut the selected audio clip at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
+    : cutTarget
+      ? `Cut at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
+      : clipAtTime(project.clips, currentTime, leadIn)
+        ? `Too close to the edge of this clip — a cut has to leave ${MIN_CLIP_DURATION}s on both sides.`
+        : 'Park the playhead over a clip to cut it, or select an audio clip to cut that instead.'
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -917,7 +945,11 @@ export function Timeline({
             : ''}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button onClick={() => cutAt(currentTime)} disabled={!cutTarget} title={cutTitle}>
+          <Button
+            onClick={() => cut(currentTime)}
+            disabled={!cutTarget && !audioCutTarget}
+            title={cutTitle}
+          >
             <span aria-hidden>✂</span> Cut
           </Button>
           {/* Marks where an export of the timeline starts or ends, at the
@@ -1186,7 +1218,7 @@ export function Timeline({
             {/* And this one "+ Audio track". */}
             <AddTrackSpacer />
 
-            <AudioTrackLanes zoom={zoom} targets={targets} />
+            <AudioTrackLanes zoom={zoom} currentTime={currentTime} targets={targets} />
 
             {/* Captions last, under the audio they were transcribed from. */}
             <CaptionLanes zoom={zoom} onSeek={onSeek} />

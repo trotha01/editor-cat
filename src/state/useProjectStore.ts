@@ -29,6 +29,7 @@ import {
   moveAudioClip,
   placeAudioClip,
   retypeTrack,
+  splitAudioClipAt,
 } from '../lib/audioTracks'
 import {
   captionCuesOf,
@@ -302,6 +303,17 @@ interface ProjectState {
    * asynchronous while an edit is not.
    */
   addCountInBeeps: (assets: { beepAssetId: string }) => CountInPlacement
+  /**
+   * Cuts one audio clip in two under the playhead, so a piece of it can be
+   * thrown away or moved on its own. False when the playhead is not inside it —
+   * or when there is no clip to cut at all — so the caller can leave it at that.
+   *
+   * One clip, named, rather than everything the playhead crosses: several lanes
+   * are usually sounding at once, and cutting a bed because you cut a take is an
+   * edit nobody asked for. `clipId` defaults to the selected clip, which is how
+   * the Cut button and the S key say which one they meant.
+   */
+  cutAudioAt: (time: number, clipId?: string) => boolean
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -982,6 +994,29 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         createdTrack: true,
         silenced: olderFixLanes.size,
       }
+    },
+
+    // Nothing about an audio cut is stored beyond the clips themselves, exactly
+    // as on the picture track: two clips meeting mid-source *is* the cut.
+    cutAudioAt: (time, clipId) => {
+      const { project, selectedAudioClipId } = get()
+      const target = clipId ?? selectedAudioClipId
+      if (!target) return false
+      // Snapped to a frame even though sound has none, so cutting the picture
+      // and the audio under it at one playhead position lands on one instant
+      // rather than on two a few milliseconds apart.
+      const result = splitAudioClipAt(
+        project.audioClips,
+        target,
+        snapToFrame(time, project.fps),
+        () => newId('aclip'),
+      )
+      if (!result) return false
+      mutate((current) => ({ ...current, audioClips: result.clips }))
+      // The playhead is now sitting over the half behind the cut, so that is
+      // what the next edit — another cut, or Delete — should land on.
+      set({ selectedAudioClipId: result.clipId })
+      return true
     },
 
     updateAudioClip: (id, patch) =>

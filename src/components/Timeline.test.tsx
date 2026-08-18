@@ -5,7 +5,7 @@ import { emptyProject, useProjectStore } from '../state/useProjectStore'
 import { useAssetStore } from '../state/useAssetStore'
 import { useProjectsStore } from '../state/useProjectsStore'
 import { useSettingsStore } from '../state/useSettingsStore'
-import type { Asset } from '../lib/types'
+import type { Asset, Clip } from '../lib/types'
 
 /**
  * The ruler doubles as the scrub bar: it is the only way to move the playhead
@@ -490,5 +490,93 @@ describe('marking an export range', () => {
     fireEvent.pointerMove(end, { clientX: 80, pointerId: 2 })
 
     expect(useProjectStore.getState().exportRange).toEqual({ start: 2, end: 2 })
+  })
+})
+
+/**
+ * Cutting, which is one button and one key over two tracks.
+ *
+ * The thing worth pinning is which of them a press lands on. A music bed is
+ * usually laid under the whole piece, so the playhead is over it as often as
+ * not — cutting it because somebody meant to cut a shot would be an edit they
+ * did not ask for, and the selection is the only thing that says which they
+ * meant.
+ */
+describe('the Cut button', () => {
+  const MUSIC = {
+    id: 'aclip-1',
+    trackId: 'm1',
+    assetId: 'song',
+    useConverted: false,
+    startTime: 0,
+    inPoint: 0,
+    duration: 30,
+    label: 'song.mp3',
+  }
+
+  function withMusicUnder(clips: Clip[], selectedAudioClipId: string | null) {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips,
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [MUSIC],
+      },
+      selectedClipId: null,
+      selectedAudioClipId,
+    })
+  }
+
+  const cutButton = () => screen.getByRole('button', { name: /cut/i })
+
+  it('cuts the selected music, on a stretch of timeline with no picture at all', () => {
+    withMusicUnder([], 'aclip-1')
+    render(<Timeline currentTime={10} onSeek={vi.fn()} />)
+
+    expect(cutButton()).toBeEnabled()
+    fireEvent.click(cutButton())
+
+    expect(
+      useProjectStore.getState().project.audioClips.map((clip) => [clip.startTime, clip.duration]),
+    ).toEqual([
+      [0, 10],
+      [10, 20],
+    ])
+  })
+
+  it('cuts the picture when no audio clip is selected', () => {
+    withMusicUnder([{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 20 }], null)
+    render(<Timeline currentTime={10} onSeek={vi.fn()} />)
+
+    fireEvent.click(cutButton())
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(2)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+
+  it('leaves the picture whole when the cut belongs to the audio', () => {
+    withMusicUnder([{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 20 }], 'aclip-1')
+    render(<Timeline currentTime={10} onSeek={vi.fn()} />)
+
+    fireEvent.click(cutButton())
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('answers to S, the same as the button', () => {
+    withMusicUnder([], 'aclip-1')
+    render(<Timeline currentTime={10} onSeek={vi.fn()} />)
+
+    fireEvent.keyDown(document.body, { key: 's' })
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('stays disabled where neither track can be cut', () => {
+    withMusicUnder([], 'aclip-1')
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    expect(cutButton()).toBeDisabled()
   })
 })
