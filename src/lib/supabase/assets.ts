@@ -112,3 +112,22 @@ export async function listAssets(): Promise<AssetRow[]> {
   if (error) throw new Error(error.message)
   return (data ?? []) as AssetRow[]
 }
+
+/**
+ * Forgets rows for files nothing points at any more.
+ *
+ * Only ever called with ids the sweep has established are unreferenced — see
+ * `lib/r2/sweep.ts`, which is where the deciding happens and where the reasons
+ * are written down. This is the write half and takes the list on trust.
+ *
+ * Row-level security scopes the delete to the caller's own, so a mistaken id
+ * belonging to somebody else matches nothing rather than removing theirs.
+ */
+export async function deleteAssets(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return
+  const { error } = await supabase()
+    .from('assets')
+    .delete()
+    .in('id', [...ids])
+  if (error) throw new Error(error.message)
+}

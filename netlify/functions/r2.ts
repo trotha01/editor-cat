@@ -318,6 +318,28 @@ async function downloads(request: Request, config: R2Config, subject: string): P
   return json({ urls })
 }
 
+/**
+ * Every object this account has in the private bucket.
+ *
+ * Takes nothing from the caller at all — not even a prefix — because there is
+ * only one answer it could be asked for: the prefix is derived from the
+ * verified token exactly as it is everywhere else here. A route that accepted a
+ * prefix would be a route that could be asked about somebody else's.
+ *
+ * Deliberately private-bucket only. The feed's prefixes are keyed by the
+ * *Mintspace* identity rather than the Auth0 one, so reconciling those is a
+ * different question with a different token behind it — see mintspaceToken.ts.
+ *
+ * This is for finding files nothing points at any more. Deleting a word take
+ * unhooks it from the shelf and clears this browser's copy, but the object
+ * stays; without a listing there is nothing that can even name it, let alone
+ * decide whether it is still wanted.
+ */
+async function listing(config: R2Config, subject: string): Promise<Response> {
+  const prefix = assetPrefix(await hashSubject(subject))
+  return json({ keys: await listPrefix(config, 'private', prefix) })
+}
+
 async function deletes(request: Request, config: R2Config, subject: string): Promise<Response> {
   const payload = await body(request)
   if (!payload) return jsonError(400, 'That request could not be read.')
@@ -382,6 +404,7 @@ export default async (request: Request): Promise<Response> => {
   if (route === 'uploads') return await uploads(request, config, subject)
   if (route === 'downloads') return await downloads(request, config, subject)
   if (route === 'deletes') return await deletes(request, config, subject)
+  if (route === 'listing') return await listing(config, subject)
 
   return jsonError(404, 'No such endpoint.')
 }

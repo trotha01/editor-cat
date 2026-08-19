@@ -412,3 +412,46 @@ describe('POST /api/r2/deletes', () => {
     expect(response.status).toBe(401)
   })
 })
+
+describe('POST /api/r2/listing', () => {
+  /** An S3 list response, as R2 spells it. */
+  function listed(keys: string[]): Response {
+    const contents = keys.map((key) => `<Contents><Key>${key}</Key></Contents>`).join('')
+    return new Response(`<ListBucketResult>${contents}</ListBucketResult>`, { status: 200 })
+  }
+
+  it('lists the caller’s own prefix, and takes nothing from the request', async () => {
+    // The point of the route: there is exactly one answer it can be asked for.
+    // A prefix in the body would be a prefix somebody could put anything in.
+    const fetchMock = vi.fn().mockResolvedValue(listed(['asset/x/asset_1']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await handler(
+      post('listing', { prefix: 'asset/00000000000000000000000000000000/' }),
+    )
+    expect(response.status).toBe(200)
+
+    // aws4fetch hands `fetch` a signed Request rather than a URL string.
+    const asked = new URL((fetchMock.mock.calls[0]?.[0] as Request).url)
+    const prefix = asked.searchParams.get('prefix') ?? ''
+    expect(prefix).toMatch(/^asset\/[0-9a-f]{32}\/$/)
+    expect(prefix).not.toContain('00000000000000000000000000000000')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('hands back the keys it found', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(listed(['asset/x/asset_1', 'asset/x/asset_2']))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const body = (await (await handler(post('listing', {}))).json()) as { keys: string[] }
+    expect(body.keys).toEqual(['asset/x/asset_1', 'asset/x/asset_2'])
+
+    vi.unstubAllGlobals()
+  })
+
+  it('refuses an anonymous caller like every other route', async () => {
+    requireSession.mockResolvedValue({ ok: false, response: new Response(null, { status: 401 }) })
+    expect((await handler(post('listing', {}))).status).toBe(401)
+  })
+})
