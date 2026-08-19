@@ -580,3 +580,44 @@ describe('the Cut button', () => {
     expect(cutButton()).toBeDisabled()
   })
 })
+
+/**
+ * Which clip "the selected clip" is.
+ *
+ * Delete and Cut both act on it, and each lane used to remember its own — so a
+ * press meant for the piece of music you had just cut in two would take a shot
+ * off the picture track instead, because that was still selected from earlier.
+ */
+describe('the selection across lanes', () => {
+  it('gives Delete the audio clip once the audio is what was picked', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 }],
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 0,
+            inPoint: 0,
+            duration: 30,
+          },
+        ],
+      },
+      selectedClipId: 'c1',
+      selectedAudioClipId: null,
+    })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    // Through the store, as a click on the chip does, and flushed so the key
+    // handler is the one this selection registered.
+    act(() => useProjectStore.getState().selectAudioClip('aclip-1'))
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(0)
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+  })
+})

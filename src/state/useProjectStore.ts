@@ -484,6 +484,24 @@ function prunedSelection(project: Project, state: ProjectState) {
   }
 }
 
+/**
+ * The selection, which is one clip on the whole timeline rather than one per
+ * lane.
+ *
+ * Delete and Cut both act on "the selected clip", and with a selection held in
+ * each lane at once there is no answer to which one that is: the Delete key
+ * would take a shot off the picture track because the piece of music you had
+ * just cut in two was also, still, selected. So picking anything unpicks
+ * everything else, and what is highlighted is what those keys are about.
+ */
+function onlySelected(lane: 'clip' | 'audio' | 'video', id: string | null) {
+  return {
+    selectedClipId: lane === 'clip' ? id : null,
+    selectedAudioClipId: lane === 'audio' ? id : null,
+    selectedVideoClipId: lane === 'video' ? id : null,
+  }
+}
+
 export const useProjectStore = create<ProjectState>((set, get) => {
   const mutate = (fn: (project: Project) => Project) => {
     set((state) => {
@@ -676,7 +694,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         // under words that were spoken over it.
         return underClips(project, { ...project, clips })
       })
-      set({ selectedClipId: clip.id })
+      set(onlySelected('clip', clip.id))
     },
 
     addClips: (assets, atTime) => {
@@ -698,7 +716,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       })
       // The last one in, so the selection sits at the end of what just arrived
       // rather than in the middle of it.
-      set({ selectedClipId: added[added.length - 1]?.id ?? null })
+      set(onlySelected('clip', added[added.length - 1]?.id ?? null))
     },
 
     removeClip: (clipId) => {
@@ -713,7 +731,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
     },
 
-    selectClip: (clipId) => set({ selectedClipId: clipId }),
+    selectClip: (clipId) => set(onlySelected('clip', clipId)),
 
     moveClip: (from, to) =>
       mutate((project) =>
@@ -757,7 +775,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         const next = { ...current, clips: result.clips }
         return underClips(current, recredited ? { ...next, captionCues: recredited } : next)
       })
-      set({ selectedClipId: result.clipId })
+      set(onlySelected('clip', result.clipId))
       return true
     },
 
@@ -835,7 +853,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         audioTracks: result.tracks,
         audioClips: result.clips,
       }))
-      set({ selectedAudioClipId: id })
+      set(onlySelected('audio', id))
 
       const track = result.tracks.find((entry) => entry.id === result.trackId)
       return {
@@ -986,7 +1004,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
       // The first piece, which is the one to look at: it is where the fix
       // begins, and the lane scrolls into view around it.
-      set({ selectedAudioClipId: laid[0]?.id ?? null })
+      set(onlySelected('audio', laid[0]?.id ?? null))
 
       return {
         trackId,
@@ -1015,7 +1033,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       mutate((current) => ({ ...current, audioClips: result.clips }))
       // The playhead is now sitting over the half behind the cut, so that is
       // what the next edit — another cut, or Delete — should land on.
-      set({ selectedAudioClipId: result.clipId })
+      set(onlySelected('audio', result.clipId))
       return true
     },
 
@@ -1064,7 +1082,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
     },
 
-    selectAudioClip: (id) => set({ selectedAudioClipId: id }),
+    selectAudioClip: (id) => set(onlySelected('audio', id)),
 
     addTrack: (kind) =>
       mutate((project) => ({
@@ -1130,7 +1148,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           ...current,
           videoClips: [...videoClipsOf(current), { ...draft, trackId }],
         }))
-        set({ selectedVideoClipId: draft.id })
+        set(onlySelected('video', draft.id))
         return draft.id
       }
 
@@ -1154,7 +1172,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             ],
         videoClips: [...videoClipsOf(current), { ...draft, trackId: laneId }],
       }))
-      set({ selectedVideoClipId: draft.id })
+      set(onlySelected('video', draft.id))
       return draft.id
     },
 
@@ -1201,7 +1219,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
     },
 
-    selectVideoClip: (id) => set({ selectedVideoClipId: id }),
+    selectVideoClip: (id) => set(onlySelected('video', id)),
 
     setTrackKind: (id, kind) =>
       mutate((project) => ({
