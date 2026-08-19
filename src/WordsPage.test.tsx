@@ -10,10 +10,29 @@
  * store, where the three columns are just three ids.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { WordsPage } from './WordsPage'
 import { useAssetStore } from './state/useAssetStore'
 import { useWordsStore } from './state/useWordsStore'
+import type { Asset } from './lib/types'
+
+// Reading a file's duration means letting a browser decode it, which jsdom will
+// not do — the promise inside `ingestBlob` would simply never settle.
+vi.mock('./lib/media', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./lib/media')>()
+  return {
+    ...original,
+    ingestBlob: (blob: Blob, options: { kind: Asset['kind']; name: string }) =>
+      Promise.resolve({
+        id: original.newId('asset'),
+        kind: options.kind,
+        blobKey: original.newId('blob'),
+        mimeType: blob.type,
+        name: options.name,
+        createdAt: 0,
+      } satisfies Asset),
+  }
+})
 
 vi.mock('./lib/db', () => ({
   putTier: () => Promise.resolve(),
@@ -26,6 +45,7 @@ vi.mock('./lib/db', () => ({
   listWords: () => Promise.resolve([]),
   listLanguages: () => Promise.resolve([]),
   putAsset: () => Promise.resolve(),
+  getAsset: () => Promise.resolve(undefined),
   deleteAsset: () => Promise.resolve(),
   getBlob: () => Promise.resolve(undefined),
   listAssets: () => Promise.resolve([]),
@@ -48,6 +68,19 @@ function column(title: string): HTMLElement {
   return screen.getByRole('heading', { name: title }).closest('section')!
 }
 
+/**
+ * One row of a column, by the name on it.
+ *
+ * Matched to where the name ends rather than exactly, because a row that has
+ * anything filed under it also says how much — "French, 1 word" — and no test
+ * about navigation should have to know that. Anchored at the front all the same,
+ * so it does not pick up the "Rename French" and "Delete French" buttons beside
+ * it.
+ */
+function row(title: string, name: string): HTMLElement {
+  return within(column(title)).getByRole('button', { name: new RegExp(`^${name}(,|$)`) })
+}
+
 beforeEach(() => {
   useAssetStore.setState({ assets: [], loading: false })
   useWordsStore.setState({
@@ -61,6 +94,10 @@ beforeEach(() => {
     loaded: true,
     syncing: false,
     syncError: null,
+    uploading: null,
+    uploadError: null,
+    past: [],
+    future: [],
   })
   render(<WordsPage />)
 })
@@ -86,6 +123,125 @@ describe('starting from nothing', () => {
     expect(screen.getByText('1st tier · French')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Upload videos' })).toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The same two buttons the editor's header carries, doing the same job for the
+ * other document this app edits.
+ *
+ * Asserted from the page rather than only from the store because the pair is
+ * half state and half furniture: a button that works and is disabled is the same
+ * as no button at all, and the shelf is edited from three columns at once, so
+ * which of them a step came from must not matter.
+ */
+describe('undo and redo', () => {
+  it('has nothing to offer until something has been done', () => {
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+  })
+
+  it('takes the last edit back, and puts it back again', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    expect(within(column('Words')).queryByText('chien')).not.toBeInTheDocument()
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+
+    expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+  })
+
+  it('brings back a deleted language, with the words that went with it', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete French' }))
+    expect(within(column('Languages')).queryByText('French')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+    expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
+  })
+
+  it('answers Ctrl+Z, the same as the editor does', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+
+    expect(within(column('Languages')).queryByText('French')).not.toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true, shiftKey: true })
+
+    expect(within(column('Languages')).getByText('French')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The page between opening it and the shelf arriving.
+ *
+ * Worth its own block because the three columns are empty in exactly the same
+ * way whether the read is still out or the shelf really is bare, and the page
+ * used to say the second thing in both cases — "Pick a tier first", "Add a
+ * tier, then a language", on a signed-in browser whose four tiers were on their
+ * way. What is asserted is that the columns say they are busy and stop giving
+ * instructions until they are not.
+ */
+describe('while the shelf is still being read', () => {
+  /** Nothing local yet, and the read off the account still out. */
+  const reading = () => act(() => useWordsStore.setState({ loading: false, syncing: true }))
+
+  it('says every column is busy rather than showing it as empty', () => {
+    reading()
+
+    expect(column('Tiers')).toHaveAttribute('aria-busy', 'true')
+    expect(column('Languages')).toHaveAttribute('aria-busy', 'true')
+    expect(column('Words')).toHaveAttribute('aria-busy', 'true')
+
+    expect(screen.queryByText('No tiers yet. Add one to start.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Pick a tier first.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Pick a language first.')).not.toBeInTheDocument()
+  })
+
+  it('says so where the videos go, instead of asking for a word that cannot be picked yet', () => {
+    reading()
+
+    expect(screen.getByText('Loading your shelf')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing selected')).not.toBeInTheDocument()
+  })
+
+  it('goes back to the empty shelf once the read comes back with nothing', () => {
+    reading()
+    act(() => useWordsStore.setState({ syncing: false }))
+
+    expect(column('Tiers')).toHaveAttribute('aria-busy', 'false')
+    expect(screen.getByText('No tiers yet. Add one to start.')).toBeInTheDocument()
+    expect(screen.getByText('Pick a tier first.')).toBeInTheDocument()
+    expect(screen.getByText('Nothing selected')).toBeInTheDocument()
+  })
+
+  /**
+   * The other half of the rule: syncing runs on every visit, not only the first,
+   * and a shelf that is already on screen must not be replaced by placeholders
+   * because a background read is checking it.
+   */
+  it('leaves the names alone when a shelf that is already up is re-read', () => {
+    add('Add a tier', '1st tier')
+    reading()
+
+    expect(within(column('Tiers')).getByRole('button', { name: '1st tier' })).toBeInTheDocument()
+    expect(column('Tiers')).toHaveAttribute('aria-busy', 'false')
+    // The columns below it have nothing yet, so they are still waiting.
+    expect(column('Languages')).toHaveAttribute('aria-busy', 'true')
   })
 })
 
@@ -196,7 +352,7 @@ describe('the picker strip', () => {
     add('Add a tier', 'ESL')
 
     fireEvent.click(screen.getByRole('button', { name: 'Tier: ESL' }))
-    fireEvent.click(within(column('Tiers')).getByRole('button', { name: '1st tier' }))
+    fireEvent.click(row('Tiers', '1st tier'))
 
     expect(screen.getByRole('button', { name: 'Tier: 1st tier' })).toHaveAttribute(
       'aria-expanded',
@@ -207,13 +363,13 @@ describe('the picker strip', () => {
       'true',
     )
 
-    fireEvent.click(within(column('Languages')).getByRole('button', { name: 'French' }))
+    fireEvent.click(row('Languages', 'French'))
     expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
       'aria-expanded',
       'true',
     )
 
-    fireEvent.click(within(column('Words')).getByRole('button', { name: 'chien' }))
+    fireEvent.click(row('Words', 'chien'))
     expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
       'aria-expanded',
       'false',
@@ -234,6 +390,68 @@ describe('the picker strip', () => {
   })
 })
 
+/**
+ * How much is filed under each row.
+ *
+ * The three columns are the three levels of folder the shelf is kept as, so the
+ * figure beside a name is how many folders — or, at the last level, how many
+ * video files — are inside that one. Asserted at all three levels because each
+ * counts something different, and from the page rather than the store because
+ * the count is only ever a thing you read off a row.
+ */
+describe('the count beside a name', () => {
+  it('says how many languages a tier holds, and how many words a language holds', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+    add('Add a word', 'chat')
+    add('Add a language', 'Spanish')
+
+    expect(within(column('Tiers')).getByText('(2)')).toBeInTheDocument()
+    // The count is read out with the thing it counts, because "French two" is
+    // two of nothing to somebody who cannot see which column it is in.
+    expect(within(column('Languages')).getByLabelText('French, 2 words')).toBeInTheDocument()
+    expect(within(column('Languages')).getByText('(2)')).toBeInTheDocument()
+  })
+
+  it('counts the takes filed under a word', () => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'cervelle - brain')
+
+    act(() =>
+      useWordsStore.setState((state) => ({
+        words: state.words.map((word) => ({
+          ...word,
+          videos: [{ id: 'v1', assetId: 'asset_a' }],
+        })),
+      })),
+    )
+
+    expect(within(column('Words')).getByText('(1)')).toBeInTheDocument()
+    expect(within(column('Words')).getByLabelText('cervelle - brain, 1 video')).toBeInTheDocument()
+  })
+
+  // Three columns of "(0)" is the distraction the figure is meant to save you
+  // from, and an empty row is the one thing the column already says plainly.
+  it('says nothing at all about a row with nothing under it', () => {
+    add('Add a tier', '1st tier')
+
+    expect(within(column('Tiers')).queryByText('(0)')).not.toBeInTheDocument()
+    expect(within(column('Tiers')).getByRole('button', { name: '1st tier' })).toBeInTheDocument()
+  })
+
+  // The name is what truncates with an ellipsis when the row is too narrow for
+  // it — the count sits outside that truncated span, so a long name never
+  // pushes it off the row or swallows it into the "...".
+  it('keeps showing the count beside a name too long for the row', () => {
+    add('Add a tier', 'A first tier with a name so long it will not fit in the column width')
+    add('Add a language', 'French')
+
+    expect(within(column('Tiers')).getByText('(1)')).toBeInTheDocument()
+  })
+})
+
 describe('the columns to the right of a tier', () => {
   beforeEach(() => {
     add('Add a tier', '1st tier')
@@ -249,7 +467,7 @@ describe('the columns to the right of a tier', () => {
     expect(within(column('Languages')).queryByText('Spanish')).not.toBeInTheDocument()
     expect(within(column('Words')).queryByText('gato')).not.toBeInTheDocument()
 
-    fireEvent.click(within(column('Tiers')).getByRole('button', { name: '1st tier' }))
+    fireEvent.click(row('Tiers', '1st tier'))
 
     expect(within(column('Languages')).getByText('Spanish')).toBeInTheDocument()
   })
@@ -262,8 +480,8 @@ describe('the columns to the right of a tier', () => {
     expect(within(column('Words')).getByText('bonjour - hello')).toBeInTheDocument()
     expect(within(column('Words')).queryByText('chien')).not.toBeInTheDocument()
 
-    fireEvent.click(within(column('Tiers')).getByRole('button', { name: '1st tier' }))
-    fireEvent.click(within(column('Languages')).getByRole('button', { name: 'French' }))
+    fireEvent.click(row('Tiers', '1st tier'))
+    fireEvent.click(row('Languages', 'French'))
 
     expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
     expect(within(column('Words')).queryByText('bonjour - hello')).not.toBeInTheDocument()
@@ -273,7 +491,7 @@ describe('the columns to the right of a tier', () => {
     expect(within(column('Words')).getByText('chien')).toBeInTheDocument()
     expect(within(column('Words')).queryByText('gato')).not.toBeInTheDocument()
 
-    fireEvent.click(within(column('Languages')).getByRole('button', { name: 'Spanish' }))
+    fireEvent.click(row('Languages', 'Spanish'))
 
     expect(within(column('Words')).getByText('gato')).toBeInTheDocument()
     expect(within(column('Words')).queryByText('chien')).not.toBeInTheDocument()
@@ -341,5 +559,59 @@ describe('the columns to the right of a tier', () => {
     // By exact name: every row also carries a "Delete chien" button, which a
     // looser match would count as a second chien.
     expect(within(column('Words')).getAllByRole('button', { name: 'chien' })).toHaveLength(1)
+  })
+})
+
+/**
+ * Files dragged in off the desktop and dropped on a word.
+ *
+ * The other half of what the video area takes, and the only column that takes
+ * anything: a tier is a folder of languages and a language a folder of words,
+ * but a word is the folder the takes themselves go in.
+ */
+describe('dropping files onto a word', () => {
+  /** A drag carrying one take, as the browser describes one. */
+  const withTake = () => ({
+    dataTransfer: {
+      files: [new File(['take'], 'chien.mp4', { type: 'video/mp4' })],
+      types: ['Files'],
+    },
+  })
+
+  /** The row a name sits in, which is what the drop lands on. */
+  function row(name: string): HTMLElement {
+    return within(column('Words')).getByRole('button', { name }).closest('li')!
+  }
+
+  beforeEach(() => {
+    add('Add a tier', '1st tier')
+    add('Add a language', 'French')
+    add('Add a word', 'chien')
+    // Added last, so it is the word that is open — the drop below is aimed at
+    // the other one, which is the case worth asserting.
+    add('Add a word', 'cerville - brain')
+  })
+
+  it('files the take under the word it was dropped on, and opens that word', async () => {
+    fireEvent.drop(row('chien'), withTake())
+
+    expect(await screen.findByRole('heading', { name: 'chien' })).toBeInTheDocument()
+    await waitFor(() => {
+      const chien = useWordsStore.getState().words.find((word) => word.text === 'chien')
+      expect(chien?.videos).toHaveLength(1)
+    })
+    // The other word is where it was: a drop files takes, it does not move them.
+    const other = useWordsStore.getState().words.find((word) => word.text === 'cerville - brain')
+    expect(other?.videos).toEqual([])
+  })
+
+  it('closes the list the narrow layout had open, the way picking a word does', () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Word: cerville - brain' }))
+    fireEvent.drop(row('chien'), withTake())
+
+    expect(screen.getByRole('button', { name: 'Word: chien' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
   })
 })

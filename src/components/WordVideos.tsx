@@ -11,6 +11,10 @@
  * The order is also what most of the labelling is: the ends of a run are its
  * intro and its outro by virtue of being the ends (`roleInRun`), so the only
  * label a row offers is the optional "Word" on the takes in between.
+ *
+ * Getting the takes here has two doors — the upload button, and files dragged
+ * straight onto this area off the desktop, which is how anyone with a folder of
+ * takes open beside the browser would try it first.
  */
 import { useMemo, useRef, useState } from 'react'
 import {
@@ -28,9 +32,8 @@ import { AssetThumb } from './AssetThumb'
 import { RenameField } from './RenameField'
 import { WordSequencePlayer, type PlayableVideo } from './WordSequencePlayer'
 import { Button, Callout, EmptyState, Spinner, TextArea } from './ui'
+import { useFileDrop } from '../hooks/useFileDrop'
 import { useWordVideoBytes } from '../hooks/useWordVideoBytes'
-import { toDisplayMessage } from '../lib/errors'
-import { ingestBlob } from '../lib/media'
 import { formatTime } from '../lib/timeline'
 import {
   roleHint,
@@ -47,8 +50,13 @@ import type { Asset } from '../lib/types'
 export function WordVideos({ word }: { word: Word }) {
   const catalogue = useAssetStore((state) => state.assets)
   const moveVideo = useWordsStore((state) => state.moveVideo)
+  const uploading = useWordsStore((state) => state.uploading)
+  const uploadError = useWordsStore((state) => state.uploadError)
+  const setTranscript = useWordsStore((state) => state.setTranscript)
 
-  const [busy, setBusy] = useState<{ done: number; total: number } | null>(null)
+  /** This word's upload, when the batch that is running is this word's. */
+  const busy = uploading?.wordId === word.id ? uploading : null
+  /** Whatever the last upload went wrong with, so it can be said once. */
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -83,8 +91,8 @@ export function WordVideos({ word }: { word: Word }) {
     [entries],
   )
 
-  // The takes of the word that is open, fetched from Drive if this browser has
-  // never held them — which is every take of every word on a second machine.
+  // The takes of the word that is open, fetched from storage if this browser
+  // has never held them — which is every take of every word on a second machine.
   const { fetching } = useWordVideoBytes(useMemo(() => playable.map((e) => e.asset), [playable]))
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
@@ -110,46 +118,33 @@ export function WordVideos({ word }: { word: Word }) {
   }
 
   /**
-   * Uploads, one file at a time and in the order they were chosen.
+   * Files whatever was chosen or dropped, then empties the input.
    *
-   * Sequential on purpose: picking six takes and having them land in whatever
-   * order six parallel ingests happened to finish would mean re-ordering the run
-   * by hand every time, which is the work this page exists to make easy.
+   * The filing itself is the store's (`addLocalVideos`), because the column
+   * beside this one can start the same batch by having files dropped on a word.
+   * Clearing the input is this side's: without it, choosing the same file twice
+   * in a row is a change event that never fires.
    */
-  const upload = async (files: FileList | null) => {
+  const upload = async (files: FileList | readonly File[] | null) => {
     if (!files?.length) return
-    const chosen = Array.from(files)
-    setBusy({ done: 0, total: chosen.length })
     setError(null)
-    try {
-      // Asked for once, before the first byte is read: it is the same folder for
-      // every file in this batch, and making it is what stops six uploads
-      // racing to create six of it. Null when there is no Drive to make it in,
-      // which sends the backup nowhere and the file nowhere but here.
-      const driveParentId = (await useWordsStore.getState().ensureWordFolder(word.id)) ?? undefined
-
-      for (const [done, file] of chosen.entries()) {
-        setBusy({ done, total: chosen.length })
-        if (!file.type.startsWith('video/')) {
-          setError(`"${file.name}" is not a video.`)
-          continue
-        }
-        const asset = await ingestBlob(file, { kind: 'video', name: file.name, driveParentId })
-        // Into the catalogue but into no project's library: this belongs to a
-        // word, not to whatever timeline happens to be open.
-        useAssetStore.getState().adopt(asset)
-        useWordsStore.getState().addVideo(word.id, asset.id)
-      }
-    } catch (cause) {
-      setError(toDisplayMessage(cause))
-    } finally {
-      setBusy(null)
-      if (fileInput.current) fileInput.current.value = ''
-    }
+    await useWordsStore.getState().addLocalVideos(word.id, Array.from(files))
+    if (fileInput.current) fileInput.current.value = ''
   }
 
+  // The takes this word's area is dropped on. Off while a batch is running, so
+  // a second armful of files cannot be dropped onto one that is still going.
+  const { over: dropping, dropProps } = useFileDrop((files) => void upload(files), !!uploading)
+
+  /** Whatever went wrong last, whichever door it came in by. */
+  const problem = error ?? uploadError
+
   return (
-    <div className="flex flex-col gap-3">
+    // The whole of a word's area is the target, player and rows included: a
+    // folder of takes dragged over here is meant for the word, and asking
+    // somebody to hit a particular strip of it would be a worse door than the
+    // button. `relative` is for the sheet that covers it while a drag is over.
+    <div className="relative flex flex-col gap-3" {...dropProps}>
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="primary" onClick={() => fileInput.current?.click()} disabled={!!busy}>
           {busy ? <Spinner /> : <span aria-hidden>⬆️</span>}
@@ -166,21 +161,31 @@ export function WordVideos({ word }: { word: Word }) {
         />
       </div>
 
-      {error ? (
+      {/* One place for every door's failures: a file that would not ingest
+          reads the same whether it was picked or dropped. */}
+      {problem ? (
         <Callout tone="error" title="Could not add that file">
-          {error}
+          {problem}
         </Callout>
       ) : null}
 
       {/* Keyed on the word so moving to another one starts its run from the
           beginning, rather than resuming at whichever take the last word was
           parked on. */}
-      <WordSequencePlayer key={word.id} entries={playable} onMove={moveOnto} />
+      <WordSequencePlayer
+        key={word.id}
+        entries={playable}
+        onMove={moveOnto}
+        // The same action the box on the take's own row calls, so the transcript
+        // under the picture and the one on the row are one thing edited twice
+        // over rather than two that have to be kept in step.
+        onTranscript={(videoId, transcript) => setTranscript(word.id, videoId, transcript)}
+      />
 
       {entries.length === 0 ? (
         <EmptyState icon="🎥" title="No videos for this word yet">
-          Upload the takes for “{word.text}” — an intro, the word itself, an outro — and drag them
-          into the order they should play.
+          Upload the takes for “{word.text}” — an intro, the word itself, an outro — or drag the
+          files straight onto this area. Then drag them into the order they should play.
         </EmptyState>
       ) : (
         <DndContext
@@ -210,6 +215,19 @@ export function WordVideos({ word }: { word: Word }) {
           </SortableContext>
         </DndContext>
       )}
+
+      {/* Drawn over the area rather than around it, so the whole target is
+          visibly one thing however long the run below has grown. It must not
+          take pointer events: an overlay that did would be the element the drag
+          then leaves and enters, which is a flicker and, on the way out, a drop
+          the browser hands to nobody. */}
+      {dropping ? (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-accent bg-canvas/80">
+          <p className="text-sm font-medium">
+            <span aria-hidden>⬇️</span> Drop videos to add them to “{word.text}”
+          </p>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -308,7 +326,7 @@ function VideoRow({
           <p className="flex items-center gap-1.5 text-xs text-ink-dim">
             {fetching ? (
               <>
-                <Spinner className="size-3" /> Fetching from Drive…
+                <Spinner className="size-3" /> Fetching…
               </>
             ) : asset ? (
               `${asset.duration ? formatTime(asset.duration) : 'video'}${
@@ -374,10 +392,12 @@ function VideoRow({
           className="shrink-0"
           onClick={() => void removeVideo(wordId, video.id)}
           aria-label={`Remove ${name}`}
-          // Unlike the Library, this does reach Drive — the word's folder is
-          // the word's list of takes, so one left in it would come back on the
-          // next read. Drive's bin is what makes that recoverable.
-          title="Remove this video. The file goes to your Google Drive bin."
+          // This used to reach into somebody's Drive and bin the file, because
+          // the word's *folder* was the word's list of takes and one left
+          // behind would come back on the next read. The shelf document is that
+          // list now, so taking a take off a word is the whole of it — the copy
+          // in storage is left where it is.
+          title="Remove this video from the word."
         >
           <span aria-hidden>🗑</span>
         </Button>

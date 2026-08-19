@@ -83,7 +83,7 @@ describe('the lane headers', () => {
 
 /**
  * Same distinction as the picture track: a layer whose asset is not in the
- * library yet is either still coming down from Drive or actually gone, and a
+ * library yet is either still coming down from storage or actually gone, and a
  * hydration in flight is what tells those two apart.
  */
 describe('a layer whose asset is not in the library', () => {
@@ -104,7 +104,7 @@ describe('a layer whose asset is not in the library', () => {
     }
   }
 
-  it('says the layer is loading while this project is still being restored from Drive', () => {
+  it('says the layer is loading while this project is still being restored', () => {
     useProjectStore.setState({ project: projectWithOneLayer() })
     useProjectsStore.setState({ hydration: { done: 1, total: 3, failures: [] } })
 

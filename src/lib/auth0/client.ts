@@ -8,18 +8,11 @@
  * `/api/*` takes its access token, and Supabase — which registers this tenant as
  * a third-party auth provider — takes its ID token (see ../supabase/session.ts).
  *
- * Two asks, and the second one is the whole point. `beginGoogleSignIn`
- * establishes the account; `connectDrive` asks Google for the folder afterwards.
- * They are separate because of where Auth0 files what comes back: a login writes
- * the provider's tokens against the user's *identity*, and Token Vault — which
- * is what the functions exchange against — reads `connected_accounts`, a store
- * nothing but the connect flow fills. A login carrying `connection_scope` is
- * therefore not one screen saved but one grant wasted.
- *
- * Cheaper than it sounds, all the same. The address is known by the time the
- * second ask runs, so `login_hint` turns it into a single approval rather than
- * another choice of account — the same trick the old Netlify Identity flow
- * needed, for a different reason.
+ * One ask, where there were two. Signing in used to be followed by a second
+ * trip to Google for a Drive grant, filed in a different place by Auth0 and
+ * spent by a function through Token Vault. Media lives in storage this
+ * deployment owns now, so there is nothing left to ask for and no grant that can
+ * lapse and lock somebody out of their own editor an hour later.
  *
  * A full-page redirect rather than a pop-up. There is no project open behind the
  * sign-in screen to navigate away from, and unlike Netlify Identity, Auth0
@@ -37,23 +30,6 @@ import { Auth0Client, type IdToken, type User } from '@auth0/auth0-spa-js'
  * and the token exchange on the server side names it too.
  */
 export const GOOGLE_CONNECTION = 'google-oauth2'
-
-/**
- * The only Drive scope this app asks for, and deliberately the narrowest Google
- * offers: per-file access to what the app creates, plus whatever the user hands
- * it through the Picker.
- *
- * Asking for `drive.readonly` instead would mean "see and download all your
- * Google Drive files" on the consent screen, and a yearly third-party security
- * assessment before that screen could be published.
- *
- * Named here *and* configured on the Auth0 connection. The connection setting is
- * what Token Vault stores tokens against; this is what the authorisation request
- * asks for, which is what makes the ask visible in the code that depends on it.
- */
-export const DRIVE_SCOPE_LIST: readonly string[] = ['https://www.googleapis.com/auth/drive.file']
-
-export const DRIVE_SCOPES = DRIVE_SCOPE_LIST.join(' ')
 
 export interface Auth0Config {
   domain: string
@@ -137,10 +113,12 @@ export function auth0(): Auth0Client {
     // call below is refused by an API it was never addressed to — silently, in
     // the sense that the token looks perfectly valid. The tenant half is an MRRT
     // policy; see scripts/auth0-connect-setup.mjs.
+    // Both of these were for the connect flow, which is gone. Left alone on
+    // purpose: they change how the SDK asks for and binds *every* token, not
+    // just the ones the My Account API wanted, and turning them off would
+    // invalidate sessions already stored in people's browsers. Dead weight is
+    // cheaper than signing everybody out to remove it.
     useMrrt: true,
-    // Not optional. The My Account API declines bearer tokens and wants a proof
-    // of possession bound to a key this browser generated, so a token lifted out
-    // of storage cannot be replayed elsewhere. The SDK does the whole dance.
     useDpop: true,
   })
   return client
@@ -164,7 +142,9 @@ function toAccount(user: User | undefined): Account | null {
  * Whether this load is Auth0 returning from Google.
  *
  * Two errands come back through here and the SDK tells them apart by which code
- * is present: `code` is a sign-in, `connect_code` is a finished Drive grant.
+ * is present: `code` is a sign-in. `connect_code` is a finished Drive grant,
+ * which nothing starts any more — kept because a redirect already in flight
+ * when this shipped still has to be able to land somewhere.
  * Both are handed to the same `handleRedirectCallback`, which is why this only
  * has to recognise them, not sort them.
  *
@@ -274,40 +254,6 @@ export async function beginGoogleSignIn(): Promise<void> {
       connection: GOOGLE_CONNECTION,
       redirect_uri: window.location.origin,
     },
-  })
-}
-
-/**
- * Asks Google for the Drive folder, on an account that is already signed in.
- *
- * The second screen, and the one that actually stocks Token Vault. Auth0 calls
- * this a connected account: the browser asks the My Account API to open a
- * consent, Google asks the user, and Auth0 keeps the refresh token that comes
- * back somewhere the token exchange in netlify/lib/tokenVault.ts can reach it.
- *
- * `login_hint` is what keeps it to a single click. The account is already known
- * by the time this runs, so Google is told which one rather than asked, and the
- * user sees the permission on its own instead of picking their address again —
- * the same trick the old Netlify Identity flow needed, for the same reason.
- *
- * Nothing after this runs: it navigates. The grant comes back as `connect_code`
- * on the next load, which `adoptRedirect` hands to the SDK along with everything
- * else.
- */
-export async function connectDrive(loginHint?: string): Promise<void> {
-  await auth0().connectAccountWithRedirect({
-    connection: GOOGLE_CONNECTION,
-    // The scope the *vault* is stocked with, which is the one the functions will
-    // later spend. The connection carries the same list in the Auth0 dashboard;
-    // naming it here too is what keeps the ask visible in the code that depends
-    // on it.
-    scopes: [...DRIVE_SCOPE_LIST],
-    // Three naming conventions in one call, and they are the SDK's rather than
-    // ours: `redirectUri` camel and top-level, `authorization_params` snake,
-    // `login_hint` snake inside it. `loginWithRedirect` above spells the first
-    // two the other way round.
-    redirectUri: window.location.origin,
-    ...(loginHint ? { authorization_params: { login_hint: loginHint } } : {}),
   })
 }
 

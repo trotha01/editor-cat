@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react'
 import { getBlob, putBlob } from '../lib/db'
-import { downloadFile } from '../lib/google/drive'
+import { downloadAsset } from '../lib/r2/download'
 import { mapLimited } from '../lib/concurrency'
 import { probeMedia } from '../lib/media'
 import { useAssetStore } from '../state/useAssetStore'
@@ -49,28 +49,28 @@ export function useWordVideoBytes(assets: readonly Asset[]): { fetching: Set<str
       // the dependencies — see `key`.
       const catalogue = useAssetStore.getState().assets
       const wanted = key ? key.split(',') : []
-      const missing: { asset: Asset; driveFileId: string }[] = []
+      const missing: { asset: Asset; r2Key: string }[] = []
 
       for (const id of wanted) {
         const asset = catalogue.find((entry) => entry.id === id)
-        if (!asset?.driveFileId) continue
+        if (!asset?.r2Key) continue
         if (await getBlob(asset.blobKey)) continue
-        missing.push({ asset, driveFileId: asset.driveFileId })
+        missing.push({ asset, r2Key: asset.r2Key })
       }
       if (cancelled || missing.length === 0) return
 
-      await mapLimited(missing, DOWNLOAD_CONCURRENCY, async ({ asset, driveFileId }) => {
+      await mapLimited(missing, DOWNLOAD_CONCURRENCY, async ({ asset, r2Key }) => {
         mark(asset.id, true)
         try {
-          const blob = await downloadFile(driveFileId)
+          const blob = await downloadAsset(r2Key)
           if (cancelled) return
           await putBlob(asset.blobKey, blob)
 
-          // Catalogued from a Drive listing, which knows a file's name and not
-          // how long it is — so the row said "video" and the run's running time
-          // counted it as nothing. The bytes are here now, and the browser can
-          // be asked. It also replaces the asset, which is what makes everything
-          // that asked for its URL and was told there was none ask again.
+          // A take catalogued before its bytes reached this machine has no
+          // duration, so the run's running time counted it as nothing. The
+          // bytes are here now and the browser can be asked. It also replaces
+          // the asset, which is what makes everything that asked for its URL
+          // and was told there was none ask again.
           await useAssetStore
             .getState()
             .update(asset.id, await probeMedia(blob, 'video').catch(() => ({})))

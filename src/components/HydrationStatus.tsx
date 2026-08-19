@@ -1,5 +1,5 @@
 /**
- * Progress while media for a freshly opened project comes back from Drive.
+ * Progress while media for a freshly opened project comes back from storage.
  *
  * The timeline is already laid out from metadata by the time this shows, so
  * this explains why a clip might not play yet rather than blocking the editor.
@@ -13,8 +13,8 @@ export function HydrationStatus() {
 
   return (
     <Callout tone="info" title="Fetching this project’s media">
-      {hydration.done} of {hydration.total} restored from Google Drive. You can arrange the timeline
-      now — clips will play as their files arrive.
+      {hydration.done} of {hydration.total} restored. You can arrange the timeline now — clips will
+      play as their files arrive.
       {hydration.failures.length > 0 ? (
         <span className="mt-1 block text-amber-800">
           {hydration.failures.length} could not be recovered:{' '}

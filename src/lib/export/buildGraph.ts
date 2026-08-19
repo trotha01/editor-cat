@@ -25,6 +25,7 @@
  * each blend begins. Nothing else in the graph moves — the padding, the layers
  * and the captions all still go on afterwards, in that order.
  */
+import { forceKeyframesExpr } from './hlsArgs'
 
 /**
  * How a clip comes in from the one before it.
@@ -137,9 +138,32 @@ export interface ExportSpec {
    * last ten seconds of a long project is not ten seconds of work.
    */
   range?: { start: number; end: number }
+  /**
+   * Encode the mix on its own, with no picture at all.
+   *
+   * The sound is assembled exactly as it is for a video — the audio tracks plus
+   * whatever the clips and layers carry themselves — so the file is the mix that
+   * was being listened to rather than a second arrangement of the same parts.
+   * What changes is everything downstream: no video graph, no picture inputs
+   * beyond the ones with sound in them, and no burnt-in captions, which have
+   * nowhere to be burnt.
+   */
+  audioOnly?: boolean
   /** 18 is visually lossless, 28 is small. 23 is a good middle. */
   crf?: number
   preset?: string
+  /**
+   * Force a keyframe every N seconds, so a later `-c copy` pass can cut the
+   * file into segments of that length.
+   *
+   * Absent leaves the argv exactly as it was, which is what an export destined
+   * for download wants — extra keyframes cost bitrate and buy nothing there.
+   * Set it when the output is going to be packaged as HLS, and set it to the
+   * same number as `-hls_time`: a segmenter can only cut at a keyframe, so
+   * asking for four-second segments over a stream whose keyframes land every
+   * eight silently yields eight-second ones. See `HLS_SEGMENT_SECONDS`.
+   */
+  keyframeSeconds?: number
 }
 
 export interface ExportPlan {
@@ -270,10 +294,23 @@ function placeOverlay(clip: ExportOverlayClip, width: number, height: number, fp
   return stages.join(',')
 }
 
+/**
+ * Whether a picture clip or a layer contributes any sound of its own.
+ *
+ * Only asked in audio-only mode, where it decides which files are staged as
+ * inputs at all: a still, a silent take or one turned down to nothing has
+ * nothing to give a soundtrack, and decoding it would be a minute spent on
+ * frames nobody is going to see.
+ */
+function carriesSound(clip: ExportClip | ExportOverlayClip): boolean {
+  return clip.kind === 'video' && clip.hasAudio === true && (clip.volume ?? 1) > 0
+}
+
 export function buildExportPlan(spec: ExportSpec): ExportPlan {
   const { clips, width, height, fps, outputFile } = spec
+  const audioOnly = spec.audioOnly === true
 
-  if (clips.length === 0) {
+  if (!audioOnly && clips.length === 0) {
     throw new Error('Add at least one clip to the timeline before exporting.')
   }
 
@@ -312,7 +349,16 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   const args: string[] = []
 
   // --- Inputs ------------------------------------------------------------
-  for (const clip of clips) {
+  // Which ffmpeg input each clip became, since in audio-only mode the ones with
+  // no sound in them are never staged and the numbering closes up behind them.
+  // With the picture in play nothing is skipped, so these are the indices they
+  // always were.
+  const clipInput = new Map<number, number>()
+  const overlayInput = new Map<number, number>()
+  let inputs = 0
+
+  clips.forEach((clip, index) => {
+    if (audioOnly && !carriesSound(clip)) return
     if (clip.kind === 'image') {
       args.push('-loop', '1', '-t', sec(clip.duration), '-i', clip.file)
     } else {
@@ -320,18 +366,22 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
       // and ffmpeg makes it accurate by decoding from the preceding keyframe.
       args.push('-ss', sec(clip.inPoint), '-t', sec(clip.duration), '-i', clip.file)
     }
-  }
+    clipInput.set(index, inputs)
+    inputs += 1
+  })
 
-  const overlayInputOffset = clips.length
-  for (const clip of overlays) {
+  overlays.forEach((clip, index) => {
+    if (audioOnly && !carriesSound(clip)) return
     if (clip.kind === 'image') {
       args.push('-loop', '1', '-t', sec(clip.duration), '-i', clip.file)
     } else {
       args.push('-ss', sec(clip.inPoint), '-t', sec(clip.duration), '-i', clip.file)
     }
-  }
+    overlayInput.set(index, inputs)
+    inputs += 1
+  })
 
-  const audioInputOffset = clips.length + overlays.length
+  const audioInputOffset = inputs
   for (const clip of audio) {
     // Trim at the input like the video clips, so the filtergraph only has to
     // place and mix rather than also cut.
@@ -339,135 +389,141 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   }
 
   // --- Video graph -------------------------------------------------------
+  // Skipped entirely for an audio-only export: there is no picture to build, and
+  // nothing downstream of here — the padding, the layers, the captions — has
+  // anywhere to be applied. The audio graph below is untouched by the choice,
+  // which is what makes the soundtrack the same mix either way.
   const chains: string[] = []
-  const normalized: string[] = []
+  if (!audioOnly) {
+    const normalized: string[] = []
 
-  // Whether anything blends, which decides how the clips are joined below.
-  const blending = clips.some((_, index) => overlapInto(clips, index) > 0)
+    // Whether anything blends, which decides how the clips are joined below.
+    const blending = clips.some((_, index) => overlapInto(clips, index) > 0)
 
-  clips.forEach((_, index) => {
-    const label = `v${index}`
-    chains.push(
-      `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
-        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},` +
-        `format=yuv420p` +
-        // xfade reads the offset off the input's own timestamps, so they have to
-        // start at zero. The input seek normally sees to that; saying so costs
-        // nothing and turns "the dissolve happened somewhere else entirely" into
-        // a bug that cannot occur. Left off when nothing blends, so an export
-        // without transitions is the graph it always was.
-        (blending ? ',setpts=PTS-STARTPTS' : '') +
-        `[${label}]`,
-    )
-    normalized.push(`[${label}]`)
-  })
+    clips.forEach((_, index) => {
+      const label = `v${index}`
+      chains.push(
+        `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},` +
+          `format=yuv420p` +
+          // xfade reads the offset off the input's own timestamps, so they have to
+          // start at zero. The input seek normally sees to that; saying so costs
+          // nothing and turns "the dissolve happened somewhere else entirely" into
+          // a bug that cannot occur. Left off when nothing blends, so an export
+          // without transitions is the graph it always was.
+          (blending ? ',setpts=PTS-STARTPTS' : '') +
+          `[${label}]`,
+      )
+      normalized.push(`[${label}]`)
+    })
 
-  // The picture is built up in stages, each taking the last one's label:
-  // concatenated, padded to the timeline's own clock, layered on, then
-  // captioned. The order is the whole point — see each step below.
-  //
-  // Counting the stages up front lets whichever turns out to be last write
-  // [vout] itself, rather than every export ending with a relabelling filter
-  // that exists only because the graph was built without looking ahead.
-  let pending = leadIn > 0 || contentEnd > visualEnd + 0.01 ? 1 : 0
-  pending += overlays.length + (spec.captions ? 1 : 0) + (trimming ? 1 : 0)
-  const nextStage = (label: string): string => {
-    pending -= 1
-    return pending === 0 ? '[vout]' : label
-  }
-
-  let stage = pending === 0 ? '[vout]' : '[vcat]'
-  if (!blending) {
-    chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
-  } else {
-    // With a transition anywhere, the clips are joined a pair at a time instead:
-    // `xfade` takes exactly two inputs and has to know how far into the picture
-    // so far the blend begins, which is only knowable one join at a time.
+    // The picture is built up in stages, each taking the last one's label:
+    // concatenated, padded to the timeline's own clock, layered on, then
+    // captioned. The order is the whole point — see each step below.
     //
-    // The offset is the accumulated length *minus* the overlap, which is the
-    // same number `layoutClips` arrives at for where the incoming clip starts —
-    // the two have to agree or the preview is showing a different edit.
-    let current = normalized[0] as string
-    let elapsed = Math.max(0, clips[0]?.duration ?? 0)
-    for (let index = 1; index < clips.length; index += 1) {
-      const overlap = overlapInto(clips, index)
-      const last = index === clips.length - 1
-      const out = last ? stage : `[vj${index}]`
-      const length = Math.max(0, clips[index]?.duration ?? 0)
-      if (overlap > 0) {
-        const name = clips[index]?.transition?.name ?? 'fade'
-        chains.push(
-          `${current}${normalized[index]}xfade=transition=${name}:` +
-            `duration=${sec(overlap)}:offset=${sec(Math.max(0, elapsed - overlap))}${out}`,
-        )
-      } else {
-        // A straight cut between two clips that are otherwise part of a blended
-        // run. Still a concat, just of two rather than of all of them.
-        chains.push(`${current}${normalized[index]}concat=n=2:v=1:a=0${out}`)
-      }
-      elapsed += length - overlap
-      current = out
+    // Counting the stages up front lets whichever turns out to be last write
+    // [vout] itself, rather than every export ending with a relabelling filter
+    // that exists only because the graph was built without looking ahead.
+    let pending = leadIn > 0 || contentEnd > visualEnd + 0.01 ? 1 : 0
+    pending += overlays.length + (spec.captions ? 1 : 0) + (trimming ? 1 : 0)
+    const nextStage = (label: string): string => {
+      pending -= 1
+      return pending === 0 ? '[vout]' : label
     }
-  }
 
-  // Padding at either end, both done with tpad on the concatenated picture:
-  // black in front for the lead-in, and the last frame held at the back when
-  // sound or a layer outlasts the picture.
-  const padding: string[] = []
-  if (leadIn > 0) {
-    padding.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
-  }
-  if (contentEnd > visualEnd + 0.01) {
-    // Something runs past the last clip, so hold its final frame rather than
-    // cutting to black mid-sentence — or out from under a layer still on screen.
-    padding.push(`tpad=stop_mode=clone:stop_duration=${sec(contentEnd - visualEnd)}`)
-  }
-  if (padding.length > 0) {
-    const out = nextStage('[vpad]')
-    chains.push(`${stage}${padding.join(',')}${out}`)
-    stage = out
-  }
+    let stage = pending === 0 ? '[vout]' : '[vcat]'
+    if (!blending) {
+      chains.push(`${normalized.join('')}concat=n=${clips.length}:v=1:a=0${stage}`)
+    } else {
+      // With a transition anywhere, the clips are joined a pair at a time instead:
+      // `xfade` takes exactly two inputs and has to know how far into the picture
+      // so far the blend begins, which is only knowable one join at a time.
+      //
+      // The offset is the accumulated length *minus* the overlap, which is the
+      // same number `layoutClips` arrives at for where the incoming clip starts —
+      // the two have to agree or the preview is showing a different edit.
+      let current = normalized[0] as string
+      let elapsed = Math.max(0, clips[0]?.duration ?? 0)
+      for (let index = 1; index < clips.length; index += 1) {
+        const overlap = overlapInto(clips, index)
+        const last = index === clips.length - 1
+        const out = last ? stage : `[vj${index}]`
+        const length = Math.max(0, clips[index]?.duration ?? 0)
+        if (overlap > 0) {
+          const name = clips[index]?.transition?.name ?? 'fade'
+          chains.push(
+            `${current}${normalized[index]}xfade=transition=${name}:` +
+              `duration=${sec(overlap)}:offset=${sec(Math.max(0, elapsed - overlap))}${out}`,
+          )
+        } else {
+          // A straight cut between two clips that are otherwise part of a blended
+          // run. Still a concat, just of two rather than of all of them.
+          chains.push(`${current}${normalized[index]}concat=n=2:v=1:a=0${out}`)
+        }
+        elapsed += length - overlap
+        current = out
+      }
+    }
 
-  // Layers, after the padding for the same reason the captions are: a layer's
-  // start time is absolute timeline seconds, and it is the padding that makes
-  // the stream's clock agree with the timeline. Applied bottom of the stack
-  // first, each over the result of the last, which is what makes the track
-  // order the stacking order.
-  overlays.forEach((clip, index) => {
-    const input = overlayInputOffset + index
-    chains.push(`[${input}:v]${placeOverlay(clip, width, height, fps)}[ov${index}]`)
-    const out = nextStage(`[vov${index}]`)
-    // `enable` gates it to its own stretch of timeline; `eof_action=pass` keeps
-    // the picture flowing once the layer has run out rather than ending the
-    // output with it.
-    const until = sec(clip.startTime + clip.duration)
-    chains.push(
-      `${stage}[ov${index}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:` +
-        `enable='between(t,${sec(clip.startTime)},${until})'${out}`,
-    )
-    stage = out
-  })
+    // Padding at either end, both done with tpad on the concatenated picture:
+    // black in front for the lead-in, and the last frame held at the back when
+    // sound or a layer outlasts the picture.
+    const padding: string[] = []
+    if (leadIn > 0) {
+      padding.push(`tpad=start_mode=add:start_duration=${sec(leadIn)}:color=black`)
+    }
+    if (contentEnd > visualEnd + 0.01) {
+      // Something runs past the last clip, so hold its final frame rather than
+      // cutting to black mid-sentence — or out from under a layer still on screen.
+      padding.push(`tpad=stop_mode=clone:stop_duration=${sec(contentEnd - visualEnd)}`)
+    }
+    if (padding.length > 0) {
+      const out = nextStage('[vpad]')
+      chains.push(`${stage}${padding.join(',')}${out}`)
+      stage = out
+    }
 
-  // Captions go on last of all: they belong on top of everything, including a
-  // layer, and like the layers they are dated from the timeline rather than
-  // from the first frame of picture. Burning them in before the lead-in padding
-  // would put every caption late by the length of it — and lose outright any
-  // caption written over it.
-  if (spec.captions) {
-    const out = nextStage('[vass]')
-    chains.push(
-      `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${out}`,
-    )
-    stage = out
-  }
+    // Layers, after the padding for the same reason the captions are: a layer's
+    // start time is absolute timeline seconds, and it is the padding that makes
+    // the stream's clock agree with the timeline. Applied bottom of the stack
+    // first, each over the result of the last, which is what makes the track
+    // order the stacking order.
+    overlays.forEach((clip, index) => {
+      const input = overlayInput.get(index) as number
+      chains.push(`[${input}:v]${placeOverlay(clip, width, height, fps)}[ov${index}]`)
+      const out = nextStage(`[vov${index}]`)
+      // `enable` gates it to its own stretch of timeline; `eof_action=pass` keeps
+      // the picture flowing once the layer has run out rather than ending the
+      // output with it.
+      const until = sec(clip.startTime + clip.duration)
+      chains.push(
+        `${stage}[ov${index}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:` +
+          `enable='between(t,${sec(clip.startTime)},${until})'${out}`,
+      )
+      stage = out
+    })
 
-  // The cut to the chosen range, after everything that is dated from the
-  // timeline has been laid on it. `setpts` rebases what is left to zero, since
-  // an mp4 that starts at 0:42 is one most players open on a blank frame.
-  if (trimming) {
-    chains.push(
-      `${stage}trim=start=${sec(rangeStart)}:end=${sec(rangeEnd)},setpts=PTS-STARTPTS${nextStage('[vcut]')}`,
-    )
+    // Captions go on last of all: they belong on top of everything, including a
+    // layer, and like the layers they are dated from the timeline rather than
+    // from the first frame of picture. Burning them in before the lead-in padding
+    // would put every caption late by the length of it — and lose outright any
+    // caption written over it.
+    if (spec.captions) {
+      const out = nextStage('[vass]')
+      chains.push(
+        `${stage}ass=filename=${spec.captions.file}:fontsdir=${spec.captions.fontsDir}${out}`,
+      )
+      stage = out
+    }
+
+    // The cut to the chosen range, after everything that is dated from the
+    // timeline has been laid on it. `setpts` rebases what is left to zero, since
+    // an mp4 that starts at 0:42 is one most players open on a blank frame.
+    if (trimming) {
+      chains.push(
+        `${stage}trim=start=${sec(rangeStart)}:end=${sec(rangeEnd)},setpts=PTS-STARTPTS${nextStage('[vcut]')}`,
+      )
+    }
   }
 
   // --- Audio graph -------------------------------------------------------
@@ -478,12 +534,15 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   // that is left is to move it to where the clip sits on the timeline — and to
   // fade whichever ends of it are dissolving, so the sound crosses over with
   // the picture rather than the two takes talking over each other.
-  for (const { clip, input, start } of withStarts(clips, leadIn)) {
+  for (const { clip, input: index, start } of withStarts(clips, leadIn)) {
     const volume = clip.volume ?? 1
     if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0 || clip.duration <= 0) continue
+    // Whichever input this clip became — the same number as its position on the
+    // track unless an audio-only export closed the gaps between the silent ones.
+    const input = clipInput.get(index) as number
     const fades: AudioFades = {
-      in: overlapInto(clips, input),
-      out: overlapInto(clips, input + 1),
+      in: overlapInto(clips, index),
+      out: overlapInto(clips, index + 1),
       length: Math.max(0, clip.duration),
     }
     const shape = fades.in > 0 || fades.out > 0 ? fades : undefined
@@ -500,7 +559,8 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
     const volume = clip.volume ?? 1
     if (clip.kind !== 'video' || !clip.hasAudio || volume <= 0) return
     const label = `o${index}`
-    chains.push(`[${overlayInputOffset + index}:a]${placeAudio(clip.startTime, volume)}[${label}]`)
+    const input = overlayInput.get(index) as number
+    chains.push(`[${input}:a]${placeAudio(clip.startTime, volume)}[${label}]`)
     placed.push(`[${label}]`)
   })
 
@@ -513,6 +573,11 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   })
 
   const hasAudio = placed.length > 0
+  if (audioOnly && !hasAudio) {
+    // Said here rather than left to produce a file with no streams in it, which
+    // ffmpeg refuses in its own words several minutes of staging later.
+    throw new Error('There is no sound on this timeline to export.')
+  }
   // Without a range the mix is the output, so an untrimmed export keeps the
   // graph it always had rather than gaining a filter that does nothing.
   const mixOut = trimming ? '[amix]' : '[aout]'
@@ -536,21 +601,35 @@ export function buildExportPlan(spec: ExportSpec): ExportPlan {
   args.push('-filter_complex', chains.join(';'))
 
   // --- Mapping and encoding ---------------------------------------------
-  args.push('-map', '[vout]')
+  if (!audioOnly) args.push('-map', '[vout]')
   if (hasAudio) args.push('-map', '[aout]')
 
-  args.push(
-    '-c:v',
-    'libx264',
-    '-preset',
-    spec.preset ?? 'veryfast',
-    '-crf',
-    String(spec.crf ?? 23),
-    '-pix_fmt',
-    'yuv420p',
-    '-r',
-    String(fps),
-  )
+  if (audioOnly) {
+    // Belt and braces beside mapping nothing but the mix: an input staged for
+    // its sound still carries its picture, and `-vn` is what stops a stray
+    // stream being copied into a file that is supposed to be a soundtrack.
+    args.push('-vn')
+  } else {
+    args.push(
+      '-c:v',
+      'libx264',
+      '-preset',
+      spec.preset ?? 'veryfast',
+      '-crf',
+      String(spec.crf ?? 23),
+      '-pix_fmt',
+      'yuv420p',
+      '-r',
+      String(fps),
+    )
+
+    // Only when the output is destined for segmenting. libx264's own defaults —
+    // a 250-frame GOP plus scene cuts — put keyframes wherever the edit happens
+    // to fall, and `-c copy` can only split there.
+    if (spec.keyframeSeconds !== undefined && spec.keyframeSeconds > 0) {
+      args.push('-force_key_frames', forceKeyframesExpr(spec.keyframeSeconds))
+    }
+  }
 
   if (hasAudio) {
     args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000')

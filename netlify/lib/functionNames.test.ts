@@ -40,13 +40,17 @@ describe('netlify/functions directory', () => {
     // minted the Supabase session the browser used to carry; with nothing to
     // mint, keeping it would deploy an endpoint whose only remaining effect
     // would be to hand out a credential nothing accepts.
+    //
+    // `google.ts` went the same way, twice. It exchanged a caller's token for
+    // a Google one through Auth0's Token Vault, came back for the one-shots
+    // that moved everything out of Drive, and left again once they had run.
     expect(names).toEqual([
       'anthropic.ts',
       'elevenlabs.ts',
       'fal.ts',
       'github.ts',
-      'google.ts',
       'media.ts',
+      'r2.ts',
     ])
   })
 })

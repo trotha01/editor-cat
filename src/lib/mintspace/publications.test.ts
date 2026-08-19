@@ -26,8 +26,10 @@ const base: Project = {
 
 const publication = (digest: string, videoId = digest): Publication => ({
   videoId,
-  storagePath: `uid-1/${videoId}.mp4`,
-  videoUrl: `https://cdn.example/uid-1/${videoId}.mp4`,
+  publicationId: videoId,
+  r2Prefix: `v1/uid-1/${videoId}/`,
+  r2Keys: [`v1/uid-1/${videoId}/index.m3u8`],
+  videoUrl: `https://cdn.example/v1/uid-1/${videoId}/index.m3u8`,
   digest,
   caption: null,
   publishedAt: '2026-08-11T12:00:00.000Z',

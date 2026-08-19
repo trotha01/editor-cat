@@ -153,16 +153,6 @@ export interface IngestOptions {
   name: string
   prompt?: string
   sourceUrl?: string
-  /** Set when the media came from Drive, so it is not uploaded straight back. */
-  driveFileId?: string
-  /**
-   * Which Drive folder to back this up into, when it is not the project's.
-   *
-   * Set by the word pages, whose files belong in the folder for their word (see
-   * lib/wordsDrive.ts). Absent everywhere else, which means the folder the user
-   * chose — the answer for anything belonging to a timeline.
-   */
-  driveParentId?: string
   signal?: AbortSignal
 }
 
@@ -198,7 +188,6 @@ export async function ingestBlob(blob: Blob, options: IngestOptions): Promise<As
     ...probed,
     ...(options.prompt ? { prompt: options.prompt } : {}),
     ...(options.sourceUrl ? { sourceUrl: options.sourceUrl } : {}),
-    ...(options.driveFileId ? { driveFileId: options.driveFileId } : {}),
   }
 
   await putBlob(blobKey, blob)

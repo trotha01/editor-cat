@@ -292,8 +292,8 @@ function ConfirmDelete({
           the project menu for the next {RETENTION_DAYS} days.
         </p>
         <p className="text-xs leading-relaxed text-ink-dim">
-          After that it is deleted for good. Media already saved to your Google Drive stays there
-          either way — deleting a project does not touch your Drive.
+          After that it is deleted for good. Media already saved to storage stays there either way —
+          deleting a project does not touch your Drive.
         </p>
 
         <div className="flex flex-wrap justify-end gap-2">

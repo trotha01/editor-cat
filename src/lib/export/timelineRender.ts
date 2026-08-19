@@ -15,7 +15,13 @@
  * sound — and a summary derived independently of the render is a summary free
  * to be wrong about it.
  */
-import { renderProject, type ExportAsset, type RenderProgress, type RenderRequest } from './render'
+import {
+  renderProject,
+  type ExportAsset,
+  type HlsPackage,
+  type RenderProgress,
+  type RenderRequest,
+} from './render'
 import { buildAssFile } from './assCaptions'
 import { captionFonts } from './captionFonts'
 import { exportRangeOf, type ExportRange } from './range'
@@ -103,10 +109,36 @@ export interface TimelineRenderOptions {
   range?: ExportRange
   onProgress?: (progress: RenderProgress) => void
   signal?: AbortSignal
+  /**
+   * Render the soundtrack on its own, as an M4A.
+   *
+   * The mix is assembled from the same project by the same code, so what comes
+   * out is what the video would have carried rather than a second arrangement
+   * of it. Only the picture — and with it the captions, which are burnt into
+   * frames there are none of — is left out.
+   */
+  audioOnly?: boolean
+  /**
+   * Also package the result for streaming.
+   *
+   * Asked for whenever this deployment can publish, not only when the user has
+   * chosen to — otherwise "render once, download to check it, then publish the
+   * file you checked" would need a second encode, since forcing keyframes
+   * changes the bytes. Packaging itself is a stream copy and costs seconds.
+   */
+  hls?: boolean
+}
+
+export interface TimelineRenderResult {
+  blob: Blob
+  hls?: HlsPackage
+  poster?: Blob
 }
 
 /** Renders the project to an MP4, exactly as the preview shows it. */
-export async function renderTimeline(options: TimelineRenderOptions): Promise<Blob> {
+export async function renderTimeline(
+  options: TimelineRenderOptions,
+): Promise<TimelineRenderResult> {
   const { project, assets, crf, range, onProgress, signal } = options
   const plan = exportPlan(project, assets)
   // Fitted here rather than taken on trust: the range was chosen against
@@ -130,7 +162,17 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
     needed.set(assetId, { id: assetId, blob, mimeType: asset.mimeType })
   }
 
-  for (const clip of project.clips) await collect(clip.assetId)
+  // In an audio-only render only the clips that could be heard are fetched. A
+  // still has no sound to give and a silenced clip's is not in the mix, so
+  // reading their bytes back out of storage would be a wait for nothing — and
+  // it would fail a soundtrack export outright over a picture nobody asked for.
+  const audible = new Set(
+    plan.videoClips.filter((clip) => clipGain(clip) > 0).map((clip) => clip.id),
+  )
+  for (const clip of project.clips) {
+    if (options.audioOnly && !audible.has(clip.id)) continue
+    await collect(clip.assetId)
+  }
 
   const audio: RenderRequest['audio'] = []
   for (const clip of plan.audibleClips) {
@@ -154,8 +196,11 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
     if (track.hidden) continue
     for (const clip of videoClipsOf(project)) {
       if (clip.trackId !== track.id || clip.duration <= 0) continue
-      await collect(clip.assetId)
       const asset = assets.find((entry) => entry.id === clip.assetId)
+      // A layer is fetched for an audio-only render only if it could be heard,
+      // for the same reason a clip is.
+      const heard = asset?.kind === 'video' && layerGain(videoTracksOf(project), clip) > 0
+      if (!options.audioOnly || heard) await collect(clip.assetId)
       overlays.push({
         assetId: clip.assetId,
         kind: asset?.kind === 'video' ? 'video' : 'image',
@@ -187,7 +232,7 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
   // than kept on the project: changing the resolution changes the file, and the
   // fonts are only fetched when there is something to draw with them.
   const captions =
-    plan.burntInCues.length > 0
+    plan.burntInCues.length > 0 && !options.audioOnly
       ? {
           ass: buildAssFile({
             tracks: plan.captionTracks,
@@ -199,7 +244,7 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
         }
       : undefined
 
-  const { blob } = await renderProject(
+  const result = await renderProject(
     {
       clips,
       overlays,
@@ -211,10 +256,16 @@ export async function renderTimeline(options: TimelineRenderOptions): Promise<Bl
       leadIn: plan.leadIn,
       ...(captions ? { captions } : {}),
       ...(fitted ? { range: fitted } : {}),
+      ...(options.audioOnly ? { audioOnly: true } : {}),
       crf,
+      ...(options.hls ? { hls: {} } : {}),
     },
     { onProgress, signal },
   )
 
-  return blob
+  return {
+    blob: result.blob,
+    ...(result.hls ? { hls: result.hls } : {}),
+    ...(result.poster ? { poster: result.poster } : {}),
+  }
 }

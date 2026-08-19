@@ -12,7 +12,7 @@
  * list you look things up in: a tier — "1st tier", "Classical", "ESL" — then a
  * language taught in it, then a word of that language. Everything to the right
  * of them is about the one word that is selected, and the three columns are the
- * same three levels of folder the shelf is kept as in Drive.
+ * same three levels the shelf is kept as.
  *
  * Below `lg` there is no room to put three lists beside the videos, so the same
  * three columns become a strip along the bottom of the window saying what is
@@ -22,8 +22,10 @@
  * word's takes back.
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useFileDrop } from './hooks/useFileDrop'
 import { usePersistedState } from './hooks/usePersistedState'
-import { DriveUploads } from './components/DriveUploads'
+import { useUndoRedoShortcut } from './hooks/useUndoRedoShortcut'
+import { UploadStatus } from './components/UploadStatus'
 import { FeedbackBubble } from './components/FeedbackBubble'
 import { RenameField } from './components/RenameField'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -31,19 +33,8 @@ import { WordVideos } from './components/WordVideos'
 import { Button, Callout, EmptyState, LinkButton, Spinner, TextInput } from './components/ui'
 import { EDITOR_HASH } from './lib/route'
 import { languagesInTier, sortedTiers, wordsInLanguage } from './lib/words'
-import { useDriveStore } from './state/useDriveStore'
+import { useAuthStore } from './state/useAuthStore'
 import { useWordsStore } from './state/useWordsStore'
-
-/**
- * What deleting also does, when there is a folder in Drive to do it to.
- *
- * Said out loud because it is a departure from the rest of the app, where your
- * Drive copy is always left alone. Here the folder is the shelf, so a delete
- * that stopped at this browser would be undone by the next read.
- */
-function binNote(inDrive: boolean): string {
-  return inDrive ? '\n\nThe folder goes to your Google Drive bin, where you can get it back.' : ''
-}
 
 export function WordsPage() {
   const tiers = useWordsStore((state) => state.tiers)
@@ -55,7 +46,14 @@ export function WordsPage() {
   const loading = useWordsStore((state) => state.loading)
   const syncing = useWordsStore((state) => state.syncing)
   const syncError = useWordsStore((state) => state.syncError)
-  const driveConnected = useDriveStore((state) => state.status === 'connected' && !!state.folder)
+  const canUndo = useWordsStore((state) => state.canUndo())
+  const canRedo = useWordsStore((state) => state.canRedo())
+  const signedIn = useAuthStore((state) => state.account !== null)
+
+  // The shelf's stack rather than the open project's — this page never opened
+  // one — and the same two keys, because a word page is a document being edited
+  // as much as a timeline is.
+  useUndoRedoShortcut(useWordsStore)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   /**
@@ -88,12 +86,12 @@ export function WordsPage() {
   }, [])
 
   useEffect(() => {
-    // Whenever there is a Drive to read, read it — which is not only on mount.
-    // A connection restored after the page was opened, or granted again after it
-    // lapsed, is the same event as arriving with one, and a shelf that only
-    // syncs on a reload would look like one that does not sync.
-    if (driveConnected) void useWordsStore.getState().syncFromDrive()
-  }, [driveConnected])
+    // Whenever there is an account to read the shelf off, read it — which is not
+    // only on mount. A sign-in that lands after the page was opened is the same
+    // event as arriving with one, and a shelf that only synced on a reload would
+    // look like one that does not sync.
+    if (signedIn) void useWordsStore.getState().syncShelf()
+  }, [signedIn])
 
   const tierList = useMemo(() => sortedTiers(tiers), [tiers])
   const languageList = useMemo(
@@ -109,8 +107,37 @@ export function WordsPage() {
   const language = languageList.find((entry) => entry.id === selectedLanguageId)
   const word = wordList.find((entry) => entry.id === selectedWordId)
 
+  /**
+   * Whether a read that could still fill the columns is out.
+   *
+   * Two of them can: this browser's copy of the shelf (`loading`) and the
+   * account's (`syncing`), and a shelf that has never been on this machine only
+   * arrives with the second — so the page is still loading until both have come
+   * back, not just the first. Held here and handed to all three columns and the
+   * word, so the whole page says "loading" at once rather than one corner of it.
+   *
+   * Only the parts with nothing in them draw a placeholder. A sync on a shelf
+   * that is already up is a background refresh, and blanking the names somebody
+   * is reading to say so would be worse than saying nothing.
+   */
+  const busy = loading || syncing
+
   return (
-    <div className="flex h-full flex-col bg-canvas text-ink">
+    <div
+      className="flex h-full flex-col bg-canvas text-ink"
+      // The page now takes files in two places, which means it is a page people
+      // will drop files *near*. A drop the browser is left to handle replaces
+      // the app with the video that was dropped, so everything that misses a
+      // target is swallowed here instead: `defaultPrevented` is how a drop that
+      // did land on one says so, since those handlers have already run by the
+      // time this one does.
+      onDragOver={(event) => {
+        if (event.defaultPrevented) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'none'
+      }}
+      onDrop={(event) => event.preventDefault()}
+    >
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-3">
         <span aria-hidden className="text-xl">
           🔤
@@ -118,19 +145,44 @@ export function WordsPage() {
         {/* Not "Words": the column below is called that, and a page and a list
             inside it should not answer to the same name. */}
         <h1 className="text-sm font-semibold">Word videos</h1>
-        <p className="min-w-0 flex-1 truncate text-xs text-ink-dim">
-          {syncing
-            ? 'Reading your Drive…'
+        {/* `status`, so the one line that says a read is running is announced
+            when it starts rather than sat there to be found. The placeholders
+            below are drawn for the eye and hidden from a screen reader, which
+            makes this their announcement too. */}
+        <p role="status" className="min-w-0 flex-1 truncate text-xs text-ink-dim">
+          {busy
+            ? 'Reading your shelf…'
             : 'Upload the videos for a word, order them, and watch them together.'}
         </p>
-        {syncing ? <Spinner className="text-ink-dim" /> : null}
+        {busy ? <Spinner className="text-ink-dim" /> : null}
+
+        {/* The same pair as the editor's, in the same shape and the same corner
+            of the header: adding a language, dragging a run into order and
+            deleting a word are all edits to a document, and the page they are
+            made on should be able to take them back. */}
+        <Button
+          onClick={() => useWordsStore.getState().undo()}
+          disabled={!canUndo}
+          title="Undo (Ctrl/Cmd+Z)"
+          aria-label="Undo"
+        >
+          <span aria-hidden>↶</span>
+        </Button>
+        <Button
+          onClick={() => useWordsStore.getState().redo()}
+          disabled={!canRedo}
+          title="Redo (Ctrl/Cmd+Shift+Z)"
+          aria-label="Redo"
+        >
+          <span aria-hidden>↷</span>
+        </Button>
 
         <LinkButton href={EDITOR_HASH}>
           <span aria-hidden>🎬</span> Editor
         </LinkButton>
         {/* The same dialog the editor opens, minus the project section: the
-            account, the Drive folder this shelf lives in, and what this browser
-            is storing are all as much this page's business as the editor's. It
+            account and what this browser is storing are as much this page's
+            business as the editor's. It
             sits last here as it does there, so it is in the same place on both
             pages. */}
         <Button onClick={() => setSettingsOpen(true)}>
@@ -150,7 +202,12 @@ export function WordsPage() {
             title="Tiers"
             collapsed={!!collapsed.tiers}
             onToggle={() => toggle('tiers')}
-            items={tierList.map((entry) => ({ id: entry.id, label: entry.name }))}
+            items={tierList.map((entry) => ({
+              id: entry.id,
+              label: entry.name,
+              count: languages.filter((language) => language.tierId === entry.id).length,
+            }))}
+            countNoun="language"
             selectedId={selectedTierId}
             // Picking one moves the narrow layout on to the list below it: the
             // three levels are one errand — tier, then language, then word — and
@@ -169,8 +226,7 @@ export function WordsPage() {
               if (
                 count > 0 &&
                 !window.confirm(
-                  `Delete "${doomed?.name}" and its ${count} language${count === 1 ? '' : 's'}?` +
-                    binNote(driveConnected && !!doomed?.driveFolderId),
+                  `Delete "${doomed?.name}" and its ${count} language${count === 1 ? '' : 's'}?`,
                 )
               ) {
                 return
@@ -179,7 +235,8 @@ export function WordsPage() {
             }}
             addLabel="Add a tier"
             placeholder="1st tier"
-            empty={loading ? 'Loading…' : 'No tiers yet. Add one to start.'}
+            empty="No tiers yet. Add one to start."
+            loading={busy}
           />
 
           <NavColumn
@@ -188,7 +245,12 @@ export function WordsPage() {
             title="Languages"
             collapsed={!!collapsed.languages}
             onToggle={() => toggle('languages')}
-            items={languageList.map((entry) => ({ id: entry.id, label: entry.name }))}
+            items={languageList.map((entry) => ({
+              id: entry.id,
+              label: entry.name,
+              count: words.filter((word) => word.languageId === entry.id).length,
+            }))}
+            countNoun="word"
             selectedId={selectedLanguageId}
             onSelect={(id) => {
               useWordsStore.getState().selectLanguage(id)
@@ -202,8 +264,7 @@ export function WordsPage() {
               if (
                 count > 0 &&
                 !window.confirm(
-                  `Delete "${doomed?.name}" and its ${count} word${count === 1 ? '' : 's'}?` +
-                    binNote(driveConnected && !!doomed?.driveFolderId),
+                  `Delete "${doomed?.name}" and its ${count} word${count === 1 ? '' : 's'}?`,
                 )
               ) {
                 return
@@ -218,6 +279,10 @@ export function WordsPage() {
                 ? `No languages in ${tier?.name ?? 'this tier'} yet.`
                 : 'Pick a tier first.'
             }
+            // "Pick a tier first" while the tiers are still on their way is an
+            // instruction nobody can follow, and it is the line that made the
+            // page look like an empty shelf rather than a loading one.
+            loading={busy}
           />
 
           <NavColumn
@@ -229,8 +294,9 @@ export function WordsPage() {
             items={wordList.map((entry) => ({
               id: entry.id,
               label: entry.text,
-              note: entry.videos.length ? `${entry.videos.length}` : undefined,
+              count: entry.videos.length,
             }))}
+            countNoun="video"
             selectedId={selectedWordId}
             // The end of the errand: the videos are what was being looked for, so
             // the list gets out of their way.
@@ -239,6 +305,20 @@ export function WordsPage() {
               setSheet(null)
             }}
             onAdd={(value) => useWordsStore.getState().addWord(value)}
+            // Files dragged in off the desktop onto a word, which is the other
+            // half of what the video area takes and the reason only this column
+            // takes them: a tier is a folder of languages and a language a
+            // folder of words, but a word is the folder the takes go in.
+            //
+            // The word is opened as well as filed into, so what was just
+            // dropped — and anything that went wrong dropping it — is on screen
+            // beside the list rather than happening to a row you are not
+            // looking at.
+            onDropFiles={(id, files) => {
+              useWordsStore.getState().selectWord(id)
+              setSheet(null)
+              void useWordsStore.getState().addLocalVideos(id, files)
+            }}
             onRename={(id, name) => useWordsStore.getState().renameWord(id, name)}
             onDelete={(id) => {
               const doomed = wordList.find((entry) => entry.id === id)
@@ -246,8 +326,7 @@ export function WordsPage() {
               if (
                 count > 0 &&
                 !window.confirm(
-                  `Delete "${doomed?.text}" and its ${count} video${count === 1 ? '' : 's'}?` +
-                    binNote(driveConnected && !!doomed?.driveFolderId),
+                  `Delete "${doomed?.text}" and its ${count} video${count === 1 ? '' : 's'}?`,
                 )
               ) {
                 return
@@ -264,6 +343,7 @@ export function WordsPage() {
                 ? `No words in ${language?.name ?? 'this language'} yet.`
                 : 'Pick a language first.'
             }
+            loading={busy}
           />
 
           {/* Last, so it is the bottom edge of the window and whichever list is
@@ -302,17 +382,17 @@ export function WordsPage() {
             screen just as the list of takes got long enough to need it. */}
         <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
           {/* Outside the word, and drawn whether or not one is open: an upload
-              that failed to reach Drive is still worth saying so about after you
-              have moved on to the next word. This is an upload page above all
-              else, so a backup that silently did not happen is the worst thing
-              that could quietly go wrong on it. */}
-          <DriveUploads />
+              that failed is still worth saying so about after you have moved on
+              to the next word. This is an upload page above all else, so a
+              backup that silently did not happen is the worst thing that could
+              quietly go wrong on it. */}
+          <UploadStatus />
 
-          {/* A failed read of Drive is worth saying and never worth blocking on:
-              what is on screen is this browser's copy of the shelf, which is
+          {/* A failed read or write is worth saying and never worth blocking
+              on: what is on screen is this browser's copy of the shelf, which is
               still a shelf. */}
           {syncError ? (
-            <Callout tone="warn" title="Google Drive">
+            <Callout tone="warn" title="Syncing your shelf">
               {syncError}
             </Callout>
           ) : null}
@@ -327,22 +407,20 @@ export function WordsPage() {
                     {language.name}
                   </span>
                 ) : null}
-                {/* The other end of the link, made visible: these videos are in a
-                    folder the user owns, and the fastest way to believe that is
-                    to be able to open it. */}
-                {word.driveFolderId ? (
-                  <a
-                    href={`https://drive.google.com/drive/folders/${word.driveFolderId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-ink-dim underline decoration-dotted hover:text-ink"
-                  >
-                    Open the Drive folder
-                  </a>
-                ) : null}
               </div>
               <WordVideos word={word} />
             </>
+          ) : busy ? (
+            /* Before "Nothing selected", because with the columns still filling
+               there is nothing to select yet — and telling somebody to add a
+               tier while their four tiers are being fetched is how a page that
+               is working reads as a page that lost their shelf. */
+            <EmptyState
+              icon={<Spinner className="!size-7 border-4 text-ink-dim" />}
+              title="Loading your shelf"
+            >
+              Reading your tiers, languages and words.
+            </EmptyState>
           ) : (
             <EmptyState icon="🔤" title="Nothing selected">
               {selectedLanguageId
@@ -414,8 +492,49 @@ function PickerTab({
 interface NavItem {
   id: string
   label: string
-  /** A small figure after the name — how many videos a word has. */
-  note?: string
+  /**
+   * How many things are filed under this row: languages in a tier, words in a
+   * language, takes in a word — which is to say how many folders or files are
+   * inside its folder in Drive.
+   */
+  count: number
+}
+
+/**
+ * The uneven widths of the rows a column stands in for while it is being read.
+ *
+ * Uneven because names are: a stack of identical bars reads as a widget, and a
+ * ragged one reads as the list of "1st tier", "Classical", "ESL" that is about
+ * to land in its place. Five of them, which is about what a column holds before
+ * it starts scrolling — enough to fill the space so the column does not resize
+ * under the mouse when the real names arrive.
+ */
+const PENDING_ROWS = ['w-4/5', 'w-3/5', 'w-11/12', 'w-2/3', 'w-1/2']
+
+/**
+ * A column with its read still out.
+ *
+ * Rows rather than a spinner or another line of small grey text, because the
+ * complaint that got this written was that the columns looked empty rather than
+ * busy — and an empty column and a column holding one short sentence look alike
+ * from across the room. This one has the shape of a list.
+ *
+ * Hidden from screen readers: it says nothing the header's "Reading your shelf…"
+ * has not already said, and five nameless rows announced one after another would
+ * be worse than silence.
+ */
+function PendingRows() {
+  return (
+    <div aria-hidden className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-hidden">
+      {PENDING_ROWS.map((width) => (
+        // The height of a real row, so the list does not jump as it fills.
+        <span
+          key={width}
+          className={`h-8 shrink-0 animate-pulse rounded-lg bg-surface-2 ${width}`}
+        />
+      ))}
+    </div>
+  )
 }
 
 /**
@@ -432,14 +551,17 @@ function NavColumn({
   open,
   title,
   items,
+  countNoun,
   selectedId,
   onSelect,
   onAdd,
   onRename,
   onDelete,
+  onDropFiles,
   addLabel,
   placeholder,
   empty,
+  loading,
   disabled = false,
   collapsed,
   onToggle,
@@ -450,14 +572,25 @@ function NavColumn({
   open: boolean
   title: string
   items: NavItem[]
+  /**
+   * What a row's count counts, singular — "language", "word", "video". Only a
+   * screen reader hears it: on screen the column above says what the list holds,
+   * so a bare "(9)" is enough, but read out on its own a number in brackets is
+   * nine of nothing.
+   */
+  countNoun: string
   selectedId: string | null
   onSelect: (id: string) => void
   onAdd: (value: string) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
+  /** Given only where a row is somewhere files can go. Without it, rows take none. */
+  onDropFiles?: (id: string, files: File[]) => void
   addLabel: string
   placeholder: string
   empty: string
+  /** A read that could fill this list is out. Only matters while it is empty. */
+  loading: boolean
   disabled?: boolean
   /** Narrowed to a strip, so the columns you are not using stop taking room. */
   collapsed: boolean
@@ -466,6 +599,9 @@ function NavColumn({
   const [draft, setDraft] = useState('')
   /** The row whose name is being typed over, if any. */
   const [renaming, setRenaming] = useState<string | null>(null)
+
+  /** A list on its way is neither the list nor the reason it is empty. */
+  const pending = loading && items.length === 0
 
   const add = () => {
     const value = draft.trim()
@@ -477,6 +613,7 @@ function NavColumn({
   return (
     <section
       id={id}
+      aria-busy={pending}
       // Half the window at most below `lg`, so opening a list of thirty
       // languages leaves the player on screen behind it rather than becoming the
       // page again. Above `lg` the column is a column and takes the height it is
@@ -523,7 +660,9 @@ function NavColumn({
         {/* The names are the part that scrolls, at both widths: they are the only
             thing here with no bound on how long they get, and the add box below
             them has to stay reachable without scrolling past thirty languages. */}
-        {items.length === 0 ? (
+        {pending ? (
+          <PendingRows />
+        ) : items.length === 0 ? (
           <p className="px-1 py-2 text-xs leading-relaxed text-ink-dim">{empty}</p>
         ) : (
           <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
@@ -538,49 +677,16 @@ function NavColumn({
                   />
                 </li>
               ) : (
-                <li key={item.id} className="group flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onSelect(item.id)}
-                    aria-current={selectedId === item.id}
-                    className={`min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                      selectedId === item.id
-                        ? 'bg-accent text-accent-ink'
-                        : 'text-ink hover:bg-surface-2'
-                    }`}
-                  >
-                    {item.label}
-                    {item.note ? (
-                      <span
-                        className={`ml-1.5 text-xs ${
-                          selectedId === item.id ? 'text-accent-ink/75' : 'text-ink-dim'
-                        }`}
-                      >
-                        {item.note}
-                      </span>
-                    ) : null}
-                  </button>
-                  {/* Out of the way until the row is pointed at or tabbed into:
-                    three columns of names are what this page is read from, and a
-                    pencil and a cross beside every one of them is a lot of
-                    furniture to read past. */}
-                  <Button
-                    variant="ghost"
-                    className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    onClick={() => setRenaming(item.id)}
-                    aria-label={`Rename ${item.label}`}
-                  >
-                    ✏️
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    onClick={() => onDelete(item.id)}
-                    aria-label={`Delete ${item.label}`}
-                  >
-                    ✕
-                  </Button>
-                </li>
+                <NavRow
+                  key={item.id}
+                  item={item}
+                  countNoun={countNoun}
+                  selected={selectedId === item.id}
+                  onSelect={() => onSelect(item.id)}
+                  onRename={() => setRenaming(item.id)}
+                  onDelete={() => onDelete(item.id)}
+                  onDropFiles={onDropFiles && ((files) => onDropFiles(item.id, files))}
+                />
               ),
             )}
           </ul>
@@ -617,5 +723,104 @@ function NavColumn({
         </form>
       </div>
     </section>
+  )
+}
+
+/**
+ * One name in one of the columns: the row you pick with, rename from and delete
+ * from — and, where the column says so, drop files onto.
+ *
+ * Its own component for the drop: a hook per row is what gives each one its own
+ * "a drag is over *me*", and there is nowhere to keep that in a list rendered
+ * inline.
+ */
+function NavRow({
+  item,
+  countNoun,
+  selected,
+  onSelect,
+  onRename,
+  onDelete,
+  onDropFiles,
+}: {
+  item: NavItem
+  /**
+   * What the row's count counts, singular — "language", "word", "video". Only
+   * a screen reader hears it: on screen the column above says what the list
+   * holds, so a bare "(9)" is enough, but read out on its own a number in
+   * brackets is nine of nothing.
+   */
+  countNoun: string
+  selected: boolean
+  onSelect: () => void
+  onRename: () => void
+  onDelete: () => void
+  /** Absent in the columns whose rows are not folders of takes. */
+  onDropFiles?: (files: File[]) => void
+}) {
+  const { over, dropProps } = useFileDrop((files) => onDropFiles?.(files), !onDropFiles)
+
+  return (
+    <li
+      className={`group flex items-center gap-1 rounded-lg ${over ? 'ring-2 ring-accent' : ''}`}
+      {...dropProps}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected}
+        // Spelled out for the count, because "French (1)" read aloud is
+        // "French one" — the brackets carry the meaning on screen and say
+        // nothing out loud. A row with nothing in it keeps its bare name, on
+        // screen and off.
+        aria-label={
+          item.count
+            ? `${item.label}, ${item.count} ${countNoun}${item.count === 1 ? '' : 's'}`
+            : undefined
+        }
+        className={`flex min-w-0 flex-1 items-baseline rounded-lg px-2 py-1.5 text-left text-sm transition ${
+          selected ? 'bg-accent text-accent-ink' : 'text-ink hover:bg-surface-2'
+        }`}
+      >
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+        {/* How much is filed under the row, dimmed: it is worth seeing which
+            tiers are full and which word has no takes yet without opening
+            them, but it is not what you are reading the column for, so it
+            must not compete with the names. An empty row shows nothing
+            rather than "(0)" — three columns of zeroes is exactly the
+            distraction this is meant to avoid. It sits outside the
+            truncated name so a long name's ellipsis never eats the count
+            with it. */}
+        {item.count ? (
+          <span
+            aria-hidden
+            className={`ml-1.5 flex-shrink-0 text-xs ${
+              selected ? 'text-accent-ink/75' : 'text-ink-dim'
+            }`}
+          >
+            ({item.count})
+          </span>
+        ) : null}
+      </button>
+      {/* Out of the way until the row is pointed at or tabbed into: three
+          columns of names are what this page is read from, and a pencil and a
+          cross beside every one of them is a lot of furniture to read past. */}
+      <Button
+        variant="ghost"
+        className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={onRename}
+        aria-label={`Rename ${item.label}`}
+      >
+        ✏️
+      </Button>
+      <Button
+        variant="ghost"
+        className="!px-1 !py-0.5 text-xs opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={onDelete}
+        aria-label={`Delete ${item.label}`}
+      >
+        ✕
+      </Button>
+    </li>
   )
 }

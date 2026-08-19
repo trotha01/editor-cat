@@ -16,18 +16,18 @@ need **no key at all**. Signing in is the whole of the way in.
 
 ## What it does
 
-| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 · Idea**     | Type a single word and get 20 tiny, weird scene ideas back from Claude — one or two characters (not necessarily human), an absurd situation, and a line of dialogue that uses the word, all sized to the 8-10 seconds a clip actually gets. Ask for a different number (1-50), and edit the **prompt sent to Claude** right on the tab if that shape of scene isn't the one you're after — **Reset prompt** puts the stock brief back. **Copy** any of them into the Image prompt to get started.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **2 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **3 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| **Timeline**     | A clip added from the **Library** lands after the clip the playhead is on, so the next shot arrives where you are working rather than at the end of the track. Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, [say its captions again properly](#fixing-a-clip-that-says-it-wrong), silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. The mark between two clips opens a **transitions** picker — cross dissolve, dips, wipes, slides, blur and an iris — with a duration you can drag and an **Apply to all**. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. **Start**/**End** (or `I`/`O`) mark where an export of the timeline begins and ends at the playhead, drawn as a band across every lane with a handle on each edge to drag — the same range the export dialog opens onto, and either side stays in step with the other.                                                                                                                       |
-| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| **5 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Three navigation columns on the left — a tier ("1st tier", "Classical", "ESL"), then a language taught in it, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. Anything can be **renamed** with the ✏️ beside it — a tier, a language, a word or a take — which renames the folder or file in Drive rather than making a new one. Each column **folds to a strip** with the « beside its name, and stays folded next time. **Settings** and the **report bubble** are here as well, the same ones the editor has. **Watch together** plays the whole run back to back in one player, moving to the next take on its own and showing each one's transcript as it goes. The shelf **is a tree of folders in your Drive** — one per tier, one per language inside it, one per word inside that, and that word's videos in the word folder — so it opens the same on your next machine, a video dropped into a word's folder from your phone turns up in the app, and **Open the Drive folder** on any word takes you straight to it. See [The word shelf in your Drive](#the-word-shelf-in-your-drive). |
-| **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Step             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 · Idea**     | Type a single word and get 20 tiny, weird scene ideas back from Claude — one or two characters (not necessarily human), an absurd situation, and a line of dialogue that uses the word, all sized to the 8-10 seconds a clip actually gets. Ask for a different number (1-50), and edit the **prompt sent to Claude** right on the tab if that shape of scene isn't the one you're after — **Reset prompt** puts the stock brief back. **Copy** any of them into the Image prompt to get started.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **2 · Image**    | Generate images from a text prompt. **Improve with AI** rewrites the prompt with composition, lighting and lens detail.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **3 · Video**    | Pick a generated image as the opening frame and animate it with Seedance 2.0 at 480p. **Improve with AI** here is tuned differently — it describes _motion and camera_, since the model can already see the frame.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Timeline**     | A clip added from the **Library** lands after the clip the playhead is on, so the next shot arrives where you are working rather than at the end of the track. Drag clips to reorder, drag their edges to trim, set how long stills stay on screen. Every clip carries a **⋯ menu** with what can be done to that clip alone — caption it, [say its captions again properly](#fixing-a-clip-that-says-it-wrong), silence it, take it off the timeline. **Cut** (or `S`) splits the clip under the playhead in two; zoom in and every frame gets its own line to aim at. The mark between two clips opens a **transitions** picker — cross dissolve, dips, wipes, slides, blur and an iris — with a duration you can drag and an **Apply to all**. Clips that came with sound keep it, at a level you set per clip. Give the picture a **lead-in** to slide the whole track later and open black in front of it. A **clip sound** lane under the picture draws the waveform of whatever audio each video clip carries. Audio sits on its own stacked tracks below. **Start**/**End** (or `I`/`O`) mark where an export of the timeline begins and ends at the playhead, drawn as a band across every lane with a handle on each edge to drag — the same range the export dialog opens onto, and either side stays in step with the other. |
+| **Preview**      | Play the timeline back with the transport, or press **Fullscreen** (or `F`) to watch it filling the screen with the controls still to hand. `Space` plays and pauses, arrows nudge the playhead, `Esc` comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **4 · Captions** | **Add captions** transcribes the speech on the timeline with ElevenLabs Scribe, and lays it out karaoke-style: one caption on screen at a time, with the word being spoken picked out. The transcript is editable — retype a misheard word and every other timing in the line is left alone. Any single clip can be captioned or redone from its own **⋯ menu on the timeline**, which replaces only that clip's captions and leaves every correction made elsewhere standing. Captions get a lane of their own, where they can be retimed, trimmed, split and joined, and each word has a mark you can drag until the highlight lands on the voice. Large and bold by default; size, colour, weight and height are adjustable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **5 · Audio**    | Record as many voiceover takes as you like — they layer onto separate tracks automatically. Add music that sits under them. Drop in a **three-beep count-in** and drag it to the exact moment it should lead into. Convert any take into another voice with ElevenLabs; the original is always kept. A clip whose own dialogue is mispronounced is fixed from the timeline instead — see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Export**       | Render an MP4 in the browser with ffmpeg compiled to WebAssembly, captions burnt in. The whole timeline by default, or a **start and end** — marked on the timeline itself, or typed here — to cut a piece out of it. Download it, or publish it straight into [Mintspace](#publishing-to-mintspace-optional) — a vertical video feed — without leaving the dialog. The render happens here either way; only the finished file ever goes anywhere. What a project has published is remembered, so the same video cannot go up twice, and anything already up can be deleted from the same dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Words**        | A second page, reached from **Words** in the header (`#/words`), for building up a shelf of words rather than cutting one project. Three navigation columns on the left — a tier ("1st tier", "Classical", "ESL"), then a language taught in it, then a word of that language — with **Add** under each. Upload the videos for the selected word, label each one **Intro**, **Word** or **Outro**, drag them (or use the ↑↓ on each row) into the order they should play, and type the transcript of what is said in it. Anything can be **renamed** with the ✏️ beside it — a tier, a language, a word or a take. Each column **folds to a strip** with the « beside its name, and stays folded next time. **Settings** and the **report bubble** are here as well, the same ones the editor has. The **player** above the rows plays the whole run back to back, moving to the next take on its own — click the picture to start or stop it, drag the bar under it to scrub across the whole word, and correct the transcript of the take on screen in the box below it. The shelf itself is **kept on your account**, so it opens the same on your next machine in one query, and the takes are in [the same storage](#where-your-media-lives) as everything else the app makes. See [The word shelf](#the-word-shelf).               |
+| **Report**       | A bubble in the bottom-right corner files a bug report, a feature request or a question as an issue on the project's tracker — no GitHub account needed. What it will publish, the reporter's email address included, is shown before anything is posted. See [Reporting bugs from inside the app](#reporting-bugs-from-inside-the-app).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## What you need
 
@@ -259,47 +259,35 @@ Signed out, or with no Supabase project configured, there is one project and
 nothing to switch between, so the name is plain text there and Settings is still
 where it is renamed.
 
-**Getting in is three steps, and each asks for one thing.** Sign in with Google;
-grant permission to write to your Drive; pick the folder your media goes into.
-Then the editor. The second step is asked with the first one's email as a hint,
-so Google does not make you choose an account twice. Settings keeps the folder
-and the sign-out, and nothing else about Google.
+**Getting in is one step.** Sign in with Google, and you are in the editor.
+Settings keeps the sign-out and nothing else about Google.
 
-**Three steps once, one step after that.** Both answers are kept against the
-account rather than in the browser that gave them — the Drive grant by Auth0's
-Token Vault, the folder by a table of this app's own — so every later sign-in is
-a single click, on a new machine as much as on the same one. The folder used to
-live in localStorage alone, which signing out clears (it is an id in one
-account's Drive, and the next person at that keyboard must not inherit it), so
-every login was asked where its media should go all over again.
-
-It was briefly two, because Auth0 will carry a Drive scope through its login and
-the consent screen duly shows the folder next to the account. That grant lands
-against the user's _identity_, and Token Vault — which is what the functions
-exchange against — reads `connected_accounts`, a store only Auth0's own connect
-flow fills. So the folder is asked for after the sign-in rather than during it:
-not a screen that could have been saved, but the only ask that stocks the vault.
-See [what sign-in needs](#what-sign-in-needs).
+It used to be three — sign in, grant Drive, choose a folder — and the middle one
+could not even ride along on the login, because Auth0 files a scope granted at
+sign-in against the user's _identity_ while Token Vault reads
+`connected_accounts`, which only its own connect flow writes. Media lives in
+[our own storage](#where-your-media-lives) now, so there is no second consent to
+ask for and no folder to choose.
 
 **What lives where.** Supabase holds the timeline — clips, tracks, trims, audio
 placement, resolution, and the captions with every word timing in them — plus a
-catalogue of asset metadata and the Drive folder each account writes into. It
-never holds media bytes. Those are in your Google Drive, and cached in each browser's IndexedDB.
-Opening a project on a new machine restores the timeline from metadata
-immediately, so you can rearrange it while the media is still coming down from
-Drive behind you.
+catalogue of asset metadata. It never holds media bytes. Those are in the
+storage bucket, and cached in each browser's IndexedDB. Opening a project on a
+new machine restores the timeline from metadata immediately, so you can
+rearrange it while the media is still coming down behind you.
 
-**Media that predates Drive cannot be recovered on another machine.** An asset
-with no `driveFileId` only ever existed in the browser that made it; those clips
-open with their timing intact and report as unrecoverable.
+**Media that was never uploaded cannot be recovered on another machine.** An
+asset with no `r2Key` only ever existed in the browser that made it — generated
+before the upload finished, or on a browser that never reached the network.
+Those clips open with their timing intact and report as unrecoverable.
 
 **Deleting a project asks first, and keeps it for 90 days.** The confirmation
 names the project — the button is a small icon in a list of near-identical rows —
 and what follows is a `deleted_at` stamp rather than a `delete`. It leaves the
 project menu, reappears at the bottom of it under **Recently deleted** with the
 days it has left, and one click puts it back. After 90 days it is destroyed for
-real. Your Drive is not touched either way: deleting a project deletes an
-arrangement of media, never the media.
+real. Deleting a project deletes an arrangement of media, never the media
+itself.
 
 The purge runs when a session starts, which is the only scheduler this app has,
 so it sweeps an account the next time its owner signs in rather than the day a
@@ -323,10 +311,21 @@ exactly as it did before: one project, IndexedDB, no sign-in.
    fails on a constraint. `0006` changes `user_id` from `uuid` to `text` and
    moves the policies onto `auth.jwt() ->> 'sub'`, because Auth0 subjects are not
    UUIDs — see [migrating an existing project](#migrating-an-existing-project).
-   `0007` adds the one-row-per-user table holding the Drive folder each account
-   writes into, so a sign-in restores it instead of asking for it again. `0008`
-   makes deleting a project reversible: a `deleted_at` column, plus the two
-   functions that stamp it and sweep up after 90 days.
+   `0007` added the one-row-per-user table holding the Drive folder each account
+   wrote into, and `0011` drops it again along with `assets.drive_file_id`, now
+   that media lives in [our own storage](#where-your-media-lives) and the two
+   one-shot repairs that put it there have run. `0008` makes
+   deleting a project reversible: a `deleted_at` column, plus the two functions
+   that stamp it and sweep up after 90 days. `0010` adds `assets.r2_key`, which
+   is how a second machine finds an asset's bytes.
+
+   **`0011` was the last one, and it was destructive in two directions.** It
+   dropped `assets.drive_file_id`, the record of where an unmigrated file lived,
+   and `drive_folders`, the root the word-take repair walked down from. Both had
+   to outlive the repairs that read them — which is why it is numbered after
+   `0010` rather than folded into it, and why a fresh deployment simply runs the
+   whole sequence and never notices.
+
 3. **Supabase Auth is not used at all** — there is no provider to enable there.
    What Supabase needs instead is Auth0 registered as a third-party auth
    provider, and one Auth0 Action. Both are dashboard work, neither can be done
@@ -377,70 +376,68 @@ repeats it for anyone who went looking for their projects first. Both offer a
 retry, which fetches the list again and opens a project without disturbing
 whatever is already on screen.
 
-## Saving to your own Google Drive (optional)
+## Where your media lives
 
-Drive is asked for in the step straight after signing in, and the one after
-_that_ is choosing where your media goes: make an `editor-cat` folder in one
-click, or pick an existing one. From then on everything the app makes —
-generated images, rendered clips, recordings, files you upload — is copied into
-that folder as it is created, and **Library → Import from Drive** opens the
-Google Picker inside it to bring existing media in.
+Everything the app makes — generated images, rendered clips, recordings, files
+you upload, word-shelf takes — goes into a Cloudflare R2 bucket this deployment
+owns, and comes back down on any machine you sign in on. There is nothing to
+connect and no folder to choose: signing in is the whole of it.
 
-The editor does not open until all three are in place — session, permission,
-folder — because an editor that silently saves nowhere is worse than one more
-click. Declining the Drive permission on Google's own consent screen therefore
-sends you back to the same button, with a way to switch accounts.
+The bytes stay in IndexedDB as well, and that copy is the one everything plays
+and exports from. Storage is the durable copy, not the playback source: an
+export needs the bytes locally regardless, and working from the local copy is
+what keeps editing free of network round trips. An upload that fails therefore
+costs you the backup rather than the work — but it is now the _only_ other copy,
+so a failure says so on screen and retries, rather than passing in silence the
+way it could when your own Drive held a second one.
 
-The connection belongs to the account, not the browser, so this is a one-time
-step: signing in on another machine resumes it without asking again. It only
-comes back if the grant is revoked or expires, and then the screen says which.
+**This used to be your Google Drive.** That bought two real things — your own
+storage quota rather than ours, and files that were legible in Drive without
+this app — and cost an entire OAuth integration, Auth0 Token Vault, a second
+consent screen between signing in and reaching the editor, a third screen to
+choose a folder, and a scope so narrow that a video you dropped into one of the
+app's own folders by hand was invisible to it. Getting in took three steps; it
+takes one now.
 
-**Signing out** is in Settings, under Account. It leaves your projects and your
-media where they are and clears this browser: the Google permission held in
-memory, and the folder new media was being saved into.
+**Anything that was in Drive is in R2 now.** Two one-shot repairs moved it —
+one for assets the account had a Drive id for, one for word takes whose asset
+row the old folder walk had never written — and both went with the integration
+once they had run. `src/lib/google/`, `/api/google/*`, `netlify/lib/tokenVault.ts`,
+`AUTH0_BACKEND_CLIENT_ID`, `AUTH0_BACKEND_CLIENT_SECRET`, `drive_folders` and
+`assets.drive_file_id` are all gone. Files left in anybody's Drive are still
+there — nothing here ever deleted one — and are no longer reachable from this
+app.
 
-The bytes stay in IndexedDB either way; Drive is the durable copy, not the
-playback source. Drive has no URL that carries our token _and_ serves range
-requests, so a `<video>` pointed straight at it could not seek — and export
-needs the bytes locally regardless. A failed upload therefore costs you the
-backup and nothing else.
-
-The Auth0 settings are what turn Drive on, because Drive rides on the same
-login. There is no Google client id in this repository any more: Auth0 holds it,
-and your Google console only ever learns about Auth0.
+Set up the bucket under [deploying to Netlify](#deploying-to-netlify);
+`.env.example` explains each variable and why the two buckets are separate.
 
 ### Setting up Auth0
 
-Sign-in and Drive are one consent, so this is one setup rather than two. Auth0
+Sign-in is the only thing Google is asked for, so this is a short setup. Auth0
 holds the Google client; your Google Cloud console only ever learns about Auth0.
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a
-   project and enable the **Google Drive API** and the **Google Picker API**.
-2. Configure the **OAuth consent screen**. While it is in _Testing_ you can add
-   up to 100 test users and nothing further is required.
-3. Create an **OAuth client ID** of type _Web application_. Its one authorised
-   redirect URI is Auth0's: `https://YOUR_TENANT.us.auth0.com/login/callback`.
-   Not this site's — no URL of yours goes in this list, now or ever, which is
-   what makes deploy previews possible at all.
-4. In Auth0, create a **Google social connection** with that client id and
-   secret. Under its settings:
-   - add `https://www.googleapis.com/auth/drive.file` to the connection scopes,
-   - enable **Offline Access** in Permissions, so Auth0 can hold a refresh token,
-   - turn on **Connected Accounts for Token Vault**, which is what lets the
-     functions exchange a caller's token for a Google one.
+   project and configure the **OAuth consent screen**. While it is in _Testing_
+   you can add up to 100 test users and nothing further is required. No API
+   needs enabling: this app reads your name and address and asks for nothing
+   else.
+2. Create an **OAuth client ID** of type _Web application_. Its one authorised
+   redirect URI is Auth0's:
+   `https://YOUR_TENANT.us.auth0.com/login/callback`. Not this site's — no URL
+   of yours goes in this list, now or ever, which is what makes deploy previews
+   possible at all.
+3. In Auth0, create a **Google social connection** with that client id and
+   secret.
 
-   Confirm the client id and secret actually saved. Token Vault refuses to
-   store anything against Auth0's shared development keys, and a connection
-   that has quietly fallen back to them fails much later and somewhere else, as
-   `federated_connection_refresh_token_not_found` — a sentence about refresh
-   tokens, three steps downstream, naming a different client. The tell is on
-   Google's own consent screen: **"auth0.com wants access to your Google
-   Account"** means the dev keys, and your own application's name means your own
-   keys. The tenant log says it outright too, as a warning during login.
+   Confirm they actually saved. A connection that has quietly fallen back to
+   Auth0's shared development keys still signs people in, so nothing looks
+   wrong. The tell is on Google's own consent screen: **"auth0.com wants access
+   to your Google Account"** means the dev keys, and your own application's name
+   means your own.
 
-5. Create an **API** in Auth0 — its identifier is `VITE_AUTH0_AUDIENCE`, and any
+4. Create an **API** in Auth0 — its identifier is `VITE_AUTH0_AUDIENCE`, and any
    URI will do so long as it matches everywhere.
-6. Create a **Single Page Application** for the browser. Its client id is
+5. Create a **Single Page Application** for the browser. Its client id is
    `VITE_AUTH0_CLIENT_ID`; its Allowed Callback URLs, Allowed Logout URLs and
    Allowed Web Origins cover wherever the app is served from, and its
    Connections tab has `google-oauth2` enabled.
@@ -453,68 +450,20 @@ holds the Google client; your Google Cloud console only ever learns about Auth0.
    Application with its authentication method set to None looks identical from
    the browser, does PKCE, signs in, and defaults to non-rotating.
 
-   Nothing surfaces at the time. The session appears to work, stops surviving
-   reloads once the access token expires, and Token Vault holds no Google tokens
-   because none were ever stored — which appears hours later, somewhere else,
-   against a different client id, as `tokenset_not_found`. Only the tenant log
-   under Monitoring → Logs connects the three, and only if you think to look:
-   "no 'refresh_token' was issued because the authorization code exchange
-   originated from a browser"
-
-7. Turn on the half of Token Vault that a login does not fill. Three things have
-   to be true before the browser's connect flow can run, and only the first has
-   a dashboard:
-
-   - **Activate the My Account API** (Dashboard → Applications → APIs). Its
-     identifier is `https://YOUR_TENANT.us.auth0.com/me/`, trailing slash and
-     all.
-   - Give the SPA a **user-delegated** grant on it, from that API's Application
-     Access tab, with the `*:me:connected_accounts` permissions.
-   - Add an **MRRT policy** to the SPA naming that same audience, so one refresh
-     token reaches both this app's API and Auth0's.
-
-   The last two have no dashboard between them and no error when they are
-   missing: a policy naming an API that is not activated is silently ignored,
-   and a client grant created over the Management API with `subject_type: user`
-   can come back stored as `client` — accepted, inert, and sitting right there
-   while the browser is refused for want of it.
-   `scripts/auth0-connect-setup.mjs` does the last two and reads back what it
-   wrote; `scripts/auth0-tokenvault-doctor.mjs` reads the objects rather than
-   the pages when they disagree.
-
-8. On that API's page, press **Add Application**, name it, and press **Add** —
-   which, despite the wording, creates a **Custom API Client** rather than
-   authorising an application that already exists. Then **Configure
-   Application**: its type reads _Custom API Client_, and under Advanced
-   Settings → Grant Types the **Token Vault** grant is already enabled. Its
-   client id and secret are `AUTH0_BACKEND_CLIENT_ID` and
-   `AUTH0_BACKEND_CLIENT_SECRET`.
-
-   Not a machine-to-machine application, however generously granted. Access
-   token exchange is the variant where the caller _is_ the resource server the
-   token was minted for, and Auth0 decides that by whose credentials signed the
-   request — a Custom API Client shares the API's identifier, which is the whole
-   of what makes it the same entity. An M2M client answers "This client is not a
-   resource server and cannot exchange access tokens."
-
-9. Create a Google **API key** under the same Cloud credentials page, restricted
-   by HTTP referrer. The Picker will not open without one.
+   Nothing surfaces at the time. The session appears to work and then stops
+   surviving reloads once the access token expires, and only the tenant log
+   under Monitoring → Logs says why: "no 'refresh_token' was issued because the
+   authorization code exchange originated from a browser".
 
 ```
 VITE_AUTH0_DOMAIN=your-tenant.us.auth0.com
 VITE_AUTH0_CLIENT_ID=            # the SPA application
 VITE_AUTH0_AUDIENCE=https://editor-cat/api
-VITE_GOOGLE_API_KEY=AIza...
-VITE_GOOGLE_PROJECT_NUMBER=1234567890   # Cloud console → project number
-
-AUTH0_BACKEND_CLIENT_ID=         # the API's Custom API Client, not an M2M app
-AUTH0_BACKEND_CLIENT_SECRET=     # scoped to Functions, and genuinely secret
 ```
 
-Only the last one is a secret. The rest ship in the bundle by design, and
-referrer allowlisting is what protects the API key. The project number is passed
-to the Picker as its app id, which is what Google requires for files picked
-there to stay reachable under `drive.file`.
+None of the three is a secret: the domain is in every authorisation URL, the
+client id is public by design, and the audience is in every token. All three
+ship in the bundle.
 
 Optionally, add an Auth0 **Action** that puts the address into the access token
 as `https://editor-cat/email`. Nothing depends on it — the browser reads the
@@ -540,10 +489,6 @@ hosts under that domain with Netlify's **Automatic deploy subdomains**.
 
 > **Only a domain you own.** Never `https://*.netlify.app`: every site Netlify
 > hosts matches it, so anyone could deploy one and be handed your users' tokens.
-> The same goes for the API key's referrer list, which needs
-> `https://*.staging.your.site/*` for the Picker — that one is a separate Google
-> allowlist, because the Picker calls Google straight from the page and Auth0 is
-> nowhere in that path.
 
 Deploys stay reachable at `*--sitename.netlify.app` too, and those hosts are
 outside the wildcard, so sign-in will refuse them. That is the allowlist working;
@@ -637,10 +582,11 @@ AUTH0_BACKEND_CLIENT_SECRET=     # the API's Custom API Client
 Run the files in `supabase/migrations/` in order, but check which have actually
 been applied first — this project's history is not a clean run. On the live
 project (`dxfxvvrbltjckstlnhup`) only `0005_project_drive_folder.sql` has been
-applied; **`0003`, `0004`, `0006`, `0007` and `0008` are outstanding**. All five
-need running, and the order between them does not matter: `0004` only drops a
-table, `0007` only creates one, `0008` adds a column and two functions to a table
-whose type change it does not depend on, and `0006` repeats `0003`'s two
+applied; **`0003`, `0004`, `0006`, `0007`, `0008`, `0009`, `0010` and `0011` are
+outstanding**. Order matters only at the end — `0011` drops what `0010` replaces,
+so it goes last. Between the rest it does not: `0004` only drops a
+table, `0007` and `0009` only create one each, `0008` adds a column and two
+functions to a table whose type change it does not depend on, and `0006` repeats `0003`'s two
 `drop constraint if exists` statements rather than assuming `0003` has run — it
 has to, because `alter column ... type` rebuilds any foreign key on the column,
 and a text column referencing `auth.users (id)` cannot be rebuilt at all.
@@ -673,30 +619,11 @@ and refetched once on an unrecognised key id. That is what lets `/api/fal/*`
 verify every status poll of a minutes-long video job without calling the tenant
 each time.
 
-**Where the Drive token comes from.** Auth0's Token Vault holds the Google
-tokens. `/api/google/token` exchanges the caller's Auth0 token for a Google one
-(`netlify/lib/tokenVault.ts`), so Google's refresh token never reaches this
-codebase — there is none here to leak, and no table to back up or lose.
-
-### One scope, and why
-
-`drive.file` is the only Drive scope this app asks for: per-file access to what
-it creates, plus whatever you hand it through the Google Picker. It cannot see
-anything else in your Drive, and the consent screen says as much.
-
-That is possible because **the Picker does the browsing**. It runs against your
-own Google session rather than this app's token, so it shows your real Drive;
-whatever you select is then granted to the app, file by file. Listing your folder
-ourselves would need `drive.readonly` — a Google _restricted_ scope, rendered as
-"See and download all your Google Drive files", and requiring their annual
-third-party security assessment before the consent screen can be published.
-Using the Picker instead is Google's own recommendation, and it is what lets this
-app go public without that assessment.
-
-The practical limit: `drive.file` does **not** grant access to files already
-inside a folder you pick — only to the folder itself, and to files the app
-created or you selected. So import always goes through the Picker, and there is
-no way to enumerate a folder behind your back.
+**No Google tokens anywhere.** Auth0's Token Vault used to hold them, and
+`/api/google/token` exchanged a caller's Auth0 token for a Google one so that
+Google's refresh token never reached this codebase. Both are gone with Drive:
+signing in asks Google for a name and an address, and nothing else, so there is
+no token to store, exchange, or lose.
 
 ## Publishing to Mintspace (optional)
 
@@ -706,9 +633,9 @@ export dialog offers it as a destination alongside the download: pick **Publish
 to Mintspace**, write a caption, and the export goes into the feed.
 
 The render is unchanged and still runs in this tab. Your source media — the
-generations, the recordings, the takes you did not use — never leaves the
-machine. What is uploaded is the finished MP4, and only that, to a bucket anyone
-can read, because that is what being in a feed means.
+generations, the recordings, the takes you did not use — stays in your own
+storage and is never published. What goes up is the finished video, and only
+that, to a bucket anyone can read, because that is what being in a feed means.
 
 ### Two accounts, and why
 
@@ -830,7 +757,7 @@ publish directory, functions directory, SPA fallback and security headers.
 4. If anyone is to sign in, turn on **Identity** for the site and enable
    **Google** under its external providers.
 
-If you are using the Drive integration, set the `VITE_AUTH0_*` variables in the
+Set the `VITE_AUTH0_*` variables in the
 site's environment variables and add the deployed origin to the Auth0
 application's allowed callback, logout and web-origin lists.
 
@@ -889,6 +816,16 @@ ID by origin allowlisting.
 able to sign in and save, alongside the dashboard steps in [what sign-in
 needs](#what-sign-in-needs).
 
+**`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+`R2_BUCKET_PUBLIC` and `R2_BUCKET_PRIVATE`** are what media storage needs, and
+`VITE_R2_PUBLIC_BASE` is the Cloudflare custom domain the public bucket is
+served from. Without them the editor still runs on this browser alone: nothing
+is backed up, nothing fills in on a second machine, and publishing is not
+offered. Scope the API token to those two buckets with Object Read & Write and
+nothing else — never account-wide. `.env.example` explains why there are two
+buckets, and spells out the CORS policy, which is the thing most likely to be
+wrong in a way nothing reports.
+
 **`GITHUB_TOKEN` and `GITHUB_REPO`** are optional, and only decide whether the
 report bubble can file anything. Without them the editor is unchanged and the
 bubble says reporting is not set up. See [letting a deployment file
@@ -907,18 +844,19 @@ Browser (React + TypeScript + Tailwind)          Netlify Functions (stateless pa
   Speech    — audio decoded here, Scribe there     /api/elevenlabs/* → api.elevenlabs.io
   Sign-in   — Auth0 (auth0-spa-js)                    Auth0 token verified locally,
   Projects  — timelines in Supabase (no media)         site's key attached
-  Drive     — media in your own Drive              /api/media        → streams provider media
-  Preview   — custom player over <video>           /api/google/*     → oauth2.googleapis.com
-  Export    — ffmpeg.wasm → MP4, captions burnt in    exchanges the caller's Auth0 token
-  Publish   — that same MP4, into Mintspace            through Token Vault for a Google one
+  Storage   — media in our own R2 bucket           /api/media        → streams provider media
+  Preview   — custom player over <video>           /api/r2/*         → signs the URLs the browser
+  Export    — ffmpeg.wasm → MP4 + HLS package          uploads and downloads with. No bytes
+  Publish   — the HLS package, into Mintspace          pass through it.
   Report    — bug reports, filed as issues          /api/github/*     → api.github.com
                                                        files what the report form collected,
                                                        attributed to the verified session
 
-                                                 Supabase, Drive and Mintspace all talk to the
+                                                 Supabase, R2 and Mintspace all talk to the
                                                  browser directly, not through us — Supabase
-                                                 trusts the Auth0 token on its own, and
-                                                 Mintspace is signed in to separately.
+                                                 trusts the Auth0 token on its own, R2 is
+                                                 reached with a URL we signed, and Mintspace
+                                                 is signed in to separately.
 ```
 
 A few decisions worth knowing about:
@@ -942,10 +880,10 @@ into IndexedDB and everything afterwards works from `blob:` URLs. That is what
 makes the project survive a refresh and keeps export free of CORS surprises.
 
 **One hook backs everything up.** Every panel already funnels new media through
-`ingestBlob`, so Drive and the asset catalogue both attach to that single point
-(`setIngestListener` in `src/lib/media.ts`) instead of to each generate button.
-Nothing in the ingest path knows Google or Supabase exists, which is also what
-keeps it testable.
+`ingestBlob`, so the upload and the asset catalogue both attach to that single
+point (`setIngestListener` in `src/lib/media.ts`) instead of to each generate
+button. Nothing in the ingest path knows R2 or Supabase exists, which is also
+what keeps it testable.
 
 **Local first, cloud second.** Every edit still writes to IndexedDB
 synchronously, exactly as before; the Supabase push is a debounced follow-up.
@@ -956,38 +894,29 @@ case — an edit made _while_ a save is in flight — is exactly the kind of bug
 that only ever shows up as "my last change sometimes vanished".
 
 **The timeline stores ids, not files.** A project document references assets by
-id; the assets table maps those to Drive file ids. That indirection is what lets
+id; the assets table maps those to storage keys. That indirection is what lets
 a timeline be a few kilobytes and still describe hundreds of megabytes of media
 well enough to rebuild it anywhere.
 
-**A Drive credential never reaches local storage.** The access token lives in
-memory for its hour and nowhere else. The refresh token that replaces it — the
-part that is genuinely long-lived — is held server-side under a service role key
-and swapped for an access token on demand, so the page never sees it. That split
-is the whole design: everything the browser holds is short-lived and cheap to
-replace, and the thing that is not, it cannot read. A deployment with no
-server-side half configured has nowhere to keep a refresh token, so it does not
-offer a connection at all rather than one that quietly dies within the hour —
-the gate says which piece is missing. A connection that lapses later is caught
-where it bites, next to the upload that failed; reloading returns you to the
-Drive step, which by then says "Reconnect Google Drive" rather than pretending
-this is the first time.
+**No storage credential ever reaches the browser.** The R2 keys live in the
+Netlify environment and are read only inside `/api/r2`, which signs a URL per
+object and hands that back. A signed URL is good for one object, one method and
+fifteen minutes, so the worst thing a leaked one can do is what it was minted to
+do. The bytes never pass through the function either — the browser PUTs straight
+to Cloudflare — which is what keeps a sixty-megabyte export clear of the
+six-megabyte payload ceiling every other endpoint here is shaped by.
 
-**Two trips to Google, and the second is not optional.** Signing in and
-authorising Drive used to be one request (`response_type=code id_token`), which
-returned proof of identity and a consent code together. Auth0 owns
-the login now and has no way to add a scope to it, so Drive is asked for
-separately. What is _not_ done is making it optional: a Drive grant that sits
-switched off until someone finds a button in Settings is a backup that quietly
-does nothing, so the gate asks for it before the editor opens and a site that
-cannot store the result says so instead. `login_hint` carries the address across
-from the first screen, which is what keeps the second one to a single question.
+**An upload that fails says so.** This is the one thing that got _louder_ when
+Drive went. A failed Drive upload cost redundancy and nothing else, because the
+bytes were in IndexedDB and in the user's own Drive; now IndexedDB is the only
+other copy, so silence plus cleared site data is lost work. Three attempts with
+backoff, then a visible "not backed up" state with a retry. Editing still never
+waits on any of it.
 
-**The gate holds all three.** The editor does not mount until there is a
-session, a Drive connection _and_ a folder — an editor that silently saves
-nothing is worse than a prompt. But entry is latched: a grant revoked from
-someone's Google account page an hour later shows up in Settings rather than
-ejecting them from an open project.
+**The gate holds one thing.** The editor mounts as soon as there is a session.
+It used to hold three — a session, a Google Drive connection and a folder — because an
+editor that silently saved nothing was worse than a prompt. Nothing is silent
+now, and there is nothing left to ask.
 
 **Tracks fill themselves in.** A new recording goes onto the first voice track
 with a free gap at that moment, and only stacks a new lane when every existing
@@ -1072,8 +1001,8 @@ out of a particular export. The beeps are generated at half scale, because the
 mixer sums tracks without normalising and a cue at full level would clip
 whatever it counts into.
 
-**Clips keep their own sound.** A video that arrives with audio — filmed
-footage from Drive, or a model that returns sound — plays it in the preview and
+**Clips keep their own sound.** A video that arrives with audio — filmed footage
+you uploaded, or a model that returns sound — plays it in the preview and
 mixes it into the export, locked to its picture, with a mute and a level on the
 clip itself. What makes that safe is that nothing is assumed: naming an audio
 stream that is not there fails the whole render, so the exporter asks ffmpeg
@@ -1374,7 +1303,7 @@ because Auth0 returns from Google to this same URL with `code` and `state` in th
 _query_ string: the hash is the one part of the address that return cannot
 disturb. `src/Root.tsx` picks between the two and owns the pair of things both
 need — the asset catalogue and the ingest hook — so a video uploaded for a word
-reaches Drive by exactly the route a generated image does.
+reaches storage by exactly the route a generated image does.
 
 **A word's videos are ordered by hand, and the labels are only labels.** Intro,
 Word and Outro say what a take _is_; they do not say where it goes. The run plays
@@ -1392,101 +1321,83 @@ they go through `adopt` instead and stay out of the project's library, where the
 would only be clutter. The bytes are cleared when the last word listing them is
 deleted (`isVideoAssetOrphaned`).
 
-**The folder tree is the shelf.** See below — it is the one decision on that page
-big enough to deserve its own section.
+**The shelf is one row.** See below — it is the one decision on that page big
+enough to deserve its own section.
 
-## The word shelf in your Drive
+## The word shelf
 
-The [word pages](#what-it-does) keep their shelf as folders in the Drive folder
-you chose, in the layout anybody would build by hand:
-
-```
-editor-cat/                       the folder you chose at sign-in
-  1st tier/                       a tier
-    French/                       a language taught in it
-      cerville - brain/           a word
-        intro.mp4                 its takes, in the order the sidecar gives
-        cerville.mp4
-        editor-cat.json           the order, the labels and the transcripts
-      bonjour - hello/
-        ...
-    German/
-      ...
-  ESL/
-    French/                       the same language, a different shelf
-      ...
-```
+The [word pages](#what-it-does) keep the whole shelf — the tiers, the languages
+under them, the words under those, and the order, labels and transcripts of every
+take — as **one row on your account**. `word_shelves` holds the three lists as a
+single JSON document, guarded by a version the same way a project is
+(`src/lib/supabase/shelf.ts`, `supabase/migrations/0009_word_shelf.sql`). It is
+written a beat after the last edit rather than on every keystroke, and read
+whole, so opening the page on any machine is one query. The takes themselves are
+in [the same storage](#where-your-media-lives) as everything else the app makes,
+found by the asset each take points at.
 
 **Three levels, because the top one is not a property of a language.** The same
 language is taught in more than one tier and its words are not the same words:
-French in the first tier and French in ESL share a name and nothing else. So each
-gets its own folder under its own tier, and the app matches a language by folder
-first and by name _within a tier_ second — never across them, which would merge
-two shelves that only look alike.
+French in the first tier and French in ESL share a name and nothing else. So a
+language is matched by name _within a tier_ and never across them, which would
+merge two shelves that only look alike.
 
-**Why folders rather than a table.** The obvious alternative was another Supabase
-table beside the projects one. Folders won because of what they cost and what
-they buy: no schema, no migration, no row-level security policy, and a shelf that
-is legible in Drive without this app — the videos for a word are where you would
-go looking for them from a phone, in a folder named after the word. Adding a tier,
-a language or a word creates its folder there and then, so the place to drop takes
-into exists before there are any.
+**This used to be a folder tree in your Google Drive**, one folder per tier, per
+language and per word, with each word's takes inside it and a small
+`editor-cat.json` beside them holding the order and the transcripts. It bought a
+shelf that was legible in Drive without this app — the videos for a word were
+where you would go looking for them from a phone — and it cost a great deal
+more than it looked like it did.
 
-**A folder cannot hold an order, so one small file does.** `editor-cat.json` in
-each word folder lists that word's takes by Drive file id, in order, with the
-label and transcript for each (`buildSidecar`/`parseSidecar` in
-`src/lib/words.ts`). The folder still says which videos there _are_ — drop one in
-from a phone and it joins the end of the run, labelled as the word itself — and
-the sidecar says what they are and what order they go in. A sidecar that has been
-mangled or will not download is read as absent: what is lost is the order and the
-labels, not the videos. It is rewritten a beat after the last edit rather than on
-every keystroke, and again when an upload finishes, since a take has no Drive id
-to be listed under until it is up there.
+The folder tree was not just where the bytes were; it was the shelf's
+_identity_. Every read walked it, matched tiers and languages and words by folder
+id, and pruned anything the walk did not turn up — because a take removed from a
+word and left sitting in its folder would simply be found again on the next read
+and come back from the dead. That made deleting on this page reach into somebody's
+Drive and trash a folder, which is a departure this app made nowhere else, and it
+made every rename a patch against a file id. The sidecars had already been
+retired for cost — a listing plus a download _per word_ before the page could
+draw, sixty-odd round trips for a shelf of twenty-three words — and the document
+they were replaced by turned out to hold everything the folders were being asked
+about anyway.
 
-**Reading it back is what makes it a link rather than a tidier upload.** Opening
-the page lists the folders three levels down, matches them against what this
-browser already had — by folder id first, then by name, so a tier or language
-added offline adopts its folder rather than growing a second one — and folds in
-anything new (`mergeShelf`). Only
-the folder names and the sidecars come down at that point; a take's bytes are
-fetched when you open the word that has it, which is the same
-metadata-first-bytes-second order the editor hydrates a project in.
+So the folders are gone and the document is the shelf. What went with them: the
+walk, the folder-id matching, the pruning, the trashing, and about seven hundred
+lines of reconciling one against the other. **Nothing was deleted from anybody's
+Drive on the way out** — the folders and their videos are still there, and
+deleting somebody's files to tidy up is not this app's call, which was true when
+the folders were the shelf and is still true now that they are not.
 
-**Deleting reaches Drive, which is a departure.** Everywhere else in this app your
-Drive copy is left alone. Here it cannot be: a take removed from a word and left
-sitting in that word's folder would simply be found again on the next read and
-come back from the dead. So removing a take trashes its file, and deleting a word,
-a language or a tier trashes the folder — which takes everything inside it, and is
-Drive's own bin, where a mis-click is recoverable. The confirmation says so. The
-same reasoning runs the other way: a word whose folder the read did not turn up
-has been deleted from another machine, and goes here too, or it would sit on this
-machine forever with no way to get rid of it. Pruning runs top down, so a tier
-that has gone takes its languages and their words with it. Nothing without a
-folder id is ever dropped — that is work made here that Drive has not been told
-about yet.
+**What a read does.** The account's copy is the shelf and this browser's copy is a
+cache of it, so a read replaces what it has — which is what lets a word deleted on
+a laptop stay deleted on the desktop. The exception is anything made here since
+the last successful write, and on a browser that has never had one, everything it
+holds: that is work the account has not been told about yet, and treating silence
+about it as a deletion would throw it away (`mergeRemoteShelf`). Takes fill in
+behind all of it: a machine that has never held the files gets asset rows first
+and bytes when you open the word, the same metadata-first-bytes-second order the
+editor hydrates a project in.
 
-**Renaming is a rename, not a move.** The ✏️ on a tier, a language, a word or a
-take changes the name in this browser and patches the folder or file in Drive,
-which keeps its id — and the id is what the shelf is matched by, so a tier
+**Renaming is a rename.** The ✏️ on a tier, a language, a word or a take changes
+the name and nothing else — the id is what the shelf is matched by, so a tier
 renamed on a laptop is the same tier on the desktop rather than a new one beside
 the old. A name a sibling already has is refused, the same way adding a duplicate
-is: two folders of one name under one parent are a shelf that has quietly forked.
-Two takes in a word folder may share a name freely, since everything that refers
-to them goes by id.
+is. Two takes in a word may share a name freely, since everything that refers to
+them goes by id.
 
-**None of it is required.** With no Drive connection there are no folder ids, no
-reads and no writes, and the page is exactly the local one it would have been.
-That is one check (`driveRoot`) rather than a scattering of them.
+**None of it needs an account.** Signed out, the shelf is this browser's alone in
+IndexedDB and the page is exactly what it would otherwise have been. What you
+lose is the second machine seeing any of it.
 
 ## Testing
 
 ```bash
 npm test          # unit tests — timeline maths, caption grouping and retiming,
                   # the karaoke subtitle file, reading Scribe's word list, ffmpeg
-                  # argv, SSRF guard, session
-                  # verification and persistence, the Drive connection flow, the
-                  # video request body, orientation, key storage, and what the
-                  # report bubble will and will not file
+                  # argv, HLS packaging, SigV4 signing, the storage key
+                  # derivation, session verification and persistence, the video
+                  # request body, orientation, and what the report bubble will
+                  # and will not file
 npm run lint
 npm run build
 
@@ -1522,13 +1433,13 @@ as `anon`, and returns an empty project list. `netlify/lib/auth.test.ts` signs
 real RS256 tokens with a real key pair and feeds them to the real
 `requireSession`, because a token nobody accepts looks exactly like a user who is
 not signed in, and one accepted too readily looks like nothing at all.
-`src/lib/google/oauthPopup.test.ts` and `identity.test.ts` pin the parameters
-the Drive grant rests on — `access_type=offline` and `prompt=consent` for a
-refresh token that outlives the tab, `login_hint` so the second consent screen
-does not also ask which account, and the Drive scopes actually reaching the
-request. And `src/components/SignInGate.test.tsx` holds the gate rules that
-decide whether anyone can use the app — no entry without Drive, no Drive prompt
-before there is an account to file it under, and no ejection once inside.
+`netlify/lib/r2Keys.test.ts` is the same kind of test one layer down: R2 has no
+row-level security, so the only thing between one account and another's files is
+that every key is derived from a verified token. It holds the traversals, the
+look-alike prefixes, and the empty id that would quietly widen a prefix into
+somebody's whole account. And `src/components/SignInGate.test.tsx` holds the
+rule that an unconfigured build does not gate at all, which is what keeps mock
+mode and a fresh clone working.
 
 `src/components/FeedbackBubble.test.tsx` is there for the same kind of reason. It
 holds the rule that nothing reaches GitHub until Post is pressed, and that what
@@ -1557,38 +1468,28 @@ If your CI image ships its own browser, point the test at it with
 
 ## Known limits
 
-- **A folder you made by hand is invisible to the word pages.** The app holds the
-  narrowest Drive scope there is — `drive.file`, per-file access to what it
-  created or you handed it — so it can see the language and word folders it made
-  and nothing else of your Drive. If you already have a `Spanish/gato/` tree in
-  there, the app cannot find it and will make its own; move your videos into the
-  folder it made, or drop them into it from Drive, and they turn up in the app on
-  the next visit. The alternative is `drive.readonly`, which puts "see and
-  download all your Google Drive files" on the consent screen.
-- **Deleting on the word pages deletes in Drive.** Unlike the Library, which
-  never touches your Drive copy, removing a take trashes its file and deleting a
-  word or language trashes the folder — because the folder _is_ the list, and
-  anything left in it comes back on the next read. It is Drive's bin rather than
-  a permanent delete, and the confirmation says so.
-- **A language saved before the shelf had tiers is left out.** The word pages
-  briefly kept languages directly in the chosen folder, with no tier above them.
-  Those rows are skipped on load rather than guessed at, because their folders sit
-  where tier folders live now. Nothing in Drive is touched: move such a folder
-  under a tier folder and the next visit reads it back in.
-- **Two machines editing the same word at once will not merge.** Each writes the
-  whole sidecar for that word, so the last write wins for the order and the
-  labels. The videos themselves are never lost this way — they are files in the
-  folder, and both machines see all of them.
+- **The shelf needs an account; the videos do not.** Signed out, or on a
+  deployment with no Supabase, the word pages still work — the shelf is this
+  browser's alone, saved in IndexedDB. What you lose is the second machine seeing
+  any of it.
+- **Media is on our bill now, and there is no cap.** It used to go to the user's
+  own Google Drive quota. Nothing limits how much one account stores, which is
+  fine at this size and will not be forever; `assets.byte_size` is recorded per
+  file so the curve is visible before a number has to be picked.
+- **A file left behind in Google Drive stays there.** Media used to live in a
+  folder tree in the user's own Drive. Nothing was deleted on the way out, so
+  anything that was not moved across is still sitting in Drive — findable from
+  Drive itself, and no longer reachable from this app.
+- **Two machines editing the same word at once will not merge.** The shelf is one
+  document, written under a version guard: a write that finds the row moved on
+  re-reads, folds this machine's additions into what is up there and writes again.
+  Additions survive that; two edits to the _same_ word within the same beat do not
+  — the account's copy of an entry wins. The videos themselves are never lost this
+  way, since they are files in Drive that both machines can see.
 - **A filed report is one-way.** The issue carries the reporter's address so
   they can be answered, but nothing comes back into the editor — there is no
   inbox in the app, and someone who files a bug and closes the tab will only
   hear about it by email or by opening the issue themselves.
-- **Getting in costs two trips to Google.** One signs you in, the other grants
-  Drive. Not a limit of the login — Auth0 will carry the scope through it — but
-  of where the result lands: a login files Google's tokens against the user's
-  identity, and Token Vault reads `connected_accounts`, which only the connect
-  flow writes. The second trip is asked with the first one's address as a hint,
-  so it is one approval rather than another choice of account.
 - **A clip's sound cannot be moved off its clip.** It is mixed where the clip
   sits and trimmed with it, which is what you want for filmed footage; but there
   is no way to slide it, keep it running under the next clip, or drop it onto an

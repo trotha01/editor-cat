@@ -10,9 +10,10 @@ import { useRef, useState } from 'react'
 import { Button } from './ui'
 import { ClipMenu } from './ClipMenu'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
-import { formatTime } from '../lib/timeline'
+import { formatTime, snapToFrame } from '../lib/timeline'
 import { clipEnd } from '../lib/lanes'
 import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
+import { audioCutTargetAt } from '../lib/audioTracks'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { CaptionTarget } from '../lib/captionSources'
@@ -59,19 +60,24 @@ const LANE_SWITCH_THRESHOLD = LANE_PITCH * 0.6
 
 export function AudioTrackLanes({
   zoom,
+  currentTime,
   targets,
 }: {
   zoom: number
+  /** Where the playhead is, which is where a cut from a clip's menu lands. */
+  currentTime: number
   /** Which clips can be captioned, by clip id. Voice clips only — see `speechSources`. */
   targets: ReadonlyMap<string, CaptionTarget>
 }) {
   const project = useProjectStore((state) => state.project)
   const tracks = project.audioTracks
   const clips = project.audioClips
+  const fps = project.fps
   const moveAudioClipTo = useProjectStore((state) => state.moveAudioClipTo)
   const selectedId = useProjectStore((state) => state.selectedAudioClipId)
   const selectAudioClip = useProjectStore((state) => state.selectAudioClip)
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
+  const cutAudioAt = useProjectStore((state) => state.cutAudioAt)
 
   const captionClip = useCaptionJobStore((state) => state.captionClip)
   const captioningClipId = useCaptionJobStore((state) => state.clipId)
@@ -145,6 +151,10 @@ export function AudioTrackLanes({
 
   if (tracks.length === 0) return null
 
+  // Snapped the same way the store snaps a cut, so a menu item offering to cut
+  // and the cut it then makes cannot disagree at the very edges of a clip.
+  const playhead = snapToFrame(currentTime, fps)
+
   return (
     <div className="mt-2 flex flex-col gap-1">
       {tracks.map((track) => (
@@ -162,11 +172,13 @@ export function AudioTrackLanes({
               selected={clip.id === selectedId}
               blocked={blockedClipId === clip.id}
               target={targets.get(clip.id)}
+              cuttable={audioCutTargetAt(clips, clip.id, playhead) !== null}
               captioning={captioningClipId === clip.id}
               onPointerDown={(event) => beginDrag(event, clip)}
               onPointerMove={onDragMove}
               onPointerUp={endDrag}
               onRemove={() => removeAudioClip(clip.id)}
+              onCut={() => cutAudioAt(playhead, clip.id)}
               onCaption={(target) => void captionClip(target.source)}
             />
           ))}
@@ -187,11 +199,13 @@ function ClipChip({
   selected,
   blocked,
   target,
+  cuttable,
   captioning,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onRemove,
+  onCut,
   onCaption,
 }: {
   clip: AudioClip
@@ -201,17 +215,30 @@ function ClipChip({
   blocked: boolean
   /** Set on a voice clip, which is the only kind with words to transcribe. */
   target: CaptionTarget | undefined
+  /** Whether the playhead is somewhere a cut can actually land in this clip. */
+  cuttable: boolean
   captioning: boolean
   onPointerDown: (event: React.PointerEvent) => void
   onPointerMove: (event: React.PointerEvent) => void
   onPointerUp: (event: React.PointerEvent) => void
   onRemove: () => void
+  onCut: () => void
   onCaption: (target: CaptionTarget) => void
 }) {
   const tone = CLIP_TONE[track.kind]
   const label = clip.label ?? (clip.useConverted ? (clip.voiceName ?? 'Converted') : 'Your voice')
 
   const items: ClipMenuItem[] = [
+    // Offered here as well as on the Cut button above, greyed rather than
+    // hidden where the playhead is elsewhere: this menu is where somebody looks
+    // to find out what a piece of audio can be told to do, and "cut it" is not
+    // a thing anybody would guess a music bed could be told at all.
+    {
+      icon: '✂',
+      label: 'Cut here',
+      ...(cuttable ? { note: 'S' } : { note: 'park the playhead over this clip', disabled: true }),
+      onSelect: onCut,
+    },
     ...(target ? [captionClipItem(target, () => onCaption(target))] : []),
     { icon: '🗑', label: `Delete ${label}`, note: 'Delete', onSelect: onRemove, danger: true },
   ]

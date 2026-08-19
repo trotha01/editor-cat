@@ -4,6 +4,7 @@ import {
   isBlockedHost,
   passthroughHeaders,
   redactHeaders,
+  mediaCdnHost,
   requireServerKey,
   upstreamPath,
 } from './proxy'
@@ -159,5 +160,44 @@ describe('passthroughHeaders', () => {
   it('drops upstream cookies so a provider cannot set state on our origin', () => {
     const upstream = new Headers({ 'set-cookie': 'session=abc', 'content-type': 'video/mp4' })
     expect(passthroughHeaders(upstream).get('set-cookie')).toBeNull()
+  })
+})
+
+describe('the deployment’s own media CDN', () => {
+  const saved = process.env.VITE_R2_PUBLIC_BASE
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.VITE_R2_PUBLIC_BASE
+    else process.env.VITE_R2_PUBLIC_BASE = saved
+  })
+
+  it('is not reachable until one is configured', () => {
+    delete process.env.VITE_R2_PUBLIC_BASE
+    expect(mediaCdnHost()).toBeNull()
+    expect(isAllowedMediaUrl('https://cdn.example.com/v1/a/b/index.m3u8').ok).toBe(false)
+  })
+
+  it('joins the allowlist once it is', () => {
+    process.env.VITE_R2_PUBLIC_BASE = 'https://cdn.example.com'
+    expect(mediaCdnHost()).toBe('cdn.example.com')
+    expect(isAllowedMediaUrl('https://cdn.example.com/v1/a/b/index.m3u8').ok).toBe(true)
+  })
+
+  it('does not let one CDN host vouch for a look-alike', () => {
+    process.env.VITE_R2_PUBLIC_BASE = 'https://cdn.example.com'
+    // Suffix matching allows subdomains of the CDN, which is ours; it must not
+    // allow a domain that merely ends with the same characters.
+    expect(isAllowedMediaUrl('https://evilcdn.example.com/x').ok).toBe(false)
+    expect(isAllowedMediaUrl('https://cdn.example.com.attacker.test/x').ok).toBe(false)
+  })
+
+  it('ignores a base URL that is not a URL', () => {
+    process.env.VITE_R2_PUBLIC_BASE = 'not a url'
+    expect(mediaCdnHost()).toBeNull()
+  })
+
+  it('still refuses a private address, however it is configured', () => {
+    process.env.VITE_R2_PUBLIC_BASE = 'https://cdn.example.com'
+    expect(isAllowedMediaUrl('https://127.0.0.1/x').ok).toBe(false)
   })
 })

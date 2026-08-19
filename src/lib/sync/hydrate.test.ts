@@ -29,18 +29,19 @@ const project = (extra: Partial<Project> = {}): Project => ({
 
 describe('planFor', () => {
   it('does nothing when the bytes are already in this browser', () => {
-    expect(planFor(true, 'drive_1')).toBe('ready')
-    // Local bytes win even with no Drive copy — nothing needs fetching.
+    // Local bytes are free and instant; nothing needs fetching either way.
+    expect(planFor(true, 'asset/h/a1')).toBe('ready')
     expect(planFor(true, undefined)).toBe('ready')
   })
 
-  it('downloads when the bytes are absent but Drive has them', () => {
-    expect(planFor(false, 'drive_1')).toBe('download')
+  it('downloads when the bytes are absent but storage has them', () => {
+    expect(planFor(false, 'asset/h/a1')).toBe('download')
   })
 
   it('reports missing when there is nowhere to fetch from', () => {
-    // Generated before Drive was connected: the timeline references it, but
-    // the bytes only ever existed on the machine that made them.
+    // Made before the upload finished, or on a browser that never reached the
+    // network: the timeline references it, but the bytes only ever existed on
+    // the machine that made them.
     expect(planFor(false, undefined)).toBe('missing')
   })
 })

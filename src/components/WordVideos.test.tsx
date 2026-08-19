@@ -19,12 +19,31 @@
  * them, and drawing those as blanks would look like the takes had been lost.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { WordVideos } from './WordVideos'
 import { useAssetStore } from '../state/useAssetStore'
 import { useWordsStore } from '../state/useWordsStore'
 import type { Asset } from '../lib/types'
 import type { Word } from '../lib/words'
+
+// Reading a file's duration means letting a browser decode it, which jsdom will
+// not do — the promise inside `ingestBlob` would simply never settle. Only that
+// one call is stood in for; the store around it is what is being tested.
+vi.mock('../lib/media', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../lib/media')>()
+  return {
+    ...original,
+    ingestBlob: (blob: Blob, options: { kind: Asset['kind']; name: string }) =>
+      Promise.resolve({
+        id: original.newId('asset'),
+        kind: options.kind,
+        blobKey: original.newId('blob'),
+        mimeType: blob.type,
+        name: options.name,
+        createdAt: 0,
+      } satisfies Asset),
+  }
+})
 
 vi.mock('../lib/db', () => ({
   putWord: () => Promise.resolve(),
@@ -34,6 +53,7 @@ vi.mock('../lib/db', () => ({
   listWords: () => Promise.resolve([]),
   listLanguages: () => Promise.resolve([]),
   putAsset: () => Promise.resolve(),
+  getAsset: () => Promise.resolve(undefined),
   deleteAsset: () => Promise.resolve(),
   getBlob: () => Promise.resolve(undefined),
   listAssets: () => Promise.resolve([]),
@@ -79,9 +99,13 @@ function mount(word: Word = WORD) {
     selectedWordId: word.id,
     loading: false,
     loaded: true,
+    uploading: null,
+    uploadError: null,
   })
   const view = render(<WordVideos word={word} />)
   return {
+    // The whole of a word's area, which is what files are dropped onto.
+    area: () => view.container.firstElementChild as HTMLElement,
     // The page re-renders from the store in the real app; here the prop is
     // passed in, so an edit has to be handed back the same way to be seen.
     rerender: () => view.rerender(<WordVideos word={current()} />),
@@ -250,14 +274,98 @@ describe('watching them together', () => {
   it('shows the transcript of whatever is on screen, and moves on', () => {
     mount()
 
-    // As a line under the picture, as against the same words in the box that is
-    // there to edit them — both are on screen, and this is the reading copy.
-    expect(screen.getByText('Ready?', { selector: 'p' })).toBeInTheDocument()
+    const showing = () => screen.getByRole('textbox', { name: 'Transcript for the take on screen' })
+    expect(showing()).toHaveValue('Ready?')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next video' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play gato.mp4' }))
 
     expect(screen.getByText('2 of 2 · Outro · gato.mp4')).toBeInTheDocument()
-    expect(screen.getByText('No transcript for this one yet.')).toBeInTheDocument()
+    expect(showing()).toHaveValue('')
+  })
+
+  /**
+   * The box under the picture is the same edit as the box on the take's row, and
+   * this is asserted from the store rather than from the other box because that
+   * is what "the same edit" means — a copy that merely looked right on screen
+   * would be back to two transcripts that can drift.
+   */
+  it('rewrites the transcript of the take on screen, from under the picture', () => {
+    const { rerender } = mount()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Transcript for the take on screen' }), {
+      target: { value: '¿Listo?' },
+    })
+
+    expect(current().videos.map((video) => video.transcript)).toEqual(['¿Listo?', undefined])
+    rerender()
+    expect(screen.getByRole('textbox', { name: 'Transcript for intro.mp4' })).toHaveValue('¿Listo?')
+  })
+
+  /**
+   * The bar is over the *word*, not over the file in the element, which is the
+   * whole of why it is ours rather than the browser's own. Both directions of
+   * that are asserted here: a point dragged to is read back as a take and a
+   * time inside it, and a take playing is read forward as a point on the run.
+   */
+  it('scrubs across the whole run rather than the take on screen', () => {
+    const { player } = mount()
+
+    // Six seconds into a run of two four-second takes is two seconds into the
+    // second one, and the element is only told that once it has that file.
+    fireEvent.change(screen.getByRole('slider', { name: 'Scrub through the run' }), {
+      target: { value: '6' },
+    })
+
+    expect(screen.getByText('2 of 2 · Outro · gato.mp4')).toBeInTheDocument()
+    expect(screen.getByText('0:06.0 / 0:08.0')).toBeInTheDocument()
+    fireEvent.loadedMetadata(player())
+    expect(player().currentTime).toBe(2)
+  })
+
+  /**
+   * A drag fires a change event on every pointer move, and a take within
+   * reach of where the element already is does not need telling — seeking it
+   * anyway is what made dragging the bar stutter. Only a move big enough to
+   * matter reaches the element; the small ones still move the handle, since
+   * that reads off state rather than off the element's own clock.
+   */
+  it('does not reseek the element for a drag too small to matter, but does for one that is', () => {
+    const { player } = mount()
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Scrub through the run' }), {
+      target: { value: '0.1' },
+    })
+    expect(screen.getByText('0:00.1 / 0:08.0')).toBeInTheDocument()
+    expect(player().currentTime).toBe(0)
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Scrub through the run' }), {
+      target: { value: '1' },
+    })
+    expect(player().currentTime).toBe(1)
+  })
+
+  it('counts where the run has got to as the take on screen plays', () => {
+    const { player } = mount()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Play gato.mp4' }))
+    player().currentTime = 1
+    fireEvent.timeUpdate(player())
+
+    // One second into the second take is five into the run, not one.
+    expect(screen.getByText('0:05.0 / 0:08.0')).toBeInTheDocument()
+  })
+
+  it('cannot be scrubbed along a run whose takes have never been measured', () => {
+    useAssetStore.setState({
+      assets: [
+        { ...asset('asset_a', 'intro.mp4'), duration: undefined },
+        { ...asset('asset_b', 'gato.mp4'), duration: undefined },
+      ],
+      loading: false,
+    })
+    mount()
+
+    expect(screen.getByRole('slider', { name: 'Scrub through the run' })).toBeDisabled()
   })
 
   /**
@@ -273,7 +381,7 @@ describe('watching them together', () => {
   it('carries on into the next take through the pause the browser fires at the end', () => {
     const { player } = mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Play all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
     fireEvent.pause(player())
     fireEvent.ended(player())
 
@@ -284,20 +392,100 @@ describe('watching them together', () => {
   it('stops and rewinds when the last take ends', () => {
     const { player } = mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Play all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }))
     fireEvent.pause(player())
     fireEvent.ended(player())
     fireEvent.pause(player())
     fireEvent.ended(player())
 
     expect(screen.getByText('1 of 2 · Intro · intro.mp4')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Play all' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument()
+  })
+
+  /**
+   * The picture is the only play control there is, so the click that reaches it
+   * is asserted on the element itself rather than on the button around it — a
+   * handler that only ever fired on the frame around the letterboxed picture
+   * would pass any test that pressed the button by name.
+   */
+  it('plays and pauses when the picture itself is clicked', () => {
+    const { player } = mount()
+
+    fireEvent.click(player())
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument()
+
+    fireEvent.click(player())
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument()
   })
 
   it('is not drawn at all for a word with nothing uploaded yet', () => {
     mount({ ...WORD, videos: [] })
 
-    expect(screen.queryByRole('button', { name: 'Play all' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument()
     expect(screen.getByText('No videos for this word yet')).toBeInTheDocument()
   })
 })
+
+/**
+ * Files dragged in off the desktop, which is the door somebody with a folder of
+ * takes open beside the browser reaches for first.
+ *
+ * Asserted from the events the browser really sends, because the guard is the
+ * interesting part: the page is already full of dnd-kit drags that reorder a
+ * run, and those must not light this up as somewhere to drop anything.
+ */
+describe('dropping files onto a word’s videos', () => {
+  /** A drag carrying files, as the browser describes one. */
+  const withFiles = (...files: File[]) => ({ dataTransfer: { files, types: ['Files'] } })
+
+  function video(name: string): File {
+    return new File(['take'], name, { type: 'video/mp4' })
+  }
+
+  it('files what was dropped under the word, on the end of the run', async () => {
+    const { area, rerender } = mount()
+
+    fireEvent.drop(area(), withFiles(video('cervelle.mp4')))
+    await waitFor(() => expect(current().videos).toHaveLength(3))
+
+    rerender()
+    expect(within(rows()[2]!).getByText('cervelle.mp4')).toBeInTheDocument()
+  })
+
+  it('says where they will land while the drag is over the area', () => {
+    const { area } = mount()
+
+    fireEvent.dragEnter(area(), withFiles(video('cervelle.mp4')))
+    expect(screen.getByText(/Drop videos to add them to/)).toBeInTheDocument()
+
+    fireEvent.dragLeave(area(), withFiles(video('cervelle.mp4')))
+    expect(screen.queryByText(/Drop videos to add them to/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a drag that is not carrying files, since a take is dragged the same way', () => {
+    const { area } = mount()
+
+    fireEvent.dragEnter(area(), { dataTransfer: { files: [], types: ['text/plain'] } })
+
+    expect(screen.queryByText(/Drop videos to add them to/)).not.toBeInTheDocument()
+  })
+
+  it('says so about a file that is not a video, and leaves the run alone', async () => {
+    const { area } = mount()
+
+    fireEvent.drop(area(), withFiles(new File(['x'], 'notes.pdf', { type: 'application/pdf' })))
+
+    expect(await screen.findByText(/"notes.pdf" is not a video/)).toBeInTheDocument()
+    expect(current().videos).toHaveLength(2)
+  })
+})
+
+/**
+ * The takes that are in Drive and not in the app.
+ *
+ * The case this page had no answer to: `drive.file` shows this app what it made
+ * and what it was handed, so a video recorded on a phone and dropped into the
+ * word's folder is really there and really invisible here. Picking it is what
+ * grants access to it, which is why the whole flow is asserted from the button
+ * rather than from the store — the button is the only door in.
+ */

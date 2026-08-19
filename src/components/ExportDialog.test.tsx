@@ -29,8 +29,20 @@ vi.mock('../lib/media', async (importOriginal) => {
 })
 
 const RENDERED = new Blob(['mp4'], { type: 'video/mp4' })
+
+/** The streaming package renderTimeline returns alongside the MP4. */
+const HLS = {
+  playlist: '#EXTM3U\n',
+  files: [
+    {
+      name: 'index.m3u8',
+      blob: new Blob(['#EXTM3U'], { type: 'application/vnd.apple.mpegurl' }),
+      contentType: 'application/vnd.apple.mpegurl',
+    },
+  ],
+}
 type RenderOptions = Parameters<typeof import('../lib/export/timelineRender').renderTimeline>[0]
-const renderTimeline = vi.fn<(options: RenderOptions) => Promise<Blob>>()
+const renderTimeline = vi.fn<(options: RenderOptions) => Promise<{ blob: Blob; hls?: unknown }>>()
 
 vi.mock('../lib/export/timelineRender', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/export/timelineRender')>()
@@ -51,7 +63,10 @@ vi.mock('../lib/mintspace/client', () => ({
 const publishVideo = vi.fn().mockResolvedValue({
   id: 'v1',
   videoUrl: 'https://cdn/v1.mp4',
-  storagePath: 'uid-1/v1.mp4',
+  publicationId: 'v1',
+  prefix: 'v1/uid-1/v1/',
+  keys: ['v1/uid-1/v1/index.m3u8'],
+  posterUrl: null,
   siteUrl: '',
 })
 
@@ -74,7 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
   configured.value = true
-  renderTimeline.mockResolvedValue(RENDERED)
+  renderTimeline.mockResolvedValue({ blob: RENDERED, hls: HLS })
   useProjectStore.setState({ project: { ...emptyProject(), clips: [CLIP] }, exportRange: null })
   useAssetStore.setState({ assets: [], loading: false })
 })
@@ -381,7 +396,7 @@ describe('the render itself', () => {
 
     await waitFor(() => expect(publishVideo).toHaveBeenCalled())
     expect(renderTimeline).toHaveBeenCalledTimes(1)
-    expect(publishVideo).toHaveBeenCalledWith(expect.objectContaining({ video: RENDERED }))
+    expect(publishVideo).toHaveBeenCalledWith(expect.objectContaining({ hls: HLS }))
   })
 
   it('encodes again once the settings no longer describe what is on hand', async () => {
@@ -405,7 +420,7 @@ describe('the render itself', () => {
     // On the project document, which is what syncs and what survives a reload.
     const publications = useProjectStore.getState().project.publications ?? []
     expect(publications).toHaveLength(1)
-    expect(publications[0]).toMatchObject({ videoId: 'v1', storagePath: 'uid-1/v1.mp4' })
+    expect(publications[0]).toMatchObject({ videoId: 'v1', r2Prefix: 'v1/uid-1/v1/' })
 
     // Straight after, it reads as news and says nothing about being already up.
     expect(await screen.findByText('Published')).toBeInTheDocument()
@@ -427,7 +442,15 @@ describe('the render itself', () => {
 
     reopen(view)
 
-    expect(await screen.findByText(/already in the mintspace feed/i)).toBeInTheDocument()
+    // Longer than the default second, because what this waits for is a real
+    // hash: `sourceKeyOf` is deliberately not stubbed — the dedupe it drives is
+    // the thing under test — and reopening remounts the panel, so the document
+    // is hashed again from scratch. On a loaded CI runner that has come in over
+    // a second, which failed here as "the text is not there" rather than as
+    // "the text is late".
+    expect(
+      await screen.findByText(/already in the mintspace feed/i, undefined, { timeout: 5000 }),
+    ).toBeInTheDocument()
     expect(screen.queryByText('Published')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /render and republish/i })).toBeDisabled()
   })
@@ -439,5 +462,119 @@ describe('the render itself', () => {
     fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
 
     expect(await screen.findByText(/the encoder gave up/i)).toBeInTheDocument()
+  })
+})
+
+/**
+ * The soundtrack on its own.
+ *
+ * A third destination rather than a checkbox, because it is a different file:
+ * an M4A, with none of the picture settings meaning anything about it. What is
+ * worth pinning is that it asks the renderer for the audio, that the file is
+ * named as one, and that a render made for one destination is never offered as
+ * the other — the same stamp-and-compare that guards the resolution.
+ */
+describe('exporting the audio on its own', () => {
+  const MUSIC = {
+    id: 'aclip-1',
+    trackId: 'm1',
+    assetId: 'song',
+    useConverted: false,
+    startTime: 0,
+    inPoint: 0,
+    duration: 4,
+    label: 'song.mp3',
+  }
+
+  function withMusic() {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [CLIP],
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [MUSIC],
+      },
+      exportRange: null,
+    })
+  }
+
+  function chooseAudio() {
+    fireEvent.change(screen.getByLabelText(/export to/i), { target: { value: 'audio' } })
+  }
+
+  it('renders the audio only, and saves it as an M4A', async () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(expect.objectContaining({ audioOnly: true }))
+    expect(downloadBlob).toHaveBeenCalledWith(RENDERED, expect.stringMatching(/\.m4a$/))
+  })
+
+  it('asks for no streaming package, which a soundtrack has no use for', async () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(expect.objectContaining({ hls: false }))
+  })
+
+  it('drops the picture settings, which say nothing about an M4A', () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    expect(screen.queryByLabelText(/resolution/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/quality/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the start and end, so part of the sound can be taken', async () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    fireEvent.change(screen.getByLabelText(/start/i), { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ range: { start: 1, end: 4 } }),
+    )
+  })
+
+  it('renders again rather than handing over the video it just made', async () => {
+    withMusic()
+    open()
+
+    fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(1))
+
+    chooseAudio()
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(2))
+  })
+
+  it('says there is nothing to export on a timeline with no sound on it', () => {
+    // The picture-only project the other tests use: clips, no audio at all.
+    open()
+    chooseAudio()
+
+    expect(screen.getByText(/no sound on this timeline/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /download m4a/i })).toBeDisabled()
+  })
+
+  it('still promises the media stays on this machine', () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    expect(screen.getByText(/never uploaded/i)).toBeInTheDocument()
   })
 })

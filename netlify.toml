@@ -27,11 +27,9 @@
     Permissions-Policy = "camera=(), geolocation=(), microphone=(self)"
     # 'wasm-unsafe-eval' is required by ffmpeg.wasm. blob: covers the worker,
     # the object URLs used for media, and the export download.
-    # 'wasm-unsafe-eval' is required by ffmpeg.wasm. blob: covers the worker,
-    # the object URLs used for media, and the export download.
-    # apis.google.com serves the Google Picker's loader, and the Picker itself
-    # renders in an iframe from docs.google.com. The OAuth consent screen needs
-    # no entry: it is a pop-up window, which no fetch directive governs.
-    # app.netlify.com is needed because Netlify injects its own preview/status
-    # overlay iframe on deploy previews and branch deploys.
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://apis.google.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-src https://docs.google.com https://drive.google.com https://app.netlify.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    # app.netlify.com is the only frame source left: Netlify injects its own
+    # preview/status overlay iframe on deploy previews and branch deploys. The
+    # Google Picker's loader and iframe used to be here too, and went with
+    # Drive. The sign-in redirect needs no entry — it is a top-level navigation,
+    # which no fetch directive governs.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-src https://app.netlify.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
