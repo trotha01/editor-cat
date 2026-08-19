@@ -6,18 +6,21 @@
  * clip is refused rather than allowed to overlap, because two clips stacked on
  * one lane cannot both be heard and the mistake would only surface on export.
  */
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Button } from './ui'
 import { ClipMenu } from './ClipMenu'
+import { WaveformCanvas } from './Waveform'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
+import { useAssetPeaks } from '../hooks/useAssetPeaks'
 import { formatTime, snapToFrame } from '../lib/timeline'
 import { clipEnd } from '../lib/lanes'
 import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
 import { audioCutTargetAt } from '../lib/audioTracks'
+import { useAssetStore } from '../state/useAssetStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
 import type { CaptionTarget } from '../lib/captionSources'
-import type { AudioClip, AudioTrack, AudioTrackKind } from '../lib/types'
+import type { Asset, AudioClip, AudioTrack, AudioTrackKind } from '../lib/types'
 
 export const LANE_HEIGHT = 44
 /**
@@ -30,6 +33,12 @@ export const LANE_HEIGHT = 44
 const LANE_GAP = 4
 const LANE_PITCH = LANE_HEIGHT + LANE_GAP
 export const TRACK_GUTTER_WIDTH = 168
+
+/** Narrower than this and a chip has nothing left to grab or read. */
+const MIN_CHIP_WIDTH = 30
+/** The chip's own box: `top-1 bottom-1` inside the lane, and a 1px border. */
+const CHIP_HEIGHT = LANE_HEIGHT - 8
+const CHIP_BORDER = 1
 
 /** One colour per kind, so a lane says what it carries before you read it. */
 const CLIP_TONE: Record<AudioTrackKind, string> = {
@@ -81,6 +90,12 @@ export function AudioTrackLanes({
 
   const captionClip = useCaptionJobStore((state) => state.captionClip)
   const captioningClipId = useCaptionJobStore((state) => state.clipId)
+
+  // The catalogue, so a chip can draw the sound it holds. Kept as a map here
+  // rather than searched per chip, because a countdown lane alone can be
+  // dozens of clips.
+  const assets = useAssetStore((state) => state.assets)
+  const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
 
   const dragRef = useRef<DragState | null>(null)
   // The id of the clip whose drag is currently refused, kept in state rather
@@ -169,6 +184,7 @@ export function AudioTrackLanes({
               clip={clip}
               track={track}
               zoom={zoom}
+              asset={assetById.get(sourceOf(clip))}
               selected={clip.id === selectedId}
               blocked={blockedClipId === clip.id}
               target={targets.get(clip.id)}
@@ -192,10 +208,20 @@ function clipsFor(clips: readonly AudioClip[], trackId: string): AudioClip[] {
   return clips.filter((clip) => clip.trackId === trackId)
 }
 
+/**
+ * The asset a clip actually plays, which is what its waveform has to be drawn
+ * from — the same choice playback and export make (see Preview and
+ * lib/export/timelineRender).
+ */
+function sourceOf(clip: AudioClip): string {
+  return clip.useConverted && clip.convertedAssetId ? clip.convertedAssetId : clip.assetId
+}
+
 function ClipChip({
   clip,
   track,
   zoom,
+  asset,
   selected,
   blocked,
   target,
@@ -211,6 +237,8 @@ function ClipChip({
   clip: AudioClip
   track: AudioTrack
   zoom: number
+  /** What it plays. Absent while the catalogue is still loading. */
+  asset: Asset | undefined
   selected: boolean
   blocked: boolean
   /** Set on a voice clip, which is the only kind with words to transcribe. */
@@ -227,6 +255,8 @@ function ClipChip({
 }) {
   const tone = CLIP_TONE[track.kind]
   const label = clip.label ?? (clip.useConverted ? (clip.voiceName ?? 'Converted') : 'Your voice')
+  const peaks = useAssetPeaks(asset)
+  const width = Math.max(MIN_CHIP_WIDTH, clip.duration * zoom)
 
   const items: ClipMenuItem[] = [
     // Offered here as well as on the Cut button above, greyed rather than
@@ -251,8 +281,11 @@ function ClipChip({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      style={{ left: clip.startTime * zoom, width: Math.max(30, clip.duration * zoom) }}
-      className={`group/chip absolute top-1 bottom-1 flex cursor-grab items-center gap-1 overflow-hidden rounded border px-2 text-[11px] transition-shadow active:cursor-grabbing ${tone} ${
+      style={{ left: clip.startTime * zoom, width }}
+      // `isolate` is what lets the waveform sit behind the name: it makes the
+      // chip a stacking context, so the canvas's negative z-index puts it under
+      // the text and over the chip's own tint rather than under the lane.
+      className={`group/chip absolute top-1 bottom-1 isolate flex cursor-grab items-center gap-1 overflow-hidden rounded border px-2 text-[11px] transition-shadow active:cursor-grabbing ${tone} ${
         selected ? 'ring-2 ring-accent' : ''
       } ${blocked ? 'ring-2 ring-red-500' : ''} ${track.muted ? 'opacity-40' : ''}`}
       title={
@@ -261,6 +294,30 @@ function ClipChip({
           : `${label} · ${formatTime(clip.duration)}`
       }
     >
+      {/* The clip's own sound, drawn across the chip rather than in a lane of
+          its own: unlike a video clip's audio this *is* the clip, so it belongs
+          where the clip is and moves with it when it is dragged. No label —
+          the chip around it already has one, and a second name for the same
+          thing is noise to read out.
+
+          It inherits the chip's text colour, so voice, music and count-in each
+          draw in their own kind's tone without a colour being named here. The
+          width is the chip's inside, so a clip too short to be MIN_CHIP_WIDTH
+          wide has its sound stretched over the chip it was widened to — a
+          sliver either way, and the chip's left edge is still the truth about
+          where it starts. */}
+      {asset ? (
+        <WaveformCanvas
+          peaks={peaks}
+          inPoint={clip.inPoint}
+          duration={clip.duration}
+          width={width - CHIP_BORDER * 2}
+          height={CHIP_HEIGHT - CHIP_BORDER * 2}
+          style={{ left: 0, top: 0 }}
+          className="pointer-events-none absolute -z-10 opacity-50"
+        />
+      ) : null}
+
       <span aria-hidden>{KIND_ICON[track.kind]}</span>
       <span className="truncate">{label}</span>
       {/* Always drawn rather than revealed on hover. It costs a narrow chip a
