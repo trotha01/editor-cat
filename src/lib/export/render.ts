@@ -85,6 +85,13 @@ export interface RenderRequest {
   captions?: { ass: string; fonts: readonly CaptionFont[] }
   /** The stretch of the timeline to keep. Absent is all of it. */
   range?: ExportRange
+  /**
+   * Render the mix on its own, as an M4A, with no picture encoded at all.
+   *
+   * The same sound as the video would carry — see `audioOnly` in buildGraph —
+   * so this changes what comes out of the encoder rather than what goes into it.
+   */
+  audioOnly?: boolean
   crf?: number
   /**
    * Also package the finished MP4 as HLS, in this same ffmpeg session.
@@ -232,6 +239,7 @@ export async function renderProject(
   const dirs: string[] = []
   const fileNameFor = new Map<string, string>()
   const segmentSeconds = request.hls?.segmentSeconds ?? HLS_SEGMENT_SECONDS
+  const audioOnly = request.audioOnly === true
 
   const stage = async (assetId: string, kind: 'image' | 'video' | 'audio') => {
     if (fileNameFor.has(assetId)) return
@@ -243,8 +251,19 @@ export async function renderProject(
     fileNameFor.set(assetId, name)
   }
 
-  for (const clip of request.clips) await stage(clip.assetId, clip.kind)
-  for (const clip of request.overlays ?? []) await stage(clip.assetId, clip.kind)
+  // A render with no picture in it stages no pictures. Only a video clip that
+  // has not been silenced can put anything into a soundtrack, and writing the
+  // rest into the encoder's filesystem would spend memory — which in a 32-bit
+  // heap that never gives any back is the scarce thing — to produce nothing.
+  const mayBeHeard = (clip: { kind: 'image' | 'video'; volume?: number }) =>
+    !audioOnly || (clip.kind === 'video' && (clip.volume ?? 1) > 0)
+
+  for (const clip of request.clips) {
+    if (mayBeHeard(clip)) await stage(clip.assetId, clip.kind)
+  }
+  for (const clip of request.overlays ?? []) {
+    if (mayBeHeard(clip)) await stage(clip.assetId, clip.kind)
+  }
   for (const clip of request.audio) await stage(clip.assetId, 'audio')
 
   // --- Captions ----------------------------------------------------------
@@ -263,7 +282,12 @@ export async function renderProject(
     }
   }
 
-  const outputFile = 'editor-cat-export.mp4'
+  const outputFile = audioOnly ? 'editor-cat-export.m4a' : 'editor-cat-export.mp4'
+  // There is no streaming package to make of a bare soundtrack — a feed card
+  // plays a video — so an audio-only render ignores the request rather than
+  // packaging something nothing can play, and skips the keyframes that only
+  // exist for a segmenter to cut on.
+  const packaging = request.hls !== undefined && !audioOnly
 
   // --- Find out which clips have sound of their own ----------------------
   // Only the files whose sound would actually be used are probed: a muted clip
@@ -284,7 +308,11 @@ export async function renderProject(
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
   const exportClips: ExportClip[] = request.clips.map((clip) => {
-    const file = fileNameFor.get(clip.assetId) as string
+    // Empty for a clip an audio-only render never staged. It still has to be in
+    // this list — the clips are what say where each one sits on the timeline,
+    // which is where the sound of its neighbours goes — but `hasAudio: false`
+    // then keeps it out of the graph, so the name is never asked for.
+    const file = fileNameFor.get(clip.assetId) ?? ''
     return {
       file,
       kind: clip.kind,
@@ -306,7 +334,8 @@ export async function renderProject(
   })
 
   const exportOverlays: ExportOverlayClip[] = (request.overlays ?? []).map((clip) => {
-    const file = fileNameFor.get(clip.assetId) as string
+    // Empty for the same reason a clip's can be — see above.
+    const file = fileNameFor.get(clip.assetId) ?? ''
     return {
       file,
       kind: clip.kind,
@@ -338,8 +367,9 @@ export async function renderProject(
     ...(request.leadIn ? { leadIn: request.leadIn } : {}),
     ...(request.captions ? { captions: { file: CAPTIONS_FILE, fontsDir: FONTS_DIR } } : {}),
     ...(request.range ? { range: request.range } : {}),
+    ...(audioOnly ? { audioOnly } : {}),
     ...(request.crf !== undefined ? { crf: request.crf } : {}),
-    ...(request.hls ? { keyframeSeconds: segmentSeconds } : {}),
+    ...(packaging ? { keyframeSeconds: segmentSeconds } : {}),
   })
 
   // --- Encode ------------------------------------------------------------
@@ -381,9 +411,11 @@ export async function renderProject(
     const data = await ffmpeg.readFile(outputFile)
     const bytes = bytesOf(data)
     // Copy into a fresh buffer: the wasm heap this view points at is reused.
-    const blob = new Blob([new Uint8Array(bytes)], { type: 'video/mp4' })
+    const blob = new Blob([new Uint8Array(bytes)], {
+      type: audioOnly ? 'audio/mp4' : 'video/mp4',
+    })
 
-    if (!request.hls) {
+    if (!packaging) {
       onProgress?.({ phase: 'done', ratio: 1, message: 'Done' })
       return { blob, log }
     }

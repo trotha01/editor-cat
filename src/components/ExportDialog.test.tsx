@@ -464,3 +464,117 @@ describe('the render itself', () => {
     expect(await screen.findByText(/the encoder gave up/i)).toBeInTheDocument()
   })
 })
+
+/**
+ * The soundtrack on its own.
+ *
+ * A third destination rather than a checkbox, because it is a different file:
+ * an M4A, with none of the picture settings meaning anything about it. What is
+ * worth pinning is that it asks the renderer for the audio, that the file is
+ * named as one, and that a render made for one destination is never offered as
+ * the other — the same stamp-and-compare that guards the resolution.
+ */
+describe('exporting the audio on its own', () => {
+  const MUSIC = {
+    id: 'aclip-1',
+    trackId: 'm1',
+    assetId: 'song',
+    useConverted: false,
+    startTime: 0,
+    inPoint: 0,
+    duration: 4,
+    label: 'song.mp3',
+  }
+
+  function withMusic() {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [CLIP],
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [MUSIC],
+      },
+      exportRange: null,
+    })
+  }
+
+  function chooseAudio() {
+    fireEvent.change(screen.getByLabelText(/export to/i), { target: { value: 'audio' } })
+  }
+
+  it('renders the audio only, and saves it as an M4A', async () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(expect.objectContaining({ audioOnly: true }))
+    expect(downloadBlob).toHaveBeenCalledWith(RENDERED, expect.stringMatching(/\.m4a$/))
+  })
+
+  it('asks for no streaming package, which a soundtrack has no use for', async () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(expect.objectContaining({ hls: false }))
+  })
+
+  it('drops the picture settings, which say nothing about an M4A', () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    expect(screen.queryByLabelText(/resolution/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/quality/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the start and end, so part of the sound can be taken', async () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    fireEvent.change(screen.getByLabelText(/start/i), { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalled())
+    expect(renderTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ range: { start: 1, end: 4 } }),
+    )
+  })
+
+  it('renders again rather than handing over the video it just made', async () => {
+    withMusic()
+    open()
+
+    fireEvent.click(screen.getByRole('button', { name: /download mp4/i }))
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(1))
+
+    chooseAudio()
+    fireEvent.click(screen.getByRole('button', { name: /download m4a/i }))
+
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledTimes(2))
+  })
+
+  it('says there is nothing to export on a timeline with no sound on it', () => {
+    // The picture-only project the other tests use: clips, no audio at all.
+    open()
+    chooseAudio()
+
+    expect(screen.getByText(/no sound on this timeline/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /download m4a/i })).toBeDisabled()
+  })
+
+  it('still promises the media stays on this machine', () => {
+    withMusic()
+    open()
+    chooseAudio()
+
+    expect(screen.getByText(/never uploaded/i)).toBeInTheDocument()
+  })
+})

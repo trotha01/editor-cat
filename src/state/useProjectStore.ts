@@ -29,6 +29,8 @@ import {
   moveAudioClip,
   placeAudioClip,
   retypeTrack,
+  splitAudioClipAt,
+  splitAudioClipsAt,
 } from '../lib/audioTracks'
 import {
   captionCuesOf,
@@ -302,6 +304,30 @@ interface ProjectState {
    * asynchronous while an edit is not.
    */
   addCountInBeeps: (assets: { beepAssetId: string }) => CountInPlacement
+  /**
+   * Cuts one audio clip in two under the playhead, so a piece of it can be
+   * thrown away or moved on its own. False when the playhead is not inside it —
+   * or when there is no clip to cut at all — so the caller can leave it at that.
+   *
+   * One clip, named, rather than everything the playhead crosses: several lanes
+   * are usually sounding at once, and cutting a bed because you cut a take you
+   * had selected is an edit nobody asked for. `clipId` defaults to the selected
+   * clip, which is how the Cut button and the S key say which one they meant —
+   * and with nothing selected to name one, that's `cutEverythingAt` instead.
+   */
+  cutAudioAt: (time: number, clipId?: string) => boolean
+  /**
+   * Cuts everything under the playhead in one edit: the picture clip there, if
+   * any, and every audio clip on every track the playhead happens to sit
+   * inside — not just one chosen clip. False when there was nothing to cut
+   * anywhere, so the caller can leave it at that.
+   *
+   * This is what the Cut button and the S key mean with nothing selected:
+   * no clip was named, so every lane sounding under the playhead gets the same
+   * cut the picture does, rather than only the picture as if the others
+   * weren't there.
+   */
+  cutEverythingAt: (time: number) => boolean
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -469,6 +495,24 @@ function prunedSelection(project: Project, state: ProjectState) {
     selectedCaption: captionCuesOf(project).some((cue) => cue.id === state.selectedCaption?.cueId)
       ? state.selectedCaption
       : null,
+  }
+}
+
+/**
+ * The selection, which is one clip on the whole timeline rather than one per
+ * lane.
+ *
+ * Delete and Cut both act on "the selected clip", and with a selection held in
+ * each lane at once there is no answer to which one that is: the Delete key
+ * would take a shot off the picture track because the piece of music you had
+ * just cut in two was also, still, selected. So picking anything unpicks
+ * everything else, and what is highlighted is what those keys are about.
+ */
+function onlySelected(lane: 'clip' | 'audio' | 'video', id: string | null) {
+  return {
+    selectedClipId: lane === 'clip' ? id : null,
+    selectedAudioClipId: lane === 'audio' ? id : null,
+    selectedVideoClipId: lane === 'video' ? id : null,
   }
 }
 
@@ -664,7 +708,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         // under words that were spoken over it.
         return underClips(project, { ...project, clips })
       })
-      set({ selectedClipId: clip.id })
+      set(onlySelected('clip', clip.id))
     },
 
     addClips: (assets, atTime) => {
@@ -686,7 +730,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       })
       // The last one in, so the selection sits at the end of what just arrived
       // rather than in the middle of it.
-      set({ selectedClipId: added[added.length - 1]?.id ?? null })
+      set(onlySelected('clip', added[added.length - 1]?.id ?? null))
     },
 
     removeClip: (clipId) => {
@@ -701,7 +745,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
     },
 
-    selectClip: (clipId) => set({ selectedClipId: clipId }),
+    selectClip: (clipId) => set(onlySelected('clip', clipId)),
 
     moveClip: (from, to) =>
       mutate((project) =>
@@ -745,7 +789,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         const next = { ...current, clips: result.clips }
         return underClips(current, recredited ? { ...next, captionCues: recredited } : next)
       })
-      set({ selectedClipId: result.clipId })
+      set(onlySelected('clip', result.clipId))
       return true
     },
 
@@ -823,7 +867,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         audioTracks: result.tracks,
         audioClips: result.clips,
       }))
-      set({ selectedAudioClipId: id })
+      set(onlySelected('audio', id))
 
       const track = result.tracks.find((entry) => entry.id === result.trackId)
       return {
@@ -974,7 +1018,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
       // The first piece, which is the one to look at: it is where the fix
       // begins, and the lane scrolls into view around it.
-      set({ selectedAudioClipId: laid[0]?.id ?? null })
+      set(onlySelected('audio', laid[0]?.id ?? null))
 
       return {
         trackId,
@@ -982,6 +1026,75 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         createdTrack: true,
         silenced: olderFixLanes.size,
       }
+    },
+
+    // Nothing about an audio cut is stored beyond the clips themselves, exactly
+    // as on the picture track: two clips meeting mid-source *is* the cut.
+    cutAudioAt: (time, clipId) => {
+      const { project, selectedAudioClipId } = get()
+      const target = clipId ?? selectedAudioClipId
+      if (!target) return false
+      // Snapped to a frame even though sound has none, so cutting the picture
+      // and the audio under it at one playhead position lands on one instant
+      // rather than on two a few milliseconds apart.
+      const result = splitAudioClipAt(
+        project.audioClips,
+        target,
+        snapToFrame(time, project.fps),
+        () => newId('aclip'),
+      )
+      if (!result) return false
+      mutate((current) => ({ ...current, audioClips: result.clips }))
+      // The playhead is now sitting over the half behind the cut, so that is
+      // what the next edit — another cut, or Delete — should land on.
+      set(onlySelected('audio', result.clipId))
+      return true
+    },
+
+    // One edit, not one per lane: an undo of a bare cut should put the picture
+    // and every bed it took with it back in a single step, the way `addClips`
+    // puts several shots down as one act rather than several.
+    cutEverythingAt: (time) => {
+      const { project } = get()
+      const pictureResult = splitClipAt(
+        project.clips,
+        time,
+        project.fps,
+        () => newId('clip'),
+        leadInOf(project),
+      )
+      // Snapped once, up front, so the picture and every lane of audio under it
+      // land on the same instant rather than each rounding to its own frame.
+      const audioTime = snapToFrame(time, project.fps)
+      const audioResult = splitAudioClipsAt(project.audioClips, audioTime, () => newId('aclip'))
+      if (!pictureResult && !audioResult) return false
+
+      mutate((current) => {
+        let next = current
+        if (pictureResult) {
+          const recredited = recreditCuesAfterCut(
+            captionCuesOf(current),
+            pictureResult.cutClipId,
+            pictureResult.clipId,
+            snapToFrame(time, current.fps),
+          )
+          next = {
+            ...next,
+            clips: pictureResult.clips,
+            ...(recredited ? { captionCues: recredited } : {}),
+          }
+        }
+        if (audioResult) {
+          next = { ...next, audioClips: audioResult.clips }
+        }
+        return underClips(current, next)
+      })
+      // The picture is what the button has always meant first, so its new half
+      // takes the selection the way a lone `cutAt` would have left it. Cutting
+      // audio alone leaves no one clip among several to land it on, so the
+      // selection is left as it was: none.
+      if (pictureResult) set(onlySelected('clip', pictureResult.clipId))
+      return true
     },
 
     updateAudioClip: (id, patch) =>
@@ -1029,7 +1142,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
     },
 
-    selectAudioClip: (id) => set({ selectedAudioClipId: id }),
+    selectAudioClip: (id) => set(onlySelected('audio', id)),
 
     addTrack: (kind) =>
       mutate((project) => ({
@@ -1095,7 +1208,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           ...current,
           videoClips: [...videoClipsOf(current), { ...draft, trackId }],
         }))
-        set({ selectedVideoClipId: draft.id })
+        set(onlySelected('video', draft.id))
         return draft.id
       }
 
@@ -1119,7 +1232,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             ],
         videoClips: [...videoClipsOf(current), { ...draft, trackId: laneId }],
       }))
-      set({ selectedVideoClipId: draft.id })
+      set(onlySelected('video', draft.id))
       return draft.id
     },
 
@@ -1166,7 +1279,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }))
     },
 
-    selectVideoClip: (id) => set({ selectedVideoClipId: id }),
+    selectVideoClip: (id) => set(onlySelected('video', id)),
 
     setTrackKind: (id, kind) =>
       mutate((project) => ({

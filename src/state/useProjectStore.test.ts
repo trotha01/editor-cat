@@ -1581,3 +1581,233 @@ describe('count-in beeps', () => {
     expect(useProjectStore.getState().project.audioClips).toEqual([])
   })
 })
+
+describe('cutting an audio clip', () => {
+  /** A project with one music bed, selected, running from 2s to 12s. */
+  function withMusic(): void {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 2,
+            inPoint: 0,
+            duration: 10,
+            label: 'song.mp3',
+          },
+        ],
+      },
+      selectedAudioClipId: 'aclip-1',
+    })
+  }
+
+  it('cuts the selected clip into two halves, and writes them down', () => {
+    withMusic()
+
+    expect(useProjectStore.getState().cutAudioAt(5)).toBe(true)
+
+    expect(
+      stored().audioClips.map((clip) => [clip.startTime, clip.duration, clip.inPoint]),
+    ).toEqual([
+      [2, 3, 0],
+      [5, 7, 3],
+    ])
+  })
+
+  it('selects the half behind the cut, so a second cut lands there', () => {
+    withMusic()
+
+    useProjectStore.getState().cutAudioAt(5)
+    const behind = useProjectStore.getState().project.audioClips[1]
+    expect(useProjectStore.getState().selectedAudioClipId).toBe(behind?.id)
+
+    // Which is what makes cutting twice and deleting the middle work at all.
+    useProjectStore.getState().cutAudioAt(8)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(3)
+  })
+
+  it('cuts the clip it is given rather than the selected one', () => {
+    // What the clip's own ⋯ menu uses: the press is on that clip, so it is the
+    // one that gets cut whatever happens to be selected at the time.
+    withMusic()
+    useProjectStore.setState({ selectedAudioClipId: null })
+
+    expect(useProjectStore.getState().cutAudioAt(5, 'aclip-1')).toBe(true)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('refuses when nothing is selected, leaving the audio alone', () => {
+    withMusic()
+    useProjectStore.setState({ selectedAudioClipId: null })
+
+    expect(useProjectStore.getState().cutAudioAt(5)).toBe(false)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+
+  it('refuses when the playhead is not inside the selected clip', () => {
+    withMusic()
+
+    expect(useProjectStore.getState().cutAudioAt(0.5)).toBe(false)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+
+  it('snaps the cut to a frame, so it lands where a cut in the picture would', () => {
+    withMusic()
+
+    // A millisecond past a frame line. The picture would round back to it, and
+    // the sound under the same playhead has to land on the same instant rather
+    // than a millisecond off it.
+    useProjectStore.setState({ project: { ...useProjectStore.getState().project, fps: 25 } })
+    useProjectStore.getState().cutAudioAt(5.001)
+
+    expect(useProjectStore.getState().project.audioClips[1]?.startTime).toBe(5)
+  })
+
+  it('can be undone in one step', () => {
+    withMusic()
+
+    useProjectStore.getState().cutAudioAt(5)
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+})
+
+describe('cutting everything under the playhead', () => {
+  /** One picture clip 0–10s, one music bed 2–12s, nothing selected. */
+  function withPictureAndMusic(): void {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 10 }],
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 2,
+            inPoint: 0,
+            duration: 10,
+            label: 'song.mp3',
+          },
+        ],
+      },
+      selectedClipId: null,
+      selectedAudioClipId: null,
+    })
+  }
+
+  it('cuts the picture and the audio under the playhead in one edit', () => {
+    withPictureAndMusic()
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(true)
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(2)
+    expect(
+      stored().audioClips.map((clip) => [clip.startTime, clip.duration, clip.inPoint]),
+    ).toEqual([
+      [2, 3, 0],
+      [5, 7, 3],
+    ])
+  })
+
+  it('leaves a bed the playhead is not sitting over alone', () => {
+    withPictureAndMusic()
+    useProjectStore.setState({
+      project: {
+        ...useProjectStore.getState().project,
+        audioClips: [
+          ...useProjectStore.getState().project.audioClips,
+          {
+            id: 'aclip-2',
+            trackId: 'm1',
+            assetId: 'other-song',
+            useConverted: false,
+            startTime: 20,
+            inPoint: 0,
+            duration: 5,
+            label: 'other.mp3',
+          },
+        ],
+      },
+    })
+
+    useProjectStore.getState().cutEverythingAt(5)
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(3)
+    expect(
+      useProjectStore.getState().project.audioClips.find((clip) => clip.id === 'aclip-2'),
+    ).toMatchObject({ startTime: 20, duration: 5 })
+  })
+
+  it('cuts only the audio when the playhead is not over a picture clip', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 2,
+            inPoint: 0,
+            duration: 10,
+            label: 'song.mp3',
+          },
+        ],
+      },
+      selectedAudioClipId: null,
+    })
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(true)
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('cuts only the picture when nothing audible is under the playhead', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 10 }],
+      },
+      selectedAudioClipId: null,
+    })
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(true)
+    expect(useProjectStore.getState().project.clips).toHaveLength(2)
+  })
+
+  it('refuses when there is nothing to cut anywhere', () => {
+    useProjectStore.setState({ project: emptyProject(), selectedAudioClipId: null })
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(false)
+  })
+
+  it('selects the picture half behind the cut, same as a lone cutAt would', () => {
+    withPictureAndMusic()
+
+    useProjectStore.getState().cutEverythingAt(5)
+
+    const behind = useProjectStore.getState().project.clips[1]
+    expect(useProjectStore.getState().selectedClipId).toBe(behind?.id)
+  })
+
+  it('can be undone in one step', () => {
+    withPictureAndMusic()
+
+    useProjectStore.getState().cutEverythingAt(5)
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+})

@@ -110,6 +110,15 @@ export interface TimelineRenderOptions {
   onProgress?: (progress: RenderProgress) => void
   signal?: AbortSignal
   /**
+   * Render the soundtrack on its own, as an M4A.
+   *
+   * The mix is assembled from the same project by the same code, so what comes
+   * out is what the video would have carried rather than a second arrangement
+   * of it. Only the picture — and with it the captions, which are burnt into
+   * frames there are none of — is left out.
+   */
+  audioOnly?: boolean
+  /**
    * Also package the result for streaming.
    *
    * Asked for whenever this deployment can publish, not only when the user has
@@ -153,7 +162,17 @@ export async function renderTimeline(
     needed.set(assetId, { id: assetId, blob, mimeType: asset.mimeType })
   }
 
-  for (const clip of project.clips) await collect(clip.assetId)
+  // In an audio-only render only the clips that could be heard are fetched. A
+  // still has no sound to give and a silenced clip's is not in the mix, so
+  // reading their bytes back out of storage would be a wait for nothing — and
+  // it would fail a soundtrack export outright over a picture nobody asked for.
+  const audible = new Set(
+    plan.videoClips.filter((clip) => clipGain(clip) > 0).map((clip) => clip.id),
+  )
+  for (const clip of project.clips) {
+    if (options.audioOnly && !audible.has(clip.id)) continue
+    await collect(clip.assetId)
+  }
 
   const audio: RenderRequest['audio'] = []
   for (const clip of plan.audibleClips) {
@@ -177,8 +196,11 @@ export async function renderTimeline(
     if (track.hidden) continue
     for (const clip of videoClipsOf(project)) {
       if (clip.trackId !== track.id || clip.duration <= 0) continue
-      await collect(clip.assetId)
       const asset = assets.find((entry) => entry.id === clip.assetId)
+      // A layer is fetched for an audio-only render only if it could be heard,
+      // for the same reason a clip is.
+      const heard = asset?.kind === 'video' && layerGain(videoTracksOf(project), clip) > 0
+      if (!options.audioOnly || heard) await collect(clip.assetId)
       overlays.push({
         assetId: clip.assetId,
         kind: asset?.kind === 'video' ? 'video' : 'image',
@@ -210,7 +232,7 @@ export async function renderTimeline(
   // than kept on the project: changing the resolution changes the file, and the
   // fonts are only fetched when there is something to draw with them.
   const captions =
-    plan.burntInCues.length > 0
+    plan.burntInCues.length > 0 && !options.audioOnly
       ? {
           ass: buildAssFile({
             tracks: plan.captionTracks,
@@ -234,6 +256,7 @@ export async function renderTimeline(
       leadIn: plan.leadIn,
       ...(captions ? { captions } : {}),
       ...(fitted ? { range: fitted } : {}),
+      ...(options.audioOnly ? { audioOnly: true } : {}),
       crf,
       ...(options.hls ? { hls: {} } : {}),
     },

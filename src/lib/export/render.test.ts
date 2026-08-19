@@ -324,3 +324,49 @@ describe('progress', () => {
     expect(phases.indexOf('packaging')).toBeLessThan(phases.lastIndexOf('done'))
   })
 })
+
+/**
+ * A render of the soundtrack on its own.
+ *
+ * The bookkeeping around it is what can fail quietly: a file named .mp4 that
+ * holds an M4A, a still staged into the wasm heap for an export that will never
+ * draw it, or a streaming package built out of something no feed can play.
+ */
+describe('audio only', () => {
+  function audioRequest(overrides: Record<string, unknown> = {}) {
+    return request({
+      clips: [{ assetId: 'a1', kind: 'image' as const, inPoint: 0, duration: 5 }],
+      audio: [{ assetId: 's1', startTime: 0, inPoint: 0, duration: 5, volume: 1 }],
+      assets: new Map([
+        ['a1', { id: 'a1', blob: new Blob([new Uint8Array([1])]), mimeType: 'image/png' }],
+        ['s1', { id: 's1', blob: new Blob([new Uint8Array([2])]), mimeType: 'audio/mpeg' }],
+      ]),
+      audioOnly: true,
+      ...overrides,
+    })
+  }
+
+  it('writes an M4A, and hands it back as audio', async () => {
+    const result = await renderProject(audioRequest())
+
+    expect(fake.execs[0]?.at(-1)).toBe('editor-cat-export.m4a')
+    expect(result.blob.type).toBe('audio/mp4')
+  })
+
+  it('stages no pictures, which it was never going to draw', async () => {
+    await renderProject(audioRequest())
+
+    // Read off the cleanup, which is where every staged file ends up: the
+    // filesystem itself is swept bare by the time the render returns.
+    expect(fake.deleted).toContain('s1.mp3')
+    expect(fake.deleted).not.toContain('a1.png')
+  })
+
+  it('makes no streaming package even when one is asked for', async () => {
+    const result = await renderProject(audioRequest({ hls: {} }))
+
+    expect(fake.execs).toHaveLength(1)
+    expect(result.hls).toBeUndefined()
+    expect(fake.execs[0]).not.toContain('-force_key_frames')
+  })
+})
