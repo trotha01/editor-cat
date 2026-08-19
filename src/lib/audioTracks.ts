@@ -203,6 +203,140 @@ export function placeAudioClip(
 }
 
 /**
+ * Shortest piece a cut may leave behind.
+ *
+ * Well under the picture's own floor, and deliberately so: audio has no frames
+ * to land between, and a fifth of a second is a whole drum hit — a length
+ * somebody cutting a music bed to picture has every reason to want. This is only
+ * here to stop a mis-aimed cut leaving a sliver too small to see or to grab.
+ */
+export const MIN_AUDIO_CLIP_DURATION = 0.05
+
+/**
+ * The clip a cut at `time` would fall in, or null when there is nothing to cut
+ * there.
+ *
+ * Only ever the clip that is *asked* for, rather than whatever happens to be
+ * under the playhead. Several lanes are usually sounding at once, and cutting
+ * all of them because the playhead crosses them is an edit nobody asked for —
+ * so the caller names the clip, which in the app is the selected one.
+ */
+export function audioCutTargetAt(
+  clips: readonly AudioClip[],
+  clipId: string | null | undefined,
+  time: number,
+): AudioClip | null {
+  if (!clipId) return null
+  const clip = clips.find((entry) => entry.id === clipId)
+  if (!clip) return null
+  const offset = time - clip.startTime
+  // Strictly inside, with room left on both sides: a cut on a clip's own edge is
+  // one that already exists there, and would otherwise leave an empty clip.
+  if (offset < MIN_AUDIO_CLIP_DURATION) return null
+  if (clip.duration - offset < MIN_AUDIO_CLIP_DURATION) return null
+  return clip
+}
+
+/**
+ * Every clip a cut at `time` would fall inside, across every track.
+ *
+ * Where `audioCutTargetAt` answers for the one clip a caller names,
+ * this is for when nothing was named at all: a bare Cut with no selection
+ * takes whatever is sounding under the playhead, on every lane, the same way
+ * the picture always has.
+ */
+export function audioCutTargetsAt(clips: readonly AudioClip[], time: number): AudioClip[] {
+  return clips.filter((clip) => audioCutTargetAt(clips, clip.id, time) !== null)
+}
+
+export interface AudioCutResult {
+  clips: AudioClip[]
+  /**
+   * The half after the cut, which is a new clip. Selected afterwards, so a
+   * second cut — or a delete — lands on the piece the playhead is now over.
+   */
+  clipId: string
+}
+
+/**
+ * Cuts one audio clip in two at `time`.
+ *
+ * Both halves keep pointing at the same source and together they cover exactly
+ * what the one clip covered, so a cut changes nothing about what is heard until
+ * one of the halves is moved, deleted or levelled. Returns null when there is
+ * nothing cuttable there, leaving the caller's clips alone.
+ *
+ * The anchor is carried onto both halves rather than recomputed for the half
+ * behind the cut. Two halves anchored to different shots would be pulled apart
+ * the moment either shot moved — and a cut that can silently turn into an
+ * overlap is worse than one that keeps a take whole where it was performed.
+ *
+ * Unsnapped: audio has no frames, and the caller is free to snap the playhead
+ * first — which the app does, so a cut through the picture and a cut through the
+ * sound under it land on the same instant.
+ *
+ * `makeId` is injected so this stays pure and testable.
+ */
+export function splitAudioClipAt(
+  clips: readonly AudioClip[],
+  clipId: string,
+  time: number,
+  makeId: () => string,
+): AudioCutResult | null {
+  const target = audioCutTargetAt(clips, clipId, time)
+  if (!target) return null
+
+  const offset = time - target.startTime
+  const left: AudioClip = { ...target, duration: offset }
+  const right: AudioClip = {
+    ...target,
+    id: makeId(),
+    startTime: target.startTime + offset,
+    inPoint: target.inPoint + offset,
+    duration: target.duration - offset,
+  }
+
+  const index = clips.findIndex((entry) => entry.id === clipId)
+  const next = [...clips]
+  next.splice(index, 1, left, right)
+  return { clips: next, clipId: right.id }
+}
+
+export interface AudioCutAllResult {
+  clips: AudioClip[]
+  /** The half behind the cut on each clip that got one. */
+  clipIds: string[]
+}
+
+/**
+ * Cuts every clip at `time` that has one to make, across every track — what a
+ * bare Cut means with nothing selected: not one clip in particular, so every
+ * lane sounding there gets the same cut the picture does. Returns null when
+ * there was nothing cuttable anywhere.
+ *
+ * Each clip is cut independently, so one going through never changes whether
+ * or where another one can.
+ */
+export function splitAudioClipsAt(
+  clips: readonly AudioClip[],
+  time: number,
+  makeId: () => string,
+): AudioCutAllResult | null {
+  const targets = audioCutTargetsAt(clips, time)
+  if (targets.length === 0) return null
+
+  let next: AudioClip[] = [...clips]
+  const clipIds: string[] = []
+  for (const target of targets) {
+    const result = splitAudioClipAt(next, target.id, time, makeId)
+    if (!result) continue
+    next = result.clips
+    clipIds.push(result.clipId)
+  }
+  return { clips: next, clipIds }
+}
+
+/**
  * Moves a clip in time and optionally to another track, refusing the move if
  * it would land on top of something. Returns the clips unchanged when blocked,
  * so a bad drag is a no-op rather than a silent overlap.

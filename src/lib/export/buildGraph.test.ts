@@ -1035,3 +1035,110 @@ describe('keyframes for HLS packaging', () => {
     expect(args.indexOf('-force_key_frames')).toBeLessThan(args.indexOf('-movflags'))
   })
 })
+
+/**
+ * The soundtrack on its own.
+ *
+ * The claim worth pinning is that it is the *same* mix: whatever is heard while
+ * editing — the tracks, plus the sound the clips and layers carry themselves —
+ * placed at the same times and at the same levels, only with everything about
+ * the picture left out of the argv rather than encoded and thrown away.
+ */
+describe('an audio-only export', () => {
+  const audioBase = { ...base, outputFile: 'out.m4a', audioOnly: true }
+
+  it('maps the mix and nothing else', () => {
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [img('a.png', 4)],
+      audio: [aud('music.mp3', 0, 4)],
+    })
+
+    expect(args).not.toContain('[vout]')
+    expect(args[args.indexOf('-map') + 1]).toBe('[aout]')
+    expect(args).toContain('-vn')
+    expect(args).toContain('-c:a')
+    expect(args).not.toContain('-c:v')
+  })
+
+  it('leaves out the pictures it would only have decoded to throw away', () => {
+    // A still has no sound in it, so staging and decoding one is a minute spent
+    // on frames that were never going to reach the file.
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [img('a.png', 4), vid('silent.mp4', 0, 4)],
+      audio: [aud('music.mp3', 0, 8)],
+    })
+
+    expect(inputFiles(args)).toEqual(['music.mp3'])
+    expect(graphOf(args)).not.toContain(':v]')
+  })
+
+  it('keeps the sound a clip carries itself, at the time the clip sits at', () => {
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [img('a.png', 4), loud('talk.mp4', 0, 6)],
+      audio: [],
+      leadIn: 1,
+    })
+
+    // The still is dropped, so the talking clip is input 0 — and it still
+    // starts five seconds in, which is where the timeline puts it.
+    expect(inputFiles(args)).toEqual(['talk.mp4'])
+    expect(graphOf(args)).toContain('[0:a]adelay=5000:all=1')
+  })
+
+  it('mixes the tracks with the clip sound, at their own levels', () => {
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [loud('talk.mp4', 0, 6, 0.8)],
+      audio: [aud('music.mp3', 0, 6, 0.5)],
+    })
+
+    const graph = graphOf(args)
+    expect(graph).toContain('volume=0.8')
+    expect(graph).toContain('volume=0.5')
+    expect(graph).toContain('amix=inputs=2:duration=longest:normalize=0[aout]')
+  })
+
+  it('cuts the sound to the chosen range, exactly as a video export does', () => {
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [img('a.png', 10)],
+      audio: [aud('music.mp3', 0, 10)],
+      range: { start: 2, end: 6 },
+    })
+
+    expect(graphOf(args)).toContain('atrim=start=2:end=6,asetpts=PTS-STARTPTS[aout]')
+    // The last -t is the output's own, the earlier ones bounding each input.
+    expect(args[args.lastIndexOf('-t') + 1]).toBe('4')
+  })
+
+  it('exports a project that is only sound, with no picture track at all', () => {
+    // The picture is what a video export cannot do without. A soundtrack can.
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [],
+      audio: [aud('music.mp3', 0, 30)],
+    })
+
+    expect(inputFiles(args)).toEqual(['music.mp3'])
+  })
+
+  it('says so when there is no sound to export rather than writing an empty file', () => {
+    expect(() => buildExportPlan({ ...audioBase, clips: [img('a.png', 4)], audio: [] })).toThrow(
+      /no sound/i,
+    )
+  })
+
+  it('burns in no captions, having nowhere to burn them', () => {
+    const { args } = buildExportPlan({
+      ...audioBase,
+      clips: [img('a.png', 4)],
+      audio: [aud('music.mp3', 0, 4)],
+      captions: { file: 'captions.ass', fontsDir: '/fonts' },
+    })
+
+    expect(graphOf(args)).not.toContain('ass=')
+  })
+})
