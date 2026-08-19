@@ -11,6 +11,8 @@ import { Button } from './ui'
 import { ClipMenu } from './ClipMenu'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import { formatTime, snapToFrame } from '../lib/timeline'
+import { clipEnd } from '../lib/lanes'
+import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
 import { audioCutTargetAt } from '../lib/audioTracks'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
@@ -67,9 +69,10 @@ export function AudioTrackLanes({
   /** Which clips can be captioned, by clip id. Voice clips only — see `speechSources`. */
   targets: ReadonlyMap<string, CaptionTarget>
 }) {
-  const tracks = useProjectStore((state) => state.project.audioTracks)
-  const clips = useProjectStore((state) => state.project.audioClips)
-  const fps = useProjectStore((state) => state.project.fps)
+  const project = useProjectStore((state) => state.project)
+  const tracks = project.audioTracks
+  const clips = project.audioClips
+  const fps = project.fps
   const moveAudioClipTo = useProjectStore((state) => state.moveAudioClipTo)
   const selectedId = useProjectStore((state) => state.selectedAudioClipId)
   const selectAudioClip = useProjectStore((state) => state.selectAudioClip)
@@ -125,7 +128,15 @@ export function AudioTrackLanes({
       if (candidate?.kind === kind) targetTrackId = candidate.id
     }
 
-    const ok = moveAudioClipTo(drag.clipId, drag.originStart + dx / zoom, targetTrackId)
+    // Snapping is what makes the drag land flush against another clip's edge
+    // instead of a pixel off it — the whole point of the feature, since a
+    // voiceover a frame early or late from the shot it plays against is a bug
+    // nobody would spot by eye until export.
+    const rawStart = drag.originStart + dx / zoom
+    const points = withoutOwnEdges(snapPointsFor(project), clip.startTime, clipEnd(clip))
+    const start = snapClipStart(rawStart, clip.duration, points, SNAP_DISTANCE_PX / zoom)
+
+    const ok = moveAudioClipTo(drag.clipId, start, targetTrackId)
     setBlockedClipId(ok ? null : drag.clipId)
   }
 

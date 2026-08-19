@@ -17,6 +17,7 @@ import { useRef, useState } from 'react'
 import { Button } from './ui'
 import { captionCuesOf, captionTracksOf, cuesOnTrack, wordSpans } from '../lib/captions'
 import { formatTime } from '../lib/timeline'
+import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
 import { useProjectStore } from '../state/useProjectStore'
 import type { CaptionCue, CaptionTrack } from '../lib/types'
 
@@ -49,8 +50,9 @@ interface DragState {
 }
 
 export function CaptionLanes({ zoom, onSeek }: { zoom: number; onSeek: (time: number) => void }) {
-  const tracks = useProjectStore((state) => captionTracksOf(state.project))
-  const cues = useProjectStore((state) => captionCuesOf(state.project))
+  const project = useProjectStore((state) => state.project)
+  const tracks = captionTracksOf(project)
+  const cues = captionCuesOf(project)
   const selected = useProjectStore((state) => state.selectedCaption)
   const selectCaption = useProjectStore((state) => state.selectCaption)
   const moveCueTo = useProjectStore((state) => state.moveCueTo)
@@ -99,7 +101,17 @@ export function CaptionLanes({ zoom, onSeek }: { zoom: number; onSeek: (time: nu
       return
     }
     if (drag.grab === 'move') {
-      setBlockedCueId(moveCueTo(drag.cueId, next) ? null : drag.cueId)
+      // Snapped against every clip and cue on the timeline, same as the audio
+      // and video lanes — a caption lined up on a cut or a line read by eye
+      // rarely lands on the exact frame, and this is the whole point of
+      // dragging with snapping on.
+      const cue = cues.find((entry) => entry.id === drag.cueId)
+      const duration = cue ? cue.end - cue.start : 0
+      const points = cue
+        ? withoutOwnEdges(snapPointsFor(project), cue.start, cue.end)
+        : snapPointsFor(project)
+      const start = snapClipStart(next, duration, points, SNAP_DISTANCE_PX / zoom)
+      setBlockedCueId(moveCueTo(drag.cueId, start) ? null : drag.cueId)
       return
     }
     setBlockedCueId(trimCueEdge(drag.cueId, drag.grab, next) ? null : drag.cueId)
