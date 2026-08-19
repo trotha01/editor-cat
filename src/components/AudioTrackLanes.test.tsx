@@ -54,7 +54,7 @@ function mount(overrides: Partial<AudioClip> = {}) {
   useProjectStore.setState({
     project: { ...emptyProject(), audioTracks: [track], audioClips: [{ ...clip, ...overrides }] },
   })
-  return render(<AudioTrackLanes zoom={40} targets={new Map()} />)
+  return render(<AudioTrackLanes zoom={40} currentTime={0} targets={new Map()} />)
 }
 
 beforeEach(() => {
