@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   audibleClipsAt,
   audioCutTargetAt,
+  audioCutTargetsAt,
   audioEnd,
   createTrack,
   defaultTracks,
@@ -15,6 +16,7 @@ import {
   placeAudioClip,
   rangesOverlap,
   splitAudioClipAt,
+  splitAudioClipsAt,
   trackHasRoom,
 } from './audioTracks'
 import type { AudioClip, AudioTrack, AudioTrackKind, Project } from './types'
@@ -373,6 +375,55 @@ describe('audioCutTargetAt', () => {
 
   it('answers with nothing when the playhead is outside the named clip', () => {
     expect(audioCutTargetAt(clips, 'a', 2)).toBeNull()
+  })
+})
+
+describe('audioCutTargetsAt', () => {
+  it('answers with every clip a cut at that instant would land in, unlike the named form', () => {
+    const clips = [clip('a', 't1', 4, 10), clip('b', 't2', 0, 30)]
+    expect(audioCutTargetsAt(clips, 7).map((entry) => entry.id)).toEqual(['a', 'b'])
+  })
+
+  it('leaves out a clip the playhead is not inside', () => {
+    const clips = [clip('a', 't1', 4, 10), clip('b', 't2', 20, 5)]
+    expect(audioCutTargetsAt(clips, 7).map((entry) => entry.id)).toEqual(['a'])
+  })
+
+  it('answers with nothing when no clip is under that instant', () => {
+    expect(audioCutTargetsAt([clip('a', 't1', 4, 10)], 20)).toEqual([])
+  })
+})
+
+describe('splitAudioClipsAt', () => {
+  it('cuts every clip under the playhead, on every track', () => {
+    const clips = [clip('a', 't1', 4, 10), clip('b', 't2', 0, 30)]
+    const ids = idFactory()
+    const result = splitAudioClipsAt(clips, 7, () => ids('new'))
+
+    expect(result?.clips.map((entry) => [entry.id, entry.startTime, entry.duration])).toEqual([
+      ['a', 4, 3],
+      ['new-1', 7, 7],
+      ['b', 0, 7],
+      ['new-2', 7, 23],
+    ])
+    expect(result?.clipIds).toEqual(['new-1', 'new-2'])
+  })
+
+  it('leaves a clip the playhead is not over alone', () => {
+    const clips = [clip('a', 't1', 4, 10), clip('b', 't2', 20, 5)]
+    const result = splitAudioClipsAt(clips, 7, () => 'new')
+
+    expect(result?.clips.find((entry) => entry.id === 'b')).toEqual(clip('b', 't2', 20, 5))
+  })
+
+  it('answers null when there is nothing to cut anywhere', () => {
+    expect(splitAudioClipsAt([clip('a', 't1', 4, 10)], 20, () => 'new')).toBeNull()
+  })
+
+  it('never mutates the clips it was given', () => {
+    const original = [clip('a', 't1', 4, 10), clip('b', 't2', 0, 30)]
+    splitAudioClipsAt(original, 7, () => 'new')
+    expect(original).toEqual([clip('a', 't1', 4, 10), clip('b', 't2', 0, 30)])
   })
 })
 

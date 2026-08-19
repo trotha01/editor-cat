@@ -52,7 +52,7 @@ import {
   totalDuration,
   zoomFromPinch,
 } from '../lib/timeline'
-import { audioCutTargetAt, audioEnd } from '../lib/audioTracks'
+import { audioCutTargetAt, audioCutTargetsAt, audioEnd } from '../lib/audioTracks'
 import { transitionRoomAt } from '../lib/transitions'
 import { videoClipsOf, videoLayersEnd } from '../lib/videoTracks'
 import { captionCuesOf, captionsEnd } from '../lib/captions'
@@ -609,6 +609,7 @@ export function Timeline({
   const trim = useProjectStore((state) => state.trim)
   const cutAt = useProjectStore((state) => state.cutAt)
   const cutAudioAt = useProjectStore((state) => state.cutAudioAt)
+  const cutEverythingAt = useProjectStore((state) => state.cutEverythingAt)
   const removeCut = useProjectStore((state) => state.removeCut)
   const exportRange = useProjectStore((state) => state.exportRange)
   const setExportRange = useProjectStore((state) => state.setExportRange)
@@ -736,15 +737,29 @@ export function Timeline({
     [project.audioClips, selectedAudioClipId, currentTime, project.fps],
   )
 
-  // Both tracks behind one button and one key. The audio has first claim
-  // because it had to be selected to be a candidate at all, and the store
-  // refuses a cut it cannot make — so this falls through to the picture without
-  // having to ask the same question twice.
+  // Every audio clip a cut would land on, asked with none named in particular —
+  // only meaningful with nothing selected, which is the one case where "no
+  // clip in particular" means "every one under the playhead" rather than "the
+  // picture, as if the others weren't there."
+  const audioCutTargets = useMemo(
+    () => audioCutTargetsAt(project.audioClips, snapToFrame(currentTime, project.fps)),
+    [project.audioClips, currentTime, project.fps],
+  )
+
+  // Both tracks behind one button and one key. A selection names one lane in
+  // particular, so that clip alone is cut, falling through to the picture
+  // exactly as before when the store refuses a cut it cannot make there. With
+  // nothing named, "no clip in particular" takes every lane the playhead sits
+  // over — picture and every bed at once, as one edit.
   const cut = useCallback(
     (time: number) => {
-      if (!cutAudioAt(time)) cutAt(time)
+      if (selectedAudioClipId) {
+        if (!cutAudioAt(time)) cutAt(time)
+        return
+      }
+      cutEverythingAt(time)
     },
-    [cutAudioAt, cutAt],
+    [cutAudioAt, cutAt, cutEverythingAt, selectedAudioClipId],
   )
 
   // The shortcut reads the playhead from a ref so it can be registered once.
@@ -813,13 +828,19 @@ export function Timeline({
   const frameLines = framePx >= MIN_FRAME_LINE_PX
   const canReachFrames = framePixels(MAX_ZOOM, project.fps) >= MIN_FRAME_LINE_PX
 
-  const cutTitle = audioCutTarget
-    ? `Cut the selected audio clip at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
-    : cutTarget
-      ? `Cut at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
-      : clipAtTime(project.clips, currentTime, leadIn)
-        ? `Too close to the edge of this clip — a cut has to leave ${MIN_CLIP_DURATION}s on both sides.`
-        : 'Park the playhead over a clip to cut it, or select an audio clip to cut that instead.'
+  const nothingToCutTitle = clipAtTime(project.clips, currentTime, leadIn)
+    ? `Too close to the edge of this clip — a cut has to leave ${MIN_CLIP_DURATION}s on both sides.`
+    : 'Park the playhead over a clip to cut it, or select an audio clip to cut that instead.'
+
+  const cutTitle = selectedAudioClipId
+    ? audioCutTarget
+      ? `Cut the selected audio clip at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
+      : cutTarget
+        ? `Cut at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
+        : nothingToCutTitle
+    : cutTarget || audioCutTargets.length > 0
+      ? `Cut everything at ${formatTime(snapToFrame(currentTime, project.fps))} (S)`
+      : nothingToCutTitle
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -947,7 +968,11 @@ export function Timeline({
         <div className="ml-auto flex items-center gap-2">
           <Button
             onClick={() => cut(currentTime)}
-            disabled={!cutTarget && !audioCutTarget}
+            disabled={
+              selectedAudioClipId
+                ? !cutTarget && !audioCutTarget
+                : !cutTarget && audioCutTargets.length === 0
+            }
             title={cutTitle}
           >
             <span aria-hidden>✂</span> Cut

@@ -1677,3 +1677,137 @@ describe('cutting an audio clip', () => {
     expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
   })
 })
+
+describe('cutting everything under the playhead', () => {
+  /** One picture clip 0–10s, one music bed 2–12s, nothing selected. */
+  function withPictureAndMusic(): void {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 10 }],
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 2,
+            inPoint: 0,
+            duration: 10,
+            label: 'song.mp3',
+          },
+        ],
+      },
+      selectedClipId: null,
+      selectedAudioClipId: null,
+    })
+  }
+
+  it('cuts the picture and the audio under the playhead in one edit', () => {
+    withPictureAndMusic()
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(true)
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(2)
+    expect(
+      stored().audioClips.map((clip) => [clip.startTime, clip.duration, clip.inPoint]),
+    ).toEqual([
+      [2, 3, 0],
+      [5, 7, 3],
+    ])
+  })
+
+  it('leaves a bed the playhead is not sitting over alone', () => {
+    withPictureAndMusic()
+    useProjectStore.setState({
+      project: {
+        ...useProjectStore.getState().project,
+        audioClips: [
+          ...useProjectStore.getState().project.audioClips,
+          {
+            id: 'aclip-2',
+            trackId: 'm1',
+            assetId: 'other-song',
+            useConverted: false,
+            startTime: 20,
+            inPoint: 0,
+            duration: 5,
+            label: 'other.mp3',
+          },
+        ],
+      },
+    })
+
+    useProjectStore.getState().cutEverythingAt(5)
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(3)
+    expect(
+      useProjectStore.getState().project.audioClips.find((clip) => clip.id === 'aclip-2'),
+    ).toMatchObject({ startTime: 20, duration: 5 })
+  })
+
+  it('cuts only the audio when the playhead is not over a picture clip', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'aclip-1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 2,
+            inPoint: 0,
+            duration: 10,
+            label: 'song.mp3',
+          },
+        ],
+      },
+      selectedAudioClipId: null,
+    })
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(true)
+    expect(useProjectStore.getState().project.clips).toHaveLength(0)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('cuts only the picture when nothing audible is under the playhead', () => {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [{ id: 'clip-1', assetId: 'a', inPoint: 0, outPoint: 10 }],
+      },
+      selectedAudioClipId: null,
+    })
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(true)
+    expect(useProjectStore.getState().project.clips).toHaveLength(2)
+  })
+
+  it('refuses when there is nothing to cut anywhere', () => {
+    useProjectStore.setState({ project: emptyProject(), selectedAudioClipId: null })
+
+    expect(useProjectStore.getState().cutEverythingAt(5)).toBe(false)
+  })
+
+  it('selects the picture half behind the cut, same as a lone cutAt would', () => {
+    withPictureAndMusic()
+
+    useProjectStore.getState().cutEverythingAt(5)
+
+    const behind = useProjectStore.getState().project.clips[1]
+    expect(useProjectStore.getState().selectedClipId).toBe(behind?.id)
+  })
+
+  it('can be undone in one step', () => {
+    withPictureAndMusic()
+
+    useProjectStore.getState().cutEverythingAt(5)
+    useProjectStore.getState().undo()
+
+    expect(useProjectStore.getState().project.clips).toHaveLength(1)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+})

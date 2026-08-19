@@ -544,14 +544,26 @@ describe('the Cut button', () => {
     ])
   })
 
-  it('cuts the picture when no audio clip is selected', () => {
+  it('cuts the picture and the audio under it together when nothing is selected', () => {
     withMusicUnder([{ id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 20 }], null)
     render(<Timeline currentTime={10} onSeek={vi.fn()} />)
 
     fireEvent.click(cutButton())
 
+    // Nothing named which clip was meant, so both lanes under the playhead
+    // take the cut — not just the picture, as a bare press used to mean.
     expect(useProjectStore.getState().project.clips).toHaveLength(2)
-    expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('cuts an unselected bed alone, with no picture there to cut', () => {
+    withMusicUnder([], null)
+    render(<Timeline currentTime={10} onSeek={vi.fn()} />)
+
+    expect(cutButton()).toBeEnabled()
+    fireEvent.click(cutButton())
+
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
   })
 
   it('leaves the picture whole when the cut belongs to the audio', () => {

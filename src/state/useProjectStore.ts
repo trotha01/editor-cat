@@ -30,6 +30,7 @@ import {
   placeAudioClip,
   retypeTrack,
   splitAudioClipAt,
+  splitAudioClipsAt,
 } from '../lib/audioTracks'
 import {
   captionCuesOf,
@@ -309,11 +310,24 @@ interface ProjectState {
    * or when there is no clip to cut at all — so the caller can leave it at that.
    *
    * One clip, named, rather than everything the playhead crosses: several lanes
-   * are usually sounding at once, and cutting a bed because you cut a take is an
-   * edit nobody asked for. `clipId` defaults to the selected clip, which is how
-   * the Cut button and the S key say which one they meant.
+   * are usually sounding at once, and cutting a bed because you cut a take you
+   * had selected is an edit nobody asked for. `clipId` defaults to the selected
+   * clip, which is how the Cut button and the S key say which one they meant —
+   * and with nothing selected to name one, that's `cutEverythingAt` instead.
    */
   cutAudioAt: (time: number, clipId?: string) => boolean
+  /**
+   * Cuts everything under the playhead in one edit: the picture clip there, if
+   * any, and every audio clip on every track the playhead happens to sit
+   * inside — not just one chosen clip. False when there was nothing to cut
+   * anywhere, so the caller can leave it at that.
+   *
+   * This is what the Cut button and the S key mean with nothing selected:
+   * no clip was named, so every lane sounding under the playhead gets the same
+   * cut the picture does, rather than only the picture as if the others
+   * weren't there.
+   */
+  cutEverythingAt: (time: number) => boolean
   updateAudioClip: (id: string, patch: Partial<AudioClip>) => void
   moveAudioClipTo: (id: string, startTime: number, trackId?: string) => boolean
   removeAudioClip: (id: string) => void
@@ -1034,6 +1048,52 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       // The playhead is now sitting over the half behind the cut, so that is
       // what the next edit — another cut, or Delete — should land on.
       set(onlySelected('audio', result.clipId))
+      return true
+    },
+
+    // One edit, not one per lane: an undo of a bare cut should put the picture
+    // and every bed it took with it back in a single step, the way `addClips`
+    // puts several shots down as one act rather than several.
+    cutEverythingAt: (time) => {
+      const { project } = get()
+      const pictureResult = splitClipAt(
+        project.clips,
+        time,
+        project.fps,
+        () => newId('clip'),
+        leadInOf(project),
+      )
+      // Snapped once, up front, so the picture and every lane of audio under it
+      // land on the same instant rather than each rounding to its own frame.
+      const audioTime = snapToFrame(time, project.fps)
+      const audioResult = splitAudioClipsAt(project.audioClips, audioTime, () => newId('aclip'))
+      if (!pictureResult && !audioResult) return false
+
+      mutate((current) => {
+        let next = current
+        if (pictureResult) {
+          const recredited = recreditCuesAfterCut(
+            captionCuesOf(current),
+            pictureResult.cutClipId,
+            pictureResult.clipId,
+            snapToFrame(time, current.fps),
+          )
+          next = {
+            ...next,
+            clips: pictureResult.clips,
+            ...(recredited ? { captionCues: recredited } : {}),
+          }
+        }
+        if (audioResult) {
+          next = { ...next, audioClips: audioResult.clips }
+        }
+        return underClips(current, next)
+      })
+      // The picture is what the button has always meant first, so its new half
+      // takes the selection the way a lone `cutAt` would have left it. Cutting
+      // audio alone leaves no one clip among several to land it on, so the
+      // selection is left as it was: none.
+      if (pictureResult) set(onlySelected('clip', pictureResult.clipId))
       return true
     },
 

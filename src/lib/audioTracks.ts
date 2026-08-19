@@ -237,6 +237,18 @@ export function audioCutTargetAt(
   return clip
 }
 
+/**
+ * Every clip a cut at `time` would fall inside, across every track.
+ *
+ * Where `audioCutTargetAt` answers for the one clip a caller names,
+ * this is for when nothing was named at all: a bare Cut with no selection
+ * takes whatever is sounding under the playhead, on every lane, the same way
+ * the picture always has.
+ */
+export function audioCutTargetsAt(clips: readonly AudioClip[], time: number): AudioClip[] {
+  return clips.filter((clip) => audioCutTargetAt(clips, clip.id, time) !== null)
+}
+
 export interface AudioCutResult {
   clips: AudioClip[]
   /**
@@ -288,6 +300,40 @@ export function splitAudioClipAt(
   const next = [...clips]
   next.splice(index, 1, left, right)
   return { clips: next, clipId: right.id }
+}
+
+export interface AudioCutAllResult {
+  clips: AudioClip[]
+  /** The half behind the cut on each clip that got one. */
+  clipIds: string[]
+}
+
+/**
+ * Cuts every clip at `time` that has one to make, across every track — what a
+ * bare Cut means with nothing selected: not one clip in particular, so every
+ * lane sounding there gets the same cut the picture does. Returns null when
+ * there was nothing cuttable anywhere.
+ *
+ * Each clip is cut independently, so one going through never changes whether
+ * or where another one can.
+ */
+export function splitAudioClipsAt(
+  clips: readonly AudioClip[],
+  time: number,
+  makeId: () => string,
+): AudioCutAllResult | null {
+  const targets = audioCutTargetsAt(clips, time)
+  if (targets.length === 0) return null
+
+  let next: AudioClip[] = [...clips]
+  const clipIds: string[] = []
+  for (const target of targets) {
+    const result = splitAudioClipAt(next, target.id, time, makeId)
+    if (!result) continue
+    next = result.clips
+    clipIds.push(result.clipId)
+  }
+  return { clips: next, clipIds }
 }
 
 /**
