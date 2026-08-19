@@ -35,6 +35,7 @@ const DEFAULT_CRF = 18
 
 const DESTINATIONS = [
   { id: 'download', label: 'Download an MP4' },
+  { id: 'audio', label: 'Download the audio only (M4A)' },
   { id: 'mintspace', label: 'Publish to Mintspace' },
 ] as const
 
@@ -67,7 +68,8 @@ function resolutionOptions(width: number, height: number): ExportPreset[] {
  * can only apologise.
  */
 function usableDestination(stored: unknown): Destination {
-  return stored === 'mintspace' && isMintspaceConfigured() ? 'mintspace' : 'download'
+  if (stored === 'mintspace') return isMintspaceConfigured() ? 'mintspace' : 'download'
+  return stored === 'audio' ? 'audio' : 'download'
 }
 
 function usableQuality(stored: unknown): number {
@@ -122,6 +124,8 @@ interface RenderedFile {
   height: number
   /** Undefined for a render of the whole timeline. */
   range: ExportRange | undefined
+  /** True for the soundtrack on its own, which is a different file entirely. */
+  audioOnly: boolean
 }
 
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -166,6 +170,18 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const resolutions = resolutionOptions(project.width, project.height)
   const vertical = orientationOf(project.width, project.height) === 'vertical'
   const plan = exportPlan(project, assets)
+
+  /** The soundtrack on its own, for anyone who wants the mix as a file. */
+  const audioOnly = destination === 'audio'
+  /**
+   * Whether there is certainly no sound to export.
+   *
+   * Only the certain half: whether a video clip's file really carries a stream
+   * is not known until the renderer probes it, so a project made of filmed
+   * clips is not promised a soundtrack here — it is simply not refused one.
+   */
+  const silent = plan.audibleClips.length === 0 && plan.videoClips.length === plan.silencedClips
+  const nothingToExport = audioOnly ? silent : project.clips.length === 0
 
   // The range is deliberately not remembered the way the destination and the
   // quality are. Those describe a preference; this describes one timeline, and
@@ -241,6 +257,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     rendered.crf === crf &&
     rendered.width === project.width &&
     rendered.height === project.height &&
+    rendered.audioOnly === audioOnly &&
     sameRange(rendered.range, range)
       ? rendered
       : null
@@ -288,11 +305,13 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         range,
         onProgress: setProgress,
         signal: controller.signal,
+        audioOnly,
         // Asked for whenever publishing is possible, not only when it has been
         // chosen: forcing keyframes changes the encoded bytes, so packaging
         // only on demand would mean a second render for anyone who downloads a
-        // file to check it and then decides to publish that.
-        hls: canPublish,
+        // file to check it and then decides to publish that. Never for a bare
+        // soundtrack, which is not something a feed can play.
+        hls: canPublish && !audioOnly,
       })
       const file: RenderedFile = {
         blob: result.blob,
@@ -302,6 +321,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         width: project.width,
         height: project.height,
         range,
+        audioOnly,
       }
       setRendered(file)
       return file
@@ -311,13 +331,16 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     }
   }
 
+  /** What the file is called on disk, which is also what says what it is. */
+  const fileName = `${project.name.replace(/[^\w -]/g, '') || 'export'}.${audioOnly ? 'm4a' : 'mp4'}`
+
   const runDownload = async () => {
     setError(null)
     setDownloaded(null)
 
     try {
       const { blob } = await render()
-      downloadBlob(blob, `${project.name.replace(/[^\w -]/g, '') || 'export'}.mp4`)
+      downloadBlob(blob, fileName)
       setDownloaded(blob)
     } catch (cause) {
       setError(toDisplayMessage(cause))
@@ -327,10 +350,14 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const busy = progress !== null || publishing
 
   return (
-    <Modal open={open} onClose={onClose} title="Export video" wide>
+    <Modal open={open} onClose={onClose} title={audioOnly ? 'Export audio' : 'Export video'} wide>
       <div className="flex flex-col gap-4">
-        {project.clips.length === 0 ? (
-          <Callout tone="warn">Add at least one clip to the timeline before exporting.</Callout>
+        {nothingToExport ? (
+          <Callout tone="warn">
+            {audioOnly
+              ? 'There is no sound on this timeline to export — add a music track or a voiceover first.'
+              : 'Add at least one clip to the timeline before exporting.'}
+          </Callout>
         ) : null}
 
         <div className="grid gap-3 sm:grid-cols-3">
@@ -352,44 +379,51 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             </Select>
           </Field>
 
-          <Field
-            label="Resolution"
-            htmlFor="export-resolution"
-            hint="Sizes follow the project's orientation — change it above the preview."
-          >
-            <Select
-              id="export-resolution"
-              value={`${project.width}x${project.height}`}
-              disabled={busy}
-              onChange={(event) => {
-                const found = resolutions.find(
-                  (option) => `${option.width}x${option.height}` === event.target.value,
-                )
-                if (found) setResolution(found.width, found.height)
-              }}
-            >
-              {resolutions.map((option) => (
-                <option key={option.label} value={`${option.width}x${option.height}`}>
-                  {option.label} ({option.width}×{option.height})
-                </option>
-              ))}
-            </Select>
-          </Field>
+          {/* Both of these describe the picture, and there is none in an M4A.
+              Hidden rather than greyed: a disabled control is a promise it does
+              something here, and neither of these would. */}
+          {audioOnly ? null : (
+            <>
+              <Field
+                label="Resolution"
+                htmlFor="export-resolution"
+                hint="Sizes follow the project's orientation — change it above the preview."
+              >
+                <Select
+                  id="export-resolution"
+                  value={`${project.width}x${project.height}`}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const found = resolutions.find(
+                      (option) => `${option.width}x${option.height}` === event.target.value,
+                    )
+                    if (found) setResolution(found.width, found.height)
+                  }}
+                >
+                  {resolutions.map((option) => (
+                    <option key={option.label} value={`${option.width}x${option.height}`}>
+                      {option.label} ({option.width}×{option.height})
+                    </option>
+                  ))}
+                </Select>
+              </Field>
 
-          <Field label="Quality" htmlFor="export-quality">
-            <Select
-              id="export-quality"
-              value={crf}
-              disabled={busy}
-              onChange={(event) => setStoredCrf(Number(event.target.value))}
-            >
-              {QUALITY.map((option) => (
-                <option key={option.crf} value={option.crf}>
-                  {option.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
+              <Field label="Quality" htmlFor="export-quality">
+                <Select
+                  id="export-quality"
+                  value={crf}
+                  disabled={busy}
+                  onChange={(event) => setStoredCrf(Number(event.target.value))}
+                >
+                  {QUALITY.map((option) => (
+                    <option key={option.crf} value={option.crf}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </>
+          )}
         </div>
 
         {/* Start and end, which begin as the whole video: an export nobody has
@@ -429,13 +463,13 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             disabled={busy || (!range && !rangeError)}
             onClick={() => setTyped({ start: '0', end: secondsText(plan.outputDuration) })}
           >
-            Export the whole video
+            Export the whole {audioOnly ? 'timeline' : 'video'}
           </Button>
         </div>
 
         {rangeError ? <Callout tone="warn">{rangeError}</Callout> : null}
 
-        {destination === 'download' ? (
+        {destination !== 'mintspace' ? (
           <Callout tone="info" title="Everything happens on your machine">
             Rendering runs in this tab with ffmpeg compiled to WebAssembly — your media is never
             uploaded. That also means it uses your CPU: expect roughly a minute for a short project,
@@ -449,29 +483,40 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           </Callout>
         )}
 
-        <p className="text-sm text-ink-dim">
-          {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
-          {formatTime(exportedLength)}
-          {/* Both numbers while a range is set, so the shorter one reads as a
+        {/* What the file will be. The audio-only version says only what is in
+            it: a clip count, a lead-in of black and a burnt-in caption all
+            describe a picture this file does not have. */}
+        {audioOnly ? (
+          <p className="text-sm text-ink-dim">
+            {formatTime(exportedLength)}
+            {range ? ` of ${formatTime(plan.outputDuration)}` : ''} · {sound.join(' · ')} · the mix
+            on its own, with no picture and no captions
+          </p>
+        ) : (
+          <p className="text-sm text-ink-dim">
+            {project.clips.length} clip{project.clips.length === 1 ? '' : 's'} ·{' '}
+            {formatTime(exportedLength)}
+            {/* Both numbers while a range is set, so the shorter one reads as a
               choice rather than as a timeline that has lost something. */}
-          {range ? ` of ${formatTime(plan.outputDuration)}` : ''}
-          {/* Worth saying outright: it explains an export that is longer than
+            {range ? ` of ${formatTime(plan.outputDuration)}` : ''}
+            {/* Worth saying outright: it explains an export that is longer than
               the clips add up to, and confirms the count-in has room. Only what
               survives the range — an export starting after the lead-in keeps
               none of it. */}
-          {plan.leadIn > (range?.start ?? 0)
-            ? ` · ${formatTime(plan.leadIn - (range?.start ?? 0))} of black before the picture`
-            : ''}
-          {plan.transitions > 0
-            ? ` · ${plan.transitions} transition${plan.transitions === 1 ? '' : 's'}, which overlap the clips they join`
-            : ''}{' '}
-          · {sound.join(' · ')}
-          {/* Burnt in, not a sidecar track — so it is worth saying so before a
+            {plan.leadIn > (range?.start ?? 0)
+              ? ` · ${formatTime(plan.leadIn - (range?.start ?? 0))} of black before the picture`
+              : ''}
+            {plan.transitions > 0
+              ? ` · ${plan.transitions} transition${plan.transitions === 1 ? '' : 's'}, which overlap the clips they join`
+              : ''}{' '}
+            · {sound.join(' · ')}
+            {/* Burnt in, not a sidecar track — so it is worth saying so before a
               render that cannot be undone without doing it again. */}
-          {plan.burntInCues.length > 0
-            ? ` · ${plan.burntInCues.length} caption${plan.burntInCues.length === 1 ? '' : 's'} burnt in`
-            : ''}
-        </p>
+            {plan.burntInCues.length > 0
+              ? ` · ${plan.burntInCues.length} caption${plan.burntInCues.length === 1 ? '' : 's'} burnt in`
+              : ''}
+          </p>
+        )}
 
         {progress ? (
           <div className="flex flex-col gap-2">
@@ -518,9 +563,9 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             <Button
               variant="primary"
               onClick={runDownload}
-              disabled={project.clips.length === 0 || rangeError !== null}
+              disabled={nothingToExport || rangeError !== null}
             >
-              <span aria-hidden>⬇️</span> Render and download MP4
+              <span aria-hidden>⬇️</span> Render and download {audioOnly ? 'M4A' : 'MP4'}
             </Button>
             <Button variant="ghost" onClick={onClose}>
               Close
@@ -543,7 +588,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             <button
               type="button"
               className="underline underline-offset-2"
-              onClick={() => downloadBlob(downloaded, `${project.name || 'export'}.mp4`)}
+              onClick={() => downloadBlob(downloaded, fileName)}
             >
               save it again
             </button>
