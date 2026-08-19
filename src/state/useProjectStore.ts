@@ -15,6 +15,7 @@ import {
   leadInOf,
   projectDuration,
   reorder,
+  reorderRun,
   snapToFrame,
   splitClipAt,
   trimClip,
@@ -53,6 +54,7 @@ import {
   trimCue,
   type TimedWord,
 } from '../lib/captions'
+import { moveClipsInLane } from '../lib/lanes'
 import { planCountIns } from '../lib/countIns'
 import { BEEP_LABEL, countdownSeconds } from '../lib/countdown'
 import { withTransition } from '../lib/transitions'
@@ -166,6 +168,20 @@ interface ProjectState {
   selectedVideoClipId: string | null
   selectedCaption: CaptionSelection | null
   /**
+   * Every clip a marquee gathered, from any lane, or empty when nothing was
+   * swept up.
+   *
+   * A group rather than a fourth per-lane selection, and never held at the same
+   * time as one of the three above — picking a single clip clears it and a
+   * marquee clears them, so "what is selected" still has exactly one answer.
+   * What a group can be told to do is deliberately narrower than what one clip
+   * can: moved together and deleted together, which is all a set of clips has
+   * in common. Everything that acts on *the* clip — the numeric controls, the
+   * Cut button — keeps asking the three above and gets nothing while a group is
+   * held, which is the honest answer.
+   */
+  selectedIds: readonly string[]
+  /**
    * The stretch of the timeline an export will keep, marked there directly —
    * with the Start/End buttons or the I/O keys — rather than only typed into
    * the export dialog. Null is the whole video, same as an absent range
@@ -233,6 +249,37 @@ interface ProjectState {
   removeClip: (clipId: string) => void
   selectClip: (clipId: string | null) => void
   moveClip: (from: number, to: number) => void
+  /**
+   * Holds a group of clips, from any lane, as one selection. An empty list is
+   * how a click on the empty timeline lets go of everything.
+   */
+  selectMany: (ids: readonly string[]) => void
+  /**
+   * Takes a group of clips off the timeline in one edit, wherever they live.
+   *
+   * One edit because it is one act: sweeping up four shots and pressing Delete
+   * is a single decision, and an undo that put them back one at a time would be
+   * walking back through a state nobody was ever in.
+   */
+  removeClips: (ids: readonly string[]) => void
+  /**
+   * Moves a group of picture clips so they sit where `targetClipId` is, keeping
+   * the order they are already in. Reordering is the only kind of moving the
+   * picture track has: its clips are laid end to end, so there is no start time
+   * to change and no gap to move into.
+   */
+  moveClips: (ids: readonly string[], targetClipId: string) => void
+  /**
+   * Puts several audio clips and video layers at starts of their own, in one
+   * edit, refusing the lot if any one of them would land on something.
+   *
+   * Absolute starts rather than a distance to shift by, because a drag reports
+   * the same distance many times over as the pointer moves and the clips have
+   * already moved once by then — the caller holds where each one began and this
+   * says where they are going, so a drag that doubles back lands where it
+   * started rather than somewhere twice as far along.
+   */
+  moveClipsTo: (placements: readonly { id: string; startTime: number }[]) => boolean
   trim: (clipId: string, asset: Asset | undefined, edge: 'start' | 'end', value: number) => void
   /**
    * Cuts the clip under the playhead in two at the nearest frame. False when
@@ -482,7 +529,13 @@ function keptOutsideHistory(restored: Project, current: Project): Project {
  * from driving a panel that has nothing left to show.
  */
 function prunedSelection(project: Project, state: ProjectState) {
+  const alive = new Set([
+    ...project.clips.map((clip) => clip.id),
+    ...project.audioClips.map((clip) => clip.id),
+    ...videoClipsOf(project).map((clip) => clip.id),
+  ])
   return {
+    selectedIds: state.selectedIds.filter((id) => alive.has(id)),
     selectedClipId: project.clips.some((clip) => clip.id === state.selectedClipId)
       ? state.selectedClipId
       : null,
@@ -507,12 +560,17 @@ function prunedSelection(project: Project, state: ProjectState) {
  * would take a shot off the picture track because the piece of music you had
  * just cut in two was also, still, selected. So picking anything unpicks
  * everything else, and what is highlighted is what those keys are about.
+ *
+ * A marquee's group goes the same way, for the same reason: a set of clips and
+ * a single clip are two answers to one question, so picking one clip is also
+ * how you let go of the group.
  */
 function onlySelected(lane: 'clip' | 'audio' | 'video', id: string | null) {
   return {
     selectedClipId: lane === 'clip' ? id : null,
     selectedAudioClipId: lane === 'audio' ? id : null,
     selectedVideoClipId: lane === 'video' ? id : null,
+    selectedIds: [] as readonly string[],
   }
 }
 
@@ -577,6 +635,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     selectedAudioClipId: null,
     selectedVideoClipId: null,
     selectedCaption: null,
+    selectedIds: [],
     exportRange: null,
     loaded: false,
     past: [],
@@ -605,6 +664,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           selectedAudioClipId: null,
           selectedVideoClipId: null,
           selectedCaption: null,
+          selectedIds: [],
           // A different project has nothing to do with the one just left, so
           // an undo here must not reach back into it.
           past: [],
@@ -631,6 +691,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedAudioClipId: null,
         selectedVideoClipId: null,
         selectedCaption: null,
+        selectedIds: [],
         past: [],
         future: [],
         exportRange: null,
@@ -751,6 +812,82 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       mutate((project) =>
         underClips(project, { ...project, clips: reorder(project.clips, from, to) }),
       ),
+
+    selectMany: (ids) =>
+      set({
+        selectedIds: [...ids],
+        // The three single selections go, exactly as picking one clip clears
+        // the group — see `onlySelected`.
+        selectedClipId: null,
+        selectedAudioClipId: null,
+        selectedVideoClipId: null,
+      }),
+
+    removeClips: (ids) => {
+      if (ids.length === 0) return
+      const going = new Set(ids)
+      mutate((project) =>
+        underClips(project, {
+          ...project,
+          clips: project.clips.filter((clip) => !going.has(clip.id)),
+          audioClips: project.audioClips.filter((clip) => !going.has(clip.id)),
+          videoClips: videoClipsOf(project).filter((clip) => !going.has(clip.id)),
+        }),
+      )
+      set((state) => ({
+        selectedIds: state.selectedIds.filter((id) => !going.has(id)),
+        selectedClipId: going.has(state.selectedClipId ?? '') ? null : state.selectedClipId,
+        selectedAudioClipId: going.has(state.selectedAudioClipId ?? '')
+          ? null
+          : state.selectedAudioClipId,
+        selectedVideoClipId: going.has(state.selectedVideoClipId ?? '')
+          ? null
+          : state.selectedVideoClipId,
+      }))
+    },
+
+    moveClips: (ids, targetClipId) =>
+      mutate((project) =>
+        underClips(project, { ...project, clips: reorderRun(project.clips, ids, targetClipId) }),
+      ),
+
+    moveClipsTo: (placements) => {
+      const { project } = get()
+      const audioIds = new Set(project.audioClips.map((clip) => clip.id))
+      const videoClips = videoClipsOf(project)
+      const videoIds = new Set(videoClips.map((clip) => clip.id))
+
+      const audio = moveClipsInLane(
+        project.audioClips,
+        placements.filter((placement) => audioIds.has(placement.id)),
+      )
+      const video = moveClipsInLane(
+        videoClips,
+        placements.filter((placement) => videoIds.has(placement.id)),
+      )
+      // All or nothing across the lanes as well as within one: a group half of
+      // which found room and half of which did not is no longer the group.
+      if (!audio.moved || !video.moved) return false
+
+      mutate((current) => {
+        // Re-anchored on the way past, the same as a single dragged clip is:
+        // audio that has been moved over a different shot belongs to that shot
+        // now and follows it from here on.
+        const moved = new Set(placements.map((placement) => placement.id))
+        const tracks = new Map(current.audioTracks.map((track) => [track.id, track]))
+        return {
+          ...current,
+          audioClips: audio.clips.map((clip) => {
+            if (!moved.has(clip.id)) return clip
+            const kind = tracks.get(clip.trackId)?.kind
+            const anchorClipId = kind ? anchorFor(current, kind, clip.startTime) : undefined
+            return { ...clip, anchorClipId }
+          }),
+          videoClips: video.clips,
+        }
+      })
+      return true
+    },
 
     trim: (clipId, asset, edge, value) =>
       mutate((project) =>
@@ -1496,6 +1633,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         selectedAudioClipId: null,
         selectedVideoClipId: null,
         selectedCaption: null,
+        selectedIds: [],
       })
     },
 

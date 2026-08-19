@@ -59,6 +59,7 @@ import { captionCuesOf, captionsEnd } from '../lib/captions'
 import { captionTargets, type CaptionTarget } from '../lib/captionSources'
 import { fixTargets, type FixTarget } from '../lib/clipAudioFix'
 import { isTypingTarget } from '../lib/shortcuts'
+import { boxFromCorners, boxesOverlap, isMarqueeDrag, type Box } from '../lib/marquee'
 import { AudioTrackHeaders, AudioTrackLanes, TRACK_GUTTER_WIDTH } from './AudioTrackLanes'
 import { VideoTrackHeaders, VideoTrackLanes } from './VideoTrackLanes'
 import { CaptionLanes, CaptionTrackHeaders } from './CaptionLanes'
@@ -265,6 +266,9 @@ function ClipCard({
   return (
     <div
       ref={setNodeRef}
+      // What the marquee sweeps for, and what tells it this press was on a clip
+      // rather than on the empty timeline behind one.
+      data-clip-id={entry.clip.id}
       style={{
         width,
         // A transition is an overlap, so the card really does sit on top of the
@@ -581,6 +585,22 @@ function AddTrackSpacer() {
   return <div aria-hidden className="mt-2" style={{ height: ADD_TRACK_ROW_HEIGHT }} />
 }
 
+/**
+ * What a press must have missed for it to be the start of a marquee.
+ *
+ * Everything listed here owns its own drag — a clip card or chip, the ruler
+ * that doubles as the scrub bar, a trim or export handle, a menu button, a
+ * slider — so a press that landed on one is that thing's press and not a band.
+ * Captions need no entry: their own drags stop the event before it gets here.
+ *
+ * Read off the event's target rather than settled by stacking order, because
+ * what is on top at a given pixel is a layout question and this is not: the
+ * empty stretch between two chips on a lane is background whatever is drawn
+ * over the lane, and the two pixels of a card under a transition marker are
+ * still the card.
+ */
+const MARQUEE_MISSES = '[data-clip-id], [role="presentation"], [role="slider"], button, input'
+
 /** Whether the clip at `index` begins at a cut rather than at its own start. */
 function cutBefore(positioned: readonly PositionedClip[], index: number): boolean {
   const previous = positioned[index - 1]?.clip
@@ -606,6 +626,11 @@ export function Timeline({
   const removeVideoClip = useProjectStore((state) => state.removeVideoClip)
   const selectedAudioClipId = useProjectStore((state) => state.selectedAudioClipId)
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
+  // The marquee's group, which Delete and a group drag both act on.
+  const selectedIds = useProjectStore((state) => state.selectedIds)
+  const selectMany = useProjectStore((state) => state.selectMany)
+  const removeClips = useProjectStore((state) => state.removeClips)
+  const moveClips = useProjectStore((state) => state.moveClips)
   const trim = useProjectStore((state) => state.trim)
   const cutAt = useProjectStore((state) => state.cutAt)
   const cutAudioAt = useProjectStore((state) => state.cutAudioAt)
@@ -796,12 +821,16 @@ export function Timeline({
   // Picture, overlay video and audio clips each keep their own selection, so
   // this checks all three rather than just the picture track's — Delete is
   // expected to work on whichever clip is currently highlighted, wherever it
-  // lives on the timeline.
+  // lives on the timeline. A marquee's group comes first and covers every lane
+  // at once, which is the whole point of having swept one up.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Delete' && event.key !== 'Backspace') return
       if (isTypingTarget(event.target)) return
-      if (selectedClipId) {
+      if (selectedIds.length > 0) {
+        event.preventDefault()
+        removeClips(selectedIds)
+      } else if (selectedClipId) {
         event.preventDefault()
         removeClip(selectedClipId)
       } else if (selectedVideoClipId) {
@@ -816,6 +845,8 @@ export function Timeline({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [
+    selectedIds,
+    removeClips,
     selectedClipId,
     removeClip,
     selectedVideoClipId,
@@ -846,11 +877,21 @@ export function Timeline({
     (event: DragEndEvent) => {
       const { active, over } = event
       if (!over || active.id === over.id) return
+      // Picking up one clip of a group carries the whole group, in the order it
+      // is already in. Reordering is all "moving" means on a track laid end to
+      // end, so this is what moving a group together is here.
+      const run = project.clips
+        .filter((clip) => selectedIds.includes(clip.id))
+        .map((clip) => clip.id)
+      if (run.length > 1 && run.includes(String(active.id))) {
+        moveClips(run, String(over.id))
+        return
+      }
       const from = project.clips.findIndex((clip) => clip.id === active.id)
       const to = project.clips.findIndex((clip) => clip.id === over.id)
       if (from >= 0 && to >= 0) moveClip(from, to)
     },
-    [project.clips, moveClip],
+    [project.clips, moveClip, moveClips, selectedIds],
   )
 
   // Where to re-anchor the scroll position once a pinch changes the zoom,
@@ -918,6 +959,86 @@ export function Timeline({
   }
 
   const endScrub = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.currentTarget
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
+  }
+
+  // Where the band started, and whether it has yet travelled far enough to be a
+  // band at all rather than a click on the background.
+  const marqueeRef = useRef<{ pointerId: number; clientX: number; clientY: number } | null>(null)
+  const lanesRef = useRef<HTMLDivElement>(null)
+  // In the lanes column's own coordinates, so it can be drawn straight into it.
+  const [band, setBand] = useState<Box | null>(null)
+
+  /**
+   * Which clips the band is over.
+   *
+   * Read off where the cards and chips actually are rather than worked out from
+   * times and lane heights, because those are two different questions once a
+   * card has been floored to a minimum width or pulled back over its neighbour
+   * by a transition — and a second copy of the layout is a second thing to get
+   * wrong. The elements already know; this only has to ask them.
+   */
+  const sweep = useCallback(
+    (box: Box, origin: DOMRect) => {
+      const lanes = lanesRef.current
+      if (!lanes) return
+      const ids: string[] = []
+      for (const node of lanes.querySelectorAll<HTMLElement>('[data-clip-id]')) {
+        const rect = node.getBoundingClientRect()
+        const over = boxesOverlap(box, {
+          left: rect.left - origin.left,
+          top: rect.top - origin.top,
+          right: rect.right - origin.left,
+          bottom: rect.bottom - origin.top,
+        })
+        if (over && node.dataset.clipId) ids.push(node.dataset.clipId)
+      }
+      selectMany(ids)
+    },
+    [selectMany],
+  )
+
+  const beginMarquee = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const target = event.target
+    if (target instanceof Element && target.closest(MARQUEE_MISSES)) return
+    // Captured, so the band keeps growing once the pointer leaves the lanes —
+    // which it does the moment you sweep past the last one.
+    event.currentTarget.setPointerCapture(event.pointerId)
+    marqueeRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    }
+  }
+
+  const moveMarquee = (event: React.PointerEvent<HTMLDivElement>) => {
+    const marquee = marqueeRef.current
+    if (!marquee || marquee.pointerId !== event.pointerId) return
+    const origin = event.currentTarget.getBoundingClientRect()
+    const box = boxFromCorners(
+      marquee.clientX - origin.left,
+      marquee.clientY - origin.top,
+      event.clientX - origin.left,
+      event.clientY - origin.top,
+    )
+    // Nothing is swept until the press has become a drag, so a click that
+    // wobbles a pixel still reads as a click.
+    if (!band && !isMarqueeDrag(box)) return
+    setBand(box)
+    sweep(box, origin)
+  }
+
+  const endMarquee = (event: React.PointerEvent<HTMLDivElement>) => {
+    const marquee = marqueeRef.current
+    if (!marquee) return
+    marqueeRef.current = null
+    // A press that never became a band is a click on the empty timeline, which
+    // is how you let go of everything — including a single clip's selection,
+    // since there is nowhere else on screen that says "none of these".
+    if (!band) selectMany([])
+    setBand(null)
     const target = event.currentTarget
     if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
   }
@@ -1103,7 +1224,19 @@ export function Timeline({
           onWheel={onWheelZoom}
           className="min-w-0 flex-1 overflow-x-auto p-3 pl-2"
         >
-          <div className="relative min-w-full" style={{ width: Math.max(contentWidth, 320) }}>
+          {/* The whole lanes column takes the press, so a band can be swept from
+              any empty stretch of it — between two chips, past the end of the
+              picture, or across the gap under a lane. What the press must have
+              missed to count as a band is MARQUEE_MISSES. */}
+          <div
+            ref={lanesRef}
+            onPointerDown={beginMarquee}
+            onPointerMove={moveMarquee}
+            onPointerUp={endMarquee}
+            onPointerCancel={endMarquee}
+            className="relative min-w-full"
+            style={{ width: Math.max(contentWidth, 320) }}
+          >
             {/* Ruler doubles as the scrub bar, and carries the frame grid: the
                 lines run straight down into the picture track below, so the
                 playhead can be parked on the frame you mean to cut. */}
@@ -1168,14 +1301,22 @@ export function Timeline({
                           zoom={zoom}
                           width={width}
                           pull={pull}
-                          selected={entry.clip.id === selectedClipId}
+                          selected={
+                            entry.clip.id === selectedClipId || selectedIds.includes(entry.clip.id)
+                          }
                           cutAtStart={cutBefore(positioned, entry.index)}
                           target={targets.get(entry.clip.id)}
                           fixTarget={fixable.get(entry.clip.id)}
                           canFixAudio={canFixAudio}
                           captioning={captioningClipId === entry.clip.id}
                           fixing={fixingClipId === entry.clip.id}
-                          onSelect={() => selectClip(entry.clip.id)}
+                          // A clip already in a group keeps the group: picking
+                          // it up is how the group gets dragged, and narrowing
+                          // to the one clip would throw away the very selection
+                          // being moved.
+                          onSelect={() => {
+                            if (!selectedIds.includes(entry.clip.id)) selectClip(entry.clip.id)
+                          }}
                           onTrim={(edge, seconds) =>
                             trim(entry.clip.id, assetById.get(entry.clip.assetId), edge, seconds)
                           }
@@ -1280,6 +1421,22 @@ export function Timeline({
                 aria-hidden
                 className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-red-500"
                 style={{ left: playheadX }}
+              />
+            ) : null}
+
+            {/* The band itself, over everything and taking no pointer of its
+                own — it is a picture of the drag, and the drag is already
+                captured by the column underneath it. */}
+            {band ? (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute z-30 border border-accent bg-accent/15"
+                style={{
+                  left: band.left,
+                  top: band.top,
+                  width: band.right - band.left,
+                  height: band.bottom - band.top,
+                }}
               />
             ) : null}
           </div>
