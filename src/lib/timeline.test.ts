@@ -16,6 +16,7 @@ import {
   joinCutAt,
   layoutClips,
   leadInOf,
+  playheadAnchorX,
   projectDuration,
   reorder,
   snapToFrame,
@@ -767,5 +768,25 @@ describe('zoomFromPinch', () => {
     // An actual Ctrl+wheel click can report a deltaY in the hundreds, where a
     // trackpad pinch reports single digits per event.
     expect(zoomFromPinch(40, -1000, 8, 480)).toBe(zoomFromPinch(40, -50, 8, 480))
+  })
+})
+
+describe('playheadAnchorX', () => {
+  it('holds an on-screen playhead exactly where it is', () => {
+    // 2400px in with the view scrolled to 2100 is 300px from its left edge.
+    expect(playheadAnchorX(2400, 2100, 800)).toBe(300)
+  })
+
+  it('centres a playhead that is off to the right', () => {
+    expect(playheadAnchorX(2400, 0, 800)).toBe(400)
+  })
+
+  it('centres a playhead that is off to the left', () => {
+    expect(playheadAnchorX(100, 2100, 800)).toBe(400)
+  })
+
+  it('counts a playhead on either edge as on screen', () => {
+    expect(playheadAnchorX(2100, 2100, 800)).toBe(0)
+    expect(playheadAnchorX(2900, 2100, 800)).toBe(800)
   })
 })

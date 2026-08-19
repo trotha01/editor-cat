@@ -420,6 +420,19 @@ export function zoomFromPinch(zoom: number, deltaY: number, min: number, max: nu
   return clamp(zoom * Math.exp(-delta * 0.01), min, max)
 }
 
+/**
+ * Where on screen to hold the playhead through a zoom change, given where it
+ * sits now. Where it already is when that is inside the view, so the timeline
+ * grows around the playhead rather than sliding it out from under you; the
+ * middle of the view when it is not, which is the only way a playhead that has
+ * been scrolled off comes back. All in pixels, measured from the left edge of
+ * the scrolling lanes.
+ */
+export function playheadAnchorX(playheadX: number, scrollLeft: number, viewWidth: number): number {
+  const onScreen = playheadX - scrollLeft
+  return onScreen >= 0 && onScreen <= viewWidth ? onScreen : viewWidth / 2
+}
+
 /** Formats a length of time as m:ss.d, for clip labels and durations. */
 export function formatTime(seconds: number): string {
   const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
