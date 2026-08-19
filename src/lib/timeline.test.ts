@@ -18,6 +18,7 @@ import {
   leadInOf,
   projectDuration,
   reorder,
+  reorderRun,
   snapToFrame,
   stepFrames,
   sourceTimeFor,
@@ -563,6 +564,45 @@ describe('reorder', () => {
     const input = ['a', 'b', 'c']
     reorder(input, 0, 2)
     expect(input).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('reorderRun', () => {
+  const items = ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id }))
+  const ids = (result: { id: string }[]) => result.map((item) => item.id)
+
+  it('carries a group rightwards as one piece, past the clip it was dropped on', () => {
+    expect(ids(reorderRun(items, ['a', 'b'], 'd'))).toEqual(['c', 'd', 'a', 'b', 'e'])
+  })
+
+  it('carries a group leftwards to in front of the clip it was dropped on', () => {
+    expect(ids(reorderRun(items, ['d', 'e'], 'b'))).toEqual(['a', 'd', 'e', 'b', 'c'])
+  })
+
+  it('closes up behind a group that was not next to itself to begin with', () => {
+    // 'c' was between them and stays where the rest of the run leaves it,
+    // rather than travelling along inside the group.
+    expect(ids(reorderRun(items, ['b', 'd'], 'e'))).toEqual(['a', 'c', 'e', 'b', 'd'])
+  })
+
+  it('lands a group of one exactly where reorder would have put it', () => {
+    expect(ids(reorderRun(items, ['a'], 'd'))).toEqual(ids(reorder(items, 0, 3)))
+    expect(ids(reorderRun(items, ['e'], 'b'))).toEqual(ids(reorder(items, 4, 1)))
+  })
+
+  it('is a no-op when the drop lands inside the group being moved', () => {
+    expect(ids(reorderRun(items, ['a', 'b'], 'b'))).toEqual(['a', 'b', 'c', 'd', 'e'])
+  })
+
+  it('is a no-op for an empty group or an unknown target', () => {
+    expect(ids(reorderRun(items, [], 'c'))).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(ids(reorderRun(items, ['a'], 'gone'))).toEqual(['a', 'b', 'c', 'd', 'e'])
+  })
+
+  it('does not mutate the input', () => {
+    const input = [...items]
+    reorderRun(input, ['a', 'b'], 'd')
+    expect(ids(input)).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
 })
 
