@@ -402,6 +402,49 @@ export function reorder<T>(items: readonly T[], from: number, to: number): T[] {
   return next
 }
 
+/**
+ * Moves a set of clips so they sit where `targetId` is, as one run.
+ *
+ * This is what moving a group means on a track laid end to end: there is no gap
+ * to slide into and no start time to change, so "move these three together" can
+ * only be "put these three, in the order they are already in, over there". They
+ * come out of the run and go back in as one piece, which is what keeps a shot
+ * that was between two of them from being left behind in the middle.
+ *
+ * The target is named by clip rather than by index because the index it had
+ * before the group was lifted out is not the index it has afterwards, and the
+ * one the caller has is always the one from before — a drop lands on a clip you
+ * can see, and this is what that clip means once the run is out of the way.
+ *
+ * A drop onto a clip that is itself in the group is a no-op: it names a place
+ * inside the thing being moved, so there is nowhere for it to go.
+ *
+ * Which side of the target the run lands on is the direction it came from — a
+ * run dragged rightwards passes the target and settles after it, one dragged
+ * leftwards stops in front of it. That is the same thing `reorder` does with a
+ * single clip, and it has to be, because a group of one is still a group.
+ */
+export function reorderRun<T extends { id: string }>(
+  items: readonly T[],
+  ids: readonly string[],
+  targetId: string,
+): T[] {
+  const moving = new Set(ids)
+  if (moving.size === 0 || moving.has(targetId)) return [...items]
+
+  const to = items.findIndex((item) => item.id === targetId)
+  const from = items.findIndex((item) => moving.has(item.id))
+  if (to < 0 || from < 0) return [...items]
+
+  const run = items.filter((item) => moving.has(item.id))
+  const rest = items.filter((item) => !moving.has(item.id))
+  const at = rest.findIndex((item) => item.id === targetId)
+
+  const next = [...rest]
+  next.splice(from < to ? at + 1 : at, 0, ...run)
+  return next
+}
+
 export function clamp(value: number, min: number, max: number): number {
   if (Number.isNaN(value)) return min
   return Math.min(Math.max(value, min), max)

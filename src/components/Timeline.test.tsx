@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { Timeline } from './Timeline'
 import { emptyProject, useProjectStore } from '../state/useProjectStore'
@@ -20,9 +20,13 @@ vi.mock('../lib/db', () => ({
 }))
 
 beforeEach(() => {
-  useProjectStore.setState({ project: emptyProject(), exportRange: null })
+  useProjectStore.setState({ project: emptyProject(), exportRange: null, selectedIds: [] })
   useAssetStore.setState({ assets: [], loading: false })
   useProjectsStore.setState({ hydration: null })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 function ruler() {
@@ -631,6 +635,164 @@ describe('the selection across lanes', () => {
 
     expect(useProjectStore.getState().project.audioClips).toHaveLength(0)
     expect(useProjectStore.getState().project.clips).toHaveLength(1)
+  })
+})
+
+/**
+ * Selecting several clips by dragging a band across the timeline, then moving
+ * or deleting them as one.
+ *
+ * Which clips a band caught is answered from where the cards and chips actually
+ * are, so these have to say where that is: jsdom lays nothing out and reports
+ * every element as a point at the origin, which would have every band catch
+ * everything or nothing. The arithmetic itself is covered in `marquee.test.ts`;
+ * what is covered here is the wiring — what a press has to miss to be a band at
+ * all, and what the group can then be told to do.
+ */
+describe('the marquee', () => {
+  interface Placed {
+    left: number
+    top: number
+    right: number
+    bottom: number
+  }
+
+  /** Puts each clip's element where a real layout would have put it. */
+  function layOut(boxes: Record<string, Placed>) {
+    const rect = (box: Placed) =>
+      ({
+        ...box,
+        width: box.right - box.left,
+        height: box.bottom - box.top,
+        x: box.left,
+        y: box.top,
+        toJSON: () => box,
+      }) as DOMRect
+    const origin: Placed = { left: 0, top: 0, right: 0, bottom: 0 }
+
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const id = this.dataset.clipId
+      return rect((id ? boxes[id] : undefined) ?? origin)
+    })
+  }
+
+  /** Three shots in a row, with a bed under the first two. */
+  function threeShotsAndABed() {
+    const project = emptyProject()
+    useProjectStore.setState({
+      project: {
+        ...project,
+        clips: [
+          { id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 },
+          { id: 'c2', assetId: 'a2', inPoint: 0, outPoint: 4 },
+          { id: 'c3', assetId: 'a3', inPoint: 0, outPoint: 4 },
+        ],
+        audioClips: [
+          {
+            id: 'ac1',
+            trackId: project.audioTracks[0]!.id,
+            assetId: 'song',
+            useConverted: false,
+            startTime: 0,
+            inPoint: 0,
+            duration: 4,
+          },
+        ],
+      },
+    })
+    layOut({
+      c1: { left: 0, top: 0, right: 40, bottom: 20 },
+      c2: { left: 40, top: 0, right: 80, bottom: 20 },
+      c3: { left: 80, top: 0, right: 120, bottom: 20 },
+      ac1: { left: 0, top: 60, right: 40, bottom: 80 },
+    })
+  }
+
+  /** The column the lanes are drawn in, which is what takes the band's press. */
+  function lanes() {
+    const node = ruler().parentElement
+    if (!node) throw new Error('lanes column not found')
+    return node
+  }
+
+  function sweep(from: [number, number], to: [number, number]) {
+    fireEvent.pointerDown(lanes(), { clientX: from[0], clientY: from[1], pointerId: 1, button: 0 })
+    fireEvent.pointerMove(lanes(), { clientX: to[0], clientY: to[1], pointerId: 1 })
+    fireEvent.pointerUp(lanes(), { clientX: to[0], clientY: to[1], pointerId: 1 })
+  }
+
+  it('gathers every clip the band crossed and leaves the rest alone', () => {
+    threeShotsAndABed()
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    sweep([10, 5], [60, 10])
+
+    expect(useProjectStore.getState().selectedIds).toEqual(['c1', 'c2'])
+  })
+
+  it('reaches down through the lanes to the audio', () => {
+    threeShotsAndABed()
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    sweep([10, 5], [30, 70])
+
+    expect(useProjectStore.getState().selectedIds).toEqual(['c1', 'ac1'])
+  })
+
+  it('leaves a press that landed on a clip to that clip', () => {
+    threeShotsAndABed()
+    useProjectStore.setState({ selectedIds: ['c1', 'c2'] })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+    const card = document.querySelector('[data-clip-id="c3"]')
+    if (!card) throw new Error('card not found')
+
+    // Dragging a card is how a clip is moved, so it must not also start a band
+    // that would replace the very group being dragged.
+    fireEvent.pointerDown(card, { clientX: 90, clientY: 5, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(lanes(), { clientX: 200, clientY: 10, pointerId: 1 })
+
+    expect(useProjectStore.getState().selectedIds).toEqual(['c1', 'c2'])
+  })
+
+  it('lets go of everything on a click that never became a band', () => {
+    threeShotsAndABed()
+    useProjectStore.setState({ selectedIds: ['c1', 'c2'] })
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    sweep([200, 90], [201, 90])
+
+    expect(useProjectStore.getState().selectedIds).toEqual([])
+  })
+
+  it('deletes the whole group on Delete, across lanes and in one step', () => {
+    threeShotsAndABed()
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    sweep([10, 5], [60, 70])
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    const project = useProjectStore.getState().project
+    expect(project.clips.map((clip) => clip.id)).toEqual(['c3'])
+    expect(project.audioClips).toHaveLength(0)
+
+    act(() => useProjectStore.getState().undo())
+    expect(useProjectStore.getState().project.clips).toHaveLength(3)
+  })
+
+  it('carries the whole group when one of its shots is dropped elsewhere', () => {
+    threeShotsAndABed()
+    render(<Timeline currentTime={0} onSeek={vi.fn()} />)
+
+    sweep([10, 5], [60, 10])
+    act(() => useProjectStore.getState().moveClips(['c1', 'c2'], 'c3'))
+
+    expect(useProjectStore.getState().project.clips.map((clip) => clip.id)).toEqual([
+      'c3',
+      'c1',
+      'c2',
+    ])
   })
 })
 

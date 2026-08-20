@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { AudioTrackLanes } from './AudioTrackLanes'
 import { emptyProject, useProjectStore } from '../state/useProjectStore'
 import { useAssetStore } from '../state/useAssetStore'
@@ -87,5 +87,63 @@ describe('a clip chip', () => {
 
     expect(screen.getByRole('group', { name: /Your voice/ }).querySelector('canvas')).toBeNull()
     expect(peaksFor).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Dragging a chip that is part of a marquee's group, which moves the whole
+ * group by the distance that one chip travelled.
+ *
+ * The thing worth pinning is that the group is measured from where it began
+ * rather than from where it is: a drag reports the same pointer position many
+ * times over, and a group re-measured on every event would run away down the
+ * timeline instead of tracking the pointer.
+ */
+describe('dragging a group of clips', () => {
+  const second: AudioClip = { ...clip, id: 'a2', startTime: 6, duration: 2 }
+
+  function mountPair(selectedIds: string[]) {
+    useProjectStore.setState({
+      project: { ...emptyProject(), audioTracks: [track], audioClips: [clip, second] },
+      selectedIds,
+      selectedAudioClipId: null,
+    })
+    render(<AudioTrackLanes zoom={40} currentTime={0} targets={new Map()} />)
+    return screen.getAllByRole('group')[0]!
+  }
+
+  const starts = () => useProjectStore.getState().project.audioClips.map((entry) => entry.startTime)
+
+  it('carries the rest of the group along, keeping the spacing', () => {
+    const chip = mountPair(['a1', 'a2'])
+
+    // 40px/s, so 80px is two seconds later. Twice, at the same place: the
+    // second event must land the group where the first one did.
+    fireEvent.pointerDown(chip, { clientX: 0, clientY: 0, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(chip, { clientX: 80, clientY: 0, pointerId: 1 })
+    expect(starts()).toEqual([3, 8])
+    fireEvent.pointerMove(chip, { clientX: 80, clientY: 0, pointerId: 1 })
+
+    expect(starts()).toEqual([3, 8])
+  })
+
+  it('keeps the group rather than narrowing to the chip that was picked up', () => {
+    const chip = mountPair(['a1', 'a2'])
+
+    fireEvent.pointerDown(chip, { clientX: 0, clientY: 0, pointerId: 1, button: 0 })
+
+    expect(useProjectStore.getState().selectedIds).toEqual(['a1', 'a2'])
+    expect(useProjectStore.getState().selectedAudioClipId).toBeNull()
+  })
+
+  it('moves one clip alone when it was not part of the group', () => {
+    const chip = mountPair(['a2'])
+
+    fireEvent.pointerDown(chip, { clientX: 0, clientY: 0, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(chip, { clientX: 80, clientY: 0, pointerId: 1 })
+
+    expect(starts()).toEqual([3, 6])
+    // Picking a clip outside the group is also how the group is let go of.
+    expect(useProjectStore.getState().selectedIds).toEqual([])
   })
 })

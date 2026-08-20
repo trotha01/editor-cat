@@ -62,7 +62,13 @@ beforeEach(() => {
   saveProject.mockResolvedValue(undefined)
   loadProject.mockReset()
   loadProject.mockResolvedValue(undefined)
-  useProjectStore.setState({ project: emptyProject(), selectedCaption: null, past: [], future: [] })
+  useProjectStore.setState({
+    project: emptyProject(),
+    selectedCaption: null,
+    selectedIds: [],
+    past: [],
+    future: [],
+  })
 })
 
 describe('captions reach storage', () => {
@@ -1809,5 +1815,167 @@ describe('cutting everything under the playhead', () => {
 
     expect(useProjectStore.getState().project.clips).toHaveLength(1)
     expect(useProjectStore.getState().project.audioClips).toHaveLength(1)
+  })
+})
+
+/**
+ * A group of clips, which is what a marquee leaves behind.
+ *
+ * The group spans lanes, so everything about it is about the lanes agreeing:
+ * one edit however many tracks it touches, all or nothing when a move is
+ * refused, and — since a group and a single clip are two answers to "what is
+ * selected" — never both held at once.
+ */
+describe('a group of clips', () => {
+  /** Two shots, two beds and a layer, laid so a band could plausibly cross them. */
+  function withEverything(): void {
+    useProjectStore.setState({
+      project: {
+        ...emptyProject(),
+        clips: [
+          { id: 'c1', assetId: 'a1', inPoint: 0, outPoint: 4 },
+          { id: 'c2', assetId: 'a2', inPoint: 0, outPoint: 4 },
+          { id: 'c3', assetId: 'a3', inPoint: 0, outPoint: 4 },
+        ],
+        audioTracks: [{ id: 'm1', kind: 'music', name: 'Music 1', muted: false, volume: 0.5 }],
+        audioClips: [
+          {
+            id: 'ac1',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 0,
+            inPoint: 0,
+            duration: 2,
+          },
+          {
+            id: 'ac2',
+            trackId: 'm1',
+            assetId: 'song',
+            useConverted: false,
+            startTime: 4,
+            inPoint: 0,
+            duration: 2,
+          },
+        ],
+        videoTracks: [{ id: 'vt1', name: 'Layer 1', hidden: false, opacity: 1 }],
+        videoClips: [
+          { id: 'v1', trackId: 'vt1', assetId: 'a4', startTime: 0, inPoint: 0, duration: 2 },
+        ],
+      },
+    })
+  }
+
+  const starts = () =>
+    Object.fromEntries(
+      [
+        ...useProjectStore.getState().project.audioClips,
+        ...(useProjectStore.getState().project.videoClips ?? []),
+      ].map((clip) => [clip.id, clip.startTime]),
+    )
+
+  it('lets go of the single selection when a group is held, and the other way about', () => {
+    withEverything()
+    useProjectStore.getState().selectClip('c1')
+
+    useProjectStore.getState().selectMany(['c1', 'c2'])
+
+    expect(useProjectStore.getState().selectedClipId).toBeNull()
+
+    useProjectStore.getState().selectAudioClip('ac1')
+
+    expect(useProjectStore.getState().selectedIds).toEqual([])
+  })
+
+  it('takes every lane off the timeline in one edit', () => {
+    withEverything()
+
+    useProjectStore.getState().removeClips(['c2', 'ac1', 'v1'])
+
+    const project = useProjectStore.getState().project
+    expect(project.clips.map((clip) => clip.id)).toEqual(['c1', 'c3'])
+    expect(project.audioClips.map((clip) => clip.id)).toEqual(['ac2'])
+    expect(project.videoClips).toEqual([])
+    // One step back, not three: sweeping up three clips and pressing Delete is
+    // one decision.
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project.clips).toHaveLength(3)
+    expect(useProjectStore.getState().project.audioClips).toHaveLength(2)
+  })
+
+  it('forgets a group once its clips are gone, and writes the removal down', () => {
+    withEverything()
+    useProjectStore.getState().selectMany(['c2', 'ac1'])
+
+    useProjectStore.getState().removeClips(['c2', 'ac1'])
+
+    expect(useProjectStore.getState().selectedIds).toEqual([])
+    expect(stored().clips.map((clip) => clip.id)).toEqual(['c1', 'c3'])
+  })
+
+  it('moves audio and video together, keeping the spacing between them', () => {
+    withEverything()
+
+    const moved = useProjectStore.getState().moveClipsTo([
+      { id: 'ac1', startTime: 1 },
+      { id: 'v1', startTime: 1 },
+    ])
+
+    expect(moved).toBe(true)
+    expect(starts()).toEqual({ ac1: 1, ac2: 4, v1: 1 })
+  })
+
+  it('refuses the whole group when one of them has nowhere to land', () => {
+    withEverything()
+
+    // 'ac1' would come down on 'ac2', which is not in the group and not moving.
+    const moved = useProjectStore.getState().moveClipsTo([
+      { id: 'ac1', startTime: 4 },
+      { id: 'v1', startTime: 4 },
+    ])
+
+    expect(moved).toBe(false)
+    // The layer had room and still did not go: half a group is not the group.
+    expect(starts()).toEqual({ ac1: 0, ac2: 4, v1: 0 })
+  })
+
+  it('refuses a group pushed off the front of the timeline', () => {
+    withEverything()
+
+    expect(
+      useProjectStore.getState().moveClipsTo([
+        { id: 'ac2', startTime: -1 },
+        { id: 'v1', startTime: 2 },
+      ]),
+    ).toBe(false)
+    expect(starts()).toEqual({ ac1: 0, ac2: 4, v1: 0 })
+  })
+
+  it('slides a group along its own lane without it blocking itself', () => {
+    withEverything()
+
+    // Both beds share a lane, and the one behind is landing where the one in
+    // front just was — which is only an overlap if a moving clip is judged
+    // against where it used to be.
+    const moved = useProjectStore.getState().moveClipsTo([
+      { id: 'ac1', startTime: 4 },
+      { id: 'ac2', startTime: 8 },
+    ])
+
+    expect(moved).toBe(true)
+    expect(starts()).toEqual({ ac1: 4, ac2: 8, v1: 0 })
+  })
+
+  it('moves a run of picture clips together, in the order they were in', () => {
+    withEverything()
+
+    useProjectStore.getState().moveClips(['c1', 'c2'], 'c3')
+
+    expect(useProjectStore.getState().project.clips.map((clip) => clip.id)).toEqual([
+      'c3',
+      'c1',
+      'c2',
+    ])
+    expect(stored().clips.map((clip) => clip.id)).toEqual(['c3', 'c1', 'c2'])
   })
 })

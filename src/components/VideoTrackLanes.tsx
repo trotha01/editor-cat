@@ -17,7 +17,7 @@ import { AssetThumb } from './AssetThumb'
 import { Button } from './ui'
 import { ClipMenu } from './ClipMenu'
 import { formatTime } from '../lib/timeline'
-import { clipEnd } from '../lib/lanes'
+import { clipEnd, laneOrigins } from '../lib/lanes'
 import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
 import { MIN_OVERLAY_DURATION } from '../lib/videoTracks'
 import { useAssetStore } from '../state/useAssetStore'
@@ -42,6 +42,12 @@ interface DragState {
   originStart: number
   originTrackId: string
   moved: boolean
+  /**
+   * Where every clip of the marquee's group began, when the layer picked up is
+   * part of one. Captured at the press for the reason the audio lanes capture
+   * it there — see `DragState` in AudioTrackLanes.
+   */
+  group: readonly { id: string; startTime: number }[]
 }
 
 export function VideoTrackLanes({ zoom }: { zoom: number }) {
@@ -60,6 +66,8 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
   const setVideoClipAudio = useProjectStore((state) => state.setVideoClipAudio)
   const selectedId = useProjectStore((state) => state.selectedVideoClipId)
   const selectVideoClip = useProjectStore((state) => state.selectVideoClip)
+  const selectedIds = useProjectStore((state) => state.selectedIds)
+  const moveClipsTo = useProjectStore((state) => state.moveClipsTo)
 
   const dragRef = useRef<DragState | null>(null)
   const [blockedClipId, setBlockedClipId] = useState<string | null>(null)
@@ -68,6 +76,7 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
     if (event.button !== 0) return
     const target = event.currentTarget as HTMLElement
     target.setPointerCapture(event.pointerId)
+    const inGroup = selectedIds.includes(clip.id)
     dragRef.current = {
       clipId: clip.id,
       pointerId: event.pointerId,
@@ -76,8 +85,10 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
       originStart: clip.startTime,
       originTrackId: clip.trackId,
       moved: false,
+      group: inGroup ? laneOrigins([...clips, ...(project.audioClips ?? [])], selectedIds) : [],
     }
-    selectVideoClip(clip.id)
+    // A layer already in a group keeps it: picking it up is how the group moves.
+    if (!inGroup) selectVideoClip(clip.id)
   }
 
   const onDragMove = (event: React.PointerEvent) => {
@@ -92,6 +103,24 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
     const clip = clips.find((entry) => entry.id === drag.clipId)
     if (!clip) return
 
+    // Snapped against every other clip's edges, the same as the audio lanes —
+    // lining a layer up with a cut or a caption by eye is not something a
+    // pointer can do to the pixel.
+    const rawStart = drag.originStart + dx / zoom
+    const points = withoutOwnEdges(snapPointsFor(project), clip.startTime, clipEnd(clip))
+    const start = snapClipStart(rawStart, clip.duration, points, SNAP_DISTANCE_PX / zoom)
+
+    if (drag.group.length > 1) {
+      // The whole group by the distance this layer travelled, and along the
+      // timeline only — the same rule the audio lanes move a group by.
+      const shift = start - drag.originStart
+      const ok = moveClipsTo(
+        drag.group.map((origin) => ({ id: origin.id, startTime: origin.startTime + shift })),
+      )
+      setBlockedClipId(ok ? null : drag.clipId)
+      return
+    }
+
     // Any lane will take any layer — unlike the audio lanes, where the kind
     // decides the gain, a video lane's only property is how it stacks, and
     // moving between them is exactly how you restack a shot.
@@ -104,13 +133,6 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
       const candidate = tracks[originIndex + laneDelta]
       if (candidate) targetTrackId = candidate.id
     }
-
-    // Snapped against every other clip's edges, the same as the audio lanes —
-    // lining a layer up with a cut or a caption by eye is not something a
-    // pointer can do to the pixel.
-    const rawStart = drag.originStart + dx / zoom
-    const points = withoutOwnEdges(snapPointsFor(project), clip.startTime, clipEnd(clip))
-    const start = snapClipStart(rawStart, clip.duration, points, SNAP_DISTANCE_PX / zoom)
 
     const ok = moveVideoClipTo(drag.clipId, start, targetTrackId)
     setBlockedClipId(ok ? null : drag.clipId)
@@ -149,7 +171,7 @@ export function VideoTrackLanes({ zoom }: { zoom: number }) {
                 asset={assetById.get(clip.assetId)}
                 mediaLoading={mediaLoading}
                 zoom={zoom}
-                selected={clip.id === selectedId}
+                selected={clip.id === selectedId || selectedIds.includes(clip.id)}
                 blocked={blockedClipId === clip.id}
                 onPointerDown={(event) => beginDrag(event, clip)}
                 onPointerMove={onDragMove}
@@ -234,6 +256,8 @@ function LayerChip({
     <div
       role="group"
       aria-label={`${label}, ${formatTime(clip.duration)} at ${formatTime(clip.startTime)} on ${track.name}`}
+      // What a marquee sweeps for — see MARQUEE_MISSES in Timeline.
+      data-clip-id={clip.id}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

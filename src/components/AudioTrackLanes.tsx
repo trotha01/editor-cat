@@ -13,9 +13,10 @@ import { WaveformCanvas } from './Waveform'
 import { captionClipItem, type ClipMenuItem } from './clipMenuItems'
 import { useAssetPeaks } from '../hooks/useAssetPeaks'
 import { formatTime, snapToFrame } from '../lib/timeline'
-import { clipEnd } from '../lib/lanes'
+import { clipEnd, laneOrigins } from '../lib/lanes'
 import { SNAP_DISTANCE_PX, snapClipStart, snapPointsFor, withoutOwnEdges } from '../lib/snapping'
 import { audioCutTargetAt } from '../lib/audioTracks'
+import { videoClipsOf } from '../lib/videoTracks'
 import { useAssetStore } from '../state/useAssetStore'
 import { useCaptionJobStore } from '../state/useCaptionJobStore'
 import { useProjectStore } from '../state/useProjectStore'
@@ -62,6 +63,16 @@ interface DragState {
   originTrackId: string
   /** Set once the pointer has moved far enough to count as a drag. */
   moved: boolean
+  /**
+   * Where every clip of the marquee's group began, when the clip picked up is
+   * part of one. Empty for an ordinary one-clip drag.
+   *
+   * Captured once, at the press, rather than read back each move: a drag
+   * reports where the pointer is now against where it started, and the clips
+   * have already moved by then — measuring against them would move them again
+   * on every frame.
+   */
+  group: readonly { id: string; startTime: number }[]
 }
 
 /** Vertical travel needed before a drag changes lanes, in pixels. */
@@ -85,6 +96,9 @@ export function AudioTrackLanes({
   const moveAudioClipTo = useProjectStore((state) => state.moveAudioClipTo)
   const selectedId = useProjectStore((state) => state.selectedAudioClipId)
   const selectAudioClip = useProjectStore((state) => state.selectAudioClip)
+  // A marquee's group, which travels with whichever of its clips is picked up.
+  const selectedIds = useProjectStore((state) => state.selectedIds)
+  const moveClipsTo = useProjectStore((state) => state.moveClipsTo)
   const removeAudioClip = useProjectStore((state) => state.removeAudioClip)
   const cutAudioAt = useProjectStore((state) => state.cutAudioAt)
 
@@ -107,6 +121,7 @@ export function AudioTrackLanes({
     if (event.button !== 0) return
     const target = event.currentTarget as HTMLElement
     target.setPointerCapture(event.pointerId)
+    const inGroup = selectedIds.includes(clip.id)
     dragRef.current = {
       clipId: clip.id,
       pointerId: event.pointerId,
@@ -115,8 +130,14 @@ export function AudioTrackLanes({
       originStart: clip.startTime,
       originTrackId: clip.trackId,
       moved: false,
+      // Video layers as well as audio: a band swept down the timeline catches
+      // both, and they have to keep their spacing against each other, not just
+      // against the clips on their own lane.
+      group: inGroup ? laneOrigins([...clips, ...videoClipsOf(project)], selectedIds) : [],
     }
-    selectAudioClip(clip.id)
+    // Picking up a clip that is already part of a group keeps the group —
+    // selecting it alone here would throw away the very thing being dragged.
+    if (!inGroup) selectAudioClip(clip.id)
   }
 
   const onDragMove = (event: React.PointerEvent) => {
@@ -131,6 +152,27 @@ export function AudioTrackLanes({
     const clip = clips.find((entry) => entry.id === drag.clipId)
     if (!clip) return
 
+    // Snapping is what makes the drag land flush against another clip's edge
+    // instead of a pixel off it — the whole point of the feature, since a
+    // voiceover a frame early or late from the shot it plays against is a bug
+    // nobody would spot by eye until export.
+    const rawStart = drag.originStart + dx / zoom
+    const points = withoutOwnEdges(snapPointsFor(project), clip.startTime, clipEnd(clip))
+    const start = snapClipStart(rawStart, clip.duration, points, SNAP_DISTANCE_PX / zoom)
+
+    if (drag.group.length > 1) {
+      // The whole group, by the distance this one clip travelled — snapping and
+      // all, so the clip under the pointer still lands flush and the rest keep
+      // their spacing from it. No lane changes: a group spread over three lanes
+      // has no one lane to be moved down from.
+      const shift = start - drag.originStart
+      const ok = moveClipsTo(
+        drag.group.map((origin) => ({ id: origin.id, startTime: origin.startTime + shift })),
+      )
+      setBlockedClipId(ok ? null : drag.clipId)
+      return
+    }
+
     const originIndex = tracks.findIndex((track) => track.id === drag.originTrackId)
     const kind = tracks[originIndex]?.kind
 
@@ -142,14 +184,6 @@ export function AudioTrackLanes({
       const candidate = tracks[originIndex + laneDelta]
       if (candidate?.kind === kind) targetTrackId = candidate.id
     }
-
-    // Snapping is what makes the drag land flush against another clip's edge
-    // instead of a pixel off it — the whole point of the feature, since a
-    // voiceover a frame early or late from the shot it plays against is a bug
-    // nobody would spot by eye until export.
-    const rawStart = drag.originStart + dx / zoom
-    const points = withoutOwnEdges(snapPointsFor(project), clip.startTime, clipEnd(clip))
-    const start = snapClipStart(rawStart, clip.duration, points, SNAP_DISTANCE_PX / zoom)
 
     const ok = moveAudioClipTo(drag.clipId, start, targetTrackId)
     setBlockedClipId(ok ? null : drag.clipId)
@@ -185,7 +219,7 @@ export function AudioTrackLanes({
               track={track}
               zoom={zoom}
               asset={assetById.get(sourceOf(clip))}
-              selected={clip.id === selectedId}
+              selected={clip.id === selectedId || selectedIds.includes(clip.id)}
               blocked={blockedClipId === clip.id}
               target={targets.get(clip.id)}
               cuttable={audioCutTargetAt(clips, clip.id, playhead) !== null}
@@ -277,6 +311,8 @@ function ClipChip({
     <div
       role="group"
       aria-label={`${label}, ${formatTime(clip.duration)} at ${formatTime(clip.startTime)} on ${track.name}`}
+      // What a marquee sweeps for — see MARQUEE_MISSES in Timeline.
+      data-clip-id={clip.id}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
