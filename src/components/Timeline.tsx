@@ -48,6 +48,7 @@ import {
   isThroughCut,
   layoutClips,
   leadInOf,
+  playheadAnchorX,
   snapToFrame,
   totalDuration,
   zoomFromPinch,
@@ -894,20 +895,40 @@ export function Timeline({
     [project.clips, moveClip, moveClips, selectedIds],
   )
 
-  // Where to re-anchor the scroll position once a pinch changes the zoom,
-  // filled in by onWheelZoom and consumed by the layout effect below. It has
-  // to wait for that effect because the scrollable content is only as wide as
-  // the zoom that is about to replace this one — setting scrollLeft before the
-  // resize lands just gets clamped back by the browser.
-  const pinchAnchor = useRef<{ pointerX: number; secondsAtPointer: number } | null>(null)
+  // Where to re-anchor the scroll position once the zoom changes: the instant
+  // to hold still, and where on screen to hold it. Filled in by whichever
+  // control is doing the zooming and consumed by the layout effect below. It
+  // has to wait for that effect because the scrollable content is only as wide
+  // as the zoom that is about to replace this one — setting scrollLeft before
+  // the resize lands just gets clamped back by the browser.
+  const zoomAnchor = useRef<{ anchorX: number; secondsAtAnchor: number } | null>(null)
 
   useLayoutEffect(() => {
-    const anchor = pinchAnchor.current
+    const anchor = zoomAnchor.current
     const container = scrollRef.current
     if (!anchor || !container) return
-    pinchAnchor.current = null
-    container.scrollLeft = anchor.secondsAtPointer * zoom - anchor.pointerX
+    zoomAnchor.current = null
+    container.scrollLeft = anchor.secondsAtAnchor * zoom - anchor.anchorX
   }, [zoom])
+
+  // Zooming from the slider or "Show frames" has no cursor to zoom around the
+  // way a pinch does, so it zooms around the playhead: without an anchor the
+  // scroll offset stays put in pixels while the lanes stretch under it, and a
+  // playhead a minute into a long timeline is off the screen by the time the
+  // slider has moved a step.
+  const zoomAroundPlayhead = useCallback(
+    (next: number) => {
+      const container = scrollRef.current
+      if (container) {
+        zoomAnchor.current = {
+          anchorX: playheadAnchorX(currentTime * zoom, container.scrollLeft, container.clientWidth),
+          secondsAtAnchor: currentTime,
+        }
+      }
+      setZoom(next)
+    },
+    [currentTime, zoom],
+  )
 
   // A trackpad pinch has no event of its own on the web — browsers report it as
   // a wheel event with ctrlKey set, which is also what an actual Ctrl+wheel
@@ -923,7 +944,10 @@ export function Timeline({
     // The instant under the cursor, so it is what stays under the cursor once
     // the zoom changes — without this a pinch in the middle of a long timeline
     // sends the picture sliding out from under your fingers.
-    pinchAnchor.current = { pointerX, secondsAtPointer: (container.scrollLeft + pointerX) / zoom }
+    zoomAnchor.current = {
+      anchorX: pointerX,
+      secondsAtAnchor: (container.scrollLeft + pointerX) / zoom,
+    }
     // Pinch deltaY is negative when spreading fingers apart, same sign as
     // scrolling up, so this reads as zoom in.
     setZoom(zoomFromPinch(zoom, event.deltaY, MIN_ZOOM, MAX_ZOOM))
@@ -1128,7 +1152,7 @@ export function Timeline({
           {!frameLines && canReachFrames ? (
             <Button
               variant="ghost"
-              onClick={() => setZoom(zoomForFrameLines(project.fps))}
+              onClick={() => zoomAroundPlayhead(zoomForFrameLines(project.fps))}
               title="Zoom in far enough to draw a line for every frame — cuts land on those lines"
             >
               Show frames
@@ -1143,7 +1167,7 @@ export function Timeline({
             min={MIN_ZOOM}
             max={MAX_ZOOM}
             value={zoom}
-            onChange={(event) => setZoom(Number(event.target.value))}
+            onChange={(event) => zoomAroundPlayhead(Number(event.target.value))}
             className="w-24"
           />
         </div>

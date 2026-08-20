@@ -795,3 +795,49 @@ describe('the marquee', () => {
     ])
   })
 })
+
+/**
+ * Where the lanes are scrolled to after a zoom.
+ *
+ * jsdom lays nothing out, so scrollLeft here is whatever the component last
+ * wrote rather than something the browser has clamped to the content — which
+ * is exactly the number under test.
+ */
+function lanes() {
+  const region = screen.getByRole('region', { name: 'Timeline' })
+  const node = region.querySelector('.overflow-x-auto')
+  if (!(node instanceof HTMLElement)) throw new Error('scrolling lanes not found')
+  Object.defineProperty(node, 'clientWidth', { value: 800, configurable: true })
+  return node
+}
+
+/**
+ * Zooming used to leave the scroll offset alone while the lanes stretched under
+ * it, so the playhead slid off the side of a long timeline the moment the
+ * slider moved. It zooms around the playhead instead.
+ */
+describe('the zoom slider', () => {
+  it('holds the playhead where it is on screen', () => {
+    render(<Timeline currentTime={60} onSeek={vi.fn()} />)
+    const view = lanes()
+    // 60s at the starting 40px/s is 2400px in, scrolled to sit 300px into the view.
+    view.scrollLeft = 2100
+
+    fireEvent.change(screen.getByLabelText('Zoom'), { target: { value: '80' } })
+
+    // 60s at 80px/s is 4800px in, and it is still 300px into the view.
+    expect(view.scrollLeft).toBe(4500)
+  })
+
+  it('brings a playhead that has been scrolled out of view back to the middle', () => {
+    render(<Timeline currentTime={60} onSeek={vi.fn()} />)
+    const view = lanes()
+    // Scrolled back to the top of the timeline: the playhead at 2400px is a
+    // long way past the right edge of an 800px view.
+    view.scrollLeft = 0
+
+    fireEvent.change(screen.getByLabelText('Zoom'), { target: { value: '80' } })
+
+    expect(view.scrollLeft).toBe(4400)
+  })
+})
